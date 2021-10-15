@@ -101,6 +101,25 @@ table ResponseUpdateModel{
   timestamp:string;
 }
 
+/**
+ *
+ * @description UploadTrainningTime
+ * @author ICT_hetianliu
+ *
+**/
+table RequestUploadTrainningTime{
+  fl_name:string;
+  fl_id:string;
+  iteration:int;
+  trainning_time:string;
+  timestamp:string;
+}
+table ResponseUploadTrainningTime{
+  retcode:int;
+  reason:string;
+  timestamp:string;
+}
+
 table RequestAsyncUpdateModel{
   fl_name:string;
   fl_id:string;

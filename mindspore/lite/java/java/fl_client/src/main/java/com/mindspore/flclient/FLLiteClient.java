@@ -39,6 +39,8 @@ import mindspore.schema.ResponseCode;
 import mindspore.schema.ResponseFLJob;
 import mindspore.schema.ResponseGetModel;
 import mindspore.schema.ResponseUpdateModel;
+import mindspore.schema.ResponseUploadTrainningTime;
+
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -340,6 +342,54 @@ public class FLLiteClient {
         }
         return status;
     }
+
+    /**
+     *
+     * @author ICT_hetianliu
+     * 
+     * Send prediction message of model trainning time to Server.
+     *
+     * @return the status code corresponding to the response message.
+     */
+     public FLClientStatus uploadTrainningTime() {
+        String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
+                flParameter.getDomainName());
+        UploadTrainningTime uploadTrainningTimeBuf = UpdateTrainningTime.getInstance();
+        byte[] uploadTrainningTimeBuffer = uploadTrainningTimeBuf.getRequestUploadTrainningTime(iteration, secureProtocol, batchSize);
+        if (uploadTrainningTimeBuf.getStatus() == FLClientStatus.FAILED) {
+            LOGGER.info(Common.addTag("[uploadTrainningTime] catch error in predicing trainning time"));
+            return FLClientStatus.FAILED;
+        }
+        try {
+            long start = Common.startTime("single uploadTrainningTime");
+            LOGGER.info(Common.addTag("[uploadTrainningTime] the request message length: " + uploadTrainningTimeBuffer.length));
+            byte[] message = flCommunication.syncRequest(url + "/uploadTrainningTime", uploadTrainningTimeBuffer);
+            if (!Common.isSeverReady(message)) {
+                LOGGER.info(Common.addTag("[uploadTrainningTime] the server is not ready now, need wait some time and request" +
+                        " again"));
+                status = FLClientStatus.RESTART;
+                Common.sleep(SLEEP_TIME);
+                nextRequestTime = "";
+                return status;
+            }
+            LOGGER.info(Common.addTag("[uploadTrainningTime] the response message length: " + message.length));
+            Common.endTime(start, "single uploadTrainningTime");
+            ByteBuffer debugBuffer = ByteBuffer.wrap(message);
+            ResponseUploadTrainningTime responseDataBuf = ResponseUploadTrainningTime.getRootAsResponseUploadTrainningTime(debugBuffer);
+            status = uploadTrainningTimeBuf.doResponse(responseDataBuf);
+            retCode = responseDataBuf.retcode();
+            if (status == FLClientStatus.RESTART) {
+                nextRequestTime = responseDataBuf.nextReqTime();
+            }
+            LOGGER.info(Common.addTag("[uploadTrainningTime] get response from server ok!"));
+        } catch (IOException e) {
+            LOGGER.severe(Common.addTag("[uploadTrainningTime] unsolved error code in uploadTrainningTime: catch IOException: " +
+                    e.getMessage()));
+            status = FLClientStatus.FAILED;
+            retCode = ResponseCode.RequestError;
+        }
+        return status;
+     }
 
     /**
      * Send serialized request message of updateModel to server.

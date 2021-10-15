@@ -138,6 +138,22 @@ public class SyncFLJob {
                 break;
             }
 
+            /**
+            *
+            * @description UploadTrainningTime
+            * @author ICT_hetianliu
+            *
+            **/
+            // upload trainning time
+            surStatus = client.uploadTrainningTime();
+            if (curStatus == FLClientStatus.RESTART) {
+                // TODO
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                // TODO
+                break;
+            }
+
             // train
             curStatus = flLiteClient.localTrain();
             if (curStatus == FLClientStatus.FAILED) {
