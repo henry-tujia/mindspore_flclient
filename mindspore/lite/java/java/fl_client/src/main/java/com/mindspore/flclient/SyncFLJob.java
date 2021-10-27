@@ -110,6 +110,10 @@ public class SyncFLJob {
             LOGGER.info(Common.addTag("flName: " + flParameter.getFlName()));
             int trainDataSize = flLiteClient.setInput();
             if (trainDataSize <= 0) {
+<<<<<<< HEAD
+=======
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
+>>>>>>> 3f443f52d8 (mulinfo)
                 curStatus = FLClientStatus.FAILED;
                 failed("unsolved error code in <flLiteClient.setInput>: the return trainDataSize<=0, setInput",
                         flLiteClient);
