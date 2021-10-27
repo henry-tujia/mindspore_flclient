@@ -70,7 +70,7 @@ public class SyncFLJob {
             LOGGER.info(Common.addTag("flName: " + flParameter.getFlName()));
             int trainDataSize = client.setInput(flParameter.getTrainDataset());
             if (trainDataSize <= 0) {
-                LOGGER.severe(Common.addTag("unsolved error code in <client.setInput>: the return trainDataSize<=0"));
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
                 curStatus = FLClientStatus.FAILED;
                 flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
                         client.getRetCode());
