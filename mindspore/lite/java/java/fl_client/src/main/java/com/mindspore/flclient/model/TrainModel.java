@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.logging.Logger;
+import java.lang.management;
 
 /**
  * ad train bert for train
@@ -70,6 +71,7 @@ public abstract class TrainModel {
      */
     public abstract int padSamples();
 
+<<<<<<< HEAD
     /**
      * train model
      *
@@ -77,6 +79,10 @@ public abstract class TrainModel {
      * @param epochs    train epoch number
      * @return status if success return 0 else -1
      */
+=======
+    public static UploadTrainningTime uploadTrainningTimeBuf =  UpdateTrainningTime.getInstance();;
+
+>>>>>>> 1fcf92daac (Add parameters for UploadTrainningTime.)
     public int trainModel(String modelPath, int epochs) {
         if (modelPath == null) {
             logger.severe(Common.addTag("model path cannot be empty"));
@@ -113,6 +119,7 @@ public abstract class TrainModel {
         long startTime = System.currentTimeMillis();
         for (int i = 0; i < epochs; i++) {
             float sumLossPerEpoch = 0.0f;
+            long batchStartTime = System.currentTimeMillis();
             for (int j = 0; j < batchNum; j++) {
                 List<Integer> labels = fillModelInput(j, true);
                 if (labels == null) {
@@ -132,9 +139,12 @@ public abstract class TrainModel {
                 sumLossPerEpoch += loss;
                 logger.info(Common.addTag("batch:" + j + ",loss:" + loss));
             }
+            long batchEndTime = System.currentTimeMillis();
             logger.info(Common.addTag("----------epoch:" + i + ",mean loss:" + sumLossPerEpoch / batchNum +
                     "----------"));
             long endTime = System.currentTimeMillis();
+            String Pid = ManagementFactory.getRuntimeMXBean().getName();
+            uploadTrainningTimeBuf.addTrainningTime(Pid, batchEndTime - batchStartTime);
             logger.info(Common.addTag("total train time:" + (endTime - startTime) + "ms"));
         }
         return 0;

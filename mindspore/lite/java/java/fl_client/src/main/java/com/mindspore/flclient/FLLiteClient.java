@@ -355,7 +355,7 @@ public class FLLiteClient {
         String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
                 flParameter.getDomainName());
         UploadTrainningTime uploadTrainningTimeBuf = UpdateTrainningTime.getInstance();
-        byte[] uploadTrainningTimeBuffer = uploadTrainningTimeBuf.getRequestUploadTrainningTime(iteration, secureProtocol, batchSize);
+        byte[] uploadTrainningTimeBuffer = uploadTrainningTimeBuf.getRequestUploadTrainningTime(iteration, secureProtocol, batchSize, epochs);
         if (uploadTrainningTimeBuf.getStatus() == FLClientStatus.FAILED) {
             LOGGER.info(Common.addTag("[uploadTrainningTime] catch error in predicing trainning time"));
             return FLClientStatus.FAILED;

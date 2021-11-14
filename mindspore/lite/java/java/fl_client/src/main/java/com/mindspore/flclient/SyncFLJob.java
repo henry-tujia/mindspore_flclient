@@ -147,10 +147,10 @@ public class SyncFLJob {
             // upload trainning time
             surStatus = client.uploadTrainningTime();
             if (curStatus == FLClientStatus.RESTART) {
-                // TODO
+                restart("[UploadTrainningTime] UploadTrainningTime", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
                 continue;
             } else if (curStatus == FLClientStatus.FAILED) {
-                // TODO
+                failed("[UploadTrainningTime] UploadTrainningTime", client.getIteration(), client.getRetCode(), curStatus);
                 break;
             }
 

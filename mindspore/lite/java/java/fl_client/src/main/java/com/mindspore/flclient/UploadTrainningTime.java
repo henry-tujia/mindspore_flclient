@@ -40,6 +40,11 @@ import java.util.logging.Logger;
     private FLClientStatus status;
 
     protected String trainningTIme;
+    private static double[] predictParameters;
+    private static double modelParameter;
+    private static double modelBasicTime;
+    private static double modelIntercept;
+    private static HashMap<String, vector<Long>> timeDataPerEpoch  = new HashMap<String, vector<Long>>();
 
     private UploadTrainningTime() {
     }
@@ -73,8 +78,69 @@ import java.util.logging.Logger;
      * @param batchSize      the batchSize of trainning option.
      *
      */
-    public void predictTrainningTime(int batchSize){
+    public void predictTrainningTime(int batchSize, int epoches){
+        // TODO all the set number needs to be test.
+        if (flParameter.getFlName().equals(ALBERT)) {
+            modelParameter = 12;
+            modelBasicTime = 686 + System.currentTimeMillis() % 100;
+            predictParameters = new Array(0.00000000e+00, 2.13054940e-01, -1.88135869e-02, 9.80505051e-01,
+                                         -6.67649652e-01, 2.71300855e-03, 2.49566224e-02,  7.95762709e-06,
+                                         -3.90761689e-05, -2.14748431e-04);
+            modelIntercept = 7.3465573;
+        } else if (flParameter.getFlName().equals(LENET)) {
+            modelParameter = 5;
+            modelBasicTime = 319 + System.currentTimeMillis() % 100;
+            predictParameters = new Array(0.00000000e+00, 2.13054940e-01, -1.88135869e-02, 9.80505051e-01,
+                                         -6.67649652e-01, 2.71300855e-03, 2.49566224e-02,  7.95762709e-06,
+                                         -3.90761689e-05, -2.14748431e-04);
+            modelIntercept = 7.3465573;
+        }
 
+        String Pid = ManagementFactory.getRuntimeMXBean().getName();
+        if(timeDataPerEpoch.contains(Pid)){
+            vector<Long> timeDataPerEpoch = timeDataPerEpoch.get(Pid);
+            long avg = 0;
+            timeDataPerEpochLength = timeDataPerEpoch.size();
+            if(timeDataPerEpochLength > 3) {
+                for(int i = timeDataPerEpochLength - 1; i >= timeDataPerEpochLength - 3; i--){
+                    avg += timeDataPerEpoch[i];
+                }
+                modelBasicTime = avg /= 3;
+            } else {
+                for(int i = 0; i < timeDataPerEpochLength; i++){
+                    avg += timeDataPerEpoch[i];
+                }
+                modelBasicTime = avg /= timeDataPerEpochLength;
+            }
+        }
+
+        double sum = 0;
+        a = modelParameter;
+        b = batchSize;
+        c = modelBasicTime;
+        x_data = new Array(1, a, b, c, a * a, a * b, a * c, b * b, b * c, c * c);
+        for(int i = 0; i < x_data.length; i++){
+            sum += x_data[i] * predictParameters[i];
+        }
+        sum += modelIntercept;
+        sum *= epoches;
+        trainningTime = Long.toString(sum);
+    }
+
+    /**
+     * Record the running time of an epoch of PID
+     *
+     * @param PID  the PID of the process which running the model.
+     * @param time the real running time of an epoch.
+     */
+    public void addTrainningTime(String Pid, long time){
+        if(timeDataPerEpoch.contains(Pid)){
+            timeDataPerEpoch.get(Pid).add(time);
+        } else {
+            vector<Long> PidData = new vector<Long>();
+            PidData.add(time);
+            timeDataPerEpoch.put(Pid, PidData);
+        }
     }
 
     /**
@@ -85,8 +151,8 @@ import java.util.logging.Logger;
      * @param batchSize  the batchSize of trainning option.
      * @return the flatBuffer builder of RequestUploadTrainningTime in byte[] format.
      */
-    public byte[] getRequestUploadTrainningTime(int iteration, SecureProtocol secureProtocol, int batchSize) {
-        this.predictTrainningTime(batchSize);
+    public byte[] getRequestUploadTrainningTime(int iteration, SecureProtocol secureProtocol, int batchSize, int epochs) {
+        this.predictTrainningTime(batchSize, epochs);
         RequestUploadTrainningTimeBuilder builder = new RequestUploadTrainningTimeBuilder(localFLParameter.getEncryptLevel());
         return builder.flName(flParameter.getFlName()).time().id(localFLParameter.getFlID())
                 .trainningTime(this.trainningTIme).iteration(iteration).build();
@@ -102,6 +168,7 @@ import java.util.logging.Logger;
         LOGGER.info(Common.addTag("[uploadTrainningTime] ==========uploadTrainningTime response================"));
         LOGGER.info(Common.addTag("[uploadTrainningTime] ==========retcode: " + response.retcode()));
         LOGGER.info(Common.addTag("[uploadTrainningTime] ==========reason: " + response.reason()));
+        LOGGER.info(Common.addTag("[uploadTrainningTime] ==========next request time: " + response.nextReqTime()));
         switch (response.retcode()) {
             case (ResponseCode.SUCCEED):
                 LOGGER.info(Common.addTag("[uploadTrainningTime] uploadTrainningTime success"));
@@ -220,3 +287,4 @@ import java.util.logging.Logger;
             return builder.sizedByteArray();
         }
     }
+}
