@@ -29,9 +29,17 @@ import java.util.logging.Logger;
 public class TrainDeepfm extends TrainModel {
     private static final Logger logger = Logger.getLogger(TrainDeepfm.class.toString());
 
-    private static final int NUM_OF_CLASS = 62;
+    private static final int NUM_OF_CLASS = 2;
 
-    private DatasetDeepfm dataset;
+    private DatasetDeepfm mDs = new DatasetDeepfm();
+
+    private Vector<DatasetDeepfm.DataLabelTuple> mTrainDataset;
+
+    private Vector<DatasetDeepfm.DataLabelTuple> mTestDataset;
+
+    private int batch_size;
+
+    private int batch_num;
 
     private int imageSize;
 
@@ -64,61 +72,60 @@ public class TrainDeepfm extends TrainModel {
         return localRef;
     }
 
-    public int[] inferModel(String modelPath, String testFile) {
-        if (modelPath.isEmpty() || testFile.isEmpty()) {
-            logger.severe(Common.addTag("model path or image file cannot be empty"));
-            return new int[0];
-        }
-        int trainSize = initDataSet(testFile, "");
-        logger.info(Common.addTag("dataset origin size:" + trainSize));
-        int status = initSessionAndInputs(modelPath, false);
-        if (status == -1) {
-            logger.severe(Common.addTag("init session and inputs failed"));
-            return new int[0];
-        }
-        status = padSamples();
-        if (status == -1) {
-            logger.severe(Common.addTag("infer model failed"));
-            return new int[0];
-        }
-        int[] predictLabels = new int[trainSampleSize];
-        for (int j = 0; j < batchNum; j++) {
-            fillModelInput(j, false);
-            boolean success = trainSession.runGraph();
-            if (!success) {
-                logger.severe(Common.addTag("run graph failed"));
-                return new int[0];
-            }
-            int[] batchLabels = getBatchLabel();
-            System.arraycopy(batchLabels, 0, predictLabels, j * batchSize, batchSize);
-        }
-        if (predictLabels.length == 0) {
-            return new int[0];
-        }
-        return Arrays.copyOfRange(predictLabels, 0, trainSampleSize - padSize);
-    }
+    // public int[] inferModel(String modelPath, String testFile) {
+    //     if (modelPath.isEmpty() || testFile.isEmpty()) {
+    //         logger.severe(Common.addTag("model path or image file cannot be empty"));
+    //         return new int[0];
+    //     }
+    //     int trainSize = initDataSet(testFile, "");
+    //     logger.info(Common.addTag("dataset origin size:" + trainSize));
+    //     int status = initSessionAndInputs(modelPath, false);
+    //     if (status == -1) {
+    //         logger.severe(Common.addTag("init session and inputs failed"));
+    //         return new int[0];
+    //     }
+    //     status = padSamples();
+    //     if (status == -1) {
+    //         logger.severe(Common.addTag("infer model failed"));
+    //         return new int[0];
+    //     }
+    //     int[] predictLabels = new int[trainSampleSize];
+    //     for (int j = 0; j < batchNum; j++) {
+    //         fillModelInput(j, false);
+    //         boolean success = trainSession.runGraph();
+    //         if (!success) {
+    //             logger.severe(Common.addTag("run graph failed"));
+    //             return new int[0];
+    //         }
+    //         int[] batchLabels = getBatchLabel();
+    //         System.arraycopy(batchLabels, 0, predictLabels, j * batchSize, batchSize);
+    //     }
+    //     if (predictLabels.length == 0) {
+    //         return new int[0];
+    //     }
+    //     return Arrays.copyOfRange(predictLabels, 0, trainSampleSize - padSize);
+    // }
 
     public int initDataSet(String inputFile,boolean Train) {
         if (!inputFile.isEmpty()) {
-            dataset.initDataset(inputFile,Train);
-            trainDataset = dataset.getTrainData();
-            ArrayList<Float> label = trainDataset.label;
-            // byte[] labelByteArray = DataSet.readBinFile(labelFile);
-            int trainSize = label.length;
-            trainSampleSize = trainSize;
-            // label is 32,need pad 32*62
-            labelArray = new int[trainSize * NUM_OF_CLASS];
-            Arrays.fill(labelArray, 0);
-            int j = 0;
-            for (int i = 0; i < labelByteArray.length; i += 4) {
-                labelArray[j * NUM_OF_CLASS + labelByteArray[i]] = 1;
-                j++;
+            ds.initDataset(inputFile,Train);
+            if (Train){
+                mTrainDataset = mDs.getTrainData();
             }
+            else{
+                mTestDataset = mDs.getTestData();
+            }
+            // Vector<dataset.DataLabelTuple> testDataset = ds.getTestData();
+            // int[] label = new int[trainDataset.size()*NUM_OF_CLASS];
+            // int j = 0;
+            // for(int i=0;i<trainDataset.size();i+=1){
+            //     label[j*NUM_OF_CLASS+Math.round(trainDataset.get(i).label.get(0))] =1 ;
+            //     j+=1;
+            // }
         } else {
-            labelArray = null;  // labelArray may be initialized from train
+            return -1;  // labelArray may be initialized from train
         }
-
-        return trainSampleSize;
+        return 0;
     }
 
     @Override
@@ -132,17 +139,9 @@ public class TrainDeepfm extends TrainModel {
             logger.severe(Common.addTag("session init failed"));
             return -1;
         }
-        numOfClass = NUM_OF_CLASS;
         List<MSTensor> inputs = trainSession.getInputs();
-        MSTensor imageTensor = inputs.get(0);
-        batchSize = imageTensor.getShape()[0];
-        imageSize = imageTensor.elementsNum();
-        imageBuffer = ByteBuffer.allocateDirect(imageSize * Float.BYTES);
-        imageBuffer.order(ByteOrder.nativeOrder());
-        MSTensor labelTensor = inputs.get(1);
-        labelSize = labelTensor.elementsNum();
-        labelIdBuffer = ByteBuffer.allocateDirect(labelSize * Integer.BYTES);
-        labelIdBuffer.order(ByteOrder.nativeOrder());
+        batch_size = inputs.get(0).getShape()[0];
+        batch_num = inputs.get(0).size()/batch_size;
         return 0;
     }
 
@@ -150,22 +149,56 @@ public class TrainDeepfm extends TrainModel {
     public List<Integer> fillModelInput(int batchIdx, boolean trainMod) {
         imageBuffer.clear();
         labelIdBuffer.clear();
-        List<Integer> predictLabels = new ArrayList<>(batchSize);
-        for (int i = 0; i < imageSize * Float.BYTES; i++) {
-            imageBuffer.put(imageArray[batchIdx * imageSize * Float.BYTES + i]);
-        }
-        for (int i = 0; i < labelSize; i++) {
-            labelIdBuffer.putFloat(labelArray[batchIdx * labelSize + i]);
-            if (!trainMod && labelArray[batchIdx * labelSize + i] == 1) {
-                predictLabels.add(i % NUM_OF_CLASS);
+        List<Integer> predictLabels = new ArrayList<>(batch_size);
+
+        
+        List<MSTensor> inputs = session.getInputs();
+
+        int inputIdsDataCnt = inputs.get(0).elementsNum();
+        int[] inputIdsBatchData = new int[inputIdsDataCnt];
+
+        int inputValSDataCnt = inputs.get(1).elementsNum();
+        float[] inputValsBatchData = new float[inputValSDataCnt];
+
+        int labelDataCnt = inputs.get(2).elementsNum();
+        int[] labelBatchData = new int[labelDataCnt];
+
+        for (int i = 0; i < batchSize; i++) {
+            Dataset.DataLabelTuple dataLabelTuple = dataset.get(batchIdx*batch_size+i);
+            int label = dataLabelTuple.label.get(0).intValue();
+            int[] ids = dataLabelTuple.feat_ids.stream().mapToInt(j -> j).toArray();
+
+            int n = 0;
+            float[] vals = new float[dataLabelTuple.feat_vals.size()];
+            for (Float f : dataLabelTuple.feat_vals) {
+                vals[n++] = (f != null ? f : Float.NaN); // Or whatever default you want.
             }
+            System.arraycopy(ids, 0, inputIdsBatchData, i * ids.length, ids.length);
+            System.arraycopy(vals, 0, inputValsBatchData, i * vals.length, vals.length);
+            labelBatchData[i] = label;
+            labelsVec.add(label);
         }
 
-        List<MSTensor> inputs = trainSession.getInputs();
-        MSTensor imageTensor = inputs.get(0);
-        MSTensor labelTensor = inputs.get(1);
-        imageTensor.setData(imageBuffer);
-        labelTensor.setData(labelIdBuffer);
-        return predictLabels;
+        ByteBuffer byteBufIds = ByteBuffer.allocateDirect(inputIdsBatchData.length * Integer.BYTES);
+        byteBufIds.order(ByteOrder.nativeOrder());
+        for (int i = 0; i < inputIdsBatchData.length; i++) {
+            byteBufIds.putFloat(inputIdsBatchData[i]);
+        }
+        inputs.get(0).setData(byteBufIds);
+
+        ByteBuffer byteBufVals = ByteBuffer.allocateDirect(inputValsBatchData.length * Float.BYTES);
+        byteBufVals.order(ByteOrder.nativeOrder());
+        for (int i = 0; i < inputIdsBatchData.length; i++) {
+            byteBufVals.putFloat(inputIdsBatchData[i]);
+        }
+        inputs.get(1).setData(byteBufVals);
+
+        ByteBuffer labelByteBuf = ByteBuffer.allocateDirect(labelBatchData.length * 4);
+        labelByteBuf.order(ByteOrder.nativeOrder());
+        for (int i = 0; i < labelBatchData.length; i++) {
+            labelByteBuf.putInt(labelBatchData[i]);
+        }
+        inputs.get(2).setData(labelByteBuf);
+        return labelsVec;
     }
 }

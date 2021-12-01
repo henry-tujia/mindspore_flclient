@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.mindspore.lite.train_lenet;
+package com.mindspore.lite.train_deepfm;
 
 import com.mindspore.lite.MSTensor;
 import com.mindspore.lite.LiteSession;
@@ -28,13 +28,11 @@ import java.util.Map;
 import java.util.Vector;
 
 public class NetRunner {
-    private int dataIndex = 0;
-    private int labelIndex = 1;
     private LiteSession session;
     private long batchSize;
     private long dataSize; // one input data size, in byte
-    private DataSet ds = new DataSet();
-    private long numOfClasses;
+    private Dataset ds = new Dataset();
+    private int numOfClasses = 2;
     private long cycles = 2000;
     private int idx = 1;
     private int virtualBatch = 16;
@@ -59,10 +57,8 @@ public class NetRunner {
             return;
         }
 
-        dataIndex = 0;
-        labelIndex = 1;
-        batchSize = inputs.get(dataIndex).getShape()[0];
-        dataSize = inputs.get(dataIndex).size() / batchSize;
+        batchSize = inputs.get(0).getShape()[0];
+        dataSize = inputs.get(0).size() / batchSize;
         System.out.println("batch_size: " + batchSize);
         System.out.println("virtual batch multiplier: " + virtualBatch);
         int index = modelPath.lastIndexOf(".ms");
@@ -74,17 +70,16 @@ public class NetRunner {
     }
 
     public int initDB(String datasetPath) {
-        if (dataSize != 0) {
-            ds.setExpectedDataSize(dataSize);
-        }
-        ds.initializeMNISTDatabase(datasetPath);
-        numOfClasses = ds.getNumOfClasses();
-        if (numOfClasses != 10) {
-            System.err.println("unexpected num_of_class: " + numOfClasses);
-            System.exit(1);
+
+        ds.initDataset(datasetPath+"\\train.json",true);
+        ds.initDataset(datasetPath+"\\test.json",false);
+
+        if (ds.getTrainData().size() == 0) {
+            System.err.println("train data size is 0");
+            return -1;
         }
 
-        if (ds.testData.size() == 0) {
+        if (ds.getTestData().size() == 0) {
             System.err.println("test data size is 0");
             return -1;
         }
@@ -134,7 +129,7 @@ public class NetRunner {
 
     public float calculateAccuracy(long maxTests) {
         float accuracy = 0;
-        Vector<DataSet.DataLabelTuple> test_set = ds.getTestData();
+        Vector<Dataset.DataLabelTuple> test_set = ds.getTestData();
         long tests = test_set.size() / batchSize;
         if (maxTests != -1 && tests < maxTests) {
             tests = maxTests;
@@ -174,16 +169,19 @@ public class NetRunner {
     }
 
     // each time fill batch_size data
-    Vector<Integer> fillInputData(Vector<DataSet.DataLabelTuple> dataset, boolean serially) {
+    Vector<Integer> fillInputData(Vector<Dataset.DataLabelTuple> dataset, boolean serially) {
         Vector<Integer> labelsVec = new Vector<Integer>();
         int totalSize = dataset.size();
 
         List<MSTensor> inputs = session.getInputs();
 
-        int inputDataCnt = inputs.get(dataIndex).elementsNum();
+//        int inputIdsCnt = inputs.get(dataIndex).elementsNum();
+//        float[] inputBatchData = new float[inputDataCnt];
+
+        int inputDataCnt = inputs.get(0).elementsNum();
         float[] inputBatchData = new float[inputDataCnt];
 
-        int labelDataCnt = inputs.get(labelIndex).elementsNum();
+        int labelDataCnt = inputs.get(1).elementsNum();
         int[] labelBatchData = new int[labelDataCnt];
 
         for (int i = 0; i < batchSize; i++) {
@@ -194,9 +192,9 @@ public class NetRunner {
             }
 
             int label = 0;
-            DataSet.DataLabelTuple dataLabelTuple = dataset.get(idx);
-            label = dataLabelTuple.label;
-            System.arraycopy(dataLabelTuple.data, 0, inputBatchData, (int) (i * dataLabelTuple.data.length), dataLabelTuple.data.length);
+            Dataset.DataLabelTuple dataLabelTuple = dataset.get(idx);
+            label = dataLabelTuple.label.get(0).intValue();
+            System.arraycopy(dataLabelTuple.feat_ids, 0, inputBatchData, (int) (i * dataLabelTuple.feat_ids.size()), dataLabelTuple.feat_ids.size());
             labelBatchData[i] = label;
             labelsVec.add(label);
         }
@@ -206,14 +204,14 @@ public class NetRunner {
         for (int i = 0; i < inputBatchData.length; i++) {
             byteBuf.putFloat(inputBatchData[i]);
         }
-        inputs.get(dataIndex).setData(byteBuf);
+        inputs.get(0).setData(byteBuf);
 
         ByteBuffer labelByteBuf = ByteBuffer.allocateDirect(labelBatchData.length * 4);
         labelByteBuf.order(ByteOrder.nativeOrder());
         for (int i = 0; i < labelBatchData.length; i++) {
             labelByteBuf.putInt(labelBatchData[i]);
         }
-        inputs.get(labelIndex).setData(labelByteBuf);
+        inputs.get(1).setData(labelByteBuf);
 
         return labelsVec;
     }
