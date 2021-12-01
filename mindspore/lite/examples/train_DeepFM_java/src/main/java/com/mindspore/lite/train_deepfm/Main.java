@@ -14,21 +14,18 @@
  * limitations under the License.
  */
 
-package com.mindspore.lite.train_lenet;
+package com.mindspore.lite.train_deepfm;
 
 import com.mindspore.lite.Version;
 
-public class Main {
+public  class Main {
     public static void main(String[] args) {
         System.loadLibrary("mindspore-lite-jni");
         System.out.println(Version.version());
-        if (args.length < 3) {
-            System.err.println("model path, dataset path and virtualBatch must be provided.");
-            return;
-        }
-        String modelPath = args[0];
-        String datasetPath = args[1];
-        String virtualBatch = args[2];
+
+        String modelPath = "/mnt/data/th/deepFm_java/deepfm.ms";
+        String datasetPath = "/mnt/data/th/deepFm_java/";
+        String virtualBatch = "16";
 
         NetRunner net_runner = new NetRunner();
         net_runner.trainModel(modelPath, datasetPath, Integer.parseInt(virtualBatch));

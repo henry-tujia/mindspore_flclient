@@ -120,6 +120,8 @@ public class DataSet {
 
                 DataLabelTuple data_label_tupel = new DataLabelTuple();
                 data_label_tupel.data = hwc_bin_image;
+                System.out.println(labels[i]);
+                System.out.println(labels[i] & 0xff);
                 data_label_tupel.label = labels[i] & 0xff;
                 dataset.add(data_label_tupel);
             }
