@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.mindspore.lite.train_lenet;
+package com.mindspore.lite.java_deepfm;
 
 import java.io.BufferedInputStream;
 import java.io.FileInputStream;
@@ -25,13 +25,14 @@ public class DataSet {
     private long numOfClasses = 0;
     private long expectedDataSize = 0;
     public class DataLabelTuple {
-        public float[] data;
+        public int[] ids;
+        public float[] vals;
         public int label;
     }
     Vector<DataLabelTuple> trainData;
     Vector<DataLabelTuple> testData;
 
-    public void initializeMNISTDatabase(String dpath) {
+    public void initializeCriteoDatabase(String dpath) {
         numOfClasses = 10;
         trainData = new Vector<DataLabelTuple>();
         testData = new Vector<DataLabelTuple>();
@@ -61,10 +62,9 @@ public class DataSet {
             System.exit(1);
         }
     }
-    public void readMNISTFile(String inputFileName, String labelFileName, Vector<DataLabelTuple> dataset) {
+    public void readCriteoFile(String inputFileName, String labelFileName, Vector<DataLabelTuple> dataset) {
         try {
             BufferedInputStream ibin = new BufferedInputStream(new FileInputStream(inputFileName));
-            BufferedInputStream lbin = new BufferedInputStream(new FileInputStream(labelFileName));
             byte[] bytes = new byte[4];
 
             readFile(ibin, bytes, 4);
@@ -74,22 +74,6 @@ public class DataSet {
             }
             readFile(ibin, bytes, 4);
             int inumber = Integer.parseInt(bytesToHex(bytes), 16);
-
-            readFile(lbin, bytes, 4);
-            if (!"00000801".equals(bytesToHex(bytes))) { // 2049
-                System.err.println("The dataset label is not valid: " + bytesToHex(bytes));
-                return;
-            }
-            readFile(lbin, bytes, 4);
-            int lnumber = Integer.parseInt(bytesToHex(bytes), 16);
-            if (inumber != lnumber) {
-                System.err.println("input data cnt: " + inumber + " not equal label cnt: " + lnumber);
-                return;
-            }
-
-            // read all labels
-            byte[] labels = new byte[lnumber];
-            readFile(lbin, labels, lnumber);
 
             // row, column
             readFile(ibin, bytes, 4);
@@ -103,28 +87,7 @@ public class DataSet {
             // read images
             int image_size = n_rows * n_cols;
             byte[] image_data = new byte[image_size];
-            for (int i = 0; i < lnumber; i++) {
-                float [] hwc_bin_image = new float[32 * 32];
-                readFile(ibin, image_data, image_size);
-                for (int r = 0; r < 32; r++) {
-                    for (int c = 0; c < 32; c++) {
-                        int index = r * 32 + c;
-                        if (r < 2 || r > 29 || c < 2 || c > 29) {
-                            hwc_bin_image[index] = 0;
-                        } else {
-                            int data = image_data[(r-2)*28 + (c-2)] & 0xff;
-                            hwc_bin_image[index] = (float)data / 255.0f;
-                        }
-                    }
-                }
 
-                DataLabelTuple data_label_tupel = new DataLabelTuple();
-                data_label_tupel.data = hwc_bin_image;
-                System.out.println(labels[i]);
-                System.out.println(labels[i] & 0xff);
-                data_label_tupel.label = labels[i] & 0xff;
-                dataset.add(data_label_tupel);
-            }
         } catch (IOException e) {
             System.err.println("Read Dateset exception");
         }

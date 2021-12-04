@@ -5,7 +5,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.mindspore.lite.demo</groupId>
+<<<<<<< HEAD
     <artifactId>train_deepfm_java</artifactId>
+=======
+    <artifactId>train_lenet_java</artifactId>
+>>>>>>> feature-train
     <version>1.0</version>
 
     <properties>
@@ -13,6 +17,10 @@
         <maven.compiler.target>8</maven.compiler.target>
     </properties>
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> feature-train
     <dependencies>
         <dependency>
             <groupId>com.mindspore.lite</groupId>
@@ -32,7 +40,11 @@
                 <configuration>
                     <archive>
                         <manifest>
+<<<<<<< HEAD
                             <mainClass>com.mindspore.lite.train_deepfm_java.Main</mainClass>
+=======
+                            <mainClass>com.mindspore.lite.train_lenet.Main</mainClass>
+>>>>>>> feature-train
                         </manifest>
                     </archive>
                     <descriptorRefs>
