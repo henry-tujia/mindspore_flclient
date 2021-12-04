@@ -20,6 +20,8 @@ import static com.mindspore.flclient.FLParameter.SLEEP_TIME;
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
 
+import com.mindspore.flclient.JavaMI.*
+
 import com.mindspore.flclient.model.AlInferBert;
 import com.mindspore.flclient.model.AlTrainBert;
 import com.mindspore.flclient.model.SessionUtil;
@@ -262,6 +264,7 @@ public class FLLiteClient {
         return status;
     }
 
+
     private FLClientStatus judgeStartFLJob(StartFLJob startFLJob, ResponseFLJob responseDataBuf) {
         iteration = responseDataBuf.iteration();
         FLClientStatus response = startFLJob.doResponse(responseDataBuf);
@@ -400,7 +403,7 @@ public class FLLiteClient {
         try {
             long start = Common.startTime("single updateModel");
             LOGGER.info(Common.addTag("[updateModel] the request message length: " + updateModelBuffer.length));
-            byte[] message = flCommunication.syncRequest(url + "/updateModel", updateModelBuffer);
+            byte[] message = flCommunication.syncRequest(url + "/updateModel", updateMo delBuffer);
             if (!Common.isSeverReady(message)) {
                 LOGGER.info(Common.addTag("[updateModel] the server is not ready now, need wait some time and request" +
                         " again"));
@@ -666,6 +669,78 @@ public class FLLiteClient {
                     flParameter.getTestDataset().split(",")[0] + " labelPath: " +
                     flParameter.getTestDataset().split(",")[1]));
             LOGGER.info(Common.addTag("[evaluate] evaluate acc: " + acc));
+        }
+        return status;
+    }
+
+
+    /**
+     * @description check Iteration.
+     * @author ICT_tanhao
+     * @date 2021/10/14
+     **/
+    public boolean checkIteration(int expectIteration) {
+        LOGGER.info(Common.addTag("[checking Iteration] ====================================expectIteration is " + expectIteration);
+
+        if (expectIteration != this.getIteration()) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+
+    /**
+     * @description
+     * @author ICT_tanhao
+     * @date 2021/10/14
+     **/
+    public double calMutualInformation(List<MSTensor> localModel) {
+
+        TrainLenet trainLenet = TrainLenet.getInstance();
+        var serverModel = SessionUtil.getFeatures(trainLenet.getTrainSession()));
+        var res = MutualInformation.calculateMutualInformation(localModel, serverModel);
+
+        return res
+
+    }
+
+    /**
+     * @description Send serialized request message of Something to server.
+     * @author ICT_tanhao
+     * @date 2021/10/14
+     **/
+    public FLClientStatus uploadSomething(var something) {
+        String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
+                flParameter.getDomainName());
+        byte[] uploadSomethingBuffer = something //TODO 不同场景使用特定的数据格式
+        try {
+            long start = Common.startTime("single uploadSomething");
+            LOGGER.info(Common.addTag("[uploadSomething] the request message length: " + uploadSomethingBuffer.length));
+            byte[] message = flCommunication.syncRequest(url + "/uploadSomething", uploadSomethingBuffer);
+            if (!Common.isSeverReady(message)) {
+                LOGGER.info(Common.addTag("[uploadSomethingBuffer] the server is not ready now, need wait some time and request" +
+                        " again"));
+                status = FLClientStatus.RESTART;
+                Common.sleep(SLEEP_TIME);
+                nextRequestTime = "";
+                return status;
+            }
+            LOGGER.info(Common.addTag("[uploadSomethingBuffer] the response message length: " + message.length));
+            Common.endTime(start, "single uploadSomethingBuffer");
+            ByteBuffer debugBuffer = ByteBuffer.wrap(message);
+            status_message = debugBuffer //进行数据解析，查看返回结果
+            status = doResponse(status_message);
+            retCode = status_message.retcode();
+            if (status == FLClientStatus.RESTART) {
+                nextRequestTime = responseDataBuf.nextReqTime();
+            }
+            LOGGER.info(Common.addTag("[updateModel] get response from server ok!"));
+        } catch (IOException e) {
+            LOGGER.severe(Common.addTag("[updateModel] unsolved error code in updateModel: catch IOException: " +
+                    e.getMessage()));
+            status = FLClientStatus.FAILED;
+            retCode = ResponseCode.RequestError;
         }
         return status;
     }
