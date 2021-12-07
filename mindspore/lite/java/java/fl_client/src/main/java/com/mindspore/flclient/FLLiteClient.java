@@ -68,6 +68,7 @@ public class FLLiteClient {
     private int trainDataSize;
     private double dpEps = 100d;
     private double dpDelta = 0.01d;
+    private float mulinfo = float(-1);
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private SecureProtocol secureProtocol = new SecureProtocol();
@@ -346,7 +347,7 @@ public class FLLiteClient {
      *
      * @return the status code corresponding to the response message.
      */
-     public FLClientStatus uploadTrainningTime() {
+    public FLClientStatus uploadTrainningTime() {
         String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
                 flParameter.getDomainName());
         UploadTrainningTime uploadTrainningTimeBuf = UpdateTrainningTime.getInstance();
@@ -384,7 +385,7 @@ public class FLLiteClient {
             retCode = ResponseCode.RequestError;
         }
         return status;
-     }
+    }
 
     /**
      * Send serialized request message of updateModel to server.
@@ -695,12 +696,10 @@ public class FLLiteClient {
      * @author ICT_tanhao
      * @date 2021/10/14
      **/
-    public double calMutualInformation(List<MSTensor> localModel) {
-
-        TrainLenet trainLenet = TrainLenet.getInstance();
-        var serverModel = SessionUtil.getFeatures(trainLenet.getTrainSession()));
+    public double calMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
+        
         var res = MutualInformation.calculateMutualInformation(localModel, serverModel);
-
+        
         return res
 
     }
