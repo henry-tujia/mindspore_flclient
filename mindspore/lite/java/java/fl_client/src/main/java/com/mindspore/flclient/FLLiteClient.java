@@ -20,7 +20,7 @@ import static com.mindspore.flclient.FLParameter.SLEEP_TIME;
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
 
-import com.mindspore.flclient.JavaMI.*
+import com.mindspore.flclient.JavaMI.*;
 
 import com.mindspore.flclient.model.AlInferBert;
 import com.mindspore.flclient.model.AlTrainBert;
