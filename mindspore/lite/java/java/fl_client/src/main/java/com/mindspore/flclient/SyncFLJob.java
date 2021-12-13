@@ -236,7 +236,7 @@ public class SyncFLJob {
 
             
             Map<String, float[]> new_featureMap = getFeatureMap();
-            if(!oldFeatureMap_mul.size()){
+            if(oldFeatureMap_mul.size()==0){
                 // train
                 curStatus = client.localTrain();
                 if (curStatus == FLClientStatus.FAILED) {
@@ -244,20 +244,17 @@ public class SyncFLJob {
                     break;
                 }
                 LOGGER.info(Common.addTag("[train] train succeed"));
-                Map<String, float[]> oldFeatureMap_mul = getFeatureMap();
+                oldFeatureMap_mul = getFeatureMap();
             }
             
 
              // calculate mul-information
-            float mulinfo= client.calMutualInformation(new_featureMap,oldFeatureMap_mul);
-            
-
-            curStatus = client.uploadSomething(mulinfo);
+            curStatus = client.updateAndCalMutualInformation(new_featureMap,oldFeatureMap_mul);
             if (curStatus == FLClientStatus.FAILED) {
-                failed("[upload] upload mul failed or server drop the client ", client.getIteration(), client.getRetCode(), curStatus);
+                failed("[updateAndCalMutualInformation] upload mul failed or server drop the client ", client.getIteration(), client.getRetCode(), curStatus);
                 continue;
             }
-            LOGGER.info(Common.addTag("[upload] upload mul success"));
+            LOGGER.info(Common.addTag("[updateAndCalMutualInformation] upload mul success"));
 
             // updateModel
             curStatus = updateModel(client);

@@ -117,6 +117,19 @@ table ResponseUploadTrainningTime{
   timestamp:string;
 }
 
+
+table RequestUpdateAndCalMutualInformation{
+  fl_id:string;
+  mul:string;
+  timestamp:string;
+}
+table ResponseUpdateAndCalMutualInformation{
+  retcode:int;
+  reason:string;
+  next_req_time:string;
+  timestamp:string;
+}
+
 table RequestAsyncUpdateModel{
   fl_name:string;
   fl_id:string;
