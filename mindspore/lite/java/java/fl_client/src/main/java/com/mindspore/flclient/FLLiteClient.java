@@ -40,6 +40,7 @@ import mindspore.schema.FLPlan;
 import mindspore.schema.ResponseCode;
 import mindspore.schema.ResponseFLJob;
 import mindspore.schema.ResponseGetModel;
+import mindspore.schema.ResponseUpdateAndCalMutualInformation;
 import mindspore.schema.ResponseUpdateModel;
 import mindspore.schema.ResponseUploadTrainningTime;
 
@@ -730,52 +731,45 @@ public class FLLiteClient {
     }
 
 
-    /**
-     * @description
-     * @author ICT_tanhao
-     * @date 2021/10/14
-     **/
-    public double calMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
-        
-        var res = MutualInformation.calculateMutualInformation(localModel, serverModel);
-        
-        return res
-
-    }
 
     /**
      * @description Send serialized request message of Something to server.
      * @author ICT_tanhao
      * @date 2021/10/14
      **/
-    public FLClientStatus uploadSomething(var something) {
+    public FLClientStatus updateAndCalMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
         String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
                 flParameter.getDomainName());
-        byte[] uploadSomethingBuffer = something //TODO 不同场景使用特定的数据格式
+        UpdateAndCalMutualInformation updateAndCalMutualInformationBuf = UpdateAndCalMutualInformation.getInstance();
+        byte[] updateAndCalMutualInformationBuffer = updateAndCalMutualInformationBuf.getRequestUpdateAndCalMutualInformation(localModel,serverModel);
+        if (updateAndCalMutualInformationBuf.getStatus() == FLClientStatus.FAILED) {
+            LOGGER.info(Common.addTag("[updateModel] catch error in build UpdateAndCalMutualInformation"));
+            return FLClientStatus.FAILED;
+        }
         try {
-            long start = Common.startTime("single uploadSomething");
-            LOGGER.info(Common.addTag("[uploadSomething] the request message length: " + uploadSomethingBuffer.length));
-            byte[] message = flCommunication.syncRequest(url + "/uploadSomething", uploadSomethingBuffer);
+            long start = Common.startTime("single UpdateAndCalMutualInformation");
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the request message length: " + updateAndCalMutualInformationBuffer.length));
+            byte[] message = flCommunication.syncRequest(url + "/UpdateAndCalMutualInformation", updateAndCalMutualInformationBuffer);
             if (!Common.isSeverReady(message)) {
-                LOGGER.info(Common.addTag("[uploadSomethingBuffer] the server is not ready now, need wait some time and request" +
+                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the server is not ready now, need wait some time and request" +
                         " again"));
                 status = FLClientStatus.RESTART;
                 Common.sleep(SLEEP_TIME);
                 nextRequestTime = "";
                 return status;
             }
-            LOGGER.info(Common.addTag("[uploadSomethingBuffer] the response message length: " + message.length));
-            Common.endTime(start, "single uploadSomethingBuffer");
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the response message length: " + message.length));
+            Common.endTime(start, "single UpdateAndCalMutualInformation");
             ByteBuffer debugBuffer = ByteBuffer.wrap(message);
-            status_message = debugBuffer //进行数据解析，查看返回结果
-            status = doResponse(status_message);
-            retCode = status_message.retcode();
+            ResponseUpdateAndCalMutualInformation responseDataBuf = ResponseUpdateAndCalMutualInformation.getRootAsResponseUpdateAndCalMutualInformation(debugBuffer);
+            status = updateAndCalMutualInformationBuf.doResponse(responseDataBuf);
+            retCode = responseDataBuf.retcode();
             if (status == FLClientStatus.RESTART) {
                 nextRequestTime = responseDataBuf.nextReqTime();
             }
-            LOGGER.info(Common.addTag("[updateModel] get response from server ok!"));
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] get response from server ok!"));
         } catch (IOException e) {
-            LOGGER.severe(Common.addTag("[updateModel] unsolved error code in updateModel: catch IOException: " +
+            LOGGER.severe(Common.addTag("[UpdateAndCalMutualInformation] unsolved error code in updateModel: catch IOException: " +
                     e.getMessage()));
             status = FLClientStatus.FAILED;
             retCode = ResponseCode.RequestError;
