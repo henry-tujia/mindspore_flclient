@@ -35,14 +35,14 @@ public class DatasetDeepfm {
     private Vector<DataLabelTuple> trainData;
     private Vector<DataLabelTuple> testData;
 
-    public void initDataset(String InputName,boolean Train = true) {
+    public void initDataset(String InputName,boolean Train) {
         if (Train){
             trainData = new Vector<>();
-            readfile(trainInputName, trainData);
+            readfile(InputName, trainData);
         }
     else{
             testData = new Vector<>();
-            readfile(testInputName, testData);
+            readfile(InputName, testData);
         }   
     }
 
