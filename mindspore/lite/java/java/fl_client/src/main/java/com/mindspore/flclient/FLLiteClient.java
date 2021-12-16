@@ -78,7 +78,7 @@ public class FLLiteClient {
     private int trainDataSize;
     private double dpEps = 100d;
     private double dpDelta = 0.01d;
-    private float mulinfo = float(-1);
+    private float mulinfo = -1;
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private SecureProtocol secureProtocol = new SecureProtocol();
@@ -413,7 +413,7 @@ public class FLLiteClient {
         try {
             long start = Common.startTime("single updateModel");
             LOGGER.info(Common.addTag("[updateModel] the request message length: " + updateModelBuffer.length));
-            byte[] message = flCommunication.syncRequest(url + "/updateModel", updateMo delBuffer);
+            byte[] message = flCommunication.syncRequest(url + "/updateModel", updateModelBuffer);
             if (!Common.isSeverReady(message)) {
                 LOGGER.info(Common.addTag("[updateModel] the server is not ready now, need wait some time and request" +
                         " again"));
@@ -721,7 +721,7 @@ public class FLLiteClient {
      * @date 2021/10/14
      **/
     public boolean checkIteration(int expectIteration) {
-        LOGGER.info(Common.addTag("[checking Iteration] ====================================expectIteration is " + expectIteration);
+        LOGGER.info(Common.addTag("[checking Iteration] ====================================expectIteration is " + expectIteration));
 
         if (expectIteration != this.getIteration()) {
             return false;
