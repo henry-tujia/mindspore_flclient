@@ -20,6 +20,8 @@ import static com.mindspore.flclient.FLParameter.SLEEP_TIME;
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
 
+import com.mindspore.flclient.JavaMI.*;
+
 import com.mindspore.flclient.model.AlInferBert;
 import com.mindspore.flclient.model.AlTrainBert;
 import com.mindspore.flclient.model.SessionUtil;
@@ -30,7 +32,10 @@ import mindspore.schema.FLPlan;
 import mindspore.schema.ResponseCode;
 import mindspore.schema.ResponseFLJob;
 import mindspore.schema.ResponseGetModel;
+import mindspore.schema.ResponseUpdateAndCalMutualInformation;
 import mindspore.schema.ResponseUpdateModel;
+import mindspore.schema.ResponseUploadTrainningTime;
+
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -64,6 +69,7 @@ public class FLLiteClient {
     private int trainDataSize;
     private double dpEps = 100d;
     private double dpDelta = 0.01d;
+    private float mulinfo = -1;
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private SecureProtocol secureProtocol = new SecureProtocol();
@@ -260,6 +266,7 @@ public class FLLiteClient {
         return status;
     }
 
+
     private FLClientStatus judgeStartFLJob(StartFLJob startFLJob, ResponseFLJob responseDataBuf) {
         iteration = responseDataBuf.iteration();
         FLClientStatus response = startFLJob.doResponse(responseDataBuf);
@@ -327,6 +334,54 @@ public class FLLiteClient {
             }
         } else {
             LOGGER.severe(Common.addTag("[train] the flName is not valid"));
+            status = FLClientStatus.FAILED;
+            retCode = ResponseCode.RequestError;
+        }
+        return status;
+    }
+
+    /**
+     *
+     * @author ICT_hetianliu
+     * 
+     * Send prediction message of model trainning time to Server.
+     *
+     * @return the status code corresponding to the response message.
+     */
+    public FLClientStatus uploadTrainningTime() {
+        String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
+                flParameter.getDomainName());
+        UploadTrainningTime uploadTrainningTimeBuf = UploadTrainningTime.getInstance();
+        byte[] uploadTrainningTimeBuffer = uploadTrainningTimeBuf.getRequestUploadTrainningTime(iteration, secureProtocol, batchSize, epochs);
+        if (uploadTrainningTimeBuf.getStatus() == FLClientStatus.FAILED) {
+            LOGGER.info(Common.addTag("[uploadTrainningTime] catch error in predicing trainning time"));
+            return FLClientStatus.FAILED;
+        }
+        try {
+            long start = Common.startTime("single uploadTrainningTime");
+            LOGGER.info(Common.addTag("[uploadTrainningTime] the request message length: " + uploadTrainningTimeBuffer.length));
+            byte[] message = flCommunication.syncRequest(url + "/uploadTrainningTime", uploadTrainningTimeBuffer);
+            if (!Common.isSeverReady(message)) {
+                LOGGER.info(Common.addTag("[uploadTrainningTime] the server is not ready now, need wait some time and request" +
+                        " again"));
+                status = FLClientStatus.RESTART;
+                Common.sleep(SLEEP_TIME);
+                nextRequestTime = "";
+                return status;
+            }
+            LOGGER.info(Common.addTag("[uploadTrainningTime] the response message length: " + message.length));
+            Common.endTime(start, "single uploadTrainningTime");
+            ByteBuffer debugBuffer = ByteBuffer.wrap(message);
+            ResponseUploadTrainningTime responseDataBuf = ResponseUploadTrainningTime.getRootAsResponseUploadTrainningTime(debugBuffer);
+            status = uploadTrainningTimeBuf.doResponse(responseDataBuf);
+            retCode = responseDataBuf.retcode();
+            if (status == FLClientStatus.RESTART) {
+                nextRequestTime = responseDataBuf.nextReqTime();
+            }
+            LOGGER.info(Common.addTag("[uploadTrainningTime] get response from server ok!"));
+        } catch (IOException e) {
+            LOGGER.severe(Common.addTag("[uploadTrainningTime] unsolved error code in uploadTrainningTime: catch IOException: " +
+                    e.getMessage()));
             status = FLClientStatus.FAILED;
             retCode = ResponseCode.RequestError;
         }
@@ -616,6 +671,69 @@ public class FLLiteClient {
                     flParameter.getTestDataset().split(",")[0] + " labelPath: " +
                     flParameter.getTestDataset().split(",")[1]));
             LOGGER.info(Common.addTag("[evaluate] evaluate acc: " + acc));
+        }
+        return status;
+    }
+
+
+    /**
+     * @description check Iteration.
+     * @author ICT_tanhao
+     * @date 2021/10/14
+     **/
+    public boolean checkIteration(int expectIteration) {
+        LOGGER.info(Common.addTag("[checking Iteration] ====================================expectIteration is " + expectIteration));
+
+        if (expectIteration != this.getIteration()) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+
+
+    /**
+     * @description Send serialized request message of Something to server.
+     * @author ICT_tanhao
+     * @date 2021/10/14
+     **/
+    public FLClientStatus updateAndCalMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
+        String url = Common.generateUrl(flParameter.isUseElb(), flParameter.getServerNum(),
+                flParameter.getDomainName());
+        UpdateAndCalMutualInformation updateAndCalMutualInformationBuf = UpdateAndCalMutualInformation.getInstance();
+        byte[] updateAndCalMutualInformationBuffer = updateAndCalMutualInformationBuf.getRequestUpdateAndCalMutualInformation(localModel,serverModel);
+        if (updateAndCalMutualInformationBuf.getStatus() == FLClientStatus.FAILED) {
+            LOGGER.info(Common.addTag("[updateModel] catch error in build UpdateAndCalMutualInformation"));
+            return FLClientStatus.FAILED;
+        }
+        try {
+            long start = Common.startTime("single UpdateAndCalMutualInformation");
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the request message length: " + updateAndCalMutualInformationBuffer.length));
+            byte[] message = flCommunication.syncRequest(url + "/UpdateAndCalMutualInformation", updateAndCalMutualInformationBuffer);
+            if (!Common.isSeverReady(message)) {
+                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the server is not ready now, need wait some time and request" +
+                        " again"));
+                status = FLClientStatus.RESTART;
+                Common.sleep(SLEEP_TIME);
+                nextRequestTime = "";
+                return status;
+            }
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the response message length: " + message.length));
+            Common.endTime(start, "single UpdateAndCalMutualInformation");
+            ByteBuffer debugBuffer = ByteBuffer.wrap(message);
+            ResponseUpdateAndCalMutualInformation responseDataBuf = ResponseUpdateAndCalMutualInformation.getRootAsResponseUpdateAndCalMutualInformation(debugBuffer);
+            status = updateAndCalMutualInformationBuf.doResponse(responseDataBuf);
+            retCode = responseDataBuf.retcode();
+            if (status == FLClientStatus.RESTART) {
+                nextRequestTime = responseDataBuf.nextReqTime();
+            }
+            LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] get response from server ok!"));
+        } catch (IOException e) {
+            LOGGER.severe(Common.addTag("[UpdateAndCalMutualInformation] unsolved error code in updateModel: catch IOException: " +
+                    e.getMessage()));
+            status = FLClientStatus.FAILED;
+            retCode = ResponseCode.RequestError;
         }
         return status;
     }

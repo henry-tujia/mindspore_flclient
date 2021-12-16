@@ -22,6 +22,7 @@ import com.mindspore.lite.LiteSession;
 
 import java.util.List;
 import java.util.logging.Logger;
+import java.lang.management;
 
 public abstract class TrainModel {
 
@@ -44,6 +45,8 @@ public abstract class TrainModel {
     public abstract List<Integer> fillModelInput(int batchIdx, boolean trainMod);
 
     public abstract int padSamples();
+
+    public static UploadTrainningTime uploadTrainningTimeBuf =  UpdateTrainningTime.getInstance();;
 
     public int trainModel(String modelPath, int epochs) {
         if (modelPath.isEmpty()) {
@@ -84,6 +87,7 @@ public abstract class TrainModel {
         long startTime = System.currentTimeMillis();
         for (int i = 0; i < epochs; i++) {
             float sumLossPerEpoch = 0.0f;
+            long batchStartTime = System.currentTimeMillis();
             for (int j = 0; j < batchNum; j++) {
                 fillModelInput(j, true);
                 boolean success = trainSession.runGraph();
@@ -99,9 +103,12 @@ public abstract class TrainModel {
                 sumLossPerEpoch += loss;
                 logger.info(Common.addTag("batch:" + j + ",loss:" + loss));
             }
+            long batchEndTime = System.currentTimeMillis();
             logger.info(Common.addTag("----------epoch:" + i + ",mean loss:" + sumLossPerEpoch / batchNum +
                     "----------"));
             long endTime = System.currentTimeMillis();
+            String Pid = ManagementFactory.getRuntimeMXBean().getName();
+            uploadTrainningTimeBuf.addTrainningTime(Pid, batchEndTime - batchStartTime);
             logger.info(Common.addTag("total train time:" + (endTime - startTime) + "ms"));
         }
         return 0;
