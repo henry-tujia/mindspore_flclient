@@ -18,6 +18,7 @@ package com.mindspore.flclient;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.UUID;
 import java.util.logging.Logger;
@@ -56,6 +57,8 @@ public class FLParameter {
     private int sleepTime;
     private boolean ifUseElb = false;
     private int serverNum = 1;
+    private String taskInner;
+    private ArrayList<String> taskInners = new ArrayList<String>(Arrays.asList("mul","ascy"));
 
     private FLParameter() {
         clientID = UUID.randomUUID().toString();
@@ -200,12 +203,36 @@ public class FLParameter {
         return flName;
     }
 
+    
+
     public void setFlName(String flName) {
         if (Common.checkFLName(flName)) {
             this.flName = flName;
         } else {
             LOGGER.severe(Common.addTag("[flParameter] the parameter of <flName> is not in FL_NAME_TRUST_LIST: " +
                     Arrays.toString(Common.FL_NAME_TRUST_LIST.toArray(new String[0])) + ", please check it before " +
+                    "set"));
+            throw new IllegalArgumentException();
+        }
+    }
+
+    public String getTaskInner() {
+        if (taskInner == null || taskInner.isEmpty()) {
+            LOGGER.severe(Common.addTag("[flParameter] the parameter of <taskInner> is null or empty, please set it " +
+                    "before use"));
+            throw new IllegalArgumentException();
+        }
+        return taskInner;
+    }
+
+    
+
+    public void setTaskInner(String taskInner) {
+        if (taskInners.contains(taskInner)) {
+            this.taskInner = taskInner;
+        } else {
+            LOGGER.severe(Common.addTag("[flParameter] the parameter of <taskInner> is not in TASK_INNER_LIST: " +
+                    taskInners.get(0) + "\t"+taskInners.get(1) + ", please check it before " +
                     "set"));
             throw new IllegalArgumentException();
         }

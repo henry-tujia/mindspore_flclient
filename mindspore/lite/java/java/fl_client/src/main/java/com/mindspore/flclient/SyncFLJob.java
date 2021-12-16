@@ -103,22 +103,6 @@ public class SyncFLJob {
                 break;
             }
 
-            /**
-            *
-            * @description UploadTrainningTime
-            * @author ICT_hetianliu
-            *
-            **/
-            // upload trainning time
-            surStatus = client.uploadTrainningTime();
-            if (curStatus == FLClientStatus.RESTART) {
-                restart("[UploadTrainningTime] UploadTrainningTime", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
-                continue;
-            } else if (curStatus == FLClientStatus.FAILED) {
-                failed("[UploadTrainningTime] UploadTrainningTime", client.getIteration(), client.getRetCode(), curStatus);
-                break;
-            }
-
             // train
             curStatus = client.localTrain();
             if (curStatus == FLClientStatus.FAILED) {
@@ -189,7 +173,7 @@ public class SyncFLJob {
      *
      * @return the status code corresponding to the response message.
      */
-    public FLClientStatus flJobRun_mul() {
+    public FLClientStatus flJobRunMul() {
         Common.setSecureRandom(new SecureRandom());
         localFLParameter.setFlID(flParameter.getClientID());
         FLLiteClient client = new FLLiteClient();
@@ -293,6 +277,111 @@ public class SyncFLJob {
         return curStatus;
     }
 
+    public FLClientStatus flJobRunAsynchrony() {
+        Common.setSecureRandom(new SecureRandom());
+        localFLParameter.setFlID(flParameter.getClientID());
+        FLLiteClient client = new FLLiteClient();
+        FLClientStatus curStatus;
+        curStatus = client.initSession();
+        if (curStatus == FLClientStatus.FAILED) {
+            LOGGER.severe(Common.addTag("init session failed"));
+            flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+            return curStatus;
+        }
+
+        do {
+            LOGGER.info(Common.addTag("flName: " + flParameter.getFlName()));
+            int trainDataSize = client.setInput(flParameter.getTrainDataset());
+            if (trainDataSize <= 0) {
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
+                curStatus = FLClientStatus.FAILED;
+                flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                        client.getRetCode());
+                break;
+            }
+            client.setTrainDataSize(trainDataSize);
+
+            // startFLJob
+            curStatus = startFLJob(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[startFLJob]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[startFLJob]", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            LOGGER.info(Common.addTag("[startFLJob] startFLJob succeed, curIteration: " + client.getIteration()));
+
+            // getModel
+            curStatus = getModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[getModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[getModel] getModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            /**
+            *
+            * @description UploadTrainningTime
+            * @author ICT_hetianliu
+            *
+            **/
+            // upload trainning time
+            curStatus = client.uploadTrainningTime();
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[UploadTrainningTime] UploadTrainningTime", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[UploadTrainningTime] UploadTrainningTime", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            
+            // train
+            curStatus = client.localTrain();
+            if (curStatus == FLClientStatus.FAILED) {
+                failed("[train] train", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            LOGGER.info(Common.addTag("[train] train succeed"));            
+
+            // updateModel
+            curStatus = updateModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[updateModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[updateModel] updateModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            // get the feature map after averaging and update dp_norm_clip
+            updateDpNormClip(client);
+
+            // evaluate model after getting model from server
+            if (flParameter.getTestDataset().equals("null")) {
+                LOGGER.info(Common.addTag("[evaluate] the testDataset is null, don't evaluate the model after getting" +
+                        " model from server"));
+            } else {
+                curStatus = client.evaluateModel();
+                if (curStatus == FLClientStatus.FAILED) {
+                    failed("[evaluate] evaluate", client.getIteration(), client.getRetCode(), curStatus);
+                    break;
+                }
+                LOGGER.info(Common.addTag("[evaluate] evaluate succeed"));
+            }
+            LOGGER.info(Common.addTag("========================================================the total response of "
+                    + client.getIteration() + ": " + curStatus +
+                    "======================================================================"));
+            flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                    client.getRetCode());
+        } while (client.getIteration() < client.getIterations());
+        client.freeSession();
+        LOGGER.info(Common.addTag("flJobRun finish"));
+        flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+        return curStatus;
+    }
 
 
     private FLClientStatus startFLJob(FLLiteClient client) {
@@ -533,6 +622,7 @@ public class SyncFLJob {
         int serverNum = Integer.parseInt(args[10]);
         String certPath = args[11];
         String task = args[12];
+        String taskInner = args[13];
 
         FLParameter flParameter = FLParameter.getInstance();
 
@@ -541,7 +631,6 @@ public class SyncFLJob {
             if (useSSL) {
                 flParameter.setCertPath(certPath);
             }
-
             flParameter.setTrainDataset(trainDataset);
             flParameter.setFlName(flName);
             flParameter.setTrainModelPath(trainModelPath);
@@ -551,15 +640,19 @@ public class SyncFLJob {
             flParameter.setDomainName(domainName);
             flParameter.setUseElb(useElb);
             flParameter.setServerNum(serverNum);
+            flParameter.setTaskInner(taskInner);
             if (ALBERT.equals(flName)) {
                 flParameter.setVocabFile(vocabFile);
                 flParameter.setIdsFile(idsFile);
             }
-
-            if(model.equals("mul")){
-                syncFLJob.flJobRun_mul();
+            switch (taskInner) {
+                case "mul":
+                    syncFLJob.flJobRunMul();
+                case "ascy":
+                    syncFLJob.flJobRunAsynchrony();
+                default:
+                    syncFLJob.flJobRun();
             }
-            syncFLJob.flJobRun();
         } else if (task.equals("inference")) {
             flParameter.setFlName(flName);
             flParameter.setTestDataset(testDataset);
