@@ -18,8 +18,11 @@ package com.mindspore.flclient;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 
+<<<<<<< HEAD
 import com.mindspore.flclient.model.RunType;
 
+=======
+>>>>>>> 18a112429b (ascy update)
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -72,6 +75,7 @@ public class FLParameter {
     private int sleepTime;
     private boolean ifUseElb = false;
     private int serverNum = 1;
+<<<<<<< HEAD
     private boolean ifPkiVerify = false;
     private String equipCrlPath = "null";
     private long validIterInterval = 3600000L;
@@ -83,6 +87,10 @@ public class FLParameter {
     private Map<RunType, List<String>> dataMap = new HashMap<>();
     private ServerMod serverMod;
     private int batchSize;
+=======
+    private String taskInner;
+    private ArrayList<String> taskInners = new ArrayList<String>(Arrays.asList("mul","ascy"));
+>>>>>>> 18a112429b (ascy update)
 
     private FLParameter() {
         clientID = UUID.randomUUID().toString();
@@ -308,8 +316,32 @@ public class FLParameter {
         return flName;
     }
 
+    
+
     public void setFlName(String flName) {
         this.flName = flName;
+    }
+
+    public String getTaskInner() {
+        if (taskInner == null || taskInner.isEmpty()) {
+            LOGGER.severe(Common.addTag("[flParameter] the parameter of <taskInner> is null or empty, please set it " +
+                    "before use"));
+            throw new IllegalArgumentException();
+        }
+        return taskInner;
+    }
+
+    
+
+    public void setTaskInner(String taskInner) {
+        if (taskInners.contains(taskInner)) {
+            this.taskInner = taskInner;
+        } else {
+            LOGGER.severe(Common.addTag("[flParameter] the parameter of <taskInner> is not in TASK_INNER_LIST: " +
+                    taskInners.get(0) + "\t"+taskInners.get(1) + ", please check it before " +
+                    "set"));
+            throw new IllegalArgumentException();
+        }
     }
 
     public String getTrainModelPath() {
