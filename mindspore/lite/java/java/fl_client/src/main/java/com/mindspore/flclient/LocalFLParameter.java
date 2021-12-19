@@ -59,6 +59,11 @@ public class LocalFLParameter {
      * The model name supported by federated learning tasks: "albert".
      */
     public static final String ALBERT = "albert";
+/**
+     * The model name supported by federated learning tasks: "deepFm".
+     */
+    public static final String DEEPFM = "deepfm";
+    
     private static volatile LocalFLParameter localFLParameter;
 
     private List<String> classifierWeightName = new ArrayList<>();
