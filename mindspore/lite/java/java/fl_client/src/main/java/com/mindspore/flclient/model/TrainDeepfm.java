@@ -51,7 +51,7 @@ public class TrainDeepfm extends TrainModel {
 
     private int[] labelArray;
 
-    private ByteBuffer labelIdBuffer;
+    private ByteBuffer labelsBuffer;
 
     private ByteBuffer idsBuffer;
 
@@ -147,8 +147,9 @@ public class TrainDeepfm extends TrainModel {
 
     @Override
     public List<Integer> fillModelInput(int batchIdx, boolean trainMod) {
-        imageBuffer.clear();
-        labelIdBuffer.clear();
+        labelsBuffer.clear();
+        idsBuffer.clear();
+        valsBuffer.clear();
         List<Integer> predictLabels = new ArrayList<>(batch_size);
 
         
