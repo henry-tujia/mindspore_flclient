@@ -30,10 +30,17 @@ import com.mindspore.flclient.model.CommonUtils;
 import com.mindspore.flclient.model.RunType;
 import com.mindspore.flclient.model.SessionUtil;
 <<<<<<< HEAD
+<<<<<<< HEAD
 import com.mindspore.flclient.model.TrainDeepfm;
 =======
 import com.mindspore.flclient.model.Status;
 >>>>>>> upstream/master
+=======
+import com.mindspore.flclient.model.Status;
+=======
+import com.mindspore.flclient.model.TrainDeepfm;
+>>>>>>> c7085071d7 (deepfm update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
 import com.mindspore.flclient.model.TrainLenet;
 import com.mindspore.flclient.pki.PkiBean;
 import com.mindspore.flclient.pki.PkiUtil;
@@ -344,6 +351,7 @@ public class FLLiteClient {
         LOGGER.info(Common.addTag("[train] ====================================global train epoch " + iteration +
                 "===================================="));
 <<<<<<< HEAD
+<<<<<<< HEAD
         status = FLClientStatus.SUCCESS;
         retCode = ResponseCode.SUCCEED;
         if (flParameter.getFlName().equals(ALBERT)) {
@@ -377,6 +385,41 @@ public class FLLiteClient {
         if (Common.checkFLName(flParameter.getFlName())) {
             status = deprecatedTrainLoop();
 >>>>>>> upstream/master
+=======
+        if (Common.checkFLName(flParameter.getFlName())) {
+            status = deprecatedTrainLoop();
+=======
+        status = FLClientStatus.SUCCESS;
+        retCode = ResponseCode.SUCCEED;
+        if (flParameter.getFlName().equals(ALBERT)) {
+            LOGGER.info(Common.addTag("[train] train in albert"));
+            AlTrainBert alTrainBert = AlTrainBert.getInstance();
+            int tag = alTrainBert.trainModel(flParameter.getTrainModelPath(), epochs);
+            if (tag == -1) {
+                LOGGER.severe(Common.addTag("[train] unsolved error code in <alTrainBert.trainModel>"));
+                status = FLClientStatus.FAILED;
+                retCode = ResponseCode.RequestError;
+            }
+        } else if (flParameter.getFlName().equals(LENET)) {
+            LOGGER.info(Common.addTag("[train] train in lenet"));
+            TrainLenet trainLenet = TrainLenet.getInstance();
+            int tag = trainLenet.trainModel(flParameter.getTrainModelPath(), epochs);
+            if (tag == -1) {
+                LOGGER.severe(Common.addTag("[train] unsolved error code in <trainLenet.trainModel>"));
+                status = FLClientStatus.FAILED;
+                retCode = ResponseCode.RequestError;
+            }
+        } else if (flParameter.getFlName().equals(DEEPFM)) {
+            LOGGER.info(Common.addTag("[train] train in deepfm"));
+            TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+            int tag = trainDeepfm.trainModel(flParameter.getTrainModelPath(), epochs);
+            if (tag == -1) {
+                LOGGER.severe(Common.addTag("[train] unsolved error code in <trainLenet.trainModel>"));
+                status = FLClientStatus.FAILED;
+                retCode = ResponseCode.RequestError;
+            }
+>>>>>>> c7085071d7 (deepfm update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
         } else {
             status = trainLoop();
         }

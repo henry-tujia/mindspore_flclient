@@ -62,12 +62,15 @@ public class LocalFLParameter {
      */
     public static final String ALBERT = "albert";
 <<<<<<< HEAD
+<<<<<<< HEAD
 /**
      * The model name supported by federated learning tasks: "deepFm".
      */
     public static final String DEEPFM = "deepfm";
     
 =======
+=======
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
 
     /**
      * The deployment environment supported by federated learning tasks: "android".
@@ -78,7 +81,17 @@ public class LocalFLParameter {
      * The deployment environment supported by federated learning tasks: "x86".
      */
     public static final String X86 = "x86";
+<<<<<<< HEAD
 >>>>>>> upstream/master
+=======
+=======
+/**
+     * The model name supported by federated learning tasks: "deepFm".
+     */
+    public static final String DEEPFM = "deepfm";
+    
+>>>>>>> c7085071d7 (deepfm update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     private static volatile LocalFLParameter localFLParameter;
 
     private List<String> classifierWeightName = new ArrayList<>();

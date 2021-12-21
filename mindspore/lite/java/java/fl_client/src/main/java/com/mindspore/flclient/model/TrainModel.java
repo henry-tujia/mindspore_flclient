@@ -72,9 +72,12 @@ public abstract class TrainModel {
     public abstract int padSamples();
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     public static UploadTrainningTime uploadTrainningTimeBuf =  UpdateTrainningTime.getInstance();;
 
 =======
+=======
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     /**
      * train model
      *
@@ -82,7 +85,14 @@ public abstract class TrainModel {
      * @param epochs    train epoch number
      * @return status if success return 0 else -1
      */
+<<<<<<< HEAD
 >>>>>>> upstream/master
+=======
+=======
+    public static UploadTrainningTime uploadTrainningTimeBuf =  UpdateTrainningTime.getInstance();;
+
+>>>>>>> 1fcf92daac (Add parameters for UploadTrainningTime.)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     public int trainModel(String modelPath, int epochs) {
         if (modelPath == null) {
             logger.severe(Common.addTag("model path cannot be empty"));

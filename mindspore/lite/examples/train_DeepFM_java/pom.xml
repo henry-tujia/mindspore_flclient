@@ -9,7 +9,11 @@
     <artifactId>train_deepfm_java</artifactId>
 =======
     <artifactId>train_lenet_java</artifactId>
+<<<<<<< HEAD
 >>>>>>> feature-train
+=======
+>>>>>>> c1c61b5fe9 (train_update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     <version>1.0</version>
 
     <properties>
@@ -20,7 +24,11 @@
 <<<<<<< HEAD
 =======
 
+<<<<<<< HEAD
 >>>>>>> feature-train
+=======
+>>>>>>> c1c61b5fe9 (train_update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     <dependencies>
         <dependency>
             <groupId>com.mindspore.lite</groupId>
@@ -44,7 +52,11 @@
                             <mainClass>com.mindspore.lite.train_deepfm_java.Main</mainClass>
 =======
                             <mainClass>com.mindspore.lite.train_lenet.Main</mainClass>
+<<<<<<< HEAD
 >>>>>>> feature-train
+=======
+>>>>>>> c1c61b5fe9 (train_update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
                         </manifest>
                     </archive>
                     <descriptorRefs>

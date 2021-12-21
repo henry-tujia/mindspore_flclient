@@ -93,4 +93,8 @@ cd -
 END=$(date +%s.%N)
 TIME=$(echo "$END-$START" | bc)
 echo "total run train lenet java time: $TIME s"
+<<<<<<< HEAD
 >>>>>>> feature-train
+=======
+>>>>>>> c1c61b5fe9 (train_update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5

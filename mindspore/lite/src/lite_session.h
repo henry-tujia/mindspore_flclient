@@ -133,7 +133,9 @@ class LiteSession : public session::LiteSession {
 
   int PrepareKernels(const Model *model);
 
-  static int ReSizeKernels(const std::vector<kernel::LiteKernel *> &kernels);
+  static int ReSizeKernels(
+    const std::vector<kernel::LiteKernel *> &kernels,
+    const std::unordered_map<Tensor *, Tensor *> isolate_input_map = std::unordered_map<Tensor *, Tensor *>());
 
   static void FreePackOpWeight(const std::vector<kernel::LiteKernel *> &kernels);
 
@@ -157,6 +159,7 @@ class LiteSession : public session::LiteSession {
  private:
   int IsolateOutputTensor();
   bool IsIsolatedSubGraph(const kernel::LiteKernel *kernel);
+  void UpdateLinkInfoForIsolateOutput();
   std::unordered_map<Tensor *, Tensor *> isolate_graph_output_map_; /* <calculate-tensor,  graph-output-tensor> */
   std::unordered_map<Tensor *, Tensor *> isolate_input_map_;        /* <calculate-tensor,  src-subgraph-input-tensor> */
 

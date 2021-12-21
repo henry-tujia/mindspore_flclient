@@ -54,10 +54,13 @@ public class SyncFLJob {
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
 <<<<<<< HEAD
+<<<<<<< HEAD
     private FLJobResultCallback flJobResultCallback = new FLJobResultCallback();
     private Map<String, float[]> oldFeatureMap;
     private Map<String, float[]> oldFeatureMap_mul;
 =======
+=======
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
     private IFLJobResultCallback flJobResultCallback;
     private FLClientStatus curStatus;
 
@@ -90,7 +93,15 @@ public class SyncFLJob {
             }
         }
     }
+<<<<<<< HEAD
 >>>>>>> upstream/master
+=======
+=======
+    private FLJobResultCallback flJobResultCallback = new FLJobResultCallback();
+    private Map<String, float[]> oldFeatureMap;
+    private Map<String, float[]> oldFeatureMap_mul;
+>>>>>>> ec432a626e (train update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
 
     /**
      * Starts a federated learning task on the device.
@@ -117,9 +128,15 @@ public class SyncFLJob {
             int trainDataSize = flLiteClient.setInput();
             if (trainDataSize <= 0) {
 <<<<<<< HEAD
+<<<<<<< HEAD
                 LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
 =======
 >>>>>>> upstream/master
+=======
+=======
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
+>>>>>>> 3f443f52d8 (mulinfo)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
                 curStatus = FLClientStatus.FAILED;
                 failed("unsolved error code in <flLiteClient.setInput>: the return trainDataSize<=0, setInput",
                         flLiteClient);
@@ -214,6 +231,7 @@ public class SyncFLJob {
         return curStatus;
     }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     /**
      * Starts a federated learning task on the device.
@@ -437,6 +455,230 @@ public class SyncFLJob {
     private FLClientStatus startFLJob(FLLiteClient flLiteClient) {
         FLClientStatus curStatus = flLiteClient.startFLJob();
 >>>>>>> upstream/master
+=======
+    private FLClientStatus startFLJob(FLLiteClient flLiteClient) {
+        FLClientStatus curStatus = flLiteClient.startFLJob();
+=======
+    /**
+     * Starts a federated learning task on the device.
+     *
+     * @return the status code corresponding to the response message.
+     */
+    public FLClientStatus flJobRunMul() {
+        Common.setSecureRandom(new SecureRandom());
+        localFLParameter.setFlID(flParameter.getClientID());
+        FLLiteClient client = new FLLiteClient();
+        FLClientStatus curStatus;
+        curStatus = client.initSession();
+        if (curStatus == FLClientStatus.FAILED) {
+            LOGGER.severe(Common.addTag("init session failed"));
+            flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+            return curStatus;
+        }
+
+        do {
+            LOGGER.info(Common.addTag("flName: " + flParameter.getFlName()));
+            int trainDataSize = client.setInput(flParameter.getTrainDataset());
+            if (trainDataSize <= 0) {
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
+                curStatus = FLClientStatus.FAILED;
+                flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                        client.getRetCode());
+                break;
+            }
+            client.setTrainDataSize(trainDataSize);
+
+            // startFLJob
+            curStatus = startFLJob(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[startFLJob]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[startFLJob]", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            LOGGER.info(Common.addTag("[startFLJob] startFLJob succeed, curIteration: " + client.getIteration()));
+
+            // getModel
+            curStatus = getModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[getModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[getModel] getModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            
+            Map<String, float[]> new_featureMap = getFeatureMap();
+            if(oldFeatureMap_mul.size()==0){
+                // train
+                curStatus = client.localTrain();
+                if (curStatus == FLClientStatus.FAILED) {
+                    failed("[train] train", client.getIteration(), client.getRetCode(), curStatus);
+                    break;
+                }
+                LOGGER.info(Common.addTag("[train] train succeed"));
+                oldFeatureMap_mul = getFeatureMap();
+            }
+            
+
+             // calculate mul-information
+            curStatus = client.updateAndCalMutualInformation(new_featureMap,oldFeatureMap_mul);
+            if (curStatus == FLClientStatus.FAILED) {
+                failed("[updateAndCalMutualInformation] upload mul failed or server drop the client ", client.getIteration(), client.getRetCode(), curStatus);
+                continue;
+            }
+            LOGGER.info(Common.addTag("[updateAndCalMutualInformation] upload mul success"));
+
+            // updateModel
+            curStatus = updateModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[updateModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[updateModel] updateModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            // get the feature map after averaging and update dp_norm_clip
+            updateDpNormClip(client);
+
+            // evaluate model after getting model from server
+            if (flParameter.getTestDataset().equals("null")) {
+                LOGGER.info(Common.addTag("[evaluate] the testDataset is null, don't evaluate the model after getting" +
+                        " model from server"));
+            } else {
+                curStatus = client.evaluateModel();
+                if (curStatus == FLClientStatus.FAILED) {
+                    failed("[evaluate] evaluate", client.getIteration(), client.getRetCode(), curStatus);
+                    break;
+                }
+                LOGGER.info(Common.addTag("[evaluate] evaluate succeed"));
+            }
+            LOGGER.info(Common.addTag("========================================================the total response of "
+                    + client.getIteration() + ": " + curStatus +
+                    "======================================================================"));
+            flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                    client.getRetCode());
+        } while (client.getIteration() < client.getIterations());
+        client.freeSession();
+        LOGGER.info(Common.addTag("flJobRun finish"));
+        flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+        return curStatus;
+    }
+
+    public FLClientStatus flJobRunAsynchrony() {
+        Common.setSecureRandom(new SecureRandom());
+        localFLParameter.setFlID(flParameter.getClientID());
+        FLLiteClient client = new FLLiteClient();
+        FLClientStatus curStatus;
+        curStatus = client.initSession();
+        if (curStatus == FLClientStatus.FAILED) {
+            LOGGER.severe(Common.addTag("init session failed"));
+            flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+            return curStatus;
+        }
+
+        do {
+            LOGGER.info(Common.addTag("flName: " + flParameter.getFlName()));
+            int trainDataSize = client.setInput(flParameter.getTrainDataset());
+            if (trainDataSize <= 0) {
+                LOGGER.severe(Common.addTag("unsolved  error code in <client.setInput>: the return trainDataSize<=0"));
+                curStatus = FLClientStatus.FAILED;
+                flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                        client.getRetCode());
+                break;
+            }
+            client.setTrainDataSize(trainDataSize);
+
+            // startFLJob
+            curStatus = startFLJob(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[startFLJob]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[startFLJob]", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            LOGGER.info(Common.addTag("[startFLJob] startFLJob succeed, curIteration: " + client.getIteration()));
+
+            // getModel
+            curStatus = getModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[getModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[getModel] getModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            /**
+            *
+            * @description UploadTrainningTime
+            * @author ICT_hetianliu
+            *
+            **/
+            // upload trainning time
+            curStatus = client.uploadTrainningTime();
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[UploadTrainningTime] UploadTrainningTime", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[UploadTrainningTime] UploadTrainningTime", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            
+            // train
+            curStatus = client.localTrain();
+            if (curStatus == FLClientStatus.FAILED) {
+                failed("[train] train", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+            LOGGER.info(Common.addTag("[train] train succeed"));            
+
+            // updateModel
+            curStatus = updateModel(client);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[updateModel]", client.getNextRequestTime(), client.getIteration(), client.getRetCode());
+                continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[updateModel] updateModel", client.getIteration(), client.getRetCode(), curStatus);
+                break;
+            }
+
+            // get the feature map after averaging and update dp_norm_clip
+            updateDpNormClip(client);
+
+            // evaluate model after getting model from server
+            if (flParameter.getTestDataset().equals("null")) {
+                LOGGER.info(Common.addTag("[evaluate] the testDataset is null, don't evaluate the model after getting" +
+                        " model from server"));
+            } else {
+                curStatus = client.evaluateModel();
+                if (curStatus == FLClientStatus.FAILED) {
+                    failed("[evaluate] evaluate", client.getIteration(), client.getRetCode(), curStatus);
+                    break;
+                }
+                LOGGER.info(Common.addTag("[evaluate] evaluate succeed"));
+            }
+            LOGGER.info(Common.addTag("========================================================the total response of "
+                    + client.getIteration() + ": " + curStatus +
+                    "======================================================================"));
+            flJobResultCallback.onFlJobIterationFinished(flParameter.getFlName(), client.getIteration(),
+                    client.getRetCode());
+        } while (client.getIteration() < client.getIterations());
+        client.freeSession();
+        LOGGER.info(Common.addTag("flJobRun finish"));
+        flJobResultCallback.onFlJobFinished(flParameter.getFlName(), client.getIterations(), client.getRetCode());
+        return curStatus;
+    }
+
+
+    private FLClientStatus startFLJob(FLLiteClient client) {
+        FLClientStatus curStatus = client.startFLJob();
+>>>>>>> ec432a626e (train update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
         while (curStatus == FLClientStatus.WAIT) {
             waitSomeTime();
             curStatus = flLiteClient.startFLJob();
@@ -739,6 +981,7 @@ public class SyncFLJob {
         flParameter.setFlName(flName);
         SyncFLJob syncFLJob = new SyncFLJob();
 <<<<<<< HEAD
+<<<<<<< HEAD
         if (task.equals("train")) {
             if (useSSL) {
                 flParameter.setCertPath(certPath);
@@ -773,6 +1016,8 @@ public class SyncFLJob {
                 flParameter.setVocabFile(vocabFile);
                 flParameter.setIdsFile(idsFile);
 =======
+=======
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
         Common.setIsHttps(domainName.split("//")[0].split(":")[0]);
         switch (task) {
             case "train":
@@ -827,7 +1072,45 @@ public class SyncFLJob {
             if (labels == null || labels.length == 0) {
                 LOGGER.severe("[model inference] the returned label from adInferBert.inferModel() is null, please " +
                         "check");
+<<<<<<< HEAD
 >>>>>>> upstream/master
+=======
+=======
+        if (task.equals("train")) {
+            if (useSSL) {
+                flParameter.setCertPath(certPath);
+            }
+            flParameter.setTrainDataset(trainDataset);
+            flParameter.setFlName(flName);
+            flParameter.setTrainModelPath(trainModelPath);
+            flParameter.setTestDataset(testDataset);
+            flParameter.setInferModelPath(inferModelPath);
+            flParameter.setUseSSL(useSSL);
+            flParameter.setDomainName(domainName);
+            flParameter.setUseElb(useElb);
+            flParameter.setServerNum(serverNum);
+            flParameter.setTaskInner(taskInner);
+            if (ALBERT.equals(flName)) {
+                flParameter.setVocabFile(vocabFile);
+                flParameter.setIdsFile(idsFile);
+            }
+            switch (taskInner) {
+                case "mul":
+                    syncFLJob.flJobRunMul();
+                case "ascy":
+                    syncFLJob.flJobRunAsynchrony();
+                default:
+                    syncFLJob.flJobRun();
+            }
+        } else if (task.equals("inference")) {
+            flParameter.setFlName(flName);
+            flParameter.setTestDataset(testDataset);
+            flParameter.setInferModelPath(inferModelPath);
+            if (ALBERT.equals(flName)) {
+                flParameter.setVocabFile(vocabFile);
+                flParameter.setIdsFile(idsFile);
+>>>>>>> ec432a626e (train update)
+>>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
             }
             LOGGER.info(Common.addTag("[model inference] the predicted labels: " + Arrays.toString(labels)));
             SessionUtil.free(alInferBert.getTrainSession());
