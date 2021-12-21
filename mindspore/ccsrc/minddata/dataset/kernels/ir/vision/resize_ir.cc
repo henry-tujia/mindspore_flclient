@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/resize_ir.h"
 
 #include "minddata/dataset/kernels/image/resize_op.h"
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -34,6 +33,13 @@ std::string ResizeOperation::Name() const { return kResizeOperation; }
 
 Status ResizeOperation::ValidateParams() {
   RETURN_IF_NOT_OK(ValidateVectorSize("Resize", size_));
+  // interpolation
+  if (interpolation_ != InterpolationMode::kLinear && interpolation_ != InterpolationMode::kNearestNeighbour &&
+      interpolation_ != InterpolationMode::kCubic && interpolation_ != InterpolationMode::kArea &&
+      interpolation_ != InterpolationMode::kCubicPil) {
+    std::string err_msg = "Resize: Invalid InterpolationMode, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
   return Status::OK();
 }
 
@@ -64,14 +70,13 @@ Status ResizeOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status ResizeOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Failed to find size");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("interpolation") != op_params.end(), "Failed to find interpolation");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kResizeOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "interpolation", kResizeOperation));
   std::vector<int32_t> size = op_params["size"];
   InterpolationMode interpolation = static_cast<InterpolationMode>(op_params["interpolation"]);
   *operation = std::make_shared<vision::ResizeOperation>(size, interpolation);
   return Status::OK();
 }
-
 }  // namespace vision
 }  // namespace dataset
 }  // namespace mindspore

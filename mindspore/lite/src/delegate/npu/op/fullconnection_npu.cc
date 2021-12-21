@@ -15,6 +15,7 @@
  */
 
 #include "src/delegate/npu/op/fullconnection_npu.h"
+#include "src/delegate/npu/op/fullconnection_int8_npu.h"
 #include <memory>
 #include "src/delegate/npu/npu_converter_utils.h"
 
@@ -131,5 +132,44 @@ FullconnectionNPUOp::~FullconnectionNPUOp() {
     delete reshape_op_;
     reshape_op_ = nullptr;
   }
+}
+NPUOp *GetNPUFCOp(const schema::Primitive *primitive, const std::vector<mindspore::MSTensor> &in_tensors,
+                  const std::vector<mindspore::MSTensor> &out_tensors, std::string name) {
+  auto shape = out_tensors.front().Shape();
+  if (std::find(shape.begin(), shape.end(), -1) != shape.end()) {
+    MS_LOG(ERROR) << "NPU does not support runtime inference shape.";
+    return nullptr;
+  }
+
+  if (in_tensors[0].DataType() != DataType::kNumberTypeFloat32 &&
+      in_tensors[0].DataType() != DataType::kNumberTypeFloat16) {
+    MS_LOG(ERROR) << "Npu does not support datatype " << static_cast<int>(in_tensors[0].DataType());
+    return nullptr;
+  }
+
+  NPUOp *op = nullptr;
+  if (in_tensors[1].DataType() == DataType::kNumberTypeInt8) {
+    op = new (std::nothrow) FullconnectionINT8NPUOp(primitive, in_tensors, out_tensors, name);
+  } else {
+    op = new (std::nothrow) FullconnectionNPUOp(primitive, in_tensors, out_tensors, name);
+  }
+
+  if (op == nullptr) {
+    MS_LOG(ERROR) << "create conv op for Npu failed.";
+    return nullptr;
+  }
+
+  auto ret = op->IsSupport(primitive, in_tensors, out_tensors);
+  if (ret != RET_OK) {
+    delete op;
+    return nullptr;
+  }
+  ret = op->Init(primitive, in_tensors, out_tensors);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "NPU op init failed.";
+    delete op;
+    return nullptr;
+  }
+  return op;
 }
 }  // namespace mindspore

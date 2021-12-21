@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 #include "backend/optimizer/common/const_input_to_attr_registry.h"
-
-#include <utility>
 
 #include "utils/utils.h"
 #include "utils/log_adapter.h"
@@ -56,6 +54,7 @@ ConstInputToAttrInfoRegistry::ConstInputToAttrInfoRegistry() {
   Register(prim::kPrimReduceAny->name(), {1});
   Register(prim::kPrimUnsortedSegmentMin->name(), {2});
   Register(prim::kPrimUnsortedSegmentMax->name(), {2});
+  Register(prim::kPrimCSRReduceSum->name(), {1});
   Register(kSparseGatherV2OpName, {2});
   Register(kUnsortedSegmentProdOpName, {2});
   Register(kSimpleMeanGradOpName, {1});
@@ -96,17 +95,17 @@ ConstInputToAttrInfoRegistry &ConstInputToAttrInfoRegistry::Instance() {
 void ConstInputToAttrInfoRegistry::Register(const ConstInputToAttrInfoRegister &reg) {
   auto op_name = reg.GetOpName();
   if (op_input_to_attr_map_.find(op_name) == op_input_to_attr_map_.end()) {
-    (void)op_input_to_attr_map_.insert(make_pair(op_name, reg));
+    (void)op_input_to_attr_map_.emplace(op_name, reg);
     MS_LOG(DEBUG) << op_name << " const2attr register successfully!";
   }
 }
 
 void ConstInputToAttrInfoRegistry::Register(const std::string &op_name,
-                                            const std::unordered_set<size_t> &input_attr_set) {
+                                            const mindspore::HashSet<size_t> &input_attr_set) {
   if (op_input_to_attr_map_.find(op_name) == op_input_to_attr_map_.end()) {
     ConstInputToAttrInfoRegister reg(op_name);
     (void)reg.SetConstInputToAttr(input_attr_set);
-    (void)op_input_to_attr_map_.insert(make_pair(op_name, reg));
+    (void)op_input_to_attr_map_.emplace(op_name, reg);
     MS_LOG(DEBUG) << op_name << " const2attr register successfully!";
   }
 }

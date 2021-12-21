@@ -19,7 +19,6 @@
 #include "minddata/dataset/core/config_manager.h"
 #include "minddata/dataset/core/tensor_shape.h"
 #include "minddata/dataset/engine/datasetops/source/sampler/sequential_sampler.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #ifndef ENABLE_ANDROID
 #include "minddata/dataset/kernels/image/image_utils.h"
@@ -45,7 +44,6 @@ AlbumOp::AlbumOp(int32_t num_wkrs, std::string file_dir, int32_t queue_size, boo
   for (int32_t i = 0; i < data_schema_->NumColumns(); ++i) {
     column_name_id_map_[data_schema_->Column(i).Name()] = i;
   }
-  io_block_queues_.Init(num_workers_, queue_size);
 }
 
 // Helper function for string comparison
@@ -61,12 +59,12 @@ bool StrComp(const std::string &a, const std::string &b) {
 
 // Single thread to go through the folder directory and gets all file names
 // calculate numRows then return
-Status AlbumOp::PrescanEntry() {
+Status AlbumOp::PrepareData() {
   Path folder(folder_path_);
   dirname_offset_ = folder_path_.length();
   std::shared_ptr<Path::DirIterator> dirItr = Path::DirIterator::OpenDirectory(&folder);
   if (!folder.Exists() || dirItr == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to open folder: " + folder_path_ + ".");
+    RETURN_STATUS_UNEXPECTED("Invalid folder, " + folder_path_ + " does not exist or permission denied.");
   }
   MS_LOG(INFO) << "Album folder Path found: " << folder_path_ << ".";
 
@@ -95,6 +93,10 @@ Status AlbumOp::PrescanEntry() {
 // Optimization: Could take in a tensor
 // This function does not return status because we want to just skip bad input, not crash
 bool AlbumOp::CheckImageType(const std::string &file_name, bool *valid) {
+  if (valid == nullptr) {
+    MS_LOG(ERROR) << "[Internal ERROR] Album parameter can't be nullptr.";
+    return false;
+  }
   std::ifstream file_handle;
   constexpr int read_num = 3;
   *valid = false;
@@ -212,8 +214,8 @@ Status AlbumOp::LoadIntArrayTensor(const nlohmann::json &json_obj, int32_t col_n
 
     RETURN_IF_NOT_OK(Tensor::CreateFromVector(data, &label));
   } else {
-    RETURN_STATUS_UNEXPECTED("Invalid data, column type in data_schema is neither int32 nor int64, it is " +
-                             data_schema_->Column(col_num).Type().ToString());
+    RETURN_STATUS_UNEXPECTED("Invalid column type, column type of " + data_schema_->Column(col_num).Name() +
+                             " should be int32 or int64, but got " + data_schema_->Column(col_num).Type().ToString());
   }
   row->push_back(std::move(label));
   return Status::OK();
@@ -241,7 +243,8 @@ Status AlbumOp::LoadFloatArrayTensor(const nlohmann::json &json_obj, int32_t col
 
     RETURN_IF_NOT_OK(Tensor::CreateFromVector(data, &float_array));
   } else {
-    RETURN_STATUS_UNEXPECTED("Invalid data, column type in data_schema is neither float32 nor float64, it is " +
+    RETURN_STATUS_UNEXPECTED("Invalid column type, column type of " + data_schema_->Column(col_num).Name() +
+                             " should be float32 nor float64, but got " +
                              data_schema_->Column(col_num).Type().ToString());
   }
   row->push_back(std::move(float_array));
@@ -321,7 +324,7 @@ Status AlbumOp::LoadTensorRow(row_id_type row_id, TensorRow *row) {
 
   std::ifstream file_handle(folder_path_ + file);
   if (!file_handle.is_open()) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to open json file: " + folder_path_ + file);
+    RETURN_STATUS_UNEXPECTED("Invalid json file, " + folder_path_ + file + " does not exist or permission denied.");
   }
   std::string line;
   while (getline(file_handle, line)) {
@@ -340,7 +343,7 @@ Status AlbumOp::LoadTensorRow(row_id_type row_id, TensorRow *row) {
       }
     } catch (const std::exception &err) {
       file_handle.close();
-      RETURN_STATUS_UNEXPECTED("Invalid file, failed to parse json file: " + folder_path_ + file);
+      RETURN_STATUS_UNEXPECTED("Invalid file, " + folder_path_ + file + " load failed: " + std::string(err.what()));
     }
   }
   file_handle.close();
@@ -389,13 +392,13 @@ Status AlbumOp::loadColumnData(const std::string &file, int32_t index, nlohmann:
     return LoadFloatArrayTensor(column_value, i, row);
   }
   // int value
-  if (!is_array &&
-      (data_schema_->Column(i).Type() == DataType::DE_INT64 || data_schema_->Column(i).Type() == DataType::DE_INT32)) {
+  bool judge_int =
+    (data_schema_->Column(i).Type() == DataType::DE_INT64) || (data_schema_->Column(i).Type() == DataType::DE_INT32);
+  if (!is_array && judge_int) {
     return LoadIntTensor(column_value, i, row);
   }
   // int array
-  if (is_array &&
-      (data_schema_->Column(i).Type() == DataType::DE_INT64 || data_schema_->Column(i).Type() == DataType::DE_INT32)) {
+  if (is_array && judge_int) {
     return LoadIntArrayTensor(column_value, i, row);
   } else {
     MS_LOG(WARNING) << "Value type for column: " << data_schema_->Column(i).Name() << " is not supported.";
@@ -420,23 +423,6 @@ void AlbumOp::Print(std::ostream &out, bool show_all) const {
   }
 }
 
-Status AlbumOp::LaunchThreadsAndInitOp() {
-  if (tree_ == nullptr) {
-    return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "Pipeline init failed, Execution tree not set.");
-  }
-  RETURN_IF_NOT_OK(this->PrescanEntry());
-
-  // registers QueueList and individual Queues for interrupt services
-  RETURN_IF_NOT_OK(io_block_queues_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-  // launch main workers that load TensorRows by reading all images
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&AlbumOp::WorkerEntry, this, std::placeholders::_1), "", id()));
-  TaskManager::FindMe()->Post();
-  RETURN_IF_NOT_OK(this->InitSampler());  // pass numRows to Sampler
-  return Status::OK();
-}
-
 Status AlbumOp::ComputeColMap() {
   // Set the column name map (base class field)
   if (column_name_id_map_.empty()) {
@@ -451,7 +437,7 @@ Status AlbumOp::ComputeColMap() {
 
 Status AlbumOp::GetNextRowPullMode(TensorRow *const row) {
   if (image_rows_.empty()) {
-    RETURN_IF_NOT_OK(PrescanEntry());
+    RETURN_IF_NOT_OK(PrepareData());
   }
   if (sample_ids_ == nullptr) {
     RETURN_IF_NOT_OK(this->InitSampler());

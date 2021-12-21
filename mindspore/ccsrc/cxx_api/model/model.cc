@@ -20,19 +20,6 @@
 #include "utils/utils.h"
 
 namespace mindspore {
-namespace {
-std::string GetDeviceTypeString(enum DeviceType type) {
-  static const std::map<enum DeviceType, std::string> kDeviceTypeStrs = {
-    {kCPU, "CPU"}, {kGPU, "GPU"}, {kKirinNPU, "KirinGPU"}, {kAscend910, "Ascend910"}, {kAscend310, "Ascend310"},
-  };
-  auto iter = kDeviceTypeStrs.find(type);
-  if (iter != kDeviceTypeStrs.end()) {
-    return iter->second;
-  }
-
-  return "InvalidDeviceType" + std::to_string(static_cast<int>(type));
-}
-}  // namespace
 Status Model::Build(GraphCell graph_cell, const std::shared_ptr<Context> &model_context,
                     const std::shared_ptr<TrainCfg> &) {
   if (graph_cell.GetGraph() == nullptr) {
@@ -50,7 +37,7 @@ Status Model::Build(GraphCell graph_cell, const std::shared_ptr<Context> &model_
     return kMCInvalidInput;
   }
 
-  std::string device_target = GetDeviceTypeString(device_info[0]->GetDeviceType());
+  auto device_target = device_info[0]->GetDeviceType();
   impl_ = Factory<ModelImpl>::Instance().Create(device_target);
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Create session type " << device_target << " failed";
@@ -66,13 +53,13 @@ Status Model::Build(GraphCell graph_cell, const std::shared_ptr<Context> &model_
 }
 
 Status Model::Build(const void *, size_t, ModelType, const std::shared_ptr<Context> &, const Key &,
-                    const std::string &) {
+                    const std::vector<char> &) {
   MS_LOG(ERROR) << "Unsupported Feature.";
   return kMCFailed;
 }
 
-Status Model::Build(const std::string &, ModelType, const std::shared_ptr<Context> &, const Key &,
-                    const std::string &) {
+Status Model::Build(const std::vector<char> &, ModelType, const std::shared_ptr<Context> &, const Key &,
+                    const std::vector<char> &) {
   MS_LOG(ERROR) << "Unsupported Feature.";
   return kMCFailed;
 }
@@ -94,7 +81,7 @@ Status Model::Predict(const std::vector<MSTensor> &inputs, std::vector<MSTensor>
   return impl_->Predict(inputs, outputs);
 }
 
-Status Model::PredictWithPreprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs,
+Status Model::PredictWithPreprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs,
                                     const MSKernelCallBack &before, const MSKernelCallBack &after) {
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Failed because this model has not been built.";
@@ -103,7 +90,7 @@ Status Model::PredictWithPreprocess(const std::vector<MSTensor> &inputs, std::ve
   return impl_->PredictWithPreprocess(inputs, outputs);
 }
 
-Status Model::Preprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs) {
+Status Model::Preprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs) {
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Failed because this model has not been built.";
     return kMCFailed;
@@ -175,16 +162,15 @@ Model::Model() : impl_(nullptr) {}
 Model::~Model() {}
 
 bool Model::CheckModelSupport(enum DeviceType device_type, ModelType model_type) {
-  std::string device_type_str = GetDeviceTypeString(device_type);
-  if (!Factory<ModelImpl>::Instance().CheckModelSupport(device_type_str)) {
-    return false;
-  }
-
-  auto check_model = Factory<ModelImpl>::Instance().Create(device_type_str);
+  auto check_model = Factory<ModelImpl>::Instance().Create(device_type);
   if (check_model == nullptr) {
     return false;
   }
-
   return check_model->CheckModelSupport(model_type);
+}
+
+Status Model::LoadConfig(const std::vector<char> &config_path) {
+  MS_LOG(ERROR) << "Unsupported Feature.";
+  return kMCFailed;
 }
 }  // namespace mindspore

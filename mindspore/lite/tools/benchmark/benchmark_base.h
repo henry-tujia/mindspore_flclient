@@ -29,15 +29,26 @@
 #include <memory>
 #include <cfloat>
 #include <utility>
+#ifndef BENCHMARK_CLIP_JSON
 #include <nlohmann/json.hpp>
+#endif
 #include "include/model.h"
+#include "include/api/types.h"
+#include "include/api/format.h"
 #include "tools/common/flag_parser.h"
 #include "src/common/file_utils.h"
 #include "src/common/utils.h"
 #include "ir/dtype/type_id.h"
 #include "schema/model_generated.h"
+#include "nnacl/op_base.h"
 
 namespace mindspore::lite {
+#define BENCHMARK_LOG_ERROR(str)   \
+  do {                             \
+    MS_LOG(ERROR) << str;          \
+    std::cerr << str << std::endl; \
+  } while (0);
+
 enum MS_API InDataType { kImage = 0, kBinary = 1 };
 
 enum MS_API AiModelDescription_Frequency {
@@ -51,7 +62,7 @@ enum MS_API DumpMode { DUMP_MODE_ALL = 0, DUMP_MODE_INPUT = 1, DUMP_MODE_OUTPUT 
 
 constexpr float relativeTolerance = 1e-5;
 constexpr float absoluteTolerance = 1e-8;
-
+constexpr int CosineErrMaxVal = 2;
 constexpr float kFloatMSEC = 1000.0f;
 
 constexpr int kNumPrintMin = 5;
@@ -60,9 +71,11 @@ constexpr const char *DELIM_COMMA = ",";
 constexpr const char *DELIM_SLASH = "/";
 
 extern const std::unordered_map<int, std::string> kTypeIdMap;
-extern const std::unordered_map<schema::Format, std::string> kTensorFormatMap;
+extern const std::unordered_map<mindspore::Format, std::string> kTensorFormatMap;
 
-//
+const std::unordered_map<std::string, mindspore::ModelType> ModelTypeMap{
+  {"MindIR_Opt", mindspore::ModelType::kMindIR_Opt}, {"MindIR", mindspore::ModelType::kMindIR}};
+
 namespace dump {
 constexpr auto kConfigPath = "MINDSPORE_DUMP_CONFIG";
 constexpr auto kSettings = "common_dump_settings";
@@ -103,11 +116,11 @@ class MS_API BenchmarkFlags : public virtual FlagParser {
   BenchmarkFlags() {
     // common
     AddFlag(&BenchmarkFlags::model_file_, "modelFile", "Input model file", "");
+    AddFlag(&BenchmarkFlags::model_type_, "modelType", "Input model type. MindIR | MindIR_Opt", "MindIR");
     AddFlag(&BenchmarkFlags::in_data_file_, "inDataFile", "Input data file, if not set, use random input", "");
     AddFlag(&BenchmarkFlags::config_file_, "configFile", "Config file", "");
-    AddFlag(&BenchmarkFlags::device_, "device", "CPU | GPU | NPU | Ascend310", "CPU");
-    AddFlag(&BenchmarkFlags::cpu_bind_mode_, "cpuBindMode",
-            "Input 0 for NO_BIND, 1 for HIGHER_CPU, 2 for MID_CPU, default value: 1", 1);
+    AddFlag(&BenchmarkFlags::device_, "device", "CPU | GPU | NPU | Ascend310 | Ascend710", "CPU");
+    AddFlag(&BenchmarkFlags::cpu_bind_mode_, "cpuBindMode", "Input 0 for NO_BIND, 1 for HIGHER_CPU, 2 for MID_CPU.", 1);
     // MarkPerformance
     AddFlag(&BenchmarkFlags::loop_count_, "loopCount", "Run loop count", 10);
     AddFlag(&BenchmarkFlags::num_threads_, "numThreads", "Run threads number", 2);
@@ -123,8 +136,12 @@ class MS_API BenchmarkFlags : public virtual FlagParser {
     AddFlag(&BenchmarkFlags::benchmark_data_type_, "benchmarkDataType",
             "Benchmark data type. FLOAT | INT32 | INT8 | UINT8", "FLOAT");
     AddFlag(&BenchmarkFlags::accuracy_threshold_, "accuracyThreshold", "Threshold of accuracy", 0.5);
+    AddFlag(&BenchmarkFlags::cosine_distance_threshold_, "cosineDistanceThreshold", "cosine distance threshold", -1.1);
     AddFlag(&BenchmarkFlags::resize_dims_in_, "inputShapes",
             "Shape of input data, the format should be NHWC. e.g. 1,32,32,32:1,1,32,32,1", "");
+#ifdef ENABLE_OPENGL_TEXTURE
+    AddFlag(&BenchmarkFlags::enable_gl_texture_, "enableGLTexture", "Enable GlTexture2D", false);
+#endif
   }
 
   ~BenchmarkFlags() override = default;
@@ -138,6 +155,7 @@ class MS_API BenchmarkFlags : public virtual FlagParser {
   std::string model_file_;
   std::string in_data_file_;
   std::string config_file_;
+  std::string model_type_;
   std::vector<std::string> input_data_list_;
   InDataType in_data_type_ = kBinary;
   std::string in_data_type_in_ = "bin";
@@ -146,12 +164,16 @@ class MS_API BenchmarkFlags : public virtual FlagParser {
   int loop_count_ = 10;
   int num_threads_ = 2;
   bool enable_fp16_ = false;
+#ifdef ENABLE_OPENGL_TEXTURE
+  bool enable_gl_texture_ = false;
+#endif
   bool enable_parallel_ = false;
   int warm_up_loop_count_ = 3;
   // MarkAccuracy
   std::string benchmark_data_file_;
   std::string benchmark_data_type_ = "FLOAT";
   float accuracy_threshold_ = 0.5;
+  float cosine_distance_threshold_ = -1.1;
   // Resize
   std::string resize_dims_in_;
   std::vector<std::vector<int>> resize_dims_;
@@ -174,7 +196,7 @@ class MS_API BenchmarkBase {
   virtual int RunBenchmark() = 0;
 
  protected:
-  int LoadInput();
+  virtual int LoadInput() = 0;
 
   virtual int GenerateInputData() = 0;
 
@@ -184,8 +206,9 @@ class MS_API BenchmarkBase {
 
   int ReadCalibData();
 
-  virtual int ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name,
-                             const std::vector<size_t> &dims) = 0;
+  int ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name, const std::vector<size_t> &dims);
+
+  virtual int GetDataTypeByTensorName(const std::string &tensor_name) = 0;
 
   virtual int CompareOutput() = 0;
 
@@ -288,6 +311,88 @@ class MS_API BenchmarkBase {
     }
   }
 
+  void GetMeanError(double sum_a, double sum_b, double dot_sum, float *mean_error) {
+    if (fabs(sum_a) < DBL_EPSILON && fabs(sum_b) < FLT_EPSILON) {
+      *mean_error = 1;
+    } else if (fabs(sum_a * sum_b) < DBL_EPSILON) {
+      if (fabs(sum_a) < FLT_EPSILON || fabs(sum_b) < FLT_EPSILON) {
+        *mean_error = 1;
+      } else {
+        *mean_error = 0;
+      }
+    } else {
+      *mean_error = dot_sum / (sqrt(sum_a) * sqrt(sum_b));
+    }
+  }
+
+  // tensorData need to be converter first
+  template <typename T, typename ST>
+  int CompareDatabyCosineDistance(const std::string &nodeName, const std::vector<ST> &msShape, const void *tensor_data,
+                                  float *mean_error) {
+    if (mean_error == nullptr) {
+      MS_LOG(ERROR) << "mean_error is nullptr";
+      return RET_ERROR;
+    }
+    if (tensor_data == nullptr) {
+      MS_LOG(ERROR) << "tensor_data is nullptr";
+      return RET_ERROR;
+    }
+    const T *msTensorData = static_cast<const T *>(tensor_data);
+    auto iter = this->benchmark_data_.find(nodeName);
+    if (iter != this->benchmark_data_.end()) {
+      std::vector<size_t> castedMSShape;
+      size_t shapeSize = 1;
+      for (int64_t dim : msShape) {
+        castedMSShape.push_back(size_t(dim));
+        shapeSize *= dim;
+      }
+
+      CheckTensor *calibTensor = iter->second;
+      if (calibTensor->shape != castedMSShape) {
+        std::ostringstream oss;
+        oss << "Shape of mslite output(";
+        for (auto dim : castedMSShape) {
+          oss << dim << ",";
+        }
+        oss << ") and shape source model output(";
+        for (auto dim : calibTensor->shape) {
+          oss << dim << ",";
+        }
+        oss << ") are different";
+        std::cerr << oss.str() << std::endl;
+        MS_LOG(ERROR) << oss.str().c_str();
+        return RET_ERROR;
+      }
+
+      double dot_sum = 0;
+      double sum_a = 0;
+      double sum_b = 0;
+      std::cout << "Data of node " << nodeName << " : ";
+      for (size_t j = 0; j < shapeSize; j++) {
+        if (j < 50) {
+          std::cout << static_cast<float>(msTensorData[j]) << " ";
+        }
+
+        if (std::is_same<T, float>::value && (std::isnan(msTensorData[j]) || std::isinf(msTensorData[j]))) {
+          std::cerr << "Output tensor has nan or inf data, compare fail" << std::endl;
+          MS_LOG(ERROR) << "Output tensor has nan or inf data, compare fail";
+          return RET_ERROR;
+        }
+        dot_sum += static_cast<double>(msTensorData[j]) * calibTensor->data.at(j);
+        sum_a += static_cast<double>(msTensorData[j]) * msTensorData[j];
+        sum_b += static_cast<double>(calibTensor->data.at(j)) * calibTensor->data.at(j);
+      }
+      GetMeanError(sum_a, sum_b, dot_sum, mean_error);
+      std::cout << std::endl;
+      std::cout << "Mean cosine distance of node/tensor " << nodeName << " : " << (*mean_error) * 100 << "%"
+                << std::endl;
+      return RET_OK;
+    } else {
+      MS_LOG(ERROR) << "%s is not in Source Model output", nodeName.c_str();
+      return RET_ERROR;
+    }
+  }
+
   template <typename T, typename Distribution>
   void FillInputData(size_t size, void *data, Distribution distribution) {
     MS_ASSERT(data != nullptr);
@@ -297,6 +402,8 @@ class MS_API BenchmarkBase {
   }
 
   int CheckThreadNumValid();
+
+  int CheckModelValid();
 
   int CheckDeviceTypeValid();
 
@@ -314,9 +421,10 @@ class MS_API BenchmarkBase {
   float op_cost_total_ = 0.0f;
   std::map<std::string, std::pair<int, float>> op_times_by_type_;
   std::map<std::string, std::pair<int, float>> op_times_by_name_;
-
+#ifndef BENCHMARK_CLIP_JSON
   // dump data
   nlohmann::json dump_cfg_json_;
+#endif
   std::string dump_file_output_dir_;
 #ifdef ENABLE_ARM64
   int perf_fd = 0;
@@ -327,6 +435,10 @@ class MS_API BenchmarkBase {
 #endif
   std::mt19937 random_engine_;
 };
+#ifdef SUPPORT_NNIE
+int SvpSysInit();
+int SvpSysExit();
+#endif
 
 }  // namespace mindspore::lite
 #endif  // MINNIE_BENCHMARK_BENCHMARK_BASE_H_

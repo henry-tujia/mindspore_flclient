@@ -56,8 +56,8 @@ void BuildSentenceVocabNode::Print(std::ostream &out) const {
 Status BuildSentenceVocabNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<BuildSentencePieceVocabOp>(vocab_, col_names_, vocab_size_, character_coverage_,
                                                         model_type_, params_, connector_que_size_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -66,22 +66,25 @@ Status BuildSentenceVocabNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (vocab_ == nullptr) {
     std::string err_msg = "BuildSentenceVocabNode: vocab is null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+
+  if (model_type_ != SentencePieceModel::kUnigram && model_type_ != SentencePieceModel::kBpe &&
+      model_type_ != SentencePieceModel::kChar && model_type_ != SentencePieceModel::kWord) {
+    std::string err_msg = "BuildSentenceVocabNode: Invalid SentencePieceModel, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (vocab_size_ <= 0) {
     std::string err_msg =
       "BuildSentenceVocabNode: vocab_size should be positive, but got: " + std::to_string(vocab_size_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (character_coverage_ < 0.98f || character_coverage_ > 1.0f) {
     std::string err_msg = "BuildSentenceVocabNode: character_coverage should to be between 0.98 and 1.0, but got " +
                           std::to_string(character_coverage_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (!col_names_.empty()) {

@@ -36,6 +36,7 @@ int ConvolutionWinogradFP16CPUKernel::MallocWeightBiasData() {
   auto weight_tensor = in_tensors_.at(kWeightIndex);
   int in_channel = weight_tensor->Channel();
   int out_channel = weight_tensor->Batch();
+  MS_CHECK_TRUE_RET(in_channel > 0 && out_channel > 0, RET_ERROR);
   conv_param_->input_channel_ = in_channel;
   conv_param_->output_channel_ = out_channel;
   int oc_block_num = UP_DIV(out_channel, col_tile_);
@@ -43,6 +44,7 @@ int ConvolutionWinogradFP16CPUKernel::MallocWeightBiasData() {
   auto trans_matrix_data_size = input_unit_ * input_unit_ * in_channel * oc_block_num * col_tile_ * sizeof(float16_t);
   if (!op_parameter_->is_train_session_) {
     if (packed_weight_ == nullptr) {
+      CHECK_LESS_RETURN(MAX_MALLOC_SIZE, trans_matrix_data_size);
       packed_weight_ = malloc(trans_matrix_data_size);
       if (packed_weight_ == nullptr) {
         MS_LOG(ERROR) << "malloc packed_weight_ failed.";
@@ -68,6 +70,7 @@ int ConvolutionWinogradFP16CPUKernel::MallocWeightBiasData() {
   }
 
   if (bias_data_ == nullptr) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, oc_block_num * col_tile_ * sizeof(float16_t));
     bias_data_ = malloc(oc_block_num * col_tile_ * sizeof(float16_t));
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "malloc bias_data_ failed.";
@@ -137,16 +140,19 @@ int ConvolutionWinogradFP16CPUKernel::ConfigInputOutput() {
   return RET_OK;
 }
 
-int ConvolutionWinogradFP16CPUKernel::Init() {
+int ConvolutionWinogradFP16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
-  UpdateOriginWeightAndBias();
   col_tile_ = C8NUM;
 #ifdef ENABLE_ARM64
   row_tile_ = C16NUM;
 #else
   row_tile_ = C12NUM;
 #endif
+  kernel_unit_ = conv_param_->kernel_h_;
+  input_unit_ = output_unit_ + kernel_unit_ - 1;
+  conv_param_->input_unit_ = input_unit_;
+  conv_param_->output_unit_ = output_unit_;
   if (op_parameter_->is_train_session_) {
     auto weight_tensor = in_tensors_.at(kWeightIndex);
     CHECK_NULL_RETURN(weight_tensor);
@@ -156,10 +162,6 @@ int ConvolutionWinogradFP16CPUKernel::Init() {
     auto trans_matrix_data_size = input_unit_ * input_unit_ * in_channel * oc_block_num * col_tile_ * sizeof(float16_t);
     set_workspace_size(trans_matrix_data_size);
   }
-  kernel_unit_ = conv_param_->kernel_h_;
-  input_unit_ = output_unit_ + kernel_unit_ - 1;
-  conv_param_->input_unit_ = input_unit_;
-  conv_param_->output_unit_ = output_unit_;
 
   auto ret = InitConvWeightBias();
   if (ret != RET_OK) {
@@ -187,7 +189,7 @@ int ConvolutionWinogradFP16CPUKernel::ReSize() {
     MS_LOG(ERROR) << "Resize is invalid.";
     return ret;
   }
-  ret = ConvolutionBaseCPUKernel::Init();
+  ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "ConvolutionBase init failed.";
     return ret;
@@ -249,5 +251,4 @@ int ConvolutionWinogradFP16CPUKernel::Run() {
   FreeTmpBuffer();
   return ret;
 }
-
 }  // namespace mindspore::kernel

@@ -71,6 +71,25 @@ ATTR_MAP(SigmoidGrad) = EMPTY_ATTR_MAP;
 OUTPUT_MAP(SigmoidGrad) = {{0, OUTPUT_DESC(z)}};
 REG_ADPT_DESC(SigmoidGrad, kNameSigmoidGrad, ADPT_DESC(SigmoidGrad))
 
+// HardSwish
+INPUT_MAP(HardSwish) = {{1, INPUT_DESC(x)}};
+ATTR_MAP(HardSwish) = EMPTY_ATTR_MAP;
+OUTPUT_MAP(HardSwish) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(HardSwish, kNameHSwish, ADPT_DESC(HardSwish))
+
+// HardSwishGrad
+INPUT_MAP(HardSwishGrad) = {{1, INPUT_DESC(grad)}, {2, INPUT_DESC(x)}};
+ATTR_MAP(HardSwishGrad) = EMPTY_ATTR_MAP;
+OUTPUT_MAP(HardSwishGrad) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(HardSwishGrad, kNameHSwishGrad, ADPT_DESC(HardSwishGrad))
+
+// HSigmoid
+INPUT_MAP(HardSigmoid) = {{1, INPUT_DESC(input_x)}};
+ATTR_MAP(HardSigmoid) = {{"alpha", ATTR_DESC(alpha, AnyTraits<float>())},
+                         {"beta", ATTR_DESC(beta, AnyTraits<float>())}};
+OUTPUT_MAP(HardSigmoid) = {{0, OUTPUT_DESC(output_y)}};
+REG_ADPT_DESC(HardSigmoid, kNameHSigmoid, ADPT_DESC(HardSigmoid))
+
 // Relu6
 INPUT_MAP(Relu6) = {{1, INPUT_DESC(x)}};
 ATTR_MAP(Relu6) = EMPTY_ATTR_MAP;

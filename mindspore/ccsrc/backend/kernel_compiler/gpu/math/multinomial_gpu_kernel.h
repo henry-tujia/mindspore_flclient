@@ -22,6 +22,8 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <random>
+#include "runtime/device/gpu/gpu_memory_allocator.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/multinomial_impl.cuh"
@@ -36,9 +38,12 @@ class MultinomialGpuKernel : public GpuKernel {
       : input_size_0_(0),
         output_size_(0),
         distributions_(0),
-        workspace_size_(sizeof(curandState)),
+        categories_{0},
         seed_(0),
-        seed2_(0) {}
+        seed2_(0),
+        is_null_input_(false),
+        rand_state_init_(false),
+        rand_state_(nullptr) {}
   ~MultinomialGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -47,23 +52,33 @@ class MultinomialGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
-    void *workspace_addr = GetDeviceAddress<void *>(workspace, 1);
-    T *cum_sum_input = GetDeviceAddress<T>(workspace, 0);
-    curandState *devStates = reinterpret_cast<curandState *>(workspace_addr);
+    if (is_null_input_) {
+      return true;
+    }
     int *output_addr = GetDeviceAddress<int>(outputs, 0);
-    T *input_addr = GetDeviceAddress<T>(inputs, 0);
+    T *probs_addr = GetDeviceAddress<T>(inputs, 0);
+    int64_t *num_sample_addr = GetDeviceAddress<int64_t>(inputs, 1);
     if (distributions_ == 0) {
       MS_LOG(ERROR) << "Divide by zero. the distributions_ is 0.";
       return false;
     }
-    int categories = SizeToInt(inputs[0]->size / sizeof(T)) / distributions_;
-    int num_sample = SizeToInt(outputs[0]->size / sizeof(int)) / distributions_;
-    CumSum(input_addr, cum_sum_input, cum_sum_input, IntToSize(distributions_), IntToSize(categories), 1,
-           IntToSize(categories), 1, false, false, reinterpret_cast<cudaStream_t>(stream_ptr));
-    NormInput(cum_sum_input, IntToSize(distributions_), IntToSize(categories),
-              reinterpret_cast<cudaStream_t>(stream_ptr));
-    Multinomial(seed_, seed2_, cum_sum_input, num_sample, devStates, output_addr, IntToSize(distributions_),
-                IntToSize(categories), reinterpret_cast<cudaStream_t>(stream_ptr));
+
+    auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+    if (!rand_state_init_) {
+      int rng_seed = 0;
+      std::random_device rd;
+      if (seed2_ != 0) {
+        rng_seed = seed2_;
+      } else if (seed_ != 0) {
+        rng_seed = seed_;
+      } else {
+        rng_seed = static_cast<int>(rd());
+      }
+      InitRandState(rng_seed, distributions_, rand_state_, stream);
+      rand_state_init_ = true;
+    }
+
+    Multinomial(distributions_, categories_, probs_addr, rand_state_, num_sample_addr, output_addr, stream);
     return true;
   }
 
@@ -80,25 +95,37 @@ class MultinomialGpuKernel : public GpuKernel {
       return false;
     }
     auto input_shape_0 = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shape_0) || CHECK_NULL_INPUT(output_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'MultinomialGpuKernel', input or output is null";
+      InitSizeLists();
+      return true;
+    }
     if (input_shape_0.size() == 1) {
       distributions_ = 1;
+      categories_ = input_shape_0[0];
     } else {
       distributions_ = input_shape_0[0];
+      categories_ = input_shape_0[1];
     }
     input_size_0_ = sizeof(T);
     for (size_t i = 0; i < input_shape_0.size(); i++) {
       input_size_0_ *= input_shape_0[i];
     }
-    auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+
     output_size_ = sizeof(int);
-    workspace_size_ = sizeof(int);
     for (size_t i = 0; i < output_shape.size(); i++) {
       output_size_ *= output_shape[i];
     }
-    workspace_size_ = output_size_;
-    MS_EXCEPTION_IF_NULL(AnfAlgo::GetCNodePrimitive(kernel_node));
-    seed_ = static_cast<int>(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed")));
-    seed2_ = static_cast<int>(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed2")));
+
+    auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+    MS_EXCEPTION_IF_NULL(prim);
+    seed_ = static_cast<int>(GetValue<int64_t>(prim->GetAttr("seed")));
+    seed2_ = static_cast<int>(GetValue<int64_t>(prim->GetAttr("seed2")));
+    auto &allocator = device::gpu::GPUMemoryAllocator::GetInstance();
+    rand_state_ = static_cast<curandState *>(allocator.AllocTensorMem(sizeof(curandState) * distributions_));
+
     InitSizeLists();
     return true;
   }
@@ -106,19 +133,20 @@ class MultinomialGpuKernel : public GpuKernel {
  protected:
   void InitSizeLists() override {
     input_size_list_.push_back(input_size_0_);
-    input_size_list_.push_back(sizeof(int));
+    input_size_list_.push_back(sizeof(int64_t));
     output_size_list_.push_back(output_size_);
-    workspace_size_list_.push_back(input_size_0_);
-    workspace_size_list_.push_back(workspace_size_);
   }
 
  private:
   size_t input_size_0_;
   size_t output_size_;
   size_t distributions_;
-  size_t workspace_size_;
+  size_t categories_;
   int seed_;
   int seed2_;
+  bool is_null_input_;
+  bool rand_state_init_;
+  curandState *rand_state_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

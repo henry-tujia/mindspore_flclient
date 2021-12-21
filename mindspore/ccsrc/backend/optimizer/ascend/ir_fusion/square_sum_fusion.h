@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,22 @@
 #ifndef MINDSPORE_CCSRC_BACKEND_OPTIMIZER_ASCEND_IR_FUSION_SQUARE_SUM_FUSION_H_
 #define MINDSPORE_CCSRC_BACKEND_OPTIMIZER_ASCEND_IR_FUSION_SQUARE_SUM_FUSION_H_
 
-#include "backend/optimizer/common/optimizer.h"
+#include "backend/optimizer/ascend/ascend_pass_control.h"
 
 namespace mindspore {
 namespace opt {
-class SquareSumFusion : public PatternProcessPass {
+class SquareSumFusion : public PatternProcessPassWithSwitch {
  public:
-  explicit SquareSumFusion(bool multigraph = true) : PatternProcessPass("square_sum_fusion", multigraph) {}
+  explicit SquareSumFusion(bool multigraph = true) : PatternProcessPassWithSwitch("square_sum_fusion", multigraph) {
+    PassSwitchManager::GetInstance().RegistLicPass(name(), OptPassEnum::SquareSumFusion);
+  }
   ~SquareSumFusion() override = default;
   const BaseRef DefinePattern() const override;
   const AnfNodePtr Process(const FuncGraphPtr &, const AnfNodePtr &, const EquivPtr &) const override;
+
+ private:
+  CNodePtr GenerateSquareSumV1(const FuncGraphPtr &graph, const CNodePtr &square, const CNodePtr &sum) const;
+  CNodePtr GenerateSquareSumV2(const FuncGraphPtr &graph, const CNodePtr &square, const CNodePtr &sum) const;
 };
 }  // namespace opt
 }  // namespace mindspore

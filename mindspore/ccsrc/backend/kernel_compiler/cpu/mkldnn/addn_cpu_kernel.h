@@ -33,6 +33,8 @@ class AddNCPUKernel : public MKLCPUKernel {
               const std::vector<AddressPtr> &outputs) override;
 
  private:
+  template <typename T>
+  void LaunchNnacl(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &outputs);
   void CheckParam(const CNodePtr &kernel_node);
   size_t input_num_{0};
   std::vector<size_t> output_shape_;
@@ -44,6 +46,9 @@ MS_REG_CPU_KERNEL(AddN,
                   AddNCPUKernel);
 MS_REG_CPU_KERNEL(AddN,
                   KernelAttr().SetAllSameAttr(true).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeInt32),
+                  AddNCPUKernel);
+MS_REG_CPU_KERNEL(AddN,
+                  KernelAttr().SetAllSameAttr(true).AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
                   AddNCPUKernel);
 }  // namespace kernel
 }  // namespace mindspore

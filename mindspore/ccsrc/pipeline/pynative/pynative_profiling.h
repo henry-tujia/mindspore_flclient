@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_MINDSPORE_CCSRC_RUNTIME_DEVICE_PYNATIVE_PROFILING_H_
-#define MINDSPORE_MINDSPORE_CCSRC_RUNTIME_DEVICE_PYNATIVE_PROFILING_H_
+#ifndef MINDSPORE_CCSRC_PIPELINE_PYNATIVE_PYNATIVE_PROFILING_H_
+#define MINDSPORE_CCSRC_PIPELINE_PYNATIVE_PYNATIVE_PROFILING_H_
 
 #include <memory>
 #include <string>
 #include <vector>
 #include <utility>
-#include <unordered_map>
 
 namespace mindspore {
 class PynativeProfiler {
@@ -54,4 +53,4 @@ class PynativeProfiler {
 };
 }  // namespace mindspore
 
-#endif  // MINDSPORE_MINDSPORE_CCSRC_RUNTIME_DEVICE_PYNATIVE_PROFILING_H_
+#endif  // MINDSPORE_CCSRC_PIPELINE_PYNATIVE_PYNATIVE_PROFILING_H_

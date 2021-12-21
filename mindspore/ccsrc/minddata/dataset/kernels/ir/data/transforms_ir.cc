@@ -15,7 +15,7 @@
  */
 
 #include <algorithm>
-#include <typeinfo>
+#include <utility>
 
 #include "minddata/dataset/kernels/ir/data/transforms_ir.h"
 
@@ -46,6 +46,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 #ifdef ENABLE_PYTHON
 #include "minddata/dataset/kernels/py_func_op.h"
 #endif
@@ -82,22 +83,22 @@ ConcatenateOperation::ConcatenateOperation(int8_t axis, const std::shared_ptr<Te
 
 Status ConcatenateOperation::ValidateParams() {
   if (axis_ != 0 && axis_ != -1) {
-    std::string err_msg = "Concatenate: Only 1D concatenation supported.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg =
+      "Concatenate: Only 1D concatenation supported, input 'axis' should be 0 or -1, but got:" + std::to_string(axis_);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (prepend_) {
     if (prepend_->shape().Size() != 1) {
-      std::string err_msg = "Concatenate: Can only prepend 1D arrays.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = "Concatenate: Can only prepend 1D arrays, rank of input 'prepend' should be 1, but got:" +
+                            std::to_string(prepend_->shape().Size());
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   if (append_) {
     if (append_->shape().Size() != 1) {
-      std::string err_msg = "Concatenate: Can only append 1D arrays.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = "Concatenate: Can only append 1D arrays, rank of input 'append' should be 1, but got:" +
+                            std::to_string(append_->shape().Size());
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   return Status::OK();
@@ -120,9 +121,8 @@ FillOperation::FillOperation(const std::shared_ptr<Tensor> &fill_value) : fill_v
 
 Status FillOperation::ValidateParams() {
   if (fill_value_->shape() != TensorShape::CreateScalar()) {
-    std::string err_msg = "Fill: fill_value is not a scalar tensor.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Fill: fill_value is not a scalar tensor, got shape:" + fill_value_->shape().ToString();
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -143,14 +143,14 @@ Status FillOperation::from_json(nlohmann::json op_params, std::shared_ptr<Tensor
 }
 
 // MaskOperation
-MaskOperation::MaskOperation(RelationalOp op, const std::shared_ptr<Tensor> &constant, DataType dtype)
+MaskOperation::MaskOperation(RelationalOp op, const std::shared_ptr<Tensor> &constant, const DataType &dtype)
     : op_(op), constant_(constant), dtype_(dtype) {}
 
 Status MaskOperation::ValidateParams() {
   if (!dtype_.IsBool() && !dtype_.IsFloat() && !dtype_.IsInt()) {
-    std::string err_msg = "Mask: Only supports bool or numeric datatype for generated mask type.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg =
+      "Mask: Only supports bool or numeric datatype for generated mask type, but got:" + dtype_.ToString();
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -164,8 +164,7 @@ OneHotOperation::OneHotOperation(int32_t num_classes) : num_classes_(num_classes
 Status OneHotOperation::ValidateParams() {
   if (num_classes_ <= 0) {
     std::string err_msg = "OneHot: Number of classes must be greater than 0, but got: " + std::to_string(num_classes_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -181,7 +180,7 @@ Status OneHotOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status OneHotOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("num_classes") != op_params.end(), "Failed tofind num_classes");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "num_classes", kOneHotOperation));
   int32_t num_classes = op_params["num_classes"];
   *operation = std::make_shared<transforms::OneHotOperation>(num_classes);
   return Status::OK();
@@ -200,7 +199,7 @@ std::shared_ptr<TensorOp> PadEndOperation::Build() { return std::make_shared<Pad
 // PreBuiltOperation
 PreBuiltOperation::PreBuiltOperation(std::shared_ptr<TensorOp> tensor_op) : op_(std::move(tensor_op)) {
 #ifdef ENABLE_PYTHON
-  auto pyfunc_tensor_op = std::dynamic_pointer_cast<PyFuncOp>(tensor_op);
+  auto pyfunc_tensor_op = std::dynamic_pointer_cast<PyFuncOp>(op_);
   if (pyfunc_tensor_op && pyfunc_tensor_op->IsRandom()) random_op_ = true;
 #endif
 }
@@ -272,8 +271,7 @@ TypeCastOperation::TypeCastOperation(const std::string &data_type) {
 Status TypeCastOperation::ValidateParams() {
   if (data_type_ == DataType::DE_UNKNOWN) {
     std::string err_msg = "TypeCast: Invalid data type";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -288,7 +286,7 @@ Status TypeCastOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status TypeCastOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("data_type") != op_params.end(), "Failed tofind data_type");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "data_type", kTypeCastOperation));
   std::string data_type = op_params["data_type"];
   *operation = std::make_shared<transforms::TypeCastOperation>(data_type);
   return Status::OK();
@@ -304,7 +302,7 @@ Status PluginOperation::ValidateParams() {
   err_msg += lib_path_.empty() ? "lib_path is empty, please specify a path to .so file. " : "";
   err_msg += func_name_.empty() ? "func_name_ is empty, please specify function name to load." : "";
   if (!err_msg.empty()) {
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }

@@ -25,14 +25,16 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSize = "Size";
+/// \brief Returns the size of a tensor. Refer to Python API @ref mindspore.ops.Size for more details.
 class MS_CORE_API Size : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Size() : PrimitiveC(kNameSize) {}
+  /// \brief Destructor.
   ~Size() = default;
   MS_DECLARE_PARENT(Size, PrimitiveC);
 };
 
-using PrimSizePtr = std::shared_ptr<Size>;
 }  // namespace ops
 }  // namespace mindspore
 

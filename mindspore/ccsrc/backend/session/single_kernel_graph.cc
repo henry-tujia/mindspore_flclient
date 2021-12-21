@@ -15,11 +15,8 @@
  */
 
 #include "backend/session/single_kernel_graph.h"
-
-#include <memory>
-#include <string>
-#include <vector>
 #include "backend/session/anf_runtime_algorithm.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace session {
@@ -27,6 +24,7 @@ std::shared_ptr<session::KernelGraph> SingleKernelGraph::ConstructKernelGraphBas
   const std::string &op_name, const std::vector<TypeId> &input_dtypes, const std::vector<ShapeVector> &input_shapes,
   const std::vector<TypeId> &output_dtypes, const std::vector<std::vector<size_t>> &output_shapes) {
   auto graph = std::make_shared<session::KernelGraph>();
+  MS_EXCEPTION_IF_NULL(graph);
   std::vector<AnfNodePtr> inputs;
   // set input[0]
   PrimitivePtr op_prim = std::make_shared<Primitive>(op_name);
@@ -48,7 +46,10 @@ std::shared_ptr<session::KernelGraph> SingleKernelGraph::ConstructKernelGraphBas
   // get output dynamic shape info
   AnfAlgo::SetNodeAttr(kAttrOutputIsDynamicShape, MakeValue(false), cnode);
   if (output_dtypes.size() != output_shapes.size()) {
-    MS_LOG(EXCEPTION) << " output_dtypes size should equal to output_shapes size, the op name is: " << op_name;
+    MS_LOG(EXCEPTION)
+      << "The size of output_dtypes should be equal to size of output_shapes, but got output_dtypes size: "
+      << output_dtypes.size() << ", output_shapes size: " << output_shapes.size() << ". The op name is: " << op_name
+      << trace::DumpSourceLines(cnode);
   }
   AnfAlgo::SetOutputInferTypeAndShape(output_dtypes, output_shapes, cnode.get());
   // set execution order

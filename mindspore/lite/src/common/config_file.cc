@@ -19,18 +19,57 @@
 #ifdef _MSC_VER
 #define PATH_MAX 1024
 #endif
+namespace {
+constexpr size_t kLengthOfParentheses = 2;
+constexpr size_t kMinSectionLineLength = 2;
+constexpr size_t kMaxValidLineCount = 100000;
+constexpr size_t kMaxLineCount = 100100;
+
+}  // namespace
 
 namespace mindspore {
 namespace lite {
-int GetSectionInfoFromConfigFile(const std::string &file, const std::string &section_name,
-                                 std::map<std::string, std::string> *section_info) {
-  if (file.empty()) {
-    MS_LOG(ERROR) << "file is nullptr";
+namespace {
+void ParseLine(const std::string &line, std::map<std::string, std::string> *section_config, std::string *section,
+               size_t *valid_line_count, std::map<std::string, std::map<std::string, std::string>> *config) {
+  // eg: [section]
+  //     key=value
+  if (line[0] == '[' && line[line.length() - 1] == ']') {
+    if (!section->empty() && !section_config->empty()) {
+      (void)config->insert(std::make_pair(*section, *section_config));
+    }
+    section_config->clear();
+    *section = line.substr(1, line.length() - kLengthOfParentheses);
+    *valid_line_count = *valid_line_count + 1;
+  }
+
+  if (!section->empty()) {
+    auto index = line.find('=');
+    if (index == std::string::npos) {
+      return;
+    }
+    auto key = line.substr(0, index);
+    if (index + 1 > line.size()) {
+      return;
+    }
+    auto value = line.substr(index + 1);
+    lite::Trim(&key);
+    lite::Trim(&value);
+    (void)section_config->insert(std::make_pair(key, value));
+    *valid_line_count = *valid_line_count + 1;
+  }
+}
+}  // namespace
+
+int GetAllSectionInfoFromConfigFile(const std::string &file,
+                                    std::map<std::string, std::map<std::string, std::string>> *config) {
+  if (file.empty() || config == nullptr) {
+    MS_LOG(ERROR) << "input Invalid!check file and config.";
     return RET_ERROR;
   }
   auto resolved_path = std::make_unique<char[]>(PATH_MAX);
   if (resolved_path == nullptr) {
-    MS_LOG(ERROR) << "new resolved_path failed";
+    MS_LOG(ERROR) << "new resolved_path fail!";
     return RET_ERROR;
   }
 
@@ -53,41 +92,25 @@ int GetSectionInfoFromConfigFile(const std::string &file, const std::string &sec
     return RET_ERROR;
   }
   std::string line;
-
-  bool find_section = false;
+  std::string section;
+  std::map<std::string, std::string> section_config;
+  size_t line_count = 0;
+  size_t valid_line_count = 0;
   while (std::getline(ifs, line)) {
+    line_count++;
+    if (line_count >= kMaxLineCount || valid_line_count >= kMaxValidLineCount) {
+      MS_LOG(ERROR) << "config too many lines!";
+      return RET_ERROR;
+    }
     lite::Trim(&line);
-    if (line.empty()) {
+    if (line.length() <= kMinSectionLineLength || line[0] == '#') {
       continue;
     }
-    if (line[0] == '#') {
-      continue;
-    }
-
-    if (line[0] == '[') {
-      if (find_section == true) {
-        break;
-      }
-      std::string section = line.substr(1, line.length() - 2);
-      if (section != section_name) {
-        continue;
-      }
-      find_section = true;
-    }
-
-    if (find_section == true) {
-      auto index = line.find('=');
-      if (index == std::string::npos) {
-        continue;
-      }
-      auto key = line.substr(0, index);
-      auto value = line.substr(index + 1);
-      lite::Trim(&key);
-      lite::Trim(&value);
-      section_info->insert(std::make_pair(key, value));
-    }
+    ParseLine(line, &section_config, &section, &valid_line_count, config);
   }
-
+  if (!section.empty() && !section_config.empty()) {
+    (void)config->insert(std::make_pair(section, section_config));
+  }
   ifs.close();
   return RET_OK;
 }
@@ -97,8 +120,12 @@ void ParserExecutionPlan(const std::map<std::string, std::string> *config_infos,
   for (auto info : *config_infos) {
     std::string op_name = info.first;
     std::string value = info.second;
+    if (value.empty()) {
+      MS_LOG(WARNING) << "Empty info in execution_plan";
+      continue;
+    }
     if (value[0] == '"' && value[value.length() - 1] == '"') {
-      value = value.substr(1, value.length() - 2);
+      value = value.substr(1, value.length() - kLengthOfParentheses);
     }
     auto index = value.find(':');
     if (index == std::string::npos) {
@@ -106,6 +133,9 @@ void ParserExecutionPlan(const std::map<std::string, std::string> *config_infos,
       continue;
     }
     auto data_type_key = value.substr(0, index);
+    if (index + 1 > value.size()) {
+      return;
+    }
     auto data_type_value = value.substr(index + 1);
     if (data_type_key != "data_type") {
       MS_LOG(WARNING) << "Invalid key in execution_plan: " << value;
@@ -120,7 +150,7 @@ void ParserExecutionPlan(const std::map<std::string, std::string> *config_infos,
       MS_LOG(WARNING) << "Invalid value in execution_plan: " << value;
       continue;
     }
-    data_type_plan->insert(std::make_pair(op_name, type_id));
+    (void)data_type_plan->insert(std::make_pair(op_name, type_id));
   }
 }
 }  // namespace lite

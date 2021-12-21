@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 #define MINDSPORE_TENSOR_SUMMARY_H
 
 #include <vector>
-#include <unordered_map>
 #include <tuple>
 #include <memory>
 #include <string>
 
+#include "utils/hash_map.h"
 #include "debug/debug_services.h"
 
 #ifdef ONLINE_DBG_MODE
@@ -88,6 +88,14 @@ class VarianceAndMeanCalculator {
 class ITensorSummary {
  public:
   enum WatchpointPos { eHitPos = 0, eErrorCodePos = 1, eParamListPos = 2 };
+  enum ErrorCode {
+    NAN_TENSOR = 0,
+    INF_TENSOR = 2,
+    NULL_PREV_TENSOR = 4,
+    OUT_OF_MEMORY = 8,
+    HISTORY_NOT_FOUND = 16,
+    NO_VALUE = 32
+  };
   virtual ~ITensorSummary() = default;
   virtual void SummarizeTensor(const std::vector<DebugServices::watchpoint_t> &) = 0;
   virtual std::tuple<bool, int32_t, std::vector<DebugServices::parameter_t>> IsWatchpointHit(
@@ -111,7 +119,7 @@ class TensorSummary : public ITensorSummary {
  public:
   TensorSummary() = default;
   ~TensorSummary() override = default;
-  TensorSummary(void *, void *, uint32_t, uint32_t);
+  TensorSummary(const void *, const void *, uint32_t, uint32_t);
   void SummarizeTensor(const std::vector<DebugServices::watchpoint_t> &) override;
   // returns hit, error_code, parameter_list
   std::tuple<bool, int, std::vector<DebugServices::parameter_t>> IsWatchpointHit(DebugServices::watchpoint_t) override;
@@ -129,8 +137,8 @@ class TensorSummary : public ITensorSummary {
   const int zero_count() const override { return zero_count_; }
 
  private:
-  T *current_tensor_ptr_;
-  T *prev_tensor_ptr_;
+  const T *current_tensor_ptr_;
+  const T *prev_tensor_ptr_;
   uint32_t num_elements_;
   uint32_t prev_num_elements_;
   double min_;
@@ -147,12 +155,13 @@ class TensorSummary : public ITensorSummary {
   double epsilon_;
   bool mean_sd_cal_enabled_;
   VarianceAndMeanCalculator current_mean_variance_;
-  std::unordered_map<std::string, std::unique_ptr<MeanCalculator>> means_;
-  std::unordered_map<uint32_t, std::unique_ptr<AllCloseCalculator>> all_close_;
-  std::unordered_map<uint32_t, std::unique_ptr<RangeCountCalculator>> range_counts_;
+  mindspore::HashMap<std::string, std::unique_ptr<MeanCalculator>> means_;
+  mindspore::HashMap<uint32_t, std::unique_ptr<AllCloseCalculator>> all_close_;
+  mindspore::HashMap<uint32_t, std::unique_ptr<RangeCountCalculator>> range_counts_;
   double_t StatLookup(const DebugServices::watchpoint_t &);
   double_t StatLookup(const std::string &, const DebugServices::watchpoint_t &);
   double_t GetZeroValPercent();
+  void TensorStatisticsSingleThread();
   void InitCalculators(const std::vector<DebugServices::watchpoint_t> &);
 };
 #ifdef ONLINE_DBG_MODE

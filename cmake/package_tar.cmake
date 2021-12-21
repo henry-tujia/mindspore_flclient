@@ -7,7 +7,6 @@ file(REMOVE_RECURSE ${CMAKE_SOURCE_DIR}/output)
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output)
 
 # cpack variables
-file(READ ${CMAKE_SOURCE_DIR}/version.txt VERSION_NUMBER)
 string(TOLOWER linux_${CMAKE_HOST_SYSTEM_PROCESSOR} PLATFORM_NAME)
 set(CPACK_PACKAGE_FILE_NAME mindspore_ascend-${VERSION_NUMBER}-${PLATFORM_NAME})
 set(CPACK_GENERATOR "TGZ")
@@ -123,16 +122,16 @@ if(ENABLE_CPU)
 endif()
 
 if(MS_BUILD_GRPC)
-    install(FILES ${grpc_LIBPATH}/libmindspore_grpc++.so.1.27.3
+    install(FILES ${grpc_LIBPATH}/libmindspore_grpc++.so.1.36.1
             DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc++.so.1 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_grpc.so.9.0.0
-            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_gpr.so.9.0.0
-            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_gpr.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_upb.so.9.0.0
-            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_upb.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_address_sorting.so.9.0.0
-            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_address_sorting.so.9 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_grpc.so.15.0.0
+            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_gpr.so.15.0.0
+            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_gpr.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_upb.so.15.0.0
+            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_upb.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_address_sorting.so.15.0.0
+            DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_address_sorting.so.15 COMPONENT mindspore)
 endif()
 
 ## Public header files

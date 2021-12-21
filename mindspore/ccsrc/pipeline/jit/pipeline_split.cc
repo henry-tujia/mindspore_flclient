@@ -22,6 +22,10 @@
 #include "frontend/parallel/context.h"
 #include "frontend/parallel/pipeline_transformer/pipeline_transformer.h"
 #include "frontend/parallel/step_parallel.h"
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
+#include "ps/util.h"
+#include "ps/ps_context.h"
+#endif
 
 namespace mindspore {
 namespace pipeline {
@@ -69,6 +73,11 @@ static int64_t InferStage(int64_t rank_id, int64_t stage_num, int64_t device_num
 
 // Only auto_parallel and semi_auto_parallel support PipelineSplit
 bool PipelineSplit(const ResourcePtr &res) {
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
+  if (ps::PSContext::instance()->is_server() || ps::PSContext::instance()->is_scheduler()) {
+    return true;
+  }
+#endif
   MS_EXCEPTION_IF_NULL(res);
   auto parallel_mode = parallel::ParallelContext::GetInstance()->parallel_mode();
   if (parallel_mode != parallel::SEMI_AUTO_PARALLEL && parallel_mode != parallel::AUTO_PARALLEL) {
@@ -77,7 +86,7 @@ bool PipelineSplit(const ResourcePtr &res) {
   }
   auto stage_num = parallel::ParallelContext::GetInstance()->pipeline_stage_split_num();
   if (stage_num <= 1) {
-    MS_LOG(INFO) << "stage num is: " << stage_num << ". No need Pipeline split.";
+    MS_LOG(INFO) << "The parameter 'stage_num' is: " << stage_num << ". No need Pipeline split.";
     return true;
   }
   auto manager = res->manager();
@@ -96,10 +105,14 @@ bool PipelineSplit(const ResourcePtr &res) {
     device_num = parallel::ParallelContext::GetInstance()->device_num();
   }
   if (device_num < 1) {
-    MS_LOG(EXCEPTION) << "Invalid device num: " << device_num;
+    MS_LOG(ERROR) << "For 'PipelineSplit', the argument 'device_num' must be positive, "
+                     "but got the value of device_num: "
+                  << device_num;
   }
   if (global_rank < 0) {
-    MS_LOG(EXCEPTION) << "Invalid global rank: " << global_rank;
+    MS_LOG(ERROR) << "For 'PipelineSplit', the argument 'global_rank' must be nonnegative, "
+                     "but got the value of global_rank: "
+                  << global_rank;
   }
   auto stage = InferStage(global_rank, stage_num, device_num);
   auto per_stage_rank_num = device_num / stage_num;

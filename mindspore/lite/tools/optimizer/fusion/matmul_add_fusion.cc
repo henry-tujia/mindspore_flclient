@@ -15,6 +15,7 @@
  */
 
 #include "tools/optimizer/fusion/matmul_add_fusion.h"
+#include <vector>
 #include "tools/optimizer/common/gllo_utils.h"
 #include "nnacl/op_base.h"
 
@@ -30,6 +31,7 @@ bool CheckAndGetMatMulIndex(const CNodePtr &cnode, size_t *index) {
   for (size_t i = 1; i < cnode->size(); ++i) {
     if (CheckPrimitiveType(cnode->input(i), prim::kPrimMatMul)) {
       auto matmul_cnode = cnode->input(i)->cast<CNodePtr>();
+      MS_CHECK_TRUE_RET(matmul_cnode != nullptr, false);
       if (matmul_cnode->size() > kInputSizeThree) {
         continue;
       }
@@ -46,7 +48,7 @@ bool CheckAndGetMatMulIndex(const CNodePtr &cnode, size_t *index) {
 }  // namespace
 
 bool MatMulAddFusion::Run(const FuncGraphPtr &func_graph) {
-  MS_ASSERT(func_graph != nulltr);
+  MS_ASSERT(func_graph != nullptr);
   auto node_list = TopoSort(func_graph->get_return());
   for (auto &node : node_list) {
     MS_CHECK_TRUE_RET(node != nullptr, false);
@@ -65,13 +67,25 @@ bool MatMulAddFusion::Run(const FuncGraphPtr &func_graph) {
       continue;
     }
     auto matmul_cnode = cnode->input(index)->cast<CNodePtr>();
+    MS_ASSERT(matmul_cnode != nullptr);
+    if (IsMarkedTrainOp(matmul_cnode)) {
+      return false;
+    }
     auto bias_node = cnode->input(kInputSizeThree - index);
     if (!utils::isa<ValueNode>(bias_node) &&
         (!utils::isa<Parameter>(bias_node) || !bias_node->cast<ParameterPtr>()->default_param())) {
       continue;
     }
-    if (IsMarkedTrainOp(matmul_cnode)) {
+    auto abstract = bias_node->abstract();
+    MS_CHECK_TRUE_RET(abstract != nullptr, false);
+    std::vector<int64_t> bias_shape;
+    if (FetchShapeFromAbstract(abstract, &bias_shape) != lite::RET_OK) {
+      MS_LOG(ERROR) << "Fetch shape from abstract failed.";
       return false;
+    }
+    // only support bias with shape size of 1.
+    if (bias_shape.size() > DIMENSION_1D) {
+      continue;
     }
     auto manager = func_graph->manager();
     MS_ASSERT(manager != nullptr);

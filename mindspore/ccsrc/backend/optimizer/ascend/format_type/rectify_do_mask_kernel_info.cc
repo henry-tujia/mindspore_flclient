@@ -16,15 +16,9 @@
 
 #include "backend/optimizer/ascend/format_type/rectify_do_mask_kernel_info.h"
 
-#include <vector>
-#include <map>
-#include <string>
-#include <memory>
-
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/kernel_build_info.h"
 #include "utils/utils.h"
-#include "backend/kernel_compiler/common_utils.h"
 #include "utils/ms_context.h"
 #include "backend/optimizer/common/helper.h"
 
@@ -118,6 +112,7 @@ void RectifyDoMaskKernelInfo::RectifyDropOutDoMaskKernelInfo(const std::vector<C
     if (AnfAlgo::GetInputFormat(do_mask, 0) != format) {
       auto builder =
         std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>(AnfAlgo::GetSelectKernelBuildInfo(do_mask));
+      MS_EXCEPTION_IF_NULL(builder);
       builder->SetInputFormat(format, 0);
       builder->SetOutputFormat(format, 0);
       AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), do_mask.get());
@@ -139,6 +134,7 @@ AnfNodePtr RectifyDoMaskKernelInfo::RectifyKernelInfoInPynativeProcess(const Anf
   if (do_mask_input_format != kOpFormat_DEFAULT) {
     auto builder =
       std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>(AnfAlgo::GetSelectKernelBuildInfo(node));
+    MS_EXCEPTION_IF_NULL(builder);
     builder->SetInputFormat(kOpFormat_DEFAULT, 0);
     builder->SetOutputFormat(kOpFormat_DEFAULT, 0);
     AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), node.get());
@@ -153,7 +149,7 @@ void RectifyDoMaskKernelInfo::ReSelecChildNodeKernelInfo(const CNodePtr &cnode, 
   for (const auto &out_node_info : *output_node_list) {
     MS_EXCEPTION_IF_NULL(out_node_info.first);
     auto out_node = out_node_info.first->cast<CNodePtr>();
-    if (AnfAlgo::IsRealKernel(out_node_info.first)) {
+    if (AnfUtils::IsRealKernel(out_node_info.first)) {
       auto ori_build_info = AnfAlgo::GetSelectKernelBuildInfo(out_node);
       kernel_selecter->SelectKernel(out_node);
       auto new_build_info = AnfAlgo::GetSelectKernelBuildInfo(out_node);

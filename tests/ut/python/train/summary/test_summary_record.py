@@ -22,6 +22,8 @@ import pytest
 
 from mindspore.common.tensor import Tensor
 from mindspore.train.summary.summary_record import SummaryRecord
+from mindspore._c_expression import security
+from tests.security_utils import security_off_wrap
 
 
 def get_test_data(step):
@@ -57,24 +59,35 @@ class TestSummaryRecord:
         if os.path.exists(self.base_summary_dir):
             shutil.rmtree(self.base_summary_dir)
 
+    @security_off_wrap
     @pytest.mark.parametrize("log_dir", ["", None, 32])
     def test_log_dir_with_type_error(self, log_dir):
-        with pytest.raises(TypeError):
+        with pytest.raises((TypeError, ValueError)):
             with SummaryRecord(log_dir):
                 pass
 
+    @security_off_wrap
     @pytest.mark.parametrize("raise_exception", ["", None, 32])
     def test_raise_exception_with_type_error(self, raise_exception):
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
-        with pytest.raises(TypeError) as exc:
+        with pytest.raises((TypeError, ValueError)) as exc:
             with SummaryRecord(log_dir=summary_dir, raise_exception=raise_exception):
                 pass
 
         assert "raise_exception" in str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("step", ["str"])
     def test_step_of_record_with_type_error(self, step):
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
         with pytest.raises(TypeError):
             with SummaryRecord(summary_dir) as sr:
                 sr.record(step)
+
+    @pytest.mark.parametrize("log_dir", './')
+    def test_summary_collector_security_on(self, log_dir):
+        """Test the summary collector when set security on."""
+        if security.enable_security():
+            with pytest.raises(ValueError) as exc:
+                SummaryRecord(log_dir=log_dir)
+            assert str(exc.value) == 'The Summary is not supported, please without `-s on` and recompile source.'

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,21 +21,21 @@
 #include <queue>
 #include <utility>
 #include <memory>
-#include <unordered_map>
-#include <unordered_set>
 #include <string>
 #include <algorithm>
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "backend/optimizer/common/helper.h"
 #include "frontend/optimizer/optimizer.h"
 #include "ir/func_graph.h"
 #include "utils/cache_embedding_hashmap_struct.h"
 namespace mindspore {
 namespace parallel {
-using ParamMap = std::unordered_map<ParameterPtr, ParameterPtr>;
-using ParamSet = std::unordered_set<ParameterPtr>;
+using ParamMap = mindspore::HashMap<ParameterPtr, ParameterPtr>;
+using ParamSet = mindspore::HashSet<ParameterPtr>;
 using NodePairList = std::vector<std::pair<AnfNodePtr, AnfNodePtr>>;
-using AnfMap = std::unordered_map<AnfNodePtr, AnfNodePtr>;
-using AnfSet = std::unordered_set<AnfNodePtr>;
+using AnfMap = mindspore::HashMap<AnfNodePtr, AnfNodePtr>;
+using AnfSet = mindspore::HashSet<AnfNodePtr>;
 
 ParamMap AddCacheParameters(const FuncGraphPtr &graph, const ParamSet &parameter_cache_enable_set) {
   ParamMap cache_host_params_map;
@@ -216,7 +216,13 @@ void InitHashMapData(void *data, const int64_t host_size, const int64_t cache_si
   for (int64_t i = 0; i < host_size; ++i) {
     host_range.emplace_back(static_cast<T>(i));
   }
+#if defined(__APPLE__)
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::shuffle(host_range.begin(), host_range.end(), rng);
+#else
   std::random_shuffle(host_range.begin(), host_range.end());
+#endif
   size_t size = static_cast<size_t>(cache_size);
   size_t hashmap_count = 0;
   for (size_t i = 0; i < size; ++i) {
@@ -667,7 +673,7 @@ void CacheEmbeddingForTrain(const FuncGraphPtr &graph, bool is_pipe, const CNode
     MS_LOG(EXCEPTION) << "The last cnode after sorting, not return cnode.";
   }
   if (return_node->inputs().size() < 2) {
-    MS_LOG(EXCEPTION) << "Number of return node inputs should be great than or equal to 2.";
+    MS_LOG(EXCEPTION) << "Number of return node inputs should be greater than or equal to 2.";
   }
 
   auto depend_node = CreateDepend(graph, invalid_nodes, return_node->input(1));

@@ -28,7 +28,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::ActivationType_HSWISH;
 
 namespace mindspore::kernel {
-int HswishInt8CPUKernel::Init() {
+int HswishInt8CPUKernel::Prepare() {
   lite::Tensor *input = in_tensors_.at(0);
   lite::Tensor *output = out_tensors_.at(0);
   MS_ASSERT(input);
@@ -69,7 +69,7 @@ int HswishInt8CPUKernel::DoActivation(int task_id) {
   auto input_addr = reinterpret_cast<int8_t *>(in_tensors_.at(0)->MutableData());
   auto output_addr = reinterpret_cast<int8_t *>(out_tensors_.at(0)->MutableData());
   auto length = in_tensors_.at(0)->ElementsNum();
-
+  MS_CHECK_GT(length, 0, RET_ERROR);
   int stride = UP_DIV(length, thread_count_);
   int count = MSMIN(stride, length - stride * task_id);
 

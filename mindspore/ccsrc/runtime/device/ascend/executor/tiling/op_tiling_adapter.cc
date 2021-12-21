@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "runtime/device/ascend/executor/tiling/op_tiling_adapter.h"
 #include <algorithm>
+#include "runtime/device/ascend/executor/tiling/op_tiling_adapter.h"
 #include "backend/kernel_compiler/tbe/tbe_kernel_build.h"
 #include "backend/kernel_compiler/tbe/tbe_dynaminc_shape_util.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -48,6 +48,8 @@ std::string OpTilingCalculateAdapter::GetRealOpType(const std::string &op_type) 
     {"Concat", "ConcatD"},
     {"Softmax", "SoftmaxV2"},
     {"DropoutDoMask", "DropOutDoMask"},
+    {"IOU", "Iou"},
+    {"DynamicBroadcastTo", "BroadcastTo"},
   };
   auto iter = kOpTypeMap.find(op_type);
   if (iter == kOpTypeMap.end()) {
@@ -195,16 +197,18 @@ std::vector<std::tuple<std::size_t, ge::NodePtr>> OpTilingCalculateAdapter::Conv
   if (!has_input_name_attr) {
     MS_LOG(EXCEPTION) << "Node should has attr: input_names. " << node->fullname_with_scope();
   }
+
   auto input_names_attr = AnfAlgo ::GetNodeAttr<std::vector<std::string>>(node, "input_names");
   std::vector<std::string> op_infer_depends;
   std::vector<std::tuple<std::size_t, ge::NodePtr>> constant_ops;
   for (auto index : depends_list_me) {
     if (LongToSize(index) > input_names_attr.size()) {
-      MS_LOG(EXCEPTION) << "Input index " << index << " should less input_names' size " << input_names_attr.size();
+      MS_LOG(EXCEPTION) << "Input index " << index << " should not be greater than input_names' size "
+                        << input_names_attr.size();
     }
     auto iter = depend_tensor_map.find(LongToSize(index));
     if (iter == depend_tensor_map.end()) {
-      MS_LOG(EXCEPTION) << "Input index " << index << " should less than depend_tensor_map' size "
+      MS_LOG(EXCEPTION) << "Input index " << index << " should be less than depend_tensor_map' size "
                         << input_names_attr.size();
     }
     auto depend_name = input_names_attr[index];
@@ -246,7 +250,7 @@ void OpTilingCalculateAdapter::InitOpIoName(const CNodePtr &node) {
     MS_EXCEPTION_IF_NULL(item);
     if (item->param_type() == PARAM_DYNAMIC) {
       if (dynamic_input_index > dynamic_inputs_list.size()) {
-        MS_LOG(EXCEPTION) << "Dynamic input index should less than the dynamic input's size.";
+        MS_LOG(EXCEPTION) << "Dynamic input index should be less than the dynamic input's size.";
       }
       auto real_inputs_num = dynamic_inputs_list[dynamic_input_index];
       for (auto k = 0; k < real_inputs_num; k++) {
@@ -267,7 +271,7 @@ void OpTilingCalculateAdapter::InitOpIoName(const CNodePtr &node) {
   }
 }
 
-ge::NodePtr OpTilingCalculateAdapter::AnfNodeToGeNodeAdapter(
+ge::Operator OpTilingCalculateAdapter::AnfNodeToGeNodeAdapter(
   const CNodePtr &node, ge::ComputeGraphPtr *ge_graph, const std::map<uint32_t, tensor::TensorPtr> &depend_tensor_map,
   const std::string &op_compile_info) {
   MS_EXCEPTION_IF_NULL(node);
@@ -287,7 +291,8 @@ ge::NodePtr OpTilingCalculateAdapter::AnfNodeToGeNodeAdapter(
   auto ge_node = (*ge_graph)->AddNode(op_desc);
   MS_EXCEPTION_IF_NULL(ge_node);
   AddEdge(ge_node, constant_ops);
-  return ge_node;
+  auto op = ge::OpDescUtils::CreateOperatorFromNode(ge_node);
+  return op;
 }
 }  // namespace tiling
 }  // namespace device

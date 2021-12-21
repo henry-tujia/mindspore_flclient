@@ -26,17 +26,23 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameWhere = "Where";
+/// \brief Where defined the operator prototype of selecting values which meet condition.
 class MS_CORE_API Where : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Where() : PrimitiveC(kNameWhere) { InitIOName({"condition"}, {"output"}); }
+
+  /// \brief Destructor.
   ~Where() = default;
+
   MS_DECLARE_PARENT(Where, PrimitiveC);
+
+  /// \brief Method to init the op's attributes
   void Init() {}
 };
 
 AbstractBasePtr WhereInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimWherePtr = std::shared_ptr<Where>;
 }  // namespace ops
 }  // namespace mindspore
 

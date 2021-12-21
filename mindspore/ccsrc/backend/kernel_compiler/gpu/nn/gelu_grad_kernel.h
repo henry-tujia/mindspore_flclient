@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ namespace kernel {
 template <typename T>
 class GeLUGpuGradKernel : public GpuKernel {
  public:
-  GeLUGpuGradKernel() : input_size_(0) {}
+  GeLUGpuGradKernel() : input_size_(0), is_null_input_(false) {}
   ~GeLUGpuGradKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -36,6 +36,9 @@ class GeLUGpuGradKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *dy_addr = GetDeviceAddress<T>(inputs, 0);
     T *x_addr = GetDeviceAddress<T>(inputs, 1);
     T *dx_addr = GetDeviceAddress<T>(outputs, 0);
@@ -45,9 +48,15 @@ class GeLUGpuGradKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     InitResource();
     input_size_ = sizeof(T);
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (auto dim : input_shape) {
       input_size_ *= dim;
     }
@@ -68,6 +77,7 @@ class GeLUGpuGradKernel : public GpuKernel {
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
   size_t input_size_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

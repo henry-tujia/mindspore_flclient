@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "minddata/dataset/engine/datasetops/source/sampler/sequential_sampler.h"
 
 #include <algorithm>
@@ -25,9 +26,10 @@ SequentialSamplerRT::SequentialSamplerRT(int64_t start_index, int64_t num_sample
     : SamplerRT(num_samples, samples_per_tensor), current_id_(start_index), start_index_(start_index), id_count_(0) {}
 
 Status SequentialSamplerRT::GetNextSample(TensorRow *out) {
+  RETURN_UNEXPECTED_IF_NULL(out);
   if (id_count_ > num_samples_) {
     RETURN_STATUS_UNEXPECTED(
-      "Sampler index must be less than or equal to num_samples(total rows in dataset), but got:" +
+      "[Internal ERROR] Sampler index must be less than or equal to num_samples(total rows in dataset), but got:" +
       std::to_string(id_count_) + ", num_samples_: " + std::to_string(num_samples_));
   } else if (id_count_ == num_samples_) {
     (*out) = TensorRow(TensorRow::kFlagEOE);
@@ -134,6 +136,7 @@ void SequentialSamplerRT::SamplerPrint(std::ostream &out, bool show_all) const {
 }
 
 Status SequentialSamplerRT::to_json(nlohmann::json *out_json) {
+  RETURN_UNEXPECTED_IF_NULL(out_json);
   nlohmann::json args;
   RETURN_IF_NOT_OK(SamplerRT::to_json(&args));
   args["sampler_name"] = "SequentialSampler";

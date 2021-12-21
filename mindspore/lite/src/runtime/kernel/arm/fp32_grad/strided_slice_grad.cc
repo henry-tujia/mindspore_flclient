@@ -30,7 +30,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_StridedSliceGrad;
 
 namespace mindspore::kernel {
-int StridedSliceGradCPUKernel::Init() {
+int StridedSliceGradCPUKernel::Prepare() {
   if (!InferShapeDone()) {
     return RET_OK;
   }
@@ -42,16 +42,11 @@ int StridedSliceGradCPUKernel::Init() {
   CHECK_NULL_RETURN(out_tensors_.at(0));
   auto input = in_tensors_.at(0);
   CHECK_NULL_RETURN(input);
-  switch (input->data_type()) {
-    case kNumberTypeFloat32:
-      param_->data_type = kDataTypeFloat;
-      break;
-    default:
-      MS_LOG(ERROR) << "Not supported data type: " << input->data_type();
-      return RET_ERROR;
+  if (input->data_type() != kNumberTypeFloat32) {
+    MS_LOG(ERROR) << "Not supported data type: " << input->data_type();
+    return RET_ERROR;
   }
-  FillEmptyDims();
-  FillOutputDim();
+  param_->data_type = kDataTypeFloat;
   return ReSize();
 }
 
@@ -113,7 +108,11 @@ void StridedSliceGradCPUKernel::FillOutputDim() {
   }
 }
 
-int StridedSliceGradCPUKernel::ReSize() { return RET_OK; }
+int StridedSliceGradCPUKernel::ReSize() {
+  FillEmptyDims();
+  FillOutputDim();
+  return RET_OK;
+}
 
 int StridedSliceGradImpl(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
   CHECK_NULL_RETURN(cdata);

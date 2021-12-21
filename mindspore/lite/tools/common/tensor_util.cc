@@ -14,12 +14,30 @@
  * limitations under the License.
  */
 
+#include "include/ms_tensor.h"
 #include "tools/common/tensor_util.h"
 #include "src/common/utils.h"
 #include "tools/common/graph_util.h"
 #include "abstract/utils.h"
+#include "nnacl/op_base.h"
 
 namespace mindspore::lite {
+namespace {
+constexpr float kInputDataFloatMin = 0.1f;
+constexpr float kInputDataFloatMax = 1.0f;
+constexpr double kInputDataDoubleMin = 0.1;
+constexpr double kInputDataDoubleMax = 1.0;
+constexpr int64_t kInputDataInt64Min = 0;
+constexpr int64_t kInputDataInt64Max = 1;
+constexpr int32_t kInputDataInt32Min = 0;
+constexpr int32_t kInputDataInt32Max = 1;
+constexpr int16_t kInputDataInt16Min = 0;
+constexpr int16_t kInputDataInt16Max = 1;
+constexpr int16_t kInputDataInt8Min = -127;
+constexpr int16_t kInputDataInt8Max = 127;
+constexpr int16_t kInputDataUint8Min = 0;
+constexpr int16_t kInputDataUint8Max = 254;
+}  // namespace
 std::unique_ptr<QuantParamT> GetTensorQuantParam(const std::unique_ptr<TensorT> &tensor) {
   MS_ASSERT(tensor != nullptr);
   auto &quantParams = tensor->quantParams;
@@ -46,10 +64,18 @@ std::unique_ptr<schema::QuantParamT> CopyQuantParamT(const std::unique_ptr<schem
 
 tensor::TensorPtr CreateTensorInfo(const void *data, size_t data_size, const std::vector<int64_t> &shape,
                                    TypeId data_type) {
+  if (data_type == kTypeUnknown) {
+    MS_LOG(ERROR) << "data type of tensor is unknown";
+    return nullptr;
+  }
   tensor::TensorPtr tensor_info = nullptr;
   if (shape.empty() && data_size == mindspore::abstract::TypeIdSize(data_type)) {
     ShapeVector scalar_shape = {1};
     tensor_info = std::make_shared<tensor::Tensor>(data_type, scalar_shape);
+    if (tensor_info == nullptr) {
+      MS_LOG(ERROR) << "new tensor init failed";
+      return nullptr;
+    }
     tensor_info->set_shape({});
   } else {
     tensor_info = std::make_shared<tensor::Tensor>(data_type, shape);
@@ -131,6 +157,7 @@ std::unique_ptr<schema::TensorT> CreateTensorTFromTensorInfo(const tensor::Tenso
     return nullptr;
   }
   auto schema_tensor = std::make_unique<schema::TensorT>();
+  MS_CHECK_TRUE_MSG(schema_tensor != nullptr, nullptr, "schema_tensor is nullptr");
   schema_tensor->name = tensor_name;
   auto ret = UpdateTensorTFromTensorInfo(tensor_info, &schema_tensor);
   if (ret != RET_OK) {
@@ -249,5 +276,66 @@ size_t GetShapeSize(const std::vector<int32_t> &shape) {
     shapeSize *= dim;
   }
   return shapeSize;
+}
+
+int GenerateRandomData(size_t size, void *data, int data_type) {
+  MS_ASSERT(data != nullptr);
+  switch (data_type) {
+    case kNumberTypeFloat32:
+    case kNumberTypeFloat:
+      FillInputData<float>(size, data, std::uniform_real_distribution<float>(kInputDataFloatMin, kInputDataFloatMax));
+      break;
+    case kNumberTypeFloat64:
+      FillInputData<double>(size, data,
+                            std::uniform_real_distribution<double>(kInputDataDoubleMin, kInputDataDoubleMax));
+      break;
+    case kNumberTypeInt64:
+      FillInputData<int64_t>(size, data,
+                             std::uniform_int_distribution<int64_t>(kInputDataInt64Min, kInputDataInt64Max));
+      break;
+    case kNumberTypeInt:
+    case kNumberTypeInt32:
+      FillInputData<int32_t>(size, data,
+                             std::uniform_int_distribution<int32_t>(kInputDataInt32Min, kInputDataInt32Max));
+      break;
+    case kNumberTypeInt16:
+      FillInputData<int16_t>(size, data,
+                             std::uniform_int_distribution<int16_t>(kInputDataInt16Min, kInputDataInt16Max));
+      break;
+    case kNumberTypeInt8:
+      FillInputData<int8_t>(size, data, std::uniform_int_distribution<int16_t>(kInputDataInt8Min, kInputDataInt8Max));
+      break;
+    case kNumberTypeUInt8:
+      FillInputData<uint8_t>(size, data,
+                             std::uniform_int_distribution<uint16_t>(kInputDataUint8Min, kInputDataUint8Max));
+      break;
+    default:
+      char *casted_data = static_cast<char *>(data);
+      for (size_t i = 0; i < size; i++) {
+        casted_data[i] = static_cast<char>(i);
+      }
+  }
+  return RET_OK;
+}
+
+int GenerateRandomData(mindspore::tensor::MSTensor *tensor) {
+  MS_ASSERT(tensor != nullptr);
+  auto input_data = tensor->MutableData();
+  if (input_data == nullptr) {
+    MS_LOG(ERROR) << "MallocData for inTensor failed";
+    return RET_ERROR;
+  }
+  int status;
+  if (tensor->data_type() == kObjectTypeString) {
+    status = StringsToMSTensor({"you're the best."}, tensor);
+  } else {
+    status = GenerateRandomData(tensor->Size(), input_data, static_cast<float>(tensor->data_type()));
+  }
+  if (status != RET_OK) {
+    std::cerr << "GenerateRandomData for inTensor failed: " << status << std::endl;
+    MS_LOG(ERROR) << "GenerateRandomData for inTensor failed:" << status;
+    return status;
+  }
+  return RET_OK;
 }
 }  // namespace mindspore::lite

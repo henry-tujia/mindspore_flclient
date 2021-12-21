@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 
 #include "backend/optimizer/ascend/enhancer/split_inputs_for_reduce_scatter.h"
-#include <string>
 #include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
@@ -30,7 +29,7 @@ std::vector<AnfNodePtr> SplitInputsForReduceScatter::InsertSplitForInput(const F
   for (size_t i = 0; i < inputs_size; i++) {
     std::vector<AnfNodePtr> split_inputs{NewValueNode(std::make_shared<Primitive>(prim::kPrimSplitV->name()))};
     split_inputs.push_back(AnfAlgo::GetInputNode(node, i));
-    auto split = func_graph->NewCNode(split_inputs);
+    auto split = NewCNode(split_inputs, func_graph);
     MS_EXCEPTION_IF_NULL(split);
     std::vector<TypeId> dtypes(rank_size, AnfAlgo::GetPrevNodeOutputInferDataType(node, i));
     std::vector<std::vector<size_t>> shapes;
@@ -42,7 +41,6 @@ std::vector<AnfNodePtr> SplitInputsForReduceScatter::InsertSplitForInput(const F
       size_splits.push_back(output_node_shape[0]);
     }
     AnfAlgo::SetOutputInferTypeAndShape(dtypes, shapes, split.get());
-
     AnfAlgo::SetNodeAttr("split_dim", MakeValue(0L), split);
     AnfAlgo::SetNodeAttr("num_split", MakeValue(rank_size), split);
     AnfAlgo::SetNodeAttr("size_splits", MakeValue(size_splits), split);
@@ -70,10 +68,9 @@ AnfNodePtr SplitInputsForReduceScatter::RearrangeInputsForReduceScatter(const Fu
       reduce_scatter_inputs.push_back(inputs[idx]);
     }
   }
-  auto reduce_scatter = func_graph->NewCNode(reduce_scatter_inputs);
+  auto reduce_scatter = NewCNode(reduce_scatter_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(reduce_scatter);
   reduce_scatter->set_abstract(node->abstract());
-
   AnfAlgo::CopyNodeAttrs(node, reduce_scatter);
   AnfAlgo::SetNodeAttr(kAttrFusion, MakeValue(1L), reduce_scatter);
   kernel_select_->SelectKernel(reduce_scatter);

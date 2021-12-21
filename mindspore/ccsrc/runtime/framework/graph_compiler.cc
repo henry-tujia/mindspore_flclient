@@ -18,7 +18,9 @@
 #include <numeric>
 #include <map>
 #include <utility>
+#include <algorithm>
 #include "runtime/framework/graph_scheduler.h"
+#include "runtime/op_builder/op_lazy_builder.h"
 #include "runtime/device/device_address.h"
 #include "common/trans.h"
 #include "utils/convert_utils.h"
@@ -47,7 +49,7 @@ bool NodeDeviceAddressExist(const DeviceContext *device_context, const AnfNodePt
   MS_EXCEPTION_IF_NULL(kernel);
   MS_EXCEPTION_IF_NULL(device_context);
   if (AnfAlgo::OutputAddrExist(kernel, index)) {
-    const auto &address = AnfAlgo::GetOutputAddr(kernel, index);
+    const auto &address = AnfAlgo::GetOutputAddr(kernel, index, false);
     MS_EXCEPTION_IF_NULL(address);
     return address->DeviceType() == device_context->GetDeviceAddressType();
   }
@@ -98,6 +100,7 @@ void CreateParameterDeviceAddress(const DeviceContext *device_context, const Ker
       size_t tensor_size = AnfAlgo::GetOutputTensorMemSize(item, index);
       auto device_address = device_context->CreateDeviceAddress(nullptr, tensor_size,
                                                                 AnfAlgo::GetOutputFormat(item, index), output_type_id);
+      device_address->set_from_persistent_mem(item->isa<Parameter>());
       MS_LOG(DEBUG) << "Create addr for node:" << AnfAlgo::GetNodeDebugString(item) << " addr:" << device_address;
       AnfAlgo::SetOutputAddr(device_address, index, item.get());
     }
@@ -141,6 +144,7 @@ void CreateDeviceAddressForTensorValue(const DeviceContext *device_context, cons
       device_context->CreateDeviceAddress(nullptr, tensor_size, output_format, output_type_id);
     MS_LOG(DEBUG) << "Create addr for node:" << AnfAlgo::GetNodeDebugString(value_node) << " addr:" << address;
     MS_EXCEPTION_IF_NULL(address);
+    address->set_from_persistent_mem(true);
     AnfAlgo::SetOutputAddr(address, output_idx++, value_node.get());
   }
 }
@@ -163,6 +167,7 @@ void CreateValueNodeDeviceAddress(const DeviceContext *device_context, const Ker
       size_t tensor_size = value.size();
       auto address = device_context->CreateDeviceAddress(nullptr, tensor_size, kOpFormat_DEFAULT, kNumberTypeUInt8);
       MS_EXCEPTION_IF_NULL(address);
+      address->set_from_persistent_mem(true);
       MS_LOG(DEBUG) << "Create addr for node:" << AnfAlgo::GetNodeDebugString(value_node) << " addr:" << address;
 
       AnfAlgo::SetOutputAddr(address, 0, value_node.get());
@@ -170,7 +175,8 @@ void CreateValueNodeDeviceAddress(const DeviceContext *device_context, const Ker
   }
 }
 
-void CreateKernelOutputDeviceAddress(const DeviceContext *device_context, const KernelGraphPtr &graph) {
+void CreateKernelOutputDeviceAddress(const DeviceContext *device_context, const KernelGraphPtr &graph,
+                                     bool is_gradient_out) {
   MS_EXCEPTION_IF_NULL(device_context);
   MS_EXCEPTION_IF_NULL(graph);
   const std::vector<CNodePtr> &kernels = graph->execution_order();
@@ -179,17 +185,20 @@ void CreateKernelOutputDeviceAddress(const DeviceContext *device_context, const 
     if (AnfAlgo::IsControlOpExecInBackend(kernel)) {
       continue;
     }
-    auto kernel_mod = AnfAlgo::GetKernelMod(kernel);
-    MS_EXCEPTION_IF_NULL(kernel_mod);
-    auto output_sizes = kernel_mod->GetOutputSizeList();
-    for (size_t i = 0; i < output_sizes.size(); ++i) {
+
+    auto output_size = AnfAlgo::GetOutputAddressNum(kernel);
+    for (size_t i = 0; i < output_size; ++i) {
       if (AnfAlgo::OutputAddrExist(kernel, i)) {
         continue;
       }
-
-      std::string output_format = AnfAlgo::GetOutputFormat(kernel, i);
+      auto output_format = AnfAlgo::GetOutputFormat(kernel, i);
       auto output_type = AnfAlgo::GetOutputDeviceDataType(kernel, i);
-      auto device_address = device_context->CreateDeviceAddress(nullptr, output_sizes[i], output_format, output_type);
+      auto address_size = AnfAlgo::GetOutputTensorMemSize(kernel, i);
+      auto device_address = device_context->CreateDeviceAddress(nullptr, address_size, output_format, output_type);
+      device_address->set_host_shape(trans::GetRuntimePaddingShape(kernel, i));
+      if (is_gradient_out) {
+        device_address->set_from_persistent_mem(true);
+      }
       MS_LOG(DEBUG) << "Create addr for node:" << AnfAlgo::GetNodeDebugString(kernel) << " addr:" << device_address;
       AnfAlgo::SetOutputAddr(device_address, i, kernel.get());
     }
@@ -260,7 +269,42 @@ void UpdateDeviceAddressForInplaceNode(const KernelGraphPtr &graph) {
   }
 }
 
+void UpdateDeviceAddressForRefNode(const KernelGraphPtr &graph) {
+  MS_EXCEPTION_IF_NULL(graph);
+  auto &kernels = graph->execution_order();
+  for (auto &kernel : kernels) {
+    MS_EXCEPTION_IF_NULL(kernel);
+    auto output_num = AnfAlgo::GetOutputTensorNum(kernel);
+    if (output_num == 0) {
+      MS_LOG(DEBUG) << "This kernel has no output size.";
+      continue;
+    }
+    for (size_t i = 0; i < output_num; ++i) {
+      session::AnfWithOutIndex out_pair(kernel, i);
+      if (graph->IsInRefOutputMap(out_pair)) {
+        auto origin_pair = graph->GetRefCorrespondOutput(out_pair);
+        MS_EXCEPTION_IF_NULL(origin_pair.first);
+        auto origin_node_output_addr = AnfAlgo::GetMutableOutputAddr(origin_pair.first, origin_pair.second);
+        MS_EXCEPTION_IF_NULL(origin_node_output_addr);
+        auto cur_node_output_addr = AnfAlgo::GetMutableOutputAddr(kernel, i);
+        if (origin_node_output_addr.get() != cur_node_output_addr.get()) {
+          MS_LOG(DEBUG) << "REF address is not same, ref node output need address update";
+          MS_LOG(DEBUG) << "REF origin op is " << origin_pair.first->DebugString() << ", output index is "
+                        << origin_pair.second << ", cur op is " << kernel->DebugString() << ", out index is " << i;
+          AnfAlgo::SetOutputAddr(origin_node_output_addr, i, kernel.get());
+          // Update the reference count of device address.
+          cur_node_output_addr->DecreaseOriginalRefCount();
+          cur_node_output_addr->ResetRefCount();
+          origin_node_output_addr->IncreaseOriginalRefCount();
+          origin_node_output_addr->ResetRefCount();
+        }
+      }
+    }
+  }
+}
+
 void SetSummaryNodesRefCount(const KernelGraph *graph) {
+  MS_EXCEPTION_IF_NULL(graph);
   if (!graph->summary_node_exist()) {
     return;
   }
@@ -295,22 +339,75 @@ void UpdateRefCountForGraphOutput(const std::vector<KernelWithIndex> &output_wit
 
 GraphCompilerInfo::~GraphCompilerInfo() { GraphScheduler::GetInstance().Clear(name_, graphs_); }
 
-GraphId GraphCompiler::CompileGraph(const AnfNodePtrList &nodes, const AnfNodePtrList &outputs,
+GraphId GraphCompiler::CompileGraph(const GraphSegmentPtr &segment, const AnfNodePtrList &outputs,
                                     const DeviceContext *device_context) {
   MS_EXCEPTION_IF_NULL(session_);
+  MS_EXCEPTION_IF_NULL(segment);
+  auto nodes = segment->nodes_;
   // Generate kernel graph.
-  KernelGraphPtr graph = session_->ConstructKernelGraph(nodes, outputs);
+  KernelGraphPtr graph = session_->ConstructKernelGraph(nodes, outputs, true, device_context);
   MS_EXCEPTION_IF_NULL(graph);
+  SetGraphDependency(graph, segment);
+
+  // Unify the MindIR, must be before of the graph optimization.
+  device_context->UnifyMindIR(graph);
+
+  // The graph common optimization.
+  graph->UpdateGraphAquireGilAttr();
+  opt::BackendCommonOptimization(graph);
+  graph->SetInputNodes();
+  auto manager = MakeManager({graph});
+  if (manager) {
+    manager->AddFuncGraph(graph);
+    graph->set_manager(manager);
+  }
+  session_->SetInputNodeUsage(graph, manager);
+  graph->SetOptimizerFlag();
+
+  auto graph_id = CompileGraphImpl(graph, device_context);
 
   // Cache the backend graph output nodes to front nodes with output index.
-  for (auto &output : outputs) {
-    auto backend_node = graph->GetBackendAnfByFrontAnf(output);
-    if (backend_node != nullptr) {
-      graph->CacheGraphOutputToFrontNodeWithIndex(backend_node, output);
-    }
+  auto backend_node = graph->output();
+  MS_EXCEPTION_IF_NULL(backend_node);
+  graph->CacheGraphOutputToFrontNodeWithIndex({backend_node}, outputs);
+  graph->set_root_graph_id(graph_id);
+  AnfAlgo::UpdateGraphValidRefPair(graph);
+
+  return graph_id;
+}
+
+GraphId GraphCompiler::CompileGraph(const FuncGraphPtr &func_graph, const DeviceContext *device_context) {
+  MS_EXCEPTION_IF_NULL(session_);
+  MS_EXCEPTION_IF_NULL(func_graph);
+  // Generate kernel graph.
+  std::vector<KernelGraphPtr> all_graphs;
+  KernelGraphPtr root_graph = session_->ConstructKernelGraph(func_graph, &all_graphs);
+  MS_EXCEPTION_IF_NULL(root_graph);
+  for (const auto &graph : all_graphs) {
+    MS_EXCEPTION_IF_NULL(graph);
+    graph->set_root_graph_id(root_graph->graph_id());
   }
 
-  return CompileGraphImpl(graph, device_context);
+  // Unify the MindIR, must be before of the graph optimization.
+  device_context->UnifyMindIR(root_graph);
+
+  // The graph common optimization.
+  opt::BackendCommonOptimization(root_graph);
+
+  auto graph_id = CompileGraphImpl(root_graph, device_context);
+
+  // dump all graphs.
+  device_context->DumpAllGraphs(all_graphs);
+
+  // Cache the backend graph output nodes to front nodes with output index.
+  auto output = func_graph->output();
+  MS_EXCEPTION_IF_NULL(output);
+  auto backend_node = root_graph->output();
+  MS_EXCEPTION_IF_NULL(backend_node);
+  root_graph->CacheGraphOutputToFrontNodeWithIndex({backend_node}, {output});
+  AnfAlgo::UpdateGraphValidRefPair(root_graph);
+
+  return graph_id;
 }
 
 GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const DeviceContext *device_context) const {
@@ -318,6 +415,12 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   MS_EXCEPTION_IF_NULL(device_context);
   const auto &ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
+  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
+    MS_EXCEPTION_IF_NULL(session_);
+    session_->InitAllBucket(graph, device_context);
+    return graph->graph_id();
+  }
+
 #ifdef ENABLE_DUMP_IR
   bool save_graphs = ms_context->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
   // Dump .pb graph before graph optimization.
@@ -326,8 +429,11 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   }
 #endif
 
-  MS_LOG(INFO) << "Get graph outputs before optimizer, graph id: " << graph->graph_id();
-  auto outputs_before_optimizer = AnfAlgo::GetAllOutputWithIndex(graph->output());
+  // Set the graph sink flag.
+  auto is_executing_sink = device_context->IsExecutingSink(graph);
+  auto is_loop_count_sink = device_context->IsLoopCountSink(graph);
+  graph->set_is_executing_sink(is_executing_sink);
+  graph->set_is_loop_count_sink(is_loop_count_sink);
 
   // Execute optimization pass.
   device_context->OptimizeGraph(graph);
@@ -339,22 +445,16 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   // Adjust kernel graph before run graph.
   device_context->PreprocessBeforeRunGraph(graph);
 
-  MS_LOG(INFO) << "Get graph outputs after optimizer, graph id: " << graph->graph_id();
-  auto outputs_after_optimizer = AnfAlgo::GetAllOutputWithIndex(graph->output());
-  // Update the output map of kernel graph by modified output nodes.
-  graph->UpdateGraphOutputMap(outputs_before_optimizer, outputs_after_optimizer);
-
-  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
-    // Create device address for all anf nodes of graph.
-    CreateDeviceAddress(graph, device_context);
-  }
+  // Create device address for all anf nodes of graph.
+  CreateDeviceAddress(graph, device_context, false);
 
   graph->set_is_all_nop_node(opt::IsAllNopNode(graph.get()));
 
   MS_EXCEPTION_IF_NULL(session_);
   session_->InitAllBucket(graph, device_context);
-
+#ifndef ENABLE_SECURITY
   session_->SetSummaryNodes(graph.get());
+#endif
   SetSummaryNodesRefCount(graph.get());
 #ifdef ENABLE_DUMP_IR
   // Dump .pb graph after graph optimization.
@@ -380,17 +480,17 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   (void)mindspore::RDR::RecordGraphExecOrder(SubModuleId::SM_SESSION, exec_order_name, kernels);
 #endif
 
+  device_context->EnableRuntimeCache(graph);
   session_->DumpGraph(graph);
   return graph->graph_id();
 }
 
-GraphId GraphCompiler::CompileGraph(const session::OpRunInfo &op_run_info, const GraphInfo &graph_info,
-                                    const std::vector<int64_t> *tensors_mask,
-                                    std::vector<TensorPtr> *const input_tensors, bool *single_op_cache_hit,
+GraphId GraphCompiler::CompileGraph(const session::OpRunInfo &op_run_info, bool *single_op_cache_hit,
                                     const DeviceContext *device_context) {
   // Check if the graph cache exists.
-  auto iter = run_op_graphs_.find(graph_info);
-  if (iter != run_op_graphs_.end()) {
+  auto iter = run_op_graphs_.find(op_run_info.graph_info);
+  auto &op_lazy_builder = runtime::OpLazyBuilder::GetInstance();
+  if (iter != run_op_graphs_.end() && op_lazy_builder.QueueEmpty()) {
     const auto &graph = iter->second;
     MS_EXCEPTION_IF_NULL(graph);
     *single_op_cache_hit = true;
@@ -399,22 +499,22 @@ GraphId GraphCompiler::CompileGraph(const session::OpRunInfo &op_run_info, const
   *single_op_cache_hit = false;
   // Generate kernel graph.
   MS_EXCEPTION_IF_NULL(session_);
-  KernelGraphPtr graph = session_->ConstructSingleOpGraph(op_run_info, *input_tensors, *tensors_mask);
+  KernelGraphPtr graph =
+    session_->ConstructSingleOpGraph(op_run_info, op_run_info.input_tensors, op_run_info.tensor_mask,
+                                     device_context->GetDeviceAddressType() == device::DeviceAddressType::kAscend);
   MS_EXCEPTION_IF_NULL(graph);
+
+  // session_ is SessionBasic, AscendUnifyMindIR has not been executed.
+  device_context->UnifyMindIR(graph);
 
   MS_EXCEPTION_IF_NULL(device_context);
   device_context->OptimizeSingleOpGraph(graph);
 
-  // Generate 'KernelMod' for kernel in graph.
-  device_context->CreateKernel(graph->execution_order());
-
-  device_context->PreprocessBeforeRunSingleOpGraph(graph);
-
   // Create device address for all anf nodes of graph.
-  CreateDeviceAddress(graph, device_context);
+  CreateDeviceAddressWithoutWorkspace(graph, device_context, op_run_info.is_gradient_out);
 
   graph->set_is_all_nop_node(opt::IsAllNopNode(graph.get()));
-  run_op_graphs_[graph_info] = graph;
+  run_op_graphs_[op_run_info.graph_info] = graph;
 
   auto output_nodes = graph->outputs();
   auto &outputs_with_index = run_op_graph_output_nodes_[graph->graph_id()];
@@ -424,8 +524,26 @@ GraphId GraphCompiler::CompileGraph(const session::OpRunInfo &op_run_info, const
   }
 
   UpdateRefCountForGraphOutput(outputs_with_index);
+  AnfAlgo::UpdateGraphValidRefPair(graph);
 
   return graph->graph_id();
+}
+
+void GraphCompiler::BuildSingleOpGraphs(const std::vector<KernelGraphPtr> &graphs,
+                                        const DeviceContext *device_context) const {
+  MS_EXCEPTION_IF_NULL(device_context);
+  std::vector<CNodePtr> node_to_build;
+  for (const auto &graph : graphs) {
+    const auto &nodes = graph->execution_order();
+    std::copy(nodes.begin(), nodes.end(), std::back_inserter(node_to_build));
+  }
+
+  device_context->CreateKernel(node_to_build);
+
+  for (const auto &graph : graphs) {
+    device_context->PreprocessBeforeRunSingleOpGraph(graph);
+    CreateKernelWorkspaceDeviceAddress(device_context, graph);
+  }
 }
 
 KernelGraphPtr GraphCompiler::Fetch(GraphId graph_id) const {
@@ -442,12 +560,24 @@ KernelGraphPtr GraphCompiler::Fetch(const GraphInfo &graph_info) const {
   return iter->second;
 }
 
-void GraphCompiler::CreateDeviceAddress(const KernelGraphPtr &graph, const DeviceContext *device_context) const {
+void GraphCompiler::CreateDeviceAddress(const KernelGraphPtr &graph, const DeviceContext *device_context,
+                                        bool is_gradient_out) const {
   CreateParameterDeviceAddress(device_context, graph);
   CreateValueNodeDeviceAddress(device_context, graph);
-  CreateKernelOutputDeviceAddress(device_context, graph);
+  CreateKernelOutputDeviceAddress(device_context, graph, is_gradient_out);
   CreateKernelWorkspaceDeviceAddress(device_context, graph);
   UpdateDeviceAddressForInplaceNode(graph);
+  UpdateDeviceAddressForRefNode(graph);
+}
+
+void GraphCompiler::CreateDeviceAddressWithoutWorkspace(const KernelGraphPtr &graph,
+                                                        const DeviceContext *device_context,
+                                                        bool is_gradient_out) const {
+  CreateParameterDeviceAddress(device_context, graph);
+  CreateValueNodeDeviceAddress(device_context, graph);
+  CreateKernelOutputDeviceAddress(device_context, graph, is_gradient_out);
+  UpdateDeviceAddressForInplaceNode(graph);
+  UpdateDeviceAddressForRefNode(graph);
 }
 
 void GraphCompiler::GetParamAndOutputIndex(
@@ -478,23 +608,28 @@ TensorPtr GraphCompiler::GetSingleOpInputTensorByIndex(const CNodePtr &kernel,
                                            input_index);
 }
 
-void GraphCompiler::GetSingleOpRunInfoAndGraphInfo(const CNodePtr &kernel, const std::vector<TensorPtr> &input_tensors,
-                                                   OpRunInfo *const run_info, GraphInfo *const graph_info) {
+void GraphCompiler::GetSingleOpRunInfoAndGraphInfo(const CNodePtr &kernel, const InputTensorInfo &tensor_info,
+                                                   OpRunInfo *run_info, GraphInfo *graph_info,
+                                                   GraphOutputInfo *const graph_output_info) {
   MS_EXCEPTION_IF_NULL(session_);
-  session_->GetSingleOpRunInfo(kernel, run_info);
-  *graph_info = session_->GetSingleOpGraphInfo(kernel, input_tensors);
+  MS_EXCEPTION_IF_NULL(graph_info);
+  *graph_info = session_->GetSingleOpGraphInfo(kernel, tensor_info.input_tensors);
+  *run_info = session_->GetSingleOpRunInfo(kernel, *graph_info, tensor_info, graph_output_info);
 }
 
-void GraphCompiler::CalculateRefCount(const KernelGraphPtr &graph, std::map<KernelWithIndex, size_t> *ref_count) const {
+void GraphCompiler::CalculateRefCount(const KernelGraphPtr &graph, std::map<KernelWithIndex, size_t> *ref_count,
+                                      std::map<AnfNodePtr, size_t> *forward_output_refcount) const {
   MS_EXCEPTION_IF_NULL(session_);
   session_->GetRefCount(graph.get(), ref_count);
+  session_->GetForwardOutputRefCount(graph.get(), forward_output_refcount);
 }
 
 void GraphCompiler::UpdateRefCount(const std::set<KernelWithIndex> &input_kernels_with_index,
                                    std::map<KernelWithIndex, size_t> *ref_count,
+                                   std::map<AnfNodePtr, size_t> *forward_output_refcount,
                                    std::map<KernelWithIndex, tensor::TensorPtr> *op_output_map) const {
   MS_EXCEPTION_IF_NULL(session_);
-  session_->HandleOpInputs(input_kernels_with_index, ref_count, op_output_map);
+  session_->HandleOpInputs(input_kernels_with_index, ref_count, forward_output_refcount, op_output_map);
 }
 
 void GraphCompiler::RecoverGraphOutput(const AnfNodePtr &kernel, const VectorRef &op_outputs,
@@ -525,19 +660,37 @@ const std::vector<KernelWithIndex> &GraphCompiler::GetGraphOutputNodes(GraphId g
 
 void GraphCompiler::RegisterSummaryCallBackFunc(const CallBackFunc &callback) const {
   MS_EXCEPTION_IF_NULL(session_);
+#ifndef ENABLE_SECURITY
   session_->RegisterSummaryCallBackFunc(callback);
+#endif
 }
 
 void GraphCompiler::Summary(const std::vector<KernelGraphPtr> &graphs) const {
   MS_EXCEPTION_IF_NULL(session_);
   for (const auto &graph : graphs) {
+#ifndef ENABLE_SECURITY
     session_->Summary(graph.get());
+#endif
   }
 }
 
 void GraphCompiler::EraseSingleOpCache(const GraphInfo &graph_info, const GraphId &graph_id) {
-  run_op_graphs_.erase(graph_info);
-  run_op_graph_output_nodes_.erase(graph_id);
+  (void)run_op_graphs_.erase(graph_info);
+  (void)run_op_graph_output_nodes_.erase(graph_id);
+}
+
+void GraphCompiler::SetGraphDependency(const KernelGraphPtr &graph, const GraphSegmentPtr &segment) const {
+  MS_EXCEPTION_IF_NULL(graph);
+  MS_EXCEPTION_IF_NULL(segment);
+  segment->graph_id_ = graph->graph_id();
+  for (auto &pre_segment : segment->pre_segments_) {
+    MS_EXCEPTION_IF_NULL(pre_segment);
+    auto pre_graph = Fetch(pre_segment->graph_id_);
+    MS_EXCEPTION_IF_NULL(pre_graph);
+    pre_graph->AddPostGraph(graph);
+    graph->AddPreGraph(pre_graph);
+    MS_LOG(INFO) << "Link graph " << pre_segment->graph_id_ << " to " << graph->graph_id();
+  }
 }
 }  // namespace runtime
 }  // namespace mindspore

@@ -92,7 +92,7 @@ class MindRecordOp : public MappableLeafOp {
 
   // Called first when function is called
   // @return
-  Status LaunchThreadsAndInitOp() override;
+  Status RegisterAndLaunchThreads() override;
 
   /// Overrides base class reset method.  When an operator does a reset, it cleans up any state
   /// info from it's previous execution and then initializes itself so that it can be executed
@@ -128,12 +128,16 @@ class MindRecordOp : public MappableLeafOp {
                        const mindrecord::json &columns_json, const mindrecord::TaskType task_type);
 
   Status LoadTensorRow(row_id_type row_id, TensorRow *row) override {
-    return Status(StatusCode::kMDSyntaxError, "Cannot call this method.");
+    return Status(StatusCode::kMDSyntaxError, "[Internal ERROR] Cannot call this method.");
   }
   // Private function for computing the assignment of the column name map.
   // @return - Status
   Status ComputeColMap() override;
 
+ protected:
+  Status PrepareData() override;
+
+ private:
   std::vector<std::string> dataset_file_;                  // dataset files
   bool load_dataset_;                                      // load dataset from single file or not
   std::vector<std::string> columns_to_load_;               // Columns to load from dataset

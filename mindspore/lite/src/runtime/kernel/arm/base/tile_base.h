@@ -25,10 +25,12 @@ class TileCPUKernel : public InnerKernel {
  public:
   TileCPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
                 const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
-      : InnerKernel(parameter, inputs, outputs, ctx) {}
+      : InnerKernel(parameter, inputs, outputs, ctx) {
+    tile_parameter_ = reinterpret_cast<TileParameter *>(op_parameter_);
+  }
   ~TileCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int SimpleTileImpl(int task_id);

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ constexpr size_t INPUT_NUM = 7;
 template <typename T, typename S>
 class FusedWeightDecayScaleMomentumGpuKernel : public GpuKernel {
  public:
-  FusedWeightDecayScaleMomentumGpuKernel() : element_num_(1) {}
+  FusedWeightDecayScaleMomentumGpuKernel() : element_num_(1), is_null_input_(false) {}
   ~FusedWeightDecayScaleMomentumGpuKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -35,6 +35,9 @@ class FusedWeightDecayScaleMomentumGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
               void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *weight_decay = GetDeviceAddress<T>(inputs, 0);
     T *scale = GetDeviceAddress<T>(inputs, 1);
     T *variable = GetDeviceAddress<T>(inputs, 2);
@@ -48,13 +51,19 @@ class FusedWeightDecayScaleMomentumGpuKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != INPUT_NUM) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but FusedMomentum needs " << INPUT_NUM << " inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be " << INPUT_NUM << ", but got "
+                        << input_num;
     }
 
     auto variable_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    is_null_input_ = CHECK_SHAPE_NULL(variable_shape, kernel_name, "variable");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < variable_shape.size(); i++) {
       element_num_ *= variable_shape[i];
     }
@@ -77,6 +86,7 @@ class FusedWeightDecayScaleMomentumGpuKernel : public GpuKernel {
 
  private:
   size_t element_num_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

@@ -65,7 +65,7 @@ void *ConvolutionDelegateFP16CPUKernel::CopyData(const lite::Tensor *tensor) {
   return copied_data;
 }
 
-int ConvolutionDelegateFP16CPUKernel::Init() {
+int ConvolutionDelegateFP16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   if (!InferShapeDone()) {
@@ -120,6 +120,16 @@ int ConvolutionDelegateFP16CPUKernel::ReSize() {
   auto ret = fp16_conv_kernel_->ReSize();
   set_workspace_size(fp16_conv_kernel_->workspace_size());
   return ret;
+}
+
+bool ConvolutionDelegateFP16CPUKernel::CheckInputsValid() const {
+  // the data type of input and weight must be the same, while the bias data type of int8 convolution is int32.
+  MS_CHECK_TRUE_RET(in_tensors_.size() >= kInputSize1, false);
+  auto input_tensor = in_tensors_.at(kInputIndex);
+  auto weight_tensor = in_tensors_.at(kWeightIndex);
+  MS_CHECK_TRUE_RET(input_tensor != nullptr && weight_tensor != nullptr, false);
+  MS_CHECK_TRUE_RET(input_tensor->data() != nullptr, false);
+  return input_tensor->data_type() == weight_tensor->data_type();
 }
 
 kernel::InnerKernel *CpuConvDwFp16KernelCreator(const std::vector<lite::Tensor *> &inputs,
@@ -179,7 +189,7 @@ kernel::InnerKernel *ConvolutionDelegateFP16CPUKernel::CpuConvFp16KernelSelect(
   kernel->set_name(this->name());
 
   // Once kernel is selected, init func will invoke InitWeightAndBias
-  auto ret = kernel->Init();
+  auto ret = kernel->Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "kernel init failed.";
     delete kernel;

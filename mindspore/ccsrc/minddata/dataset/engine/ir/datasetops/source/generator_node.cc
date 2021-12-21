@@ -16,10 +16,7 @@
 
 #include "minddata/dataset/engine/ir/datasetops/source/generator_node.h"
 
-#include <memory>
-#include <string>
 #include <utility>
-#include <vector>
 
 #include "minddata/dataset/engine/datasetops/repeat_op.h"
 #include "minddata/dataset/engine/datasetops/source/generator_op.h"
@@ -31,30 +28,33 @@ namespace dataset {
 
 GeneratorNode::GeneratorNode(py::function generator_function, const std::vector<std::string> &column_names,
                              const std::vector<DataType> &column_types, int64_t source_len,
-                             std::shared_ptr<SamplerObj> sampler)
+                             std::shared_ptr<SamplerObj> sampler, uint32_t num_parallel_workers)
     : MappableSourceNode(),
       generator_function_(generator_function),
       column_names_(column_names),
       column_types_(column_types),
       reset_ancestor_(nullptr),
       sampler_(std::move(sampler)),
-      source_len_(source_len) {}
+      source_len_(source_len),
+      num_parallel_workers_(num_parallel_workers) {}
 
 GeneratorNode::GeneratorNode(py::function generator_function, const std::shared_ptr<SchemaObj> &schema,
-                             int64_t source_len, std::shared_ptr<SamplerObj> sampler)
+                             int64_t source_len, std::shared_ptr<SamplerObj> sampler, uint32_t num_parallel_workers)
     : MappableSourceNode(),
       generator_function_(generator_function),
       schema_(schema),
       reset_ancestor_(nullptr),
       sampler_(std::move(sampler)),
-      source_len_(source_len) {}
+      source_len_(source_len),
+      num_parallel_workers_(num_parallel_workers) {}
 
 std::shared_ptr<DatasetNode> GeneratorNode::Copy() {
   std::shared_ptr<GeneratorNode> node;
   if (schema_ == nullptr) {
-    node = std::make_shared<GeneratorNode>(generator_function_, column_names_, column_types_, source_len_, sampler_);
+    node = std::make_shared<GeneratorNode>(generator_function_, column_names_, column_types_, source_len_, sampler_,
+                                           num_parallel_workers_);
   } else {
-    node = std::make_shared<GeneratorNode>(generator_function_, schema_, source_len_, sampler_);
+    node = std::make_shared<GeneratorNode>(generator_function_, schema_, source_len_, sampler_, num_parallel_workers_);
   }
   return node;
 }
@@ -83,8 +83,8 @@ Status GeneratorNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_
 
   // GeneratorOp's constructor takes in a prefetch_size, which isn't being set by user nor is it being used by
   // GeneratorOp internally. Here it is given a zero which is the default in generator builder
-  std::shared_ptr<GeneratorOp> op = std::make_shared<GeneratorOp>(generator_function_, column_names_, column_types_, 0,
-                                                                  connector_que_size_, sampler_rt);
+  std::shared_ptr<GeneratorOp> op = std::make_shared<GeneratorOp>(
+    generator_function_, column_names_, column_types_, 0, connector_que_size_, sampler_rt, num_parallel_workers_);
   // set the number of rows from source length
   op->SetNumRows(source_len_);
 
@@ -97,8 +97,8 @@ Status GeneratorNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_
   if (reset_ancestor_ != nullptr) {
     reset_ancestor_->op_->AddToEoeList(op);
   }
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -108,8 +108,7 @@ Status GeneratorNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (source_len_ == 0) {
     std::string err_msg = "GeneratorNode: data row of input source must not be 0, got: " + std::to_string(source_len_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }

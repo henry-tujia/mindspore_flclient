@@ -44,7 +44,6 @@ message AttributeProto {
   optional string ref_attr_name = 15;
   optional AttributeType type = 16;
   repeated AttributeProto values = 17;          // tuple, list,dict of value
-  optional AttributeType type_val = 18;         // type type info
 }
 
 
@@ -76,7 +75,24 @@ message ModelProto {
   optional string doc_string = 6;
   optional GraphProto graph = 7;
   repeated GraphProto functions = 8; // all the graphs without the main graph.
-  optional string preprocessor = 9;  // data graph from MindData. 
+  optional PreprocessorProto preprocessor = 9;  // data graph from MindData.
+  optional bool little_endian = 10; // bytes order in load device.
+  optional ParallelProto parallel = 11; // information for parallel.
+}
+
+
+message PreprocessorProto {
+  repeated PreprocessOpProto op = 1;
+}
+
+
+message PreprocessOpProto {
+  optional string input_columns = 1;
+  optional string output_columns = 2;
+  optional string project_columns = 3;
+  optional string op_type = 4;
+  optional string operations = 5;
+  optional bool offload = 6;
 }
 
 
@@ -88,6 +104,7 @@ message GraphProto {
   repeated ValueInfoProto input = 5;
   repeated ValueInfoProto output = 6;
   optional string bprop_hash = 7;
+  repeated AttributeProto attribute = 8;
 }
 
 
@@ -113,6 +130,13 @@ message TensorProto {
     BFLOAT16 = 16;
     FLOAT64 = 17;
   }
+  message ExternalDataProto {
+  //POSIX filesystem path relative to the directory where the MindIR model was stored.
+    optional string location = 1;
+    optional int64 offset = 2;
+    optional int64 length = 3;
+    optional string checksum= 4;
+  }
   repeated int64 dims = 1;
   optional int32 data_type = 2;
   repeated float float_data = 3;
@@ -124,4 +148,20 @@ message TensorProto {
   optional bytes raw_data = 9;
   repeated double double_data = 10;
   repeated uint64 uint64_data = 11;
+  optional ExternalDataProto external_data = 12;
+  optional string ref_key = 13;
+}
+
+message ParallelProto {
+  repeated LayoutProto layout = 1;
+}
+
+message LayoutProto {
+  optional string name = 1;
+  repeated int64 device_arrangement_int = 2;
+  repeated int64 tensor_map_int = 3;
+  repeated int64 slice_shape_int = 4;
+  optional int64 field_size = 5;
+  optional bool uniform_split = 6;
+  optional string opt_shard_group = 7;
 }

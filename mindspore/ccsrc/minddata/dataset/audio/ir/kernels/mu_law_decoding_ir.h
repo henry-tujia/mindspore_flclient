@@ -31,7 +31,7 @@ constexpr char kMuLawDecodingOperation[] = "MuLawDecoding";
 
 class MuLawDecodingOperation : public TensorOperation {
  public:
-  explicit MuLawDecodingOperation(int quantization_channels);
+  explicit MuLawDecodingOperation(int32_t quantization_channels);
 
   ~MuLawDecodingOperation();
 
@@ -44,7 +44,7 @@ class MuLawDecodingOperation : public TensorOperation {
   Status to_json(nlohmann::json *out_json) override;
 
  private:
-  int quantization_channels_;
+  int32_t quantization_channels_;
 };  // class MuLawDecodingOperation
 
 }  // namespace audio

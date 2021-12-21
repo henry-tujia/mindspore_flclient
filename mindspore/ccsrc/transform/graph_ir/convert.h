@@ -23,13 +23,13 @@
 #include <map>
 #include <set>
 #include <vector>
-#include <unordered_map>
 #include <string>
 #include <utility>
 #include <stack>
 #include <fstream>
 #include <sstream>
 
+#include "utils/hash_map.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
 #include "transform/graph_ir/util.h"
@@ -79,8 +79,7 @@ class DfGraphConvertor {
 #ifndef ENABLE_SECURITY
     std::ofstream fout(name);
     if (!fout.is_open()) {
-      MS_LOG(ERROR) << "Open file '" << name << "' failed!"
-                    << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+      MS_LOG(ERROR) << "Open file '" << name << "' failed!";
       return;
     }
     fout << compute_sout_.str();
@@ -92,8 +91,7 @@ class DfGraphConvertor {
 #ifndef ENABLE_SECURITY
     std::ofstream fout(name);
     if (!fout.is_open()) {
-      MS_LOG(ERROR) << "Open file '" << name << "' failed!"
-                    << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+      MS_LOG(ERROR) << "Open file '" << name << "' failed!";
       return;
     }
     fout << init_sout_.str();
@@ -103,8 +101,7 @@ class DfGraphConvertor {
   void DrawSaveCheckpointGraph(const std::string &name) {
     std::ofstream fout(name);
     if (!fout.is_open()) {
-      MS_LOG(ERROR) << "Open file '" << name << "' failed!"
-                    << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+      MS_LOG(ERROR) << "Open file '" << name << "' failed!";
       return;
     }
     fout << checkpoint_sout_.str();
@@ -143,7 +140,7 @@ class DfGraphConvertor {
   std::ostringstream init_sout_;
   std::ostringstream checkpoint_sout_;
   std::ostringstream restore_checkpoint_sout_;
-  std::unordered_map<AnfNode *, std::string> op_draw_name_;
+  mindspore::HashMap<AnfNode *, std::string> op_draw_name_;
   std::map<std::string, std::string> param_format_;
 
   AnfNodePtr TraceTupleGetItem(const CNodePtr &node, uint64_t *index);
@@ -164,6 +161,7 @@ class DfGraphConvertor {
   void ConvertMakeTuple(const CNodePtr node);
   void ConvertTopK(const CNodePtr node);
   void ConvertReshape(const CNodePtr node);
+  void ConvertConv2D(const CNodePtr node);
   std::vector<int64_t> CastToInt(const ValuePtr &value);
   bool CheckCNode(const std::string &name, const CNodePtr node);
   void TraceOutput(AnfNodePtr node);
@@ -177,6 +175,7 @@ class DfGraphConvertor {
   void BuildSaveCheckpointGraph();
   void DrawCNode(const CNodePtr node, const OpAdapterPtr adpt);
   void UpdateDataOpDesc(const AnfNodePtr &it, const OperatorPtr &op) const;
+  void UpdateConstOpDesc(const AnfNodePtr &it, const OperatorPtr &op) const;
   void AddGraphConstInput(const OperatorPtr &op);
   OperatorPtr ToOperatorPtr(const AnfNodePtr &node);
   bool IsSourceEdgeNode(const AnfNodePtr &node);
@@ -199,17 +198,17 @@ class DfGraphConvertor {
   std::shared_ptr<DfGraph> save_ckp_graph_{nullptr};
   std::shared_ptr<DfGraph> restore_ckp_graph_{nullptr};
   std::shared_ptr<DfGraph> broadcast_graph_{nullptr};
-  std::unordered_map<AnfNode *, DfGraph> branches_map_;
-  std::unordered_map<AnfNode *, OperatorPtr> op_cache_;
-  std::unordered_map<AnfNode *, std::vector<ControlEdge>> control_edge_cache_;
-  std::unordered_map<AnfNodePtr, std::set<AnfNodePtr>> monad_control_edge_cache_;
+  mindspore::HashMap<AnfNode *, DfGraph> branches_map_;
+  mindspore::HashMap<AnfNode *, OperatorPtr> op_cache_;
+  mindspore::HashMap<AnfNode *, std::vector<ControlEdge>> control_edge_cache_;
+  mindspore::HashMap<AnfNodePtr, std::set<AnfNodePtr>> monad_control_edge_cache_;
   /* record "tuple_getitem"<->"out_handler" mapping */
-  std::unordered_map<AnfNode *, OutHandler> out_handle_cache_;
+  mindspore::HashMap<AnfNode *, OutHandler> out_handle_cache_;
   /* record "make_tuple"<->"out_handler vector" mapping */
-  std::unordered_map<AnfNode *, std::shared_ptr<std::vector<OutHandler>>> tuple_out_handle_cache_;
-  std::unordered_map<AnfNode *, std::shared_ptr<std::vector<AnfNodePtr>>> case_input_handle_cache_;
-  std::unordered_map<std::string, AnfNodePtr> params_;
-  std::unordered_map<std::string, OperatorPtr> vars_;
+  mindspore::HashMap<AnfNode *, std::shared_ptr<std::vector<OutHandler>>> tuple_out_handle_cache_;
+  mindspore::HashMap<AnfNode *, std::shared_ptr<std::vector<AnfNodePtr>>> case_input_handle_cache_;
+  mindspore::HashMap<std::string, AnfNodePtr> params_;
+  mindspore::HashMap<std::string, OperatorPtr> vars_;
   std::vector<std::pair<ge::Operator, std::string>> graph_outputs_;
   std::vector<OperatorPtr> graph_const_inputs_;
   std::vector<OperatorPtr> init_ops_;

@@ -20,6 +20,14 @@
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kUniformIntInputsNum = 3;
+constexpr size_t kUniformRealInputsNum = 1;
+constexpr size_t kUniformIntOutputsNum = 1;
+constexpr size_t kUniformRealOutputsNum = 1;
+constexpr size_t kStandardNormalOutputsNum = 1;
+constexpr char kKernelName[] = "Random";
+}  // namespace
 void StandardNormal(float *output, std::normal_distribution<float> distribution,
                     std::default_random_engine random_generator, size_t start, size_t end) {
   for (size_t i = start; i < end; i++) {
@@ -27,55 +35,29 @@ void StandardNormal(float *output, std::normal_distribution<float> distribution,
   }
 }
 
-void LaunchStandardNormal(unsigned int seed, const std::vector<AddressPtr> &outputs) {
+void LaunchStandardNormal(RandomCPUKernel *content, unsigned int seed, const std::vector<AddressPtr> &outputs) {
   auto output = reinterpret_cast<float *>(outputs[0]->addr);
   // multithreading
   size_t lens = outputs[0]->size / sizeof(float);
-  auto max_thread_num = std::thread::hardware_concurrency();
-  size_t thread_num = lens < 128 * max_thread_num ? std::ceil(lens / 128.0) : max_thread_num;
-  if (thread_num < 1) {
-    MS_LOG(ERROR) << "Invalid value: thread_num " << thread_num;
-    return;
-  }
-  std::vector<std::thread> threads;
-  threads.reserve(thread_num);
-  size_t start = 0;
-  size_t once_compute_size = (lens + thread_num - 1) / thread_num;
-  if (once_compute_size < 1) {
-    MS_LOG(ERROR) << "Invalid value: once_compute_size " << once_compute_size;
-    return;
-  }
-  std::normal_distribution<float> distribution;
-  while (start < lens) {
-    // avoid different threads using the same seed to generate the same random number
+  auto task = [&seed, &output](size_t start, size_t end) {
+    std::normal_distribution<float> distribution;
     std::default_random_engine random_generator(++seed);
-    size_t end = (start + once_compute_size) > lens ? lens : (start + once_compute_size);
-    (void)threads.emplace_back(std::thread(StandardNormal, output, distribution, random_generator, start, end));
-    start += once_compute_size;
-  }
-  for (size_t i = 0; i < threads.size(); ++i) {
-    threads[i].join();
-  }
+    StandardNormal(output, distribution, random_generator, start, end);
+  };
+  ParallelLaunchAutoSearch(task, lens, content, &content->parallel_search_info_);
 }
 
 void LaunchUniformInt(unsigned int seed, const std::vector<AddressPtr> &inputs,
                       const std::vector<AddressPtr> &outputs) {
-  if (inputs.size() != 3) {
-    MS_LOG(EXCEPTION) << "Expect input number 3, actual got input number " << inputs.size();
-  }
-  if (outputs.size() != 1) {
-    MS_LOG(EXCEPTION) << "Expect output number 1, actual got output number " << outputs.size();
-  }
   // Init min/max values.
   int min_val = reinterpret_cast<int *>(inputs[1]->addr)[0];
   int max_val = reinterpret_cast<int *>(inputs[2]->addr)[0];
   if (max_val <= min_val) {
-    MS_LOG(EXCEPTION) << "Invalid min/max values: (" << min_val << "/" << max_val << ")";
+    MS_LOG(EXCEPTION) << "For '" << kKernelName << "', invalid min/max values: (" << min_val << "/" << max_val << ")";
   }
 
   // Init output address.
   auto output = reinterpret_cast<int *>(outputs[0]->addr);
-  MS_EXCEPTION_IF_NULL(output);
 
   // Init sample number.
   size_t num_sample = outputs[0]->size / sizeof(int);
@@ -90,17 +72,9 @@ void LaunchUniformInt(unsigned int seed, const std::vector<AddressPtr> &inputs,
   }
 }
 
-void LaunchUniformReal(unsigned int seed, const std::vector<AddressPtr> &inputs,
-                       const std::vector<AddressPtr> &outputs) {
-  if (inputs.size() != 1) {
-    MS_LOG(EXCEPTION) << "Expect input number 1, actual got input number " << inputs.size();
-  }
-  if (outputs.size() != 1) {
-    MS_LOG(EXCEPTION) << "Expect output number 1, actual got output number " << outputs.size();
-  }
+void LaunchUniformReal(unsigned int seed, const std::vector<AddressPtr> &, const std::vector<AddressPtr> &outputs) {
   // Init output address.
   auto output = reinterpret_cast<float *>(outputs[0]->addr);
-  MS_EXCEPTION_IF_NULL(output);
 
   // Init sample number.
   size_t num_sample = outputs[0]->size / sizeof(int);
@@ -111,32 +85,24 @@ void LaunchUniformReal(unsigned int seed, const std::vector<AddressPtr> &inputs,
 
   // Generate random real values.
   for (size_t i = 0; i < num_sample; ++i) {
-    output[i] = distrib(gen);
+    output[i] = static_cast<float>(distrib(gen));
   }
 }
 
 void RandomCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  std::string kernel_name = AnfAlgo::GetCNodeName(kernel_node);
-  auto iter = kRandomOpTypeMap.find(kernel_name);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
+  auto iter = kRandomOpTypeMap.find(kernel_name_);
   if (iter == kRandomOpTypeMap.end()) {
-    MS_LOG(EXCEPTION) << "Random operation " << kernel_name << " is not supported.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', random operation is not supported.";
   } else {
     random_op_type_ = iter->second;
   }
 
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if ((random_op_type_ == RANDOM_OP_NORMAL) && input_num != 1) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but random op needs 1 input.";
-  }
-
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but random op needs 1 output.";
-  }
-
-  seed_ = LongToInt(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed")));
-  seed2_ = LongToInt(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed2")));
+  auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+  MS_EXCEPTION_IF_NULL(prim);
+  seed_ = LongToInt(GetValue<int64_t>(prim->GetAttr("seed")));
+  seed2_ = LongToInt(GetValue<int64_t>(prim->GetAttr("seed2")));
 }
 
 bool RandomCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &,
@@ -152,13 +118,18 @@ bool RandomCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, cons
   }
 
   if (random_op_type_ == RANDOM_OP_NORMAL) {
-    LaunchStandardNormal(RNG_seed, outputs);
+    CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kStandardNormalOutputsNum, kernel_name_);
+    LaunchStandardNormal(this, RNG_seed, outputs);
   } else if (random_op_type_ == RANDOM_OP_UNIFORM_INT) {
+    CHECK_KERNEL_INPUTS_NUM(inputs.size(), kUniformIntInputsNum, kernel_name_);
+    CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kUniformIntOutputsNum, kernel_name_);
     LaunchUniformInt(RNG_seed, inputs, outputs);
   } else if (random_op_type_ == RANDOM_OP_UNIFORM_REAL) {
+    CHECK_KERNEL_INPUTS_NUM(inputs.size(), kUniformRealInputsNum, kernel_name_);
+    CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kUniformRealOutputsNum, kernel_name_);
     LaunchUniformReal(RNG_seed, inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Random operation " << random_op_type_ << " is not supported.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', random operation " << random_op_type_ << " is not supported.";
   }
   return true;
 }

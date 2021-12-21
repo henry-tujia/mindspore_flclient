@@ -18,6 +18,8 @@
 #include <string>
 #include "backend/optimizer/common/optimizer.h"
 #include "backend/optimizer/pass/convert_const_input_to_attr.h"
+#include "backend/optimizer/pass/custom_op_const_input_to_attr.h"
+#include "backend/optimizer/pass/custom_op_reg_info_to_attr.h"
 #include "backend/optimizer/pass/convert_tuple_output_to_maketuple.h"
 #include "backend/optimizer/pass/convert_const_input_to_tensor_input.h"
 #include "backend/optimizer/pass/convert_tuple_input_to_dynamic_input.h"
@@ -27,14 +29,18 @@
 #include "backend/optimizer/pass/add_training_attr.h"
 #include "backend/optimizer/pass/optimize_updatestate.h"
 #include "backend/optimizer/pass/conv_transpose_to_conv_bp.h"
+#include "backend/optimizer/pass/reduce_sum_optimizer.h"
+#include "backend/optimizer/pass/add_dynamic_shape_attr.h"
+#include "backend/optimizer/pass/add_akg_kernel_attrs.h"
+#include "backend/optimizer/pass/sparse_process.h"
 #include "utils/ms_context.h"
 #include "debug/anf_ir_dump.h"
 
 namespace mindspore {
 namespace opt {
 void BackendCommonOptimization(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
+  MS_LOG(INFO) << "Status record: start common optimization. graph id: " << kernel_graph->graph_id();
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  MS_LOG(INFO) << "start common opt graph:" << kernel_graph->graph_id();
 #ifdef ENABLE_DUMP_IR
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
@@ -46,7 +52,11 @@ void BackendCommonOptimization(const std::shared_ptr<session::KernelGraph> &kern
 #endif
   auto optimizer = std::make_shared<GraphOptimizer>();
   auto common_pm = std::make_shared<PassManager>("common_pm");
+  common_pm->AddPass(std::make_shared<AddDynamicShapeAttr>());
+  common_pm->AddPass(std::make_shared<ReduceSumOptimizer>());
   common_pm->AddPass(std::make_shared<ConvertConstInputToAttr>());
+  common_pm->AddPass(std::make_shared<CustomOpConstInputToAttr>());
+  common_pm->AddPass(std::make_shared<SparseProcess>());
   common_pm->AddPass(std::make_shared<ConvertAttrToUnifyMindIR>());
   common_pm->AddPass(std::make_shared<ConstToAttrStridedSliceGradPass>());
   common_pm->AddPass(std::make_shared<ConvertConstInputToTensorInput>());
@@ -63,6 +73,7 @@ void BackendCommonOptimization(const std::shared_ptr<session::KernelGraph> &kern
     DumpIR(file_name, kernel_graph);
   }
 #endif
+  MS_LOG(INFO) << "Status record: end common optimization. graph id: " << kernel_graph->graph_id();
 }
 
 void CommonFinalOptimization(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
@@ -71,6 +82,7 @@ void CommonFinalOptimization(const std::shared_ptr<session::KernelGraph> &kernel
   auto optimizer = std::make_shared<GraphOptimizer>();
   auto pm = std::make_shared<PassManager>("final_opt");
   pm->AddPass(std::make_shared<OptimizeUpdateState>());
+  pm->AddPass(std::make_shared<AddAkgKernelAttrs>());
   optimizer->AddPassManager(pm);
   (void)optimizer->Optimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
@@ -86,7 +98,7 @@ void CommonFinalOptimization(const std::shared_ptr<session::KernelGraph> &kernel
 #endif
 }
 
-void CommonUnifyMindIROptimization(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
+void CommonUnifyMindIR(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   MS_LOG(INFO) << "start common unify mindir opt graph:" << kernel_graph->graph_id();
 #ifdef ENABLE_DUMP_IR
@@ -102,6 +114,7 @@ void CommonUnifyMindIROptimization(const std::shared_ptr<session::KernelGraph> &
   auto opt = std::make_shared<GraphOptimizer>();
   auto pm = std::make_shared<PassManager>("common_unify_mindir_pm");
   pm->AddPass(std::make_shared<ConvTransposeToConvBackpropInputPass>());
+  pm->AddPass(std::make_shared<CustomOpRegInfoToAttr>());
   opt->AddPassManager(pm);
   (void)opt->Optimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
@@ -112,5 +125,14 @@ void CommonUnifyMindIROptimization(const std::shared_ptr<session::KernelGraph> &
   }
 #endif
 }
+
+void AddDynamicShapeAttrPass(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
+  auto opt = std::make_shared<GraphOptimizer>();
+  auto pm = std::make_shared<PassManager>("add_dynamic_shape_attr");
+  pm->AddPass(std::make_shared<AddDynamicShapeAttr>());
+  opt->AddPassManager(pm);
+  (void)opt->Optimize(kernel_graph);
+}
+
 }  // namespace opt
 }  // namespace mindspore

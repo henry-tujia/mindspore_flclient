@@ -16,8 +16,6 @@
 
 #include "runtime/device/ascend/ascend_bucket.h"
 
-#include <vector>
-#include <memory>
 #include "runtime/mem.h"
 #include "external/hccl/hccl.h"
 #include "runtime/device/ascend/ascend_memory_pool.h"
@@ -44,6 +42,7 @@ void AscendBucket::AllocateAllReduceAddr() {
     MS_EXCEPTION_IF_NULL(tensor);
     tensor_type_list_.emplace_back(tensor->data_type());
     DeviceAddressPtr device_address = std::dynamic_pointer_cast<DeviceAddress>(tensor->device_address());
+    MS_EXCEPTION_IF_NULL(device_address);
     auto origin_size = device_address->GetSize();
     auto align_size = MemoryManager::GetCommonAlignSize(origin_size);
     origin_size_list.emplace_back(origin_size);
@@ -63,6 +62,10 @@ void AscendBucket::AllocateAllReduceAddr() {
 
   // generate memecpy output addr
   uint8_t *memcpy_output = ar_input_addr_;
+  if (origin_size_list.size() < bucket_size_ || align_size_list_.size() < bucket_size_) {
+    MS_LOG(EXCEPTION) << "Invalid bucket_size_:" << bucket_size_ << " origin_size_list.size:" << origin_size_list.size()
+                      << " align_size_list.size:" << align_size_list_.size();
+  }
   for (size_t i = 0; i < bucket_size_; ++i) {
     memcpy_output_addrs_.emplace_back(std::make_shared<kernel::Address>(memcpy_output, origin_size_list[i]));
     memcpy_output += align_size_list_[i];
@@ -95,19 +98,25 @@ void AscendBucket::FreeAllDeviceMem() {
 void AscendBucket::CopyTensorToContiguousMemory() {
   // clear allreduce input addr
   CleanAllReduceInputAddr();
+  if (memcpy_input_addrs_.size() < bucket_size_ || memcpy_output_addrs_.size() < bucket_size_) {
+    MS_LOG(EXCEPTION) << "Invalid bucket_size_:" << bucket_size_
+                      << " memcpy_input_addr_.size:" << memcpy_input_addrs_.size()
+                      << " memcpy_output_addr_.size:" << memcpy_output_addrs_.size();
+  }
   for (size_t i = 0; i < bucket_size_; ++i) {
     MS_EXCEPTION_IF_NULL(memcpy_input_addrs_[i]);
     MS_EXCEPTION_IF_NULL(memcpy_output_addrs_[i]);
     MS_LOG(DEBUG) << "MemcpyAsync dst size:" << memcpy_output_addrs_[i]->size
                   << " src size:" << memcpy_input_addrs_[i]->size;
     if (memcpy_output_addrs_[i]->size < memcpy_input_addrs_[i]->size) {
-      MS_LOG(EXCEPTION) << "rtMemcpyAsync dst size < src size";
+      MS_LOG(EXCEPTION) << "aclrtMemcpyAsync dst size < src size";
     }
 
-    auto ret = rtMemcpyAsync(memcpy_output_addrs_[i]->addr, memcpy_output_addrs_[i]->size, memcpy_input_addrs_[i]->addr,
-                             memcpy_input_addrs_[i]->size, RT_MEMCPY_DEVICE_TO_DEVICE, compute_stream_);
+    auto ret =
+      aclrtMemcpyAsync(memcpy_output_addrs_[i]->addr, memcpy_output_addrs_[i]->size, memcpy_input_addrs_[i]->addr,
+                       memcpy_input_addrs_[i]->size, ACL_MEMCPY_DEVICE_TO_DEVICE, compute_stream_);
     if (ret != RT_ERROR_NONE) {
-      MS_LOG(EXCEPTION) << "Call rtMemcpyAsync failed, error code:" << ret;
+      MS_LOG(EXCEPTION) << "Call aclrtMemcpyAsync failed, error code:" << ret;
     }
   }
 }

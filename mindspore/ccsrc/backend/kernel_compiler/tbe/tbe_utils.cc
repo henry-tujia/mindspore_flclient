@@ -39,6 +39,7 @@
 #include "securec/include/securec.h"
 #include "utils/json_operation_utils.h"
 #include "mindspore/ccsrc/debug/common.h"
+#include "backend/kernel_compiler/common_utils.h"
 
 namespace mindspore {
 namespace kernel {
@@ -57,7 +58,6 @@ constexpr auto kJOpTuneList = "op_tune_list";
 constexpr auto kJPassList = "pass_list";
 constexpr auto kRankID = "RANK_ID";
 constexpr auto kCOMPILER_OP_LEVEL = "MS_COMPILER_OP_LEVEL";
-constexpr auto kCOMPILER_CACHE_PATH = "MS_COMPILER_CACHE_PATH";
 
 uintptr_t KernelManager::kernel_stub_gen_ = 0;
 std::unordered_map<string, KernelMetaPtr> KernelManager::info_table_ = {};
@@ -80,7 +80,7 @@ std::string TbeUtils::GetBankPath() {
       save_path = real_path;
       return save_path;
     }
-    MS_LOG(EXCEPTION) << "Invalid environment variable 'TUNE_BANK_PATH', the path is " << save_path
+    MS_LOG(EXCEPTION) << "Invalid environment variable '" << kTUNE_BANK_PATH << "', the path is " << save_path
                       << ". Please check (1) whether the path exists, (2) whether the path has the access "
                          "permission, (3) whether the path is too long. ";
   }
@@ -96,7 +96,7 @@ std::string TbeUtils::GetTuneDumpPath() {
       save_path = real_path;
       return save_path;
     }
-    MS_LOG(EXCEPTION) << "Invalid environment variable 'TUNE_DUMP_PATH', the path is " << save_path
+    MS_LOG(EXCEPTION) << "Invalid environment variable '" << kTUNE_DUMP_PATH << "', the path is " << save_path
                       << ". Please check (1) whether the path exists, (2) whether the path has the access "
                          "permission, (3) whether the path is too long. ";
   }
@@ -108,44 +108,18 @@ std::string TbeUtils::GetOpDebugPath() {
   if (debug_path != "") {
     return debug_path;
   }
-  auto old_build = common::GetEnv("MS_OLD_BUILD_PROCESS");
-  std::string config_path;
-  if (!Common::CommonFuncForConfigPath("./", common::GetEnv(kCOMPILER_CACHE_PATH), &config_path)) {
-    MS_LOG(EXCEPTION) << "Invalid environment variable 'MS_COMPILER_CACHE_PATH', the path is "
-                      << common::GetEnv(kCOMPILER_CACHE_PATH)
-                      << ". Please check (1) whether the path exists, (2) whether the path has the access "
-                         "permission, (3) whether the path is too long. ";
-  }
-  if (!old_build.empty()) {
-    if (config_path[config_path.length() - 1] == '/') {
-      debug_path = config_path;
-    } else {
-      debug_path = config_path + "/";
-    }
-    return debug_path;
-  } else {
-    std::string rank_id_str = common::GetEnv(kRankID);
-    if (rank_id_str.empty()) {
-      MS_LOG(DEBUG) << "Using the default value: 0";
-      rank_id_str = "0";
-    }
-    if (config_path[config_path.length() - 1] == '/') {
-      debug_path = config_path + "rank_" + rank_id_str + "/";
-    } else {
-      debug_path = config_path + "/" + "rank_" + rank_id_str + "/";
-    }
-    return debug_path;
-  }
+  debug_path = Common::GetCompilerCachePath();
+  return debug_path;
 }
 
 std::string GetOpDebugLevel() {
-  const std::set<std::string> exp = {"0", "1"};
+  const std::set<std::string> exp = {"0", "1", "2", "3", "4"};
   std::string op_debug_level = "0";
   auto env_level = common::GetEnv(kCOMPILER_OP_LEVEL);
   if (!env_level.empty()) {
     if (exp.find(env_level) == exp.end()) {
-      MS_LOG(WARNING) << "Invalid MS_COMPILER_OP_LEVEL env:" << env_level
-                      << ", the value should be 0 or 1, now using the default value 0";
+      MS_LOG(WARNING) << "Invalid environment variable '" << kCOMPILER_OP_LEVEL << "': " << env_level
+                      << ", the value should be in {0, 1, 2, 3, 4}, now using the default value 0";
     } else {
       op_debug_level = env_level;
     }
@@ -195,9 +169,11 @@ nlohmann::json TbeUtils::GenSocInfo() {
 void TbeUtils::SaveJsonInfo(const std::string &json_name, const std::string &info) {
   auto config_path = TbeUtils::GetOpDebugPath();
   std::string path = config_path + kCceKernelMeta + json_name + kInfoSuffix;
-  auto realpath = Common::GetRealPath(path);
+  auto realpath = Common::CreatePrefixPath(path);
   if (!realpath.has_value()) {
-    MS_LOG(WARNING) << "Get real path failed, invalid path: " << realpath.value();
+    MS_LOG(WARNING) << "Invalid environment variable '" << kCOMPILER_CACHE_PATH
+                    << "', the path is: " << realpath.value() << ". Please check (1) whether the path exists, "
+                    << "(2) whether the path has the access permission, (3) whether the path is too long. ";
     return;
   }
   ChangeFileMode(realpath.value(), S_IWUSR);
@@ -219,10 +195,24 @@ void TbeUtils::LoadCache() {
     auto config_path = TbeUtils::GetOpDebugPath();
     auto path = config_path + kCceKernelMeta;
     if (!bin_map->ReadIndex(path)) {
-      MS_LOG(INFO) << "Cache initialize failed[" << path << "]";
+      MS_LOG(INFO) << "Tbe Cache initialize failed[" << path << "]";
+    }
+    auto akg_config_path = GetCompilerCachePath();
+    auto akg_path = akg_config_path + kAkgKernelMeta;
+    if (!bin_map->ReadIndex(akg_path)) {
+      MS_LOG(INFO) << "Akg Cache initialize failed[" << akg_path << "]";
     }
     has_load = true;
   }
+}
+
+void TbeUtils::UpdateCache(const std::string &kernel_name) {
+  KernelMeta *bin_map = KernelMeta::GetInstance();
+  if (bin_map == nullptr) {
+    MS_LOG(INFO) << "kernel cache is invalid.";
+    return;
+  }
+  return bin_map->UpdateCache(kernel_name);
 }
 
 KernelPackPtr TbeUtils::SearchCache(const std::string &kernel_name, const bool is_akg) {
@@ -245,10 +235,13 @@ KernelPackPtr TbeUtils::InsertCache(const std::string &kernel_name, const std::s
 
 int KernelManager::BinaryRegister(const mindspore::kernel::FlexArray &kernel_buffer, void **module, const string &magic,
                                   const bool dynamic_flag) {
-  static std::map<string, uint32_t> magic_maps = {{"RT_DEV_BINARY_MAGIC_ELF", RT_DEV_BINARY_MAGIC_ELF},
-                                                  {"RT_DEV_BINARY_MAGIC_PLAIN", RT_DEV_BINARY_MAGIC_PLAIN},
+  static std::map<string, uint32_t> magic_maps = {{"RT_DEV_BINARY_MAGIC_PLAIN", RT_DEV_BINARY_MAGIC_PLAIN},
                                                   {"RT_DEV_BINARY_MAGIC_PLAIN_AICPU", RT_DEV_BINARY_MAGIC_PLAIN_AICPU},
-                                                  {"RT_DEV_BINARY_MAGIC_ELF_AICPU", RT_DEV_BINARY_MAGIC_ELF_AICPU}};
+                                                  {"RT_DEV_BINARY_MAGIC_PLAIN_AIVEC", RT_DEV_BINARY_MAGIC_PLAIN_AIVEC},
+                                                  {"RT_DEV_BINARY_MAGIC_ELF", RT_DEV_BINARY_MAGIC_ELF},
+                                                  {"RT_DEV_BINARY_MAGIC_ELF_AICPU", RT_DEV_BINARY_MAGIC_ELF_AICPU},
+                                                  {"RT_DEV_BINARY_MAGIC_ELF_AIVEC", RT_DEV_BINARY_MAGIC_ELF_AIVEC},
+                                                  {"RT_DEV_BINARY_MAGIC_ELF_AICUBE", RT_DEV_BINARY_MAGIC_ELF_AICUBE}};
   // object for device register.
   rtDevBinary_t dev_bin;
   dev_bin.data = kernel_buffer.contents;
@@ -271,6 +264,7 @@ int KernelManager::BinaryRegister(const mindspore::kernel::FlexArray &kernel_buf
 uintptr_t KernelManager::GenFuncStub(const mindspore::kernel::KernelPack &kernel_pack, bool force_reload,
                                      uint32_t *block_dim, const bool dynamic_flag, void **handle,
                                      std::string *origin_key) {
+  MS_EXCEPTION_IF_NULL(block_dim);
   auto kernel = kernel_pack.GetKernel();
   if (kernel == nullptr) {
     MS_LOG(EXCEPTION) << "Invalid kernel pack, json or kernel is nullptr.";
@@ -354,6 +348,10 @@ bool KernelMeta::ReadIndex(const std::string &bin_dir) {
     if (suffix != kJsonSuffix) {
       continue;
     }
+    if (cce_json.rfind("_loc") != std::string::npos || cce_json.rfind("_compute") != std::string::npos) {
+      // op debug file no need load into cache
+      continue;
+    }
     auto sp = cce_json.rfind('/');
     if (sp != std::string::npos) {
       continue;
@@ -366,6 +364,7 @@ bool KernelMeta::ReadIndex(const std::string &bin_dir) {
     (void)bin_dir_tmp.append("/");
     (void)bin_dir_tmp.append(cce_json);
     kernel_index_map_[kernel_name] = bin_dir_tmp;
+    UpdateCache(kernel_name);
   }
   (void)closedir(dir);
 
@@ -387,7 +386,7 @@ void TbeUtils::GetCompileInfo(const AnfNodePtr &node, std::string *compile_info,
   auto config_path = TbeUtils::GetOpDebugPath();
   std::string path = config_path + kCceKernelMeta + json_name + kJsonSuffix;
   if (path.size() > PATH_MAX) {
-    MS_LOG(WARNING) << "File path: " << path << "is too long.";
+    MS_LOG(WARNING) << "File path length should be smaller than " << PATH_MAX << ", but got " << path;
     *get_flag = false;
     return;
   }
@@ -413,7 +412,7 @@ void TbeUtils::SaveCompileInfo(const std::string &json_name, const std::string &
   auto config_path = TbeUtils::GetOpDebugPath();
   std::string path = config_path + kCceKernelMeta + json_name + kJsonSuffix;
   if (path.size() > PATH_MAX) {
-    MS_LOG(WARNING) << "File path: " << path << "is too long.";
+    MS_LOG(WARNING) << "File path length should be smaller than " << PATH_MAX << ", but got " << path;
     *save_flag = false;
     return;
   }
@@ -490,17 +489,48 @@ std::string TbeUtils::GetSocVersion() {
   return version;
 }
 
+KernelPackPtr KernelMeta::LoadFromFile(const std::string &kernel_name) {
+  auto config_path = TbeUtils::GetOpDebugPath();
+  std::string cce_json = config_path + kCceKernelMeta + kernel_name + kJsonSuffix;
+  auto ret = std::make_shared<KernelPack>();
+  if (!ret->LoadKernelMeta(cce_json)) {
+    MS_LOG(INFO) << "Read cache json and bin file failed[" << cce_json << "]";
+    return nullptr;
+  }
+  return ret;
+}
+
+KernelPackPtr KernelMeta::SearchInFile(const std::string &kernel_name) {
+  auto ret = LoadFromFile(kernel_name);
+  if (ret != nullptr) {
+    kernel_pack_map_[kernel_name] = ret;
+  }
+  return ret;
+}
+
+void KernelMeta::UpdateCache(const std::string &kernel_name) {
+  auto kernel_pack_iter = kernel_pack_map_.find(kernel_name);
+  if (kernel_pack_iter != kernel_pack_map_.end()) {
+    // cache exists, skip
+    MS_LOG(DEBUG) << "Kernel pack already exist, skip. Kernel name:" << kernel_name;
+    return;
+  }
+  auto ret = LoadFromFile(kernel_name);
+  if (ret != nullptr) {
+    kernel_pack_map_[kernel_name] = ret;
+  }
+}
+
 KernelPackPtr KernelMeta::GetKernelPack(const std::string &kernel_name, const bool is_akg) {
   KernelPackPtr ret = nullptr;
   // 1. pack has been created
   auto kernel_pack_iter = kernel_pack_map_.find(kernel_name);
   if (kernel_pack_iter != kernel_pack_map_.end()) {
     ret = kernel_pack_iter->second;
-  } else {
+  }
+  if (is_akg) {
     // 2. kernel file has been create, but pack does not been created.
-    auto config_path = TbeUtils::GetOpDebugPath();
-    std::string cce_json = is_akg ? ("./kernel_meta/" + kernel_name + kJsonSuffix)
-                                  : (config_path + kCceKernelMeta + kernel_name + kJsonSuffix);
+    std::string cce_json = GetCompilerCachePath() + kAkgKernelMeta + kernel_name + kJsonSuffix;
     ret = std::make_shared<KernelPack>();
     if (!ret->LoadKernelMeta(cce_json)) {
       MS_LOG(INFO) << "Read cache json and bin file failed[" << cce_json << "]";

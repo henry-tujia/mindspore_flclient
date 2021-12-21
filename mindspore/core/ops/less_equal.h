@@ -26,17 +26,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameLessEqual = "LessEqual";
+/// \brief Computes the boolean value of \f$x<=y\f$ element-wise.
+/// Refer to Python API @ref mindspore.ops.LessEqual for more details.
 class MS_CORE_API LessEqual : public PrimitiveC {
  public:
+  /// \brief Constructor.
   LessEqual() : PrimitiveC(kNameLessEqual) { InitIOName({"x", "y"}, {"output"}); }
+  /// \brief Destructor.
   ~LessEqual() = default;
   MS_DECLARE_PARENT(LessEqual, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.LessEqual for the inputs.
   void Init() {}
 };
 
 AbstractBasePtr LessEqualInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                const std::vector<AbstractBasePtr> &input_args);
-using PrimLessEqualPtr = std::shared_ptr<LessEqual>;
 }  // namespace ops
 }  // namespace mindspore
 

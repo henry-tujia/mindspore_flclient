@@ -18,20 +18,30 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include "src/common/log_adapter.h"
 
 namespace mindspore {
 namespace registry {
 namespace {
+constexpr size_t kOpNumLimit = 10000;
 std::map<converter::FmkType, std::map<std::string, converter::NodeParserPtr>> node_parser_room;
 std::mutex node_mutex;
 }  // namespace
-NodeParserRegistry::NodeParserRegistry(converter::FmkType fmk_type, const std::string &node_type,
+NodeParserRegistry::NodeParserRegistry(converter::FmkType fmk_type, const std::vector<char> &node_type,
                                        const converter::NodeParserPtr &node_parser) {
   std::unique_lock<std::mutex> lock(node_mutex);
-  node_parser_room[fmk_type][node_type] = node_parser;
+  std::string node_type_str = CharToString(node_type);
+  if (node_parser_room.find(fmk_type) != node_parser_room.end()) {
+    if (node_parser_room[fmk_type].size() == kOpNumLimit) {
+      MS_LOG(WARNING) << "Op's number is up to the limitation, The parser will not be registered.";
+      return;
+    }
+  }
+  node_parser_room[fmk_type][node_type_str] = node_parser;
 }
 
-converter::NodeParserPtr NodeParserRegistry::GetNodeParser(converter::FmkType fmk_type, const std::string &node_type) {
+converter::NodeParserPtr NodeParserRegistry::GetNodeParser(converter::FmkType fmk_type,
+                                                           const std::vector<char> &node_type) {
   auto iter_level1 = node_parser_room.find(fmk_type);
   if (iter_level1 == node_parser_room.end()) {
     return nullptr;
@@ -39,7 +49,7 @@ converter::NodeParserPtr NodeParserRegistry::GetNodeParser(converter::FmkType fm
   if (node_type.empty()) {
     return nullptr;
   }
-  auto iter_level2 = iter_level1->second.find(node_type);
+  auto iter_level2 = iter_level1->second.find(CharToString(node_type));
   if (iter_level2 == iter_level1->second.end()) {
     return nullptr;
   }

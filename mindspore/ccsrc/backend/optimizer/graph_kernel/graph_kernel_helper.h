@@ -21,9 +21,9 @@
 #include <set>
 #include <string>
 #include <tuple>
-#include <unordered_set>
 #include <utility>
 #include <vector>
+#include "utils/hash_set.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
 #include "ir/primitive.h"
@@ -33,34 +33,24 @@
 #include <nlohmann/json.hpp>
 #include "backend/optimizer/graph_kernel/model/lite_graph.h"
 
-namespace mindspore {
-namespace opt {
-using kernel::DumpOption;
-
+namespace mindspore::graphkernel {
 constexpr auto kIsFeatureMapOutput = "IsFeatureMapOutput";
 constexpr auto kIsFeatureMapInputList = "IsFeatureMapInputList";
 constexpr auto kGraphKernelModule = "mindspore._extends.graph_kernel";
 constexpr auto kGraphKernelEstimateOps = "estimate_ops";
-constexpr auto kGraphKernelGetNodeCalAmount = "estimate_calulation_amount";
+constexpr auto kGraphKernelGetNodeCalAmount = "estimate_calculation_amount";
 constexpr auto kGraphKernelSplitFunc = "split_with_json";
 constexpr auto kGetGraphKernelOpExpander = "get_op_expander";
 constexpr auto kJsonKeyMultiGraph = "multi_graph";
 constexpr auto kJsonKeyGraphDesc = "graph_desc";
 constexpr auto kJsonKeyGraphMode = "graph_mode";
-constexpr auto kAllTarget = "ALL";
 
-constexpr auto kGraphKernelDumpPath = "graph_kernel_dump";
-inline const PrimitivePtr kPrimUnPadAkg = std::make_shared<Primitive>("UnPadAkg");
-inline const PrimitivePtr kPrimPadAkg = std::make_shared<Primitive>("PadAkg");
 struct DataInfo {
   std::string format{kOpFormat_DEFAULT};
   ShapeVector shape{1};
   TypePtr type{nullptr};
 };
 
-bool ConvertNonscalarTensorToParameter(const FuncGraphPtr &fg, AnfNodePtrList *inputs_ptr);
-std::tuple<FuncGraphPtr, AnfNodePtrList, AnfNodePtrList> MixedNodesTransToGraph(const AnfNodePtrList &fuse_nodes,
-                                                                                AnfNodePtrList *src_outputs = nullptr);
 void SetNewKernelInfo(const AnfNodePtr &new_node, const FuncGraphPtr &fg, const AnfNodePtrList &inputs,
                       const AnfNodePtrList &outputs);
 kernel::KernelBuildInfoPtr BuildSelectKernelBuildInfo(const std::vector<std::string> &inputs_format,
@@ -71,19 +61,11 @@ kernel::KernelBuildInfoPtr BuildSelectKernelBuildInfo(const std::vector<std::str
                                                       const std::vector<TypeId> &inputs_type,
                                                       const std::vector<std::string> &output_formats,
                                                       const std::vector<TypeId> &output_types);
-AnfNodePtr CreateNewFuseCNode(const FuncGraphPtr &kernel_graph, const FuncGraphPtr &fg, const AnfNodePtrList &inputs,
-                              const AnfNodePtrList &outputs);
-void ReplaceNewFuseCNode(const FuncGraphPtr &kernel_graph, const AnfNodePtr &new_fuse_cnode,
-                         const AnfNodePtrList &outputs);
-std::tuple<AnfNodePtr, AnfNodePtrList> FuseNodesToSubGraph(const std::vector<AnfNodePtr> &fuse_nodes,
-                                                           const FuncGraphPtr &kernel_graph,
-                                                           const std::string &postfix = "");
 bool AnfToJsonDesc(const AnfNodePtrList &nodes, const DumpOption &dump_option, nlohmann::json *op_desc);
 bool AnfToJsonDesc(const AnfNodePtrList &nodes, const DumpOption &dump_option, nlohmann::json *op_desc,
                    std::map<std::string, AnfNodePtr> *address_node_map);
 bool AnfToJsonDesc(const std::vector<AnfNodePtrList> &graphs, const DumpOption &dump_option, nlohmann::json *op_desc);
 FuncGraphPtr JsonDescToAnf(const std::string &json_desc);
-std::string ExtractGraphKernelName(const AnfNodePtrList &cnodes, const string &prefix = "", const string &postfix = "");
 void ResetKernelInfo(const AnfNodePtr &node, KernelType kernel_type = KernelType::UNKNOWN_KERNEL_TYPE);
 
 std::string GetFormat(const AnfNodePtr &node);
@@ -95,9 +77,6 @@ std::vector<int64_t> GetReduceAxis(const AnfNodePtr &node);
 CNodePtr CreateCNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &func_graph, const DataInfo &out_info,
                      bool use_fake_abstract = false);
 void SetNodeAttrSafely(const std::string &key, const ValuePtr &value, const AnfNodePtr &node);
-bool IsKeepBasicNode(const AnfNodePtr &node);
-void OpListFilter(std::vector<PrimitivePtr> *ops, const std::vector<std::string> &enable_ops_only,
-                  const std::vector<std::string> &enable_ops, const std::vector<std::string> &disable_ops);
 template <typename T>
 ValueNodePtr CreateScalarTensorValueNode(const DataInfo &info, T value, size_t data_length) {
   // Create tensor value.
@@ -117,7 +96,7 @@ ValueNodePtr CreateScalarTensorValueNode(const DataInfo &info, T value, size_t d
   MS_EXCEPTION_IF_NULL(data_ptr);
   auto ret_code = memcpy_s(data_ptr, static_cast<size_t>(tensor->data().nbytes()), &value, data_length);
   if (ret_code != 0) {
-    MS_LOG(EXCEPTION) << "Failed to copy data into scalar tensor.";
+    MS_LOG(EXCEPTION) << "Failed to copy data into scalar tensor, memcpy_s errorno: " << ret_code;
   }
 
   // Create value node.
@@ -137,14 +116,12 @@ ValueNodePtr CreateScalarTensorValueNode(const DataInfo &info, T value, size_t d
 AbstractBasePtr GetOutputAbstract(const AnfNodePtr &node, size_t output_idx);
 
 // functions to graphkernel model
-graphkernel::LiteGraphPtr AnfGraph2LiteGraph(const FuncGraphPtr &func_graph);
-FuncGraphPtr LiteGraph2AnfGraph(const graphkernel::LiteGraphPtr &lite_graph, AnfNodePtrList *outputs = nullptr);
+inner::LiteGraphPtr AnfGraph2LiteGraph(const FuncGraphPtr &func_graph);
+FuncGraphPtr LiteGraph2AnfGraph(const inner::LiteGraphPtr &lite_graph, AnfNodePtrList *outputs = nullptr);
 
-// remove parameter which is not used
-void EliminateRedundantParameters(const FuncGraphPtr &func_graph, AnfNodePtrList *inputs);
+// return a func_graph's manager
+FuncGraphManagerPtr GetFuncGraphManager(const FuncGraphPtr &func_graph);
 
-std::vector<PrimitivePtr> GetValidOps(
-  const std::vector<std::tuple<std::string, unsigned int, PrimitivePtr>> &ops_with_level, unsigned int level);
-}  // namespace opt
-}  // namespace mindspore
+void UpdateMng(const FuncGraphManagerPtr &mng, const FuncGraphPtr &func_graph);
+}  // namespace mindspore::graphkernel
 #endif  // MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_GRAPH_KERNEL_HELPER_H_

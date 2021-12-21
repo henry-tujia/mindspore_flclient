@@ -27,7 +27,7 @@ ModelInfer::ModelInfer(const Buffer &om_data, const AclModelOptions &options)
       context_(nullptr),
       om_data_(om_data),
       options_(options),
-      model_process_(),
+      model_process_(options),
       acl_env_(nullptr) {}
 
 STATUS ModelInfer::Init() {
@@ -82,13 +82,13 @@ STATUS ModelInfer::Finalize() {
     MS_LOG(ERROR) << "Set the ascend device context failed.";
     return lite::RET_ERROR;
   }
-
-  int ret = model_process_.UnLoad();
-  if (ret != lite::RET_OK) {
-    MS_LOG(ERROR) << "Unload model inner failed.";
-    return ret;
+  if (load_flag_) {
+    auto ret = model_process_.UnLoad();
+    if (ret != lite::RET_OK) {
+      MS_LOG(ERROR) << "Unload model inner failed.";
+      return ret;
+    }
   }
-
   if (context_ != nullptr) {
     rt_ret = aclrtDestroyContext(context_);
     if (rt_ret != ACL_ERROR_NONE) {
@@ -159,5 +159,10 @@ STATUS ModelInfer::Inference(const std::vector<mindspore::MSTensor> &inputs,
 
   return model_process_.PredictFromHost(inputs, outputs);
 }
+
+std::set<uint64_t> ModelInfer::GetDynamicBatch() { return model_process_.GetDynamicBatch(); }
+
+// need to be called after model load;
+std::set<std::pair<uint64_t, uint64_t>> ModelInfer::GetDynamicImage() { return model_process_.GetDynamicImage(); }
 }  // namespace acl
 }  // namespace mindspore::kernel

@@ -425,8 +425,13 @@ def test_generator_14():
     # and cause core dump and blocking in this UT. Add cleanup() here to fix it.
     it._cleanup()  # pylint: disable=W0212
 
+    # Reduce memory needed by reducing queue size
+    prefetch_original = ds.config.get_prefetch_size()
+    ds.config.set_prefetch_size(1)
+
     source = [(np.array([x]),) for x in range(256)]
-    ds1 = ds.GeneratorDataset(source, ["data"], sampler=ds.SequentialSampler(), num_parallel_workers=4).repeat(2)
+    ds1 = ds.GeneratorDataset(source, ["data"], sampler=ds.SequentialSampler(),
+                              num_parallel_workers=4, max_rowsize=1).repeat(2)
     i = 0
     for data in ds1.create_dict_iterator(num_epochs=1, output_numpy=True):  # each data is a dictionary
         golden = np.array([i])
@@ -435,6 +440,7 @@ def test_generator_14():
         if i == 256:
             i = 0
 
+    ds.config.set_prefetch_size(prefetch_original)
 
 def test_generator_15():
     """
@@ -442,9 +448,14 @@ def test_generator_15():
     """
     logger.info("Test 1D Generator MP : 0 - 63")
 
+    ## Reduce memory needed by reducing queue size
+    prefetch_original = ds.config.get_prefetch_size()
+    ds.config.set_prefetch_size(1)
+
     sampler = [x for x in range(256)]
     source = [(np.array([x]),) for x in range(256)]
-    ds1 = ds.GeneratorDataset(source, ["data"], sampler=sampler, num_parallel_workers=4).repeat(2)
+    ds1 = ds.GeneratorDataset(source, ["data"], sampler=sampler,
+                              num_parallel_workers=4, max_rowsize=1).repeat(1)
     i = 0
     for data in ds1.create_dict_iterator(num_epochs=1, output_numpy=True):  # each data is a dictionary
         golden = np.array([i])
@@ -453,6 +464,7 @@ def test_generator_15():
         if i == 256:
             i = 0
 
+    ds.config.set_prefetch_size(prefetch_original)
 
 def test_generator_16():
     """
@@ -499,6 +511,10 @@ def test_generator_18():
     """
     logger.info("Test map column order when input_columns is None.")
 
+    # Reduce shm usage by disabling this optimization
+    mem_original = ds.config.get_enable_shared_mem()
+    ds.config.set_enable_shared_mem(False)
+
     # apply dataset operations
     data1 = ds.GeneratorDataset(generator_mc(2048), ["col0", "col1"], python_multiprocessing=True)
     data1 = data1.map(operations=(lambda x: (x * 5)), output_columns=["out0"], num_parallel_workers=2,
@@ -520,6 +536,7 @@ def test_generator_18():
         golden = np.array([i * 5])
         np.testing.assert_array_equal(item["out0"], golden)
 
+    ds.config.set_enable_shared_mem(mem_original)
 
 def test_generator_19():
     """
@@ -621,7 +638,7 @@ def test_generator_error_2():
         for _ in data1:
             pass
     print("========", str(info.value))
-    assert "Generator should return a tuple of NumPy arrays" in str(info.value)
+    assert "'GeneratorDataset' should return a tuple of NumPy arrays" in str(info.value)
 
 
 def test_generator_error_3():
@@ -646,7 +663,8 @@ def test_generator_error_4():
 
         for _ in data1:
             pass
-    assert "Unexpected error. Result of a tensorOp doesn't match output column names" in str(info.value)
+    assert "the number of columns returned in 'map' operations should match the number of 'output_columns'"\
+           in str(info.value)
 
 
 def test_generator_sequential_sampler():
@@ -898,13 +916,46 @@ def test_func_generator_dataset_005():
     column_names = ["col1", "col2"]
     dataset = ds.GeneratorDataset(MyData(result), column_names)
     i = 0
-    for data in dataset.create_dict_iterator(output_numpy=True):
+    for data in dataset.create_dict_iterator(num_epochs=1, output_numpy=True):
         assert "col1" in str(data.keys())
         assert (data["col1"] == result[0]).all()
         assert (data["col2"] == result[1]).all()
         i += 1
     assert i == 2
 
+def test_func_generator_dataset_with_zip_source():
+    """
+    Feature: verify the source is zip
+    Description: the source input is zip
+    Expectation: success
+    """
+    def synthetic_data(w, b, num_examples):
+        """生成 y = Xw + b + 噪声。"""
+        X = np.random.normal(0, 1, (num_examples, len(w)))
+        y = np.matmul(X, w) + b
+        y += np.random.normal(0, 0.01, y.shape)
+        return X.astype(np.float32), y.reshape((-1, 1)).astype(np.float32)
+
+    true_w = np.array([2, -3.4])
+    true_b = 4.2
+    features, labels = synthetic_data(true_w, true_b, 10)
+
+    def load_array(data_arrays, column_names, batch_size, is_train=True):
+        """构造一个MindSpore数据迭代器。"""
+        dataset = ds.GeneratorDataset(data_arrays, column_names, shuffle=is_train)
+        dataset = dataset.batch(batch_size)
+        return dataset
+
+    batch_size = 2
+    dataset = load_array(zip(features, labels), ['features', 'labels'], batch_size)
+
+    count = 0
+    epochs = 10
+    dataset_iter = dataset.create_dict_iterator(num_epochs=epochs, output_numpy=True)
+    for _ in range(epochs):
+        for _ in dataset_iter:
+            count += 1
+    assert count == 50
 
 if __name__ == "__main__":
     test_generator_0()
@@ -945,3 +996,4 @@ if __name__ == "__main__":
     test_generator_dataset_size_5()
     test_explicit_deepcopy()
     test_func_generator_dataset_005()
+    test_func_generator_dataset_with_zip_source()

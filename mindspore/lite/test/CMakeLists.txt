@@ -12,6 +12,10 @@ if(MSLITE_ENABLE_V0)
     add_definitions(-DENABLE_V0)
 endif()
 
+if(MSLITE_ENABLE_RUNTIME_CONVERT)
+    add_definitions(-DRUNTIME_CONVERT)
+endif()
+
 file(GLOB_RECURSE TEST_UT_SRC
         ${TEST_DIR}/main.cc
         ${TEST_DIR}/common/common_test.cc
@@ -20,16 +24,24 @@ file(GLOB_RECURSE TEST_UT_SRC
         ${TEST_DIR}/ut/src/scheduler_test.cc
         ${TEST_DIR}/ut/src/registry/registry_test.cc
         ${TEST_DIR}/ut/src/registry/registry_custom_op_test.cc
-        ${TEST_DIR}/ut/src/runtime/runtime_pass_tests.cc
         ${TEST_DIR}/st/multiple_device_test.cc
         ${TEST_DIR}/st/mindrt_parallel_runtime_test.cc
         ${TEST_DIR}/st/mix_data_type_test.cc
         ${TEST_DIR}/ut/nnacl/infer/*.cc
         ${TEST_DIR}/ut/src/runtime/kernel/arm/common/*.cc
         ${TEST_DIR}/ut/src/runtime/kernel/arm/fp32/*.cc
-        ${TEST_DIR}/ut/src/runtime/kernel/arm/int8/*.cc
         ${TEST_DIR}/ut/src/runtime/kernel/arm/string/*.cc
+        ${TEST_DIR}/ut/src/api/context_c_test.cc
+        ${TEST_DIR}/ut/src/api/tensor_c_test.cc
         )
+
+if(MSLITE_ENABLE_RUNTIME_CONVERT)
+    list(APPEND TEST_UT_SRC ${TEST_DIR}/ut/src/runtime/runtime_convert_tests.cc)
+endif()
+
+if(MSLITE_ENABLE_RUNTIME_PASS)
+    list(APPEND TEST_UT_SRC ${TEST_DIR}/ut/src/runtime/runtime_pass_tests.cc)
+endif()
 
 if(MSLITE_ENABLE_TRAIN)
     file(GLOB_RECURSE TEST_TRAIN_UT_SRC
@@ -39,12 +51,29 @@ if(MSLITE_ENABLE_TRAIN)
     list(APPEND TEST_UT_SRC ${TEST_TRAIN_UT_SRC})
 endif()
 
-if(MSLITE_GPU_BACKEND STREQUAL opencl)
-    file(GLOB_RECURSE TEST_GPU_UT_SRC
-            ${TEST_DIR}/ut/src/runtime/kernel/opencl/*.cc
-            ${TEST_DIR}/ut/src/registry/registry_gpu_custom_op_test.cc
+if(MSLITE_ENABLE_SPARSE_COMPUTE)
+    file(GLOB_RECURSE SPARSE_KERNEL_UT
+            ${TEST_DIR}/ut/src/runtime/kernel/arm/fp32-sparsity/*.cc
             )
-    list(APPEND TEST_UT_SRC ${TEST_GPU_UT_SRC})
+    list(APPEND TEST_UT_SRC ${SPARSE_KERNEL_UT})
+endif()
+
+if(MSLITE_GPU_BACKEND STREQUAL opencl)
+    if(PLATFORM_ARM)
+        file(GLOB_RECURSE TEST_GPU_UT_SRC
+                ${TEST_DIR}/ut/src/runtime/kernel/opencl/*.cc
+                ${TEST_DIR}/ut/src/registry/registry_gpu_custom_op_test.cc
+                )
+        list(APPEND TEST_UT_SRC ${TEST_GPU_UT_SRC})
+    endif()
+endif()
+
+if(MSLITE_ENABLE_INT8)
+    file(GLOB_RECURSE TEST_INT8_UT_SRC
+            ${TEST_DIR}/ut/src/runtime/kernel/arm/int8/*.cc
+            ${TEST_DIR}/ut/nnacl/int8/*.cc
+            )
+    list(APPEND TEST_UT_SRC ${TEST_INT8_UT_SRC})
 endif()
 
 if(MSLITE_ENABLE_FP16)
@@ -69,6 +98,7 @@ if(MSLITE_ENABLE_CONVERTER)
                 ${LITE_DIR}/tools/benchmark/run_benchmark.cc
                 ${LITE_DIR}/tools/benchmark/benchmark_base.cc
                 ${LITE_DIR}/tools/benchmark/benchmark_unified_api.cc
+                ${LITE_DIR}/tools/benchmark/benchmark_c_api.cc
                 ${LITE_DIR}/tools/benchmark/benchmark.cc
                 )
     endif()
@@ -83,6 +113,10 @@ if(MSLITE_ENABLE_CONVERTER)
             ${TEST_DIR}/st/graph_test.cc
             ${TEST_DIR}/st/sub_graph_test.cc
             ${TEST_DIR}/ut/src/dynamic_library_loader_test.cc
+            ${TEST_DIR}/ut/tools/optimizer/fusion/fusion_inout_test/fusion_inout_test.cc
+            ${TEST_DIR}/ut/tools/optimizer/fusion/fusion_inout_test/conv_fusion_inout_test.cc
+            ${TEST_DIR}/ut/tools/optimizer/fusion/fusion_inout_test/conv_act_fusion_inout_test.cc
+            ${TEST_DIR}/ut/tools/optimizer/fusion/fusion_inout_test/conv_bias_fusion_inout_test.cc
             ${TEST_DIR}/ut/tools/optimizer/fusion/conv_biasadd_fusion_test.cc
             ${TEST_DIR}/ut/tools/optimizer/fusion/conv_bn_fusion_test.cc
             ${TEST_DIR}/ut/tools/optimizer/fusion/conv_scale_fusion_test.cc
@@ -97,6 +131,7 @@ if(MSLITE_ENABLE_CONVERTER)
         ${LITE_DIR}/src/ops/ops_utils.cc
         ${LITE_DIR}/src/ops/ops_def.cc
         ${LITE_DIR}/src/tensor.cc
+        ${LITE_DIR}/src/schema_tensor_wrapper.cc
         )
 endif()
 
@@ -109,6 +144,13 @@ add_executable(lite-test ${TEST_SRC})
 add_dependencies(lite-test fbs_src fbs_inner_src)
 
 target_link_libraries(lite-test mindspore-lite dl mindspore::gtest)
+
+# test file using gmock
+target_link_libraries(lite-test mindspore::gmock)
+add_library(gmock_tests OBJECT ${TEST_DIR}/st/optimize_allocator_test.cc)
+add_dependencies(gmock_tests fbs_src fbs_inner_src)
+target_compile_options(gmock_tests PRIVATE -fno-rtti)
+target_link_libraries(lite-test gmock_tests)
 
 if(MSLITE_ENABLE_TRAIN)
     target_link_libraries(lite-test mindspore-lite-train minddata-lite)
@@ -134,13 +176,14 @@ if(MSLITE_ENABLE_MINDRT)
 endif()
 
 if(MSLITE_ENABLE_CONVERTER)
+    target_link_libraries(lite-test tflite_parser_mid caffe_parser_mid
+                                    onnx_parser_mid tf_parser_mid)
+endif()
+
+if(MSLITE_ENABLE_CONVERTER AND (NOT MSLITE_ENABLE_RUNTIME_CONVERT))
     target_link_libraries(lite-test
             anf_exporter_mid
             mslite_converter_plugin
-            tflite_parser_mid
-            caffe_parser_mid
-            onnx_parser_mid
-            tf_parser_mid
             graph_pass_mid
             fusion_mid
             quantizer_mid
@@ -148,7 +191,6 @@ if(MSLITE_ENABLE_CONVERTER)
             ccsrc_src_mid
             converter_src_mid
             mindspore::protobuf
-            mindspore::eigen
             mindspore::json
             -Wl,--whole-archive mindspore_core -Wl,--no-whole-archive
             mindspore::glog

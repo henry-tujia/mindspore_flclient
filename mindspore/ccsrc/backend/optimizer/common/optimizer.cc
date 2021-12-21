@@ -15,13 +15,11 @@
  */
 #include "backend/optimizer/common/optimizer.h"
 
-#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <utility>
-#include <initializer_list>
 
 #include "backend/optimizer/common/pass_manager.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -33,7 +31,8 @@ PatternProcessPass::PatternProcessPass(const std::string &name, bool multigraph)
     : NodePass(name),
       multigraph_(multigraph),
       pattern_engine_(PatternEngine(std::make_shared<Visitor>())),
-      primitive_vars_(std::make_shared<PrimitiveVarMap>()) {}
+      primitive_vars_(std::make_shared<PrimitiveVarMap>()),
+      equiv_(std::make_shared<Equiv>()) {}
 
 const BaseRef PatternProcessPass::DefinePattern() const {
   VarPtr X = std::make_shared<Var>();
@@ -42,8 +41,7 @@ const BaseRef PatternProcessPass::DefinePattern() const {
 
 void PatternProcessPass::Build() {
   VarPtr fg = std::make_shared<Var>("RootG");
-  BaseRef pattern = std::move(DefinePattern());
-  pattern_ = SexpToNode(pattern, fg, primitive_vars_.get(), multigraph_);
+  pattern_ = SexpToNode(DefinePattern(), fg, primitive_vars_.get(), multigraph_);
 }
 
 AnfNodePtr PatternProcessPass::Run(const FuncGraphPtr &func_graph, const AnfNodePtr &node) {
@@ -53,9 +51,10 @@ AnfNodePtr PatternProcessPass::Run(const FuncGraphPtr &func_graph, const AnfNode
 
   auto primitive = GetCNodePrimitive(pattern_);
   if (IsPrimitiveCNode(node, primitive)) {
-    auto empty_equiv = std::make_shared<Equiv>();
     MS_EXCEPTION_IF_NULL(primitive_vars_);
-    EquivPtr equiv = pattern_engine_.Match(pattern_, node, *primitive_vars_, empty_equiv);
+    MS_EXCEPTION_IF_NULL(equiv_);
+    equiv_->clear();
+    EquivPtr equiv = pattern_engine_.Match(pattern_, node, *primitive_vars_, equiv_);
     if (equiv != nullptr && !equiv->empty()) {
       return Process(func_graph, node, equiv);
     }
@@ -63,19 +62,60 @@ AnfNodePtr PatternProcessPass::Run(const FuncGraphPtr &func_graph, const AnfNode
   return nullptr;
 }
 
+std::vector<AnfNodePtr> PatternProcessPass::GetOrigNodes() const {
+  std::vector<AnfNodePtr> orig_nodes;
+  for (auto &prim_var : *primitive_vars_) {
+    if (equiv_->find(prim_var.second) == equiv_->end()) {
+      continue;
+    }
+    auto baseref = (*equiv_)[prim_var.second];
+    if (!utils::isa<CNode>(baseref)) {
+      continue;
+    }
+    auto node = utils::cast<AnfNodePtr>(baseref);
+    orig_nodes.push_back(node);
+  }
+  return orig_nodes;
+}
+
+CNodePtr PatternProcessPass::NewCNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &fg) const {
+  MS_EXCEPTION_IF_NULL(fg);
+  auto orig_nodes = GetOrigNodes();
+  return opt::NewCNode(inputs, fg, orig_nodes);
+}
+
+CNodePtr PatternProcessPass::NewCNode(const CNodePtr &cnode, const KernelGraphPtr &fg) const {
+  MS_EXCEPTION_IF_NULL(fg);
+  auto orig_nodes = GetOrigNodes();
+  return opt::NewCNode(cnode, fg, orig_nodes);
+}
+
 bool MultipleOutputPatternProcessPass::MatchAnotherPattern(const AnfNodePtr &node, const EquivPtr &equiv) const {
   MS_EXCEPTION_IF_NULL(node);
   MS_EXCEPTION_IF_NULL(equiv);
   VarPtr fg = std::make_shared<Var>("RootG");
-  auto empty_equiv = std::make_shared<Equiv>();
   MS_EXCEPTION_IF_NULL(child_primitive_vars_);
+  MS_EXCEPTION_IF_NULL(child_equiv_);
   EquivPtr another_equiv =
     child_pattern_engine_.Match(SexpToNode(DefineAnotherPattern(), fg, child_primitive_vars_.get(), true), node,
-                                *child_primitive_vars_, empty_equiv);
+                                *child_primitive_vars_, child_equiv_);
   if (another_equiv != nullptr && !another_equiv->empty()) {
     return IsShareNodes(equiv, another_equiv);
   }
   return false;
+}
+
+std::vector<AnfNodePtr> MultipleOutputPatternProcessPass::GetOrigNodes() const {
+  std::vector<AnfNodePtr> orig_nodes = PatternProcessPass::GetOrigNodes();
+  for (auto &prim_var : *child_primitive_vars_) {
+    auto baseref = (*child_equiv_)[prim_var.second];
+    if (!utils::isa<CNode>(baseref)) {
+      continue;
+    }
+    auto node = utils::cast<AnfNodePtr>(baseref);
+    orig_nodes.push_back(node);
+  }
+  return orig_nodes;
 }
 
 void GraphOptimizer::AddPassManager(const PassManagerPtr &pass_manager) {
@@ -87,7 +127,6 @@ void GraphOptimizer::AddPassManager(const PassManagerPtr &pass_manager) {
 FuncGraphPtr GraphOptimizer::Optimize(const FuncGraphPtr &func_graph, bool run_only_once) {
   MS_EXCEPTION_IF_NULL(func_graph);
   run_only_once_ = (pass_managers_.size() == 1) ? true : run_only_once;
-  // Performance risk by creating new manager each time
   // cppcheck-suppress *
   auto manager = Manage(func_graph, true);
 

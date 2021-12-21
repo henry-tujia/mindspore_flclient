@@ -98,26 +98,6 @@ AbstractBasePtr IntermediateJoin(const AbstractBasePtr &arg1, const AbstractBase
   return nullptr;
 }
 
-std::size_t AnfNodeConfigHasher::operator()(const AnfNodeConfigPtr conf) const {
-  MS_EXCEPTION_IF_NULL(conf);
-  MS_EXCEPTION_IF_NULL(conf->node());
-  std::size_t hash_value = conf->node()->hash();
-  if (!conf->context()->IsDummyContext()) {
-    hash_value = hash_combine(hash_value, std::hash<AnalysisContext *>{}(conf->context().get()));
-  }
-  return hash_value;
-}
-
-bool AnfNodeConfigEqual::operator()(const AnfNodeConfigPtr lhs, const AnfNodeConfigPtr rhs) const {
-  if (lhs == nullptr || rhs == nullptr) {
-    return false;
-  }
-  if (lhs == rhs) {
-    return true;
-  }
-  return (*lhs == *rhs);
-}
-
 AnalysisResult AnalysisEngine::Run(const FuncGraphPtr &func_graph, const AbstractBasePtrList &args_spec_list) {
   StaticAnalysisException::Instance().ClearException();
   AnalysisResult result;
@@ -228,8 +208,10 @@ EvalResultPtr AnalysisEngine::Eval(const AnfNodeConfigPtr &conf) {
     eval_result = EvalCNode(cnode, conf);
     trace::TraceEvalCNodeLeave();
   } else {
-    MS_LOG(EXCEPTION) << "Illegal AnfNode for evaluating, node: " << node->DebugString() << "(" << node->type_name()
-                      << "), fg: " << (node->func_graph() != nullptr ? node->func_graph()->ToString() : "nullgraph");
+    MS_LOG(EXCEPTION) << "Illegal AnfNode for evaluating, node: " << node->DebugString()
+                      << "(type:" << node->type_name()
+                      << "), fg: " << (node->func_graph() != nullptr ? node->func_graph()->ToString() : "nullgraph")
+                      << " conf: " << conf->ToString();
   }
 
 #ifdef DEBUG
@@ -300,7 +282,14 @@ EvalResultPtr AnalysisEngine::EvalCNode(const CNodePtr &cnode, const AnfNodeConf
 
   std::vector<EvaluatorPtr> evaluators;
   auto build_evaluator = [this, &evaluators, &cnode](const AbstractFuncAtomPtr &poss) {
-    auto evaluator = this->GetEvaluatorFor(poss);
+    auto resolved_atom = poss;
+    if (poss->isa<AsyncAbstractFuncAtom>()) {
+      const auto &async_abs_func = poss->cast<AsyncAbstractFuncAtomPtr>();
+      const auto &resolved_func = async_abs_func->GetUnique();
+      resolved_atom = resolved_func->cast<AbstractFuncAtomPtr>();
+      MS_EXCEPTION_IF_NULL(resolved_atom);
+    }
+    auto evaluator = this->GetEvaluatorFor(resolved_atom);
     evaluator->set_bound_node(cnode);
     evaluators.push_back(evaluator);
   };
@@ -469,6 +458,14 @@ EvaluatorPtr AnalysisEngine::_GetEvaluatorFor(const std::shared_ptr<JTransformed
   return jevaluator;
 }
 
+EvaluatorPtr AnalysisEngine::_GetEvaluatorFor(const std::shared_ptr<ShardTransformedAbstractClosure> &func) {
+  MS_EXCEPTION_IF_NULL(func);
+  AbstractFunctionPtr func_orig = func->fn();
+  EvaluatorPtr evaluator_orig = GetEvaluatorFor(func_orig);
+  auto shard_evaluator = std::make_shared<ShardEvaluator>(evaluator_orig, func_orig);
+  return shard_evaluator;
+}
+
 EvaluatorPtr AnalysisEngine::_GetEvaluatorFor(const std::shared_ptr<VirtualAbstractClosure> &func) {
   MS_EXCEPTION_IF_NULL(func);
   std::shared_ptr<VirtualEvaluator> virtual_evaluator =
@@ -506,6 +503,8 @@ EvaluatorPtr AnalysisEngine::_GetEvaluatorFor(const AbstractFunctionPtr &func) {
     return _GetEvaluatorFor(func->cast<std::shared_ptr<MetaFuncGraphAbstractClosure>>());
   } else if (func->isa<JTransformedAbstractClosure>()) {
     return _GetEvaluatorFor(func->cast<std::shared_ptr<JTransformedAbstractClosure>>());
+  } else if (func->isa<ShardTransformedAbstractClosure>()) {
+    return _GetEvaluatorFor(func->cast<std::shared_ptr<ShardTransformedAbstractClosure>>());
   } else if (func->isa<VirtualAbstractClosure>()) {
     return _GetEvaluatorFor(func->cast<std::shared_ptr<VirtualAbstractClosure>>());
   } else if (func->isa<PartialAbstractClosure>()) {
@@ -516,8 +515,6 @@ EvaluatorPtr AnalysisEngine::_GetEvaluatorFor(const AbstractFunctionPtr &func) {
     MS_LOG(EXCEPTION) << "Cannot GetEvaluator from AbstractFuncAtom";
   } else if (func->isa<AbstractFuncUnion>()) {
     MS_LOG(EXCEPTION) << "Cannot GetEvaluator from AbstractFuncUnion";
-  } else if (func->isa<DummyAbstractClosure>()) {
-    MS_LOG(EXCEPTION) << "A dummy function cannot eval";
   } else {
     MS_LOG(EXCEPTION) << "Cannot GetEvaluator from AbstractFunction";
   }
@@ -573,9 +570,9 @@ EvalResultPtr AnalysisEngine::ForwardConfig(const AnfNodeConfigPtr &orig_conf, c
       }
     }
   }
-  forward_count_++;
+  (void)forward_count_++;
   auto res = ObtainEvalResultWithCache(new_conf);
-  forward_count_--;
+  (void)forward_count_--;
   return res;
 }
 
@@ -586,7 +583,7 @@ EvalResultPtr AnalysisEngine::ExecuteEvaluators(const std::vector<EvaluatorPtr> 
     MS_EXCEPTION_IF_NULL(eval);
     return eval->Run(shared_from_this(), args_conf_list, out_conf);
   }
-  static bool enable_singleThread = (common::GetEnv("ENV_SINGLE_EVAL") == "1");
+  static bool enable_singleThread = (common::GetEnv("MS_DEV_SINGLE_EVAL") == "1");
   if (enable_singleThread) {
     return ExecuteMultipleEvaluators(evaluators, out_conf, args_conf_list);
   } else {
@@ -647,7 +644,7 @@ EvaluatorPtr AnalysisEngine::HandleNestedRecursion(const std::vector<EvaluatorPt
 
   bool has_undetermined = false;
   // Check whether sub loop has untraced undetermined evaluator.
-  std::unordered_set<EvaluatorArgs, EvaluatorArgsHasher, EvaluatorArgsEqual> undetermined_evals;
+  mindspore::HashSet<EvaluatorArgs, EvaluatorArgsHasher, EvaluatorArgsEqual> undetermined_evals;
   for (auto r_it = eval_trace_.rbegin(); r_it != latest_entry_iter; r_it++) {
     undetermined_evals.insert(*r_it);
   }
@@ -704,7 +701,7 @@ std::string JoinBranchesFailedInfo(const AbstractBasePtr &spec, const AbstractBa
       }
     }
   }
-  buffer << ". trace: " << trace::DumpSourceLines(node);
+  buffer << trace::DumpSourceLines(node);
   return buffer.str();
 }
 
@@ -744,13 +741,14 @@ EvalResultPtr AnalysisEngine::ProcessEvalResults(const AbstractBasePtrList &out_
   return std::make_shared<EvalResult>(joined_spec, std::make_shared<AttrValueMap>());
 }
 
+namespace {
 bool NeedWaitForBranches(const AbstractBasePtr &abstract) {
   MS_EXCEPTION_IF_NULL(abstract);
   if (abstract->isa<AbstractFunction>()) {
     return true;
   }
-  if (abstract->isa<AbstractSequeue>()) {
-    auto elements = abstract->cast<AbstractSequeuePtr>()->elements();
+  if (abstract->isa<AbstractSequence>()) {
+    auto elements = abstract->cast<AbstractSequencePtr>()->elements();
     if (std::any_of(elements.begin(), elements.end(),
                     [](const AbstractBasePtr &item) { return item->isa<AbstractFunction>(); })) {
       return true;
@@ -760,55 +758,102 @@ bool NeedWaitForBranches(const AbstractBasePtr &abstract) {
 }
 
 void ExecEvaluator(EvaluatorPtr eval, AnalysisEnginePtr engine, ConfigPtrList args_conf_list, AnfNodeConfigPtr out_conf,
-                   const std::string &threadID, AsyncAbstractPtr async_result_branch,
-                   AsyncAbstractPtr async_result_main, AsyncInferTaskPtr async_run_flag,
+                   const std::string &thread_id, AsyncAbstractPtr async_result_branch,
+                   AsyncAbstractPtr async_result_main, AsyncInferTaskPtr async_task,
                    const trace::TraceGraphEvalStack &graph_evals,
                    const trace::TraceCNodeEvalStack &trace_c_node_evals) {
-  AnalysisSchedule::SetThreadID(threadID);
+  AnalysisSchedule::set_thread_id(thread_id);
   // Restore trace stack for dump stack when there is exception.
   trace::TraceEvalCNodeStackPrepare(trace_c_node_evals);
   trace::TraceGraphEvalStackPrepare(graph_evals);
 
   try {
     // Wait for Signal to run
-    MS_LOG(DEBUG) << async_run_flag.get() << "  " << eval->ToString() << " waiting.";
-    (void)async_run_flag->GetResult();
-    MS_LOG(DEBUG) << async_run_flag.get() << "  " << eval->ToString() << " running.";
+    MS_LOG(DEBUG) << async_task.get() << "  " << eval->ToString() << " waiting.";
+    (void)async_task->GetResult();
+    MS_LOG(DEBUG) << async_task.get() << "  " << eval->ToString() << " running.";
 
     // Acquire GIL for eval to callback python.
     EvalResultPtr result;
     {
-      py::gil_scoped_acquire pyGuard;
+      py::gil_scoped_acquire py_guard;
       result = eval->Run(engine, args_conf_list, out_conf);
     }
     MS_EXCEPTION_IF_NULL(result);
     MS_EXCEPTION_IF_NULL(result->abstract());
 
+    // Check the branch value to be compatible with the other branch value.
+    AnalysisResultCacheMgr::GetInstance().CheckSwitchValueJoinable(out_conf, result->abstract());
     // Broaden the result of switch(c,t,f)()
-    auto broadAbstract = result->abstract()->Broaden();
-    // Notify the thread of waiting for switch node and the main thread to continue.
-    AnalysisResultCacheMgr::GetInstance().SetSwitchValue(out_conf, broadAbstract);
-    async_result_branch->SetResult(broadAbstract);
-    async_result_main->SetResult(broadAbstract);
-    // Thread number will be drop when thread exits.
-    AnalysisSchedule::GetInstance().DecreaseThreadCount();
-    MS_LOG(DEBUG) << GetInferThread() << "async :" << eval->ToString()
+    auto broaden_abstract = result->abstract()->Broaden();
+    // Notify the thread of waiting for branch value and the main thread to continue.
+    async_result_branch->set_result(broaden_abstract);
+    async_result_main->set_result(broaden_abstract);
+    MS_LOG(DEBUG) << GetInferThread() << " async :" << eval->ToString()
                   << " asyncResult address = " << async_result_branch.get()
                   << " value = " << async_result_branch->TryGetResult()->ToString();
-  } catch (const std::exception &e1) {
-    auto abstractErrPtr = std::make_shared<AbstractError>(std::make_shared<StringImm>("Exception"), out_conf->node());
-    AnalysisResultCacheMgr::GetInstance().SetSwitchValue(out_conf, abstractErrPtr);
-    async_result_main->SetResult(abstractErrPtr);
+  } catch (const std::exception &ex) {
     MS_LOG(INFO) << "Eval node: " << out_conf->node()->ToString() << "  " << eval->ToString() << " threw exception.";
-    AnalysisSchedule::GetInstance().HandleException(e1);
-    try {
-      // Thread number will be drop when thread exits.
-      AnalysisSchedule::GetInstance().DecreaseThreadCount();
-    } catch (const std::exception &e2) {
-      MS_LOG(DEBUG) << "AnalysisSchedule::GetInstance().DecreaseThreadCount() threw exception.";
+    AnalysisSchedule::GetInstance().HandleException(ex);
+  }
+  // Thread number will be drop when thread exits.
+  AnalysisSchedule::GetInstance().DecreaseThreadCount();
+}
+
+void BuildPossibleSpecs(const AbstractBasePtr &first_result,
+                        const std::vector<AsyncAbstractPtr> &branch_async_abstract_list,
+                        AbstractBasePtrList *out_specs) {
+  std::vector<AsyncAbstractPtr> pending_async_abstract_list;
+  std::size_t len = branch_async_abstract_list.size();
+
+  for (size_t i = 0; i < len; ++i) {
+    auto result = branch_async_abstract_list[i]->TryGetResult();
+    if (result) {
+      out_specs->push_back(result);
+    } else {
+      pending_async_abstract_list.push_back(branch_async_abstract_list[i]);
     }
   }
+  if (first_result->isa<AbstractFunction>()) {
+    for (std::size_t j = 0; j < pending_async_abstract_list.size(); ++j) {
+      auto async_func = AsyncAbstractFuncAtom::MakeShared(pending_async_abstract_list[j], 0);
+      out_specs->push_back(async_func);
+    }
+  } else if (first_result->isa<AbstractSequence>()) {
+    const auto &orig_abstract_seq = first_result->cast<AbstractSequencePtr>();
+    MS_EXCEPTION_IF_NULL(orig_abstract_seq);
+    const auto &orig_elements = orig_abstract_seq->elements();
+    AbstractBasePtrList new_elements;
+    for (size_t i = 0; i < orig_elements.size(); ++i) {
+      if (orig_elements[i]->isa<AbstractFuncAtom>()) {
+        AbstractFuncAtomPtrList abs_func_list{orig_elements[i]->cast<AbstractFuncAtomPtr>()};
+        for (size_t j = 0; j < pending_async_abstract_list.size(); ++j) {
+          auto async_func = AsyncAbstractFuncAtom::MakeShared(pending_async_abstract_list[j], i);
+          abs_func_list.push_back(async_func);
+        }
+        new_elements.push_back(AbstractFunction::MakeAbstractFunction(abs_func_list));
+      } else {
+        new_elements.push_back(orig_elements[i]);
+      }
+    }
+    AbstractBasePtr new_first_result;
+    if (first_result->isa<AbstractTuple>()) {
+      new_first_result = std::make_shared<AbstractTuple>(new_elements);
+    } else if (first_result->isa<AbstractList>()) {
+      new_first_result = std::make_shared<AbstractList>(new_elements);
+    } else {
+      MS_LOG(EXCEPTION) << "FirstResult is not AbstractTuple or AbstractList, but: " << first_result->ToString();
+    }
+    MS_LOG(DEBUG) << GetInferThread() << " Try to replace old first with new one, old: " << first_result->ToString()
+                  << ", new: " << new_first_result->ToString();
+    std::replace_if(
+      out_specs->begin(), out_specs->end(), [first_result](const auto &elem) { return elem == first_result; },
+      new_first_result);
+  } else {
+    MS_LOG(DEBUG) << GetInferThread() << " wait for normal async result";
+  }
 }
+}  // namespace
 
 EvalResultPtr AnalysisEngine::ExecuteMultipleEvaluatorsMultiThread(const std::vector<EvaluatorPtr> &evaluators,
                                                                    const AnfNodeConfigPtr &out_conf,
@@ -829,73 +874,63 @@ EvalResultPtr AnalysisEngine::ExecuteMultipleEvaluatorsMultiThread(const std::ve
   auto possible_parent_fg = out_conf->node()->func_graph();
 
   // Eval result of the main.
-  AsyncAbstractPtr asyncResult_main = std::make_shared<AsyncAbstract>();
+  AsyncAbstractPtr async_result_main = std::make_shared<AsyncAbstract>();
   // Eval result of the branches
-  std::vector<AsyncAbstractPtr> branchAsyncResults;
+  std::vector<AsyncAbstractPtr> async_result_branches;
 
   for (auto &evaluator : evaluators) {
-    static std::atomic<int> idCount{0};
-    std::string threadId = AnalysisSchedule::GetThreadID() + "." + std::to_string(idCount.fetch_add(1));
+    static std::atomic<int> id_count{0};
+    std::string thread_id = AnalysisSchedule::thread_id() + "." + std::to_string(id_count.fetch_add(1));
     MS_EXCEPTION_IF_NULL(evaluator);
     SetUndeterminedFlag(evaluator, possible_parent_fg);
-    AsyncAbstractPtr branchAsyncResult = std::make_shared<AsyncAbstract>();
+    AsyncAbstractPtr async_result_branch = std::make_shared<AsyncAbstract>();
     // Control the order to run.
-    AsyncAbstractPtr asyncRunOrder = std::make_shared<AsyncAbstract>();
-    AsyncInferTaskPtr asyncTask = AsyncInferTask::MakeShared(asyncRunOrder, threadId);
-    // Add point to the async thread.
+    AsyncAbstractPtr control_run_order = std::make_shared<AsyncAbstract>();
+    control_run_order->set_result(std::make_shared<AbstractScalar>(1));
+    AsyncInferTaskPtr async_task = AsyncInferTask::MakeShared(control_run_order, thread_id);
+
     AnalysisSchedule::GetInstance().IncreaseThreadCount();
     MS_LOG(DEBUG) << GetInferThread() << "async : " << evaluator->ToString();
-    auto thread =
-      std::thread(ExecEvaluator, evaluator, shared_from_this(), args_conf_list, out_conf, threadId, branchAsyncResult,
-                  asyncResult_main, asyncTask, trace::GetCurrenGraphEvalStack(), trace::GetCNodeDebugStack());
+    auto thread = std::thread(ExecEvaluator, evaluator, shared_from_this(), args_conf_list, out_conf, thread_id,
+                              async_result_branch, async_result_main, async_task, trace::GetCurrentGraphEvalStack(),
+                              trace::GetCNodeDebugStack());
     thread.detach();
     // Push to list of running loop
-    asyncRunOrder->SetResult(std::make_shared<AbstractScalar>(1));
-    MS_LOG(DEBUG) << " add to schedule: " << asyncTask.get();
-    AnalysisSchedule::GetInstance().Add2Schedule(asyncTask);  // Activate order witch child thread.
-    (void)branchAsyncResults.emplace_back(std::move(branchAsyncResult));
+    MS_LOG(DEBUG) << " add to schedule: " << async_task.get();
+    AnalysisSchedule::GetInstance().Add2Schedule(async_task);  // Activate order witch child thread.
+    (void)async_result_branches.emplace_back(std::move(async_result_branch));
   }
 
   MS_LOG(DEBUG) << GetInferThread() << "async : wait for one of async to finish.  " << evaluators[0]->ToString()
                 << " or  " << evaluators[1]->ToString() << "...";
-  auto async_main = AsyncInferTask::MakeShared(asyncResult_main);
-  MS_LOG(DEBUG) << " add to schedule: " << async_main.get();
-  AnalysisSchedule::GetInstance().Add2Schedule(async_main);  // Third order
-  auto firstResult = async_main->GetResult();
-  MS_EXCEPTION_IF_NULL(firstResult);
+
+  auto first_result = async_result_main->GetResult();
+  MS_EXCEPTION_IF_NULL(first_result);
   MS_LOG(DEBUG) << GetInferThread() << "async main thread result of " << out_conf->node()->ToString() << " = "
-                << firstResult->ToString();
+                << first_result->ToString();
 
   AbstractBasePtrList out_specs;
   size_t len = evaluators.size();
-  if (NeedWaitForBranches(firstResult)) {
-    for (size_t i = 0; i < len; ++i) {
-      MS_LOG(DEBUG) << GetInferThread() << "async waiting for " << evaluators[i]->ToString();
-      auto async_branch = AsyncInferTask::MakeShared(branchAsyncResults[i]);
-      MS_LOG(DEBUG) << " add to schedule: " << async_branch.get();
-      AnalysisSchedule::GetInstance().Add2Schedule(async_branch);
-      auto result = async_branch->GetResult();
-      MS_EXCEPTION_IF_NULL(result);
-      out_specs.push_back(result);
-    }
+  if (NeedWaitForBranches(first_result)) {
+    BuildPossibleSpecs(first_result, async_result_branches, &out_specs);
   } else {
-    // Give one more chance to wait for the result of the branches.
-    auto async_tmp = AsyncInferTask::MakeShared(asyncResult_main);
-    MS_LOG(DEBUG) << " add to schedule: " << async_tmp.get();
-    AnalysisSchedule::GetInstance().Add2Schedule(async_tmp);
-    (void)async_tmp->GetResult();
     for (size_t i = 0; i < len; ++i) {
       // Not wait to get the result of branch.
-      auto result = branchAsyncResults[i]->TryGetResult();
+      auto result = async_result_branches[i]->TryGetResult();
       if (result) {
-        MS_LOG(DEBUG) << GetInferThread() << "async get " << evaluators[i]->ToString()
-                      << " result: " << result->ToString();
+        MS_LOG(DEBUG) << "#" << i << ": " << GetInferThread() << " async get " << evaluators[i]->ToString()
+                      << ", result: " << result->ToString() << ", args: " << args_conf_list;
         out_specs.push_back(result);
       }
     }
   }
 
-  return ProcessEvalResults(out_specs, out_conf->node());
+  const auto &processed_result = ProcessEvalResults(out_specs, out_conf->node());
+  if (processed_result != nullptr) {
+    // This is the final switch()() value.
+    AnalysisResultCacheMgr::GetInstance().SetSwitchValue(out_conf, processed_result->abstract());
+  }
+  return processed_result;
 }
 
 EvalResultPtr AnalysisEngine::ExecuteMultipleEvaluators(const std::vector<EvaluatorPtr> &evaluators,
@@ -904,7 +939,7 @@ EvalResultPtr AnalysisEngine::ExecuteMultipleEvaluators(const std::vector<Evalua
   AbstractBasePtrList out_specs;
   const size_t evaluators_size = 2;
   if (evaluators.size() < evaluators_size) {
-    MS_LOG(ERROR) << "evaluators size is less than 2";
+    MS_LOG(EXCEPTION) << "Evaluators size is less than 2.";
   }
   multi_poss_[evaluators[0]] = evaluators[1];
   multi_poss_[evaluators[1]] = evaluators[0];

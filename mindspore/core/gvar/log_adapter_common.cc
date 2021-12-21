@@ -46,17 +46,16 @@ static const std::vector<std::string> sub_module_names = {
   "PROFILER",           // SM_PROFILER
   "PS",                 // SM_PS
   "FL",                 // SM_FL
+  "DISTRIBUTED",        // SM_DISTRIBUTED
   "LITE",               // SM_LITE
   "ARMOUR",             // SM_ARMOUR
   "HCCL_ADPT",          // SM_HCCL_ADPT
-  "MINDQUANTUM",        // SM_MINDQUANTUM
   "RUNTIME_FRAMEWORK",  // SM_RUNTIME_FRAMEWORK
   "GE",                 // SM_GE
+  "API",                // SM_API
 };
 
-const std::string GetSubModuleName(SubModuleId module_id) {
-  return sub_module_names[static_cast<size_t>(module_id % NUM_SUBMODUES)];
-}
+const std::string GetSubModuleName(SubModuleId module_id) { return sub_module_names[(module_id % NUM_SUBMODUES)]; }
 
 // export GetTimeString for all sub modules
 std::string GetTimeString() {
@@ -78,7 +77,12 @@ std::string GetTimeString() {
   constexpr int64_t time_convert_unit = 1000;
   (void)localtime_r(&cur_time.tv_sec, &now);
   (void)strftime(buf, BUFLEN, "%Y-%m-%d-%H:%M:%S", &now);  // format date and time
-  (void)snprintf(buf + time_str_len, BUFLEN - time_str_len, ".%03ld.%03ld", cur_time.tv_usec / time_convert_unit,
+#ifdef __APPLE__
+  const std::string fmt_str = ".%03lld.%03lld";
+#else
+  const std::string fmt_str = ".%03ld.%03ld";
+#endif
+  (void)snprintf(buf + time_str_len, BUFLEN - time_str_len, fmt_str.c_str(), cur_time.tv_usec / time_convert_unit,
                  cur_time.tv_usec % time_convert_unit);
 #endif
   return std::string(buf);

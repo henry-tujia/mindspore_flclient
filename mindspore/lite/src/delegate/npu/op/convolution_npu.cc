@@ -16,6 +16,8 @@
 
 #include "src/delegate/npu/op/convolution_npu.h"
 #include "src/delegate/npu/op/convolution_depthwise_npu.h"
+#include "src/delegate/npu/op/convolution_int8_npu.h"
+#include "src/delegate/npu/op/convolution_depthwise_int8_npu.h"
 #include "src/delegate/npu/npu_converter_utils.h"
 namespace mindspore {
 int ConvolutionNPUOp::IsSupport(const schema::Primitive *primitive, const std::vector<mindspore::MSTensor> &in_tensors,
@@ -112,6 +114,36 @@ int ConvolutionNPUOp::SetNPUInputs(const std::vector<mindspore::MSTensor> &in_te
   return RET_OK;
 }
 
+int ConvolutionNPUOp::SetNPUInputs(
+  const std::vector<mindspore::MSTensor> &in_tensors, const std::vector<mindspore::MSTensor> &out_tensors,
+  const std::vector<ge::Operator *> &npu_inputs,
+  const std::unordered_map<int, std::pair<ge::Operator *, int>> &index2_multi_out_index) {
+  auto ret = InitWeightConst(in_tensors);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Set weight and bias for convolution op " << name_ << " failed when running npu";
+    return RET_ERROR;
+  }
+  conv_->set_input_filter(*weight_);
+  if (in_tensors.size() == CONV_INPUT_SIZE) {
+    ret = InitBiasConst(in_tensors);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "Set bias for convolution op " << name_ << " failed when running npu";
+      return RET_ERROR;
+    }
+    conv_->set_input_bias(*bias_);
+  }
+
+  if (!index2_multi_out_index.empty()) {
+    auto itr = index2_multi_out_index.begin();
+    auto in_op = itr->second.first;
+    MS_CHECK_TRUE_RET(in_op != nullptr, RET_ERROR);
+    conv_->SetInput(itr->first, *in_op, itr->second.second);
+  } else {
+    conv_->set_input_x(*npu_inputs[0]);
+  }
+  return RET_OK;
+}
+
 ge::Operator *ConvolutionNPUOp::GetNPUOp() {
   if (act_type_ == schema::ActivationType_NO_ACTIVATION) {
     return conv_;
@@ -151,9 +183,17 @@ NPUOp *GetNPUConvOp(const schema::Primitive *primitive, const std::vector<mindsp
   auto input_channel = in_tensors.front().Shape()[NHWC_C];
   auto output_channel = out_tensors.front().Shape()[NHWC_C];
   if (group == input_channel && group == output_channel) {
-    op = new (std::nothrow) ConvolutionDepthwiseNPUOp(primitive, in_tensors, out_tensors, name);
+    if (in_tensors[1].DataType() == DataType::kNumberTypeInt8) {
+      op = new (std::nothrow) ConvolutionDepthwiseInt8NPUOp(primitive, in_tensors, out_tensors, name);
+    } else {
+      op = new (std::nothrow) ConvolutionDepthwiseNPUOp(primitive, in_tensors, out_tensors, name);
+    }
   } else {
-    op = new (std::nothrow) ConvolutionNPUOp(primitive, in_tensors, out_tensors, name);
+    if (in_tensors[1].DataType() == DataType::kNumberTypeInt8) {
+      op = new (std::nothrow) ConvolutionInt8NPUOp(primitive, in_tensors, out_tensors, name);
+    } else {
+      op = new (std::nothrow) ConvolutionNPUOp(primitive, in_tensors, out_tensors, name);
+    }
   }
 
   if (op == nullptr) {

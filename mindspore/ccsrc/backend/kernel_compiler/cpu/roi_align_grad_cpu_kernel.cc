@@ -23,8 +23,8 @@ template <typename T, typename U>
 void AtomicAddTask(T *const address, const T val) {
   auto *address_as_ull = reinterpret_cast<U *>(address);
   U old = *address_as_ull;
-  U assumed;
-  T desired;
+  U assumed = U(0);
+  T desired = T(0);
   do {
     assumed = old;
     T *assumed_t = reinterpret_cast<T *>(&assumed);
@@ -61,26 +61,30 @@ void ROIAlignGradCPUKernel<T>::CheckParam(const CNodePtr &kernel_node) {
   //  Get the number of the input args
   size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
   if (input_num != INPUT_NUM) {
-    MS_LOG(ERROR) << "Input number is: " << input_num << ", but ROIAlignGrad needs 2 inputs.";
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', the number of inputs should be 2, but got " << input_num
+                  << " input(s).";
   }
 
   //  Get the number of the output args
   size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
   if (output_num != OUTPUT_NUM) {
-    MS_LOG(ERROR) << "Output number is: " << output_num << ", but ROIAlignGrad needs 1 output.";
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num
+                  << " output(s).";
   }
 
   //  Get the input shapes
   auto dy_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   auto dy_shape_size = dy_shape.size();
   if (dy_shape_size != DY_DIMS) {
-    MS_LOG(ERROR) << "dy shape size is " << dy_shape_size << ", but should be 4.";
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', the dimension of output should be 4-D, but got " << dy_shape_size
+                  << "-D.";
   }
 }
 
 template <typename T>
 void ROIAlignGradCPUKernel<T>::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   CheckParam(kernel_node);
 
   auto rois_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
@@ -117,7 +121,7 @@ bool ROIAlignGradCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inp
       dx[thread_idx] = ZERO;
     }
   };
-  CPUKernelUtils::ParallelFor(task1, IntToSize(size_init));
+  ParallelLaunchAutoSearch(task1, IntToSize(size_init), this, &parallel_search_info_);
 
   int elem_num = roi_rows_ * channels_ * pooled_height_ * pooled_width_;
   auto task2 = [this, &dy, &rois, &dx](size_t start, size_t end) {
@@ -176,7 +180,7 @@ bool ROIAlignGradCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inp
       }
     }
   };
-  CPUKernelUtils::ParallelFor(task2, IntToSize(elem_num));
+  ParallelLaunchAutoSearch(task2, IntToSize(elem_num), this, &parallel_search_info_);
   return true;
 }
 

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "frontend/parallel/strategy.h"
@@ -35,9 +35,7 @@ class GetNextInfo : public OperatorInfo {
       : OperatorInfo(operator_name, inputs_shape, outputs_shape, attrs, std::make_shared<GetNextCost>()) {}
   ~GetNextInfo() override = default;
 
-  Status Init(const StrategyPtr &strategy) override;
   Status SetCostUnderStrategy(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
 
  protected:
@@ -49,7 +47,7 @@ class GetNextInfo : public OperatorInfo {
   Status InferDevMatrixShape() override;
   Status InferMirrorOps() override { return SUCCESS; }
   Status InferForwardCommunication() override { return SUCCESS; }
-  void InferReplaceOps(const StrategyPtr &strategy);
+  void InferReplaceOps() override;
   Status GetAttrTypes();
   Status GetAttrShapes();
   Status GetAttrOutPutNum();
@@ -63,6 +61,7 @@ class GetNextInfo : public OperatorInfo {
   int64_t shard_num_ = 1;
   std::string shared_name_;
   Strategys dataset_strategy_;
+  Shape dev_matrix_shape_origin_;
 };
 }  // namespace parallel
 }  // namespace mindspore

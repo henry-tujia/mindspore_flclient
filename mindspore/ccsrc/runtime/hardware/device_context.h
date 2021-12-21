@@ -22,8 +22,11 @@
 #include <memory>
 #include "runtime/device/device_address.h"
 #include "runtime/device/bucket.h"
+#include "runtime/hardware/collective/collective_communication_lib.h"
+#include "runtime/hardware/collective/collective_comm_lib_loader.h"
 #include "backend/session/kernel_graph.h"
 #include "backend/session/anf_runtime_algorithm.h"
+#include "backend/optimizer/common/common_backend_optimization.h"
 
 namespace mindspore {
 namespace device {
@@ -46,7 +49,8 @@ struct DeviceContextKey {
 // DeviceContext is unified interface of interaction with device.
 class DeviceContext {
  public:
-  explicit DeviceContext(const DeviceContextKey &device_context_key) : device_context_key_(device_context_key) {}
+  explicit DeviceContext(const DeviceContextKey &device_context_key)
+      : device_context_key_(device_context_key), collective_comm_lib_(nullptr) {}
   virtual ~DeviceContext() = default;
 
   // Initialize the device context.
@@ -54,6 +58,16 @@ class DeviceContext {
 
   // Destroy device context and release device resource.
   virtual void Destroy() {}
+
+  // Partition the function graph through the device capability and return the partition segments.
+  // The second parameter is the default partition segments which are provided by the framework.
+  // Device can reprocess the default partition segments to new segments, also can partition the function graph again.
+  // If Device can launch the whole graph and not expect partitioning the function graph, then return the empty
+  // segments. The default behavior is return the default partition segments.
+  virtual std::vector<GraphSegmentPtr> PartitionGraph(const FuncGraphPtr &func_graph,
+                                                      const std::vector<GraphSegmentPtr> &default_partition_segments) {
+    return default_partition_segments;
+  }
 
   // Relevant function to allocate and free device memory.
   virtual bool AllocateMemory(DeviceAddress *const &address, size_t size) const = 0;
@@ -73,6 +87,9 @@ class DeviceContext {
 
   // Get device address type according different device type, such GPU, Ascend.
   virtual DeviceAddressType GetDeviceAddressType() const = 0;
+
+  // Unify the MindIR, the default behavior uses the common unified MindIR.
+  virtual void UnifyMindIR(const KernelGraphPtr &graph) const { opt::CommonUnifyMindIR(graph); }
 
   // Optimize the kernel graph for graph mode.
   virtual void OptimizeGraph(const KernelGraphPtr &graph) const {}
@@ -97,10 +114,21 @@ class DeviceContext {
   // Infer kernel shape and update abstract info for dynamic shape kernel.
   virtual void UpdateDynamicShape(const CNodePtr &kernel) const { AnfAlgo::InferShape(kernel); }
 
+  // Whether the graph sink executing through the device capability, the default behavior is not sink and return false.
+  virtual bool IsExecutingSink(const KernelGraphPtr &graph) const { return false; }
+  // Whether the graph loop sink executing through the device capability, the default behavior is not loop sink and
+  // return false.
+  virtual bool IsLoopCountSink(const KernelGraphPtr &graph) const { return false; }
+
+  // Launch graph, device such as Ascend support the whole graph sink to the device executing.
+  virtual bool LaunchGraph(const KernelGraphPtr &graph) const { return true; }
+
   // Launch a kernel via 'KernelMod' of the kernel.
   virtual bool LaunchKernel(const CNodePtr &kernel, const std::vector<AddressPtr> &inputs,
                             const std::vector<AddressPtr> &workspace, const std::vector<AddressPtr> &outputs,
-                            bool is_dynamic_shape = false) const = 0;
+                            bool is_dynamic_shape = false) const {
+    return true;
+  }
 
   // Synchronize stream, device such as GPU and Ascend need stream to launch kernel asynchronously,
   // using 'SyncStream' to block thread and wait for completing all tasks in stream.
@@ -117,11 +145,38 @@ class DeviceContext {
   // one bucket handles all resource to launch and sync allreduce operator.
   virtual std::shared_ptr<Bucket> CreateBucket(uint32_t bucket_id, uint32_t bucket_size) const { return nullptr; }
 
+  // Dynamically load collecitve communication library.
+  // Currently four types are supported: OpenMPI and self developed framework for CPU. NCCL for GPU. HCCL for Ascend.
+  virtual bool LoadCollectiveCommLib() { return true; }
+
+  // Return collective communication object for caller to access
+  CollectiveCommunicationLib *collective_comm_lib() const { return collective_comm_lib_; }
+
+  // TODO(jiaorui): will be delete
+  // Dump all graphs.
+  virtual void DumpAllGraphs(const std::vector<KernelGraphPtr> &all_graphs) const {}
+
+  void EnableRuntimeCache(const KernelGraphPtr &graph) const {
+    auto node_list = graph->TopoSort(graph->get_return());
+    for (auto &node : node_list) {
+      auto kernel_info = node->kernel_info();
+      if (!kernel_info) {
+        continue;
+      }
+      MS_EXCEPTION_IF_NULL(kernel_info);
+      auto runtime_cache = kernel_info->runtime_cache();
+      MS_EXCEPTION_IF_NULL(runtime_cache);
+      runtime_cache->set_valid();
+    }
+  }
+
  protected:
   DeviceContextKey device_context_key_;
+
+  // The collective communication library.
+  CollectiveCommunicationLib *collective_comm_lib_;
 };
 using DeviceContextPtr = std::shared_ptr<DeviceContext>;
 }  // namespace device
 }  // namespace mindspore
-
 #endif  // MINDSPORE_CCSRC_RUNTIME_HARDWARE_DEVICE_CONTEXT_H_

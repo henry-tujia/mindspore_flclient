@@ -18,9 +18,9 @@
 
 #include <deque>
 #include <memory>
-#include <unordered_map>
 #include <algorithm>
 
+#include "utils/hash_map.h"
 #include "ir/anf.h"
 #include "ir/manager.h"
 #include "frontend/optimizer/optimizer.h"
@@ -111,6 +111,7 @@ static AnfNodePtr DoTransform(const OptimizerPtr &optimizer, const AnfNodePtr &n
   bool is_match = substitution->predicate_(node);
   if (is_match) {
     TraceGuard trace_guard(std::make_shared<TraceOpt>(node->debug_info()));
+    ScopeGuard scope_guard(node->scope());
     auto res = (*substitution)(optimizer, node);
     if (res != nullptr && res != node) {
 #ifdef ENABLE_PROFILE
@@ -262,7 +263,7 @@ bool SubstitutionList::ApplySubstitutionToIR(const OptimizerPtr &optimizer, cons
   return changes;
 }
 
-void SubstitutionList::DisplayStatusOfSubstitution(const std::unordered_map<std::string, std::vector<bool>> &status,
+void SubstitutionList::DisplayStatusOfSubstitution(const mindspore::HashMap<std::string, std::vector<bool>> &status,
                                                    const OptimizerPtr &optimizer, size_t space) const {
   constexpr int pad_width = 4;
   std::stringstream ss;
@@ -283,7 +284,7 @@ void SubstitutionList::DisplayStatusOfSubstitution(const std::unordered_map<std:
 bool SubstitutionList::ApplySubstitutionsToIR(const OptimizerPtr &optimizer, const FuncGraphPtr &func_graph) const {
   // Add for substitution status counting
   size_t space = 0;
-  std::unordered_map<std::string, std::vector<bool>> status;
+  mindspore::HashMap<std::string, std::vector<bool>> status;
   if (optimizer->is_on_debug_) {
     for (size_t i = 0; i < list_.size(); i++) {
       status[list_[i]->name_ + std::to_string(i)] = {};
@@ -300,14 +301,14 @@ bool SubstitutionList::ApplySubstitutionsToIR(const OptimizerPtr &optimizer, con
       changes = changes || change;
       loop = loop || change;
 #ifdef ENABLE_DUMP_IR
-      static const auto enable_dump_pass_ir = (common::GetEnv("ENV_DUMP_PASS_IR") == "1");
+      static const auto enable_dump_pass_ir = GetDumpConfig().enable_dump_pass_ir;
       if (enable_dump_pass_ir && MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
         auto fg_name = optimizer->name() + "_r" + std::to_string(optimizer->CurPass_.counter) + "_" +
                        optimizer->CurPass_.name + "_" + substitution->name_;
         DumpIR(fg_name + ".ir", func_graph);
         if (MsContext::GetInstance()->get_param<int>(MS_CTX_EXECUTION_MODE) != kPynativeMode) {
-          func_graph->DumpFuncGraph(fg_name);
           ExportIR(fg_name + ".dat", func_graph);
+          func_graph->DumpFuncGraph(fg_name);
         }
       }
 #endif
@@ -337,8 +338,8 @@ bool SubstitutionList::operator()(const FuncGraphPtr &func_graph, const Optimize
   manager->AddFuncGraph(func_graph);
   bool changes = false;
   static const auto traverse_mode =
-    (common::GetEnv("ENV_TRAVERSE_SUBSTITUTIONS_MODE") != "1" ? kOptTraverseFromIRToSubstitutions
-                                                              : kOptTraverseFromSubstitutionsToIR);
+    (common::GetEnv("MS_DEV_TRAVERSE_SUBSTITUTIONS_MODE") != "1" ? kOptTraverseFromIRToSubstitutions
+                                                                 : kOptTraverseFromSubstitutionsToIR);
   if (traverse_mode == kOptTraverseFromIRToSubstitutions &&
       MsContext::GetInstance()->get_param<int>(MS_CTX_EXECUTION_MODE) != kPynativeMode &&
       optimizer->traverse_nodes_first() && !is_once_ && !global_sensitive_) {

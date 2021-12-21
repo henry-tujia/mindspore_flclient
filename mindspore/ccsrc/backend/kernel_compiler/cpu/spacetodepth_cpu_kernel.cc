@@ -15,27 +15,41 @@
  */
 
 #include "backend/kernel_compiler/cpu/spacetodepth_cpu_kernel.h"
-
 #include <vector>
-
 #include "runtime/device/cpu/cpu_device_address.h"
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kSpaceToDepthInputsNum = 1;
+constexpr size_t kSpaceToDepthOutputsNum = 1;
+constexpr size_t kSpaceToDepthInputShapeSize = 4;
+constexpr size_t kSpaceToDepthMinBlockSize = 2;
+}  // namespace
 template <typename T>
 void SpaceToDepthCPUKernel<T>::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  CheckParam(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
 
   input_shape_ = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
   output_shape_ = AnfAlgo::GetOutputDeviceShape(kernel_node, 0);
   block_size_ = LongToSize(AnfAlgo::GetNodeAttr<int64_t>(kernel_node, "block_size"));
+  if (input_shape_.size() != kSpaceToDepthInputShapeSize) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input tensor should be 4-D, but got "
+                      << input_shape_.size() << "-D";
+  }
+  if (block_size_ < kSpaceToDepthMinBlockSize) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'block_size' should be greater than or equal to "
+                      << kSpaceToDepthMinBlockSize << ", but got " << block_size_;
+  }
 }
 
 template <typename T>
 bool SpaceToDepthCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                       const std::vector<kernel::AddressPtr> & /* workspace */,
                                       const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kSpaceToDepthInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kSpaceToDepthOutputsNum, kernel_name_);
   auto input_addr = reinterpret_cast<T *>(inputs[0]->addr);
   auto output_addr = reinterpret_cast<T *>(outputs[0]->addr);
   size_t size = inputs[0]->size / sizeof(T);
@@ -72,20 +86,8 @@ bool SpaceToDepthCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inp
     }
   };
 
-  CPUKernelUtils::ParallelFor(task, size);
+  ParallelLaunchAutoSearch(task, size, this, &parallel_search_info_);
   return true;
-}
-
-template <typename T>
-void SpaceToDepthCPUKernel<T>::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 1) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but DepthToSpaceCPUKerrnel needs 1 input.";
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but DepthToSpaceCPUKernel needs 1 output.";
-  }
 }
 }  // namespace kernel
 }  // namespace mindspore

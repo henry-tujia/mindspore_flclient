@@ -19,9 +19,9 @@
 
 #include <string>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "ir/value.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
 #include "frontend/parallel/ops_info/operator_info.h"
@@ -36,8 +36,6 @@ class BatchNormInfo : public OperatorInfo {
       : OperatorInfo(operator_name, inputs_shape, outputs_shape, attrs, std::make_shared<BatchParallelCost>()) {}
   ~BatchNormInfo() override = default;
 
-  Status Init(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t) override;
   Status SetCostUnderStrategy(const StrategyPtr &) override;
 
@@ -47,7 +45,7 @@ class BatchNormInfo : public OperatorInfo {
   Status InferForwardCommunication() override;
   Status InferDevMatrixShape() override;
   Status InferTensorMap() override;
-  Status InferReplaceOps();
+  void InferReplaceOps() override;
   Status InferAsLossDivisor() override;
 
  private:

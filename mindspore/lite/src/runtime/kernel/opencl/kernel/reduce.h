@@ -38,14 +38,21 @@ class ReduceOpenCLKernel : public OpenCLKernel {
 
  private:
   int SetAxes();
+  int SetShapeSizeIs0Axes();
+  int SetShapeSizeIs1Axes();
   cl_float4 GenC4Mask();
   static std::string GetReduceTypeStr(int type);
 
+  bool IsHWCReduce();
+  bool IsHWReduce();
+  bool IsWCReduce();
+  bool IsHReduce();
+  bool IsWReduce();
+  bool IsCReduce();
+  int IsReduceAxesSupport();
+
   GpuTensorInfo inShape;
   bool use_local_{false};
-  bool wc_reduce_{false};
-  bool hw_reduce_{false};
-  bool c_reduce_{false};
   bool reduce_axes_[4]{false};
   static const size_t LOCAL_CACHE_THREAD{16};
   int axes_[MAX_SHAPE_SIZE];

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_SPLIT_GPU_KERNEL_H
 
 #include <vector>
+#include <string>
 #include <memory>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
@@ -36,6 +37,9 @@ class SplitGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     T **outputs_device = GetDeviceAddress<T *>(workspace, 0);
     for (size_t i = 0; i < outputs.size(); i++) {
@@ -51,12 +55,19 @@ class SplitGpuFwdKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     auto input_shape = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name_, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     int dims = SizeToInt(input_shape.size());
     axis_ = static_cast<int64_t>(GetAttr<int64_t>(kernel_node, "axis"));
     if (axis_ < -dims || axis_ >= dims) {
-      MS_LOG(EXCEPTION) << "axis must be in the range [-rank, rank)";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be in the range [-" << dims << "," << dims
+                        << "), but got " << axis_;
     }
     if (axis_ < 0) {
       axis_ += dims;
@@ -68,9 +79,7 @@ class SplitGpuFwdKernel : public GpuKernel {
 
     output_num_ = static_cast<int64_t>(GetAttr<int64_t>(kernel_node, "output_num"));
 
-    if (!CheckParam(kernel_node)) {
-      return false;
-    }
+    (void)CheckParam(kernel_node);
     input_size_ = 1;
     all_size_before_axis_ = 1;
     all_size_axis_ = 1;
@@ -91,6 +100,11 @@ class SplitGpuFwdKernel : public GpuKernel {
     for (int i = 0; i < output_num_; i++) {
       size_t output_size = 1;
       auto output_shape = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, i);
+      is_null_input_ = CHECK_SHAPE_NULL(output_shape, kernel_name_, "output");
+      if (is_null_input_) {
+        InitSizeLists();
+        return true;
+      }
       for (size_t j = 0; j < output_shape.size(); j++) {
         output_size *= output_shape[j];
       }
@@ -109,6 +123,8 @@ class SplitGpuFwdKernel : public GpuKernel {
     axis_step_ = 1;
     all_size_before_axis_ = 1;
     all_size_axis_ = 1;
+    is_null_input_ = false;
+    kernel_name_ = "Split";
     outputs_host_ = nullptr;
     input_size_list_.clear();
     output_size_list_.clear();
@@ -119,36 +135,33 @@ class SplitGpuFwdKernel : public GpuKernel {
   void InitSizeLists() override {}
 
  private:
-  bool CheckParam(const CNodePtr &kernel_node) {
+  void CheckParam(const CNodePtr &kernel_node) {
     auto input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     int dims = SizeToInt(input_shape.size());
     int output_num = SizeToInt(AnfAlgo::GetOutputTensorNum(kernel_node));
     if (output_num <= 0) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", must > 0.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be greater than 0, but got "
+                        << output_num;
     }
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but Split needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 1, but got " << input_num;
     }
     if (dims == 0) {
-      MS_LOG(ERROR) << "Input dims is " << dims << ", scalar is not supported.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input cannot be 0, but got " << dims;
     }
     if (axis_ < -dims || axis_ >= dims) {
-      MS_LOG(ERROR) << "Attr axis " << axis_ << " must be in " << -dims << "~" << dims;
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be in the range [-" << dims << "," << dims
+                        << "), but got " << axis_;
     }
     if (output_num_ > SizeToInt(input_shape[axis_])) {
-      MS_LOG(ERROR) << "Attr output_num " << output_num_ << "must less than" << input_shape[axis_];
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs cannot be greater than "
+                        << SizeToInt(input_shape[axis_]) << ", but got " << output_num_;
     }
     if (output_num_ != output_num) {
-      MS_LOG(ERROR) << "Output num is " << output_num << ", but need " << output_num_;
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be " << output_num_
+                        << ", but got " << output_num;
     }
-    return true;
   }
   int axis_;
   int output_num_;
@@ -156,10 +169,12 @@ class SplitGpuFwdKernel : public GpuKernel {
   int axis_step_;
   int all_size_before_axis_;
   int all_size_axis_;
+  bool is_null_input_;
   std::unique_ptr<T *[]> outputs_host_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
+  std::string kernel_name_;
 };
 }  // namespace kernel
 }  // namespace mindspore

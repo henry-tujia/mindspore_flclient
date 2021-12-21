@@ -18,7 +18,8 @@
 #include <memory>
 #include <set>
 #include <algorithm>
-#include "tools/converter/ops/ops_def.h"
+#include "ops/make_tuple.h"
+#include "ops/return.h"
 #include "tools/converter/converter_context.h"
 #include "tools/converter/quant_param_holder.h"
 #include "src/common/log_adapter.h"
@@ -26,30 +27,16 @@
 #include "tools/converter/parser/parser_utils.h"
 #include "tools/optimizer/common/gllo_utils.h"
 #include "nnacl/op_base.h"
+namespace {
+constexpr const int kSwitchTruePartialIndex = 2;
+constexpr const int kSwitchFalsePartialIndex = 3;
+constexpr const int kSwitchInputSize = 4;
+constexpr const int kSwitchLayerInputSize = 3;
+constexpr const int kSwitchLayerMakeTupleIndex = 2;
+}  // namespace
 
 namespace mindspore {
 namespace lite {
-constexpr const int kSwitchTruePartialIndex = 2;
-constexpr const int kSwitchFalsePartialIndex = 3;
-constexpr const int kPartialFgVnodeIndex = 1;
-
-FuncGraphPtr MindIRControlFlowAdjust::GetPartialFg(const CNodePtr &partial_node) {
-  MS_CHECK_TRUE_MSG(partial_node != nullptr, nullptr, "partial_node is nullptr.");
-  auto fg_vnode = partial_node->input(kPartialFgVnodeIndex)->cast<ValueNodePtr>();
-  if (fg_vnode == nullptr) {
-    MS_LOG(ERROR) << "fg is not right.";
-    status_ = RET_ERROR;
-    return nullptr;
-  }
-  auto partial_fg = GetValueNode<FuncGraphPtr>(fg_vnode);
-  if (partial_fg == nullptr) {
-    MS_LOG(ERROR) << "partial_fg is nullptr.";
-    status_ = RET_NULL_PTR;
-    return nullptr;
-  }
-  return partial_fg;
-}
-
 bool MindIRControlFlowAdjust::HasCallAfter(const FuncGraphPtr &partial_fg) {
   MS_CHECK_TRUE_MSG(partial_fg != nullptr, false, "partial_fg is nullptr.");
   auto output_node = partial_fg->output();
@@ -122,8 +109,7 @@ int MindIRControlFlowAdjust::ModifyFgToCallAfterFg(const FuncGraphPtr &fg, const
 }
 
 FuncGraphPtr MindIRControlFlowAdjust::AddAfterFuncGraph(const FuncGraphPtr &fg,
-                                                        const std::vector<AnfNodePtr> &one_of_inline_fg_output,
-                                                        const string &switch_node_name) {
+                                                        const std::vector<AnfNodePtr> &one_of_inline_fg_output) {
   MS_CHECK_TRUE_MSG(fg != nullptr, nullptr, "fg is nullptr.");
   // create after partial node to call
   auto after_fg = std::make_shared<FuncGraph>();
@@ -131,20 +117,21 @@ FuncGraphPtr MindIRControlFlowAdjust::AddAfterFuncGraph(const FuncGraphPtr &fg,
   auto manager = fg->manager();
   MS_CHECK_TRUE_MSG(manager != nullptr, nullptr, "manager is nullptr.");
   manager->AddFuncGraph(after_fg);
-  after_fg->set_attr("graph_name", MakeValue(switch_node_name + "_after_fg"));
+  std::string after_fg_name = "after_fg";
+  after_fg->set_attr("graph_name", MakeValue(after_fg_name));
   after_fg->set_manager(fg->manager());
 
   int i = 0;
   for (auto &iter : one_of_inline_fg_output) {
     auto new_parameter = after_fg->add_parameter();
     MS_CHECK_TRUE_MSG(new_parameter != nullptr, nullptr, "new_parameter is nullptr.");
-    new_parameter->set_name(switch_node_name + ":" + std::to_string(i++));
+    new_parameter->set_name(after_fg_name + ":" + std::to_string(i++));
     new_parameter->set_abstract(iter->abstract());
   }
 
   if (after_fg->get_inputs().size() > 1) {
     std::vector<AnfNodePtr> make_tuple_inputs = after_fg->get_inputs();
-    auto make_tuple_prim_ptr = std::make_shared<lite::MakeTuple>();
+    auto make_tuple_prim_ptr = std::make_shared<ops::MakeTuple>();
     if (make_tuple_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new MakeTuple failed";
       return nullptr;
@@ -155,7 +142,7 @@ FuncGraphPtr MindIRControlFlowAdjust::AddAfterFuncGraph(const FuncGraphPtr &fg,
     auto make_tuple_cnode = after_fg->NewCNode(make_tuple_inputs);
     MS_CHECK_TRUE_MSG(make_tuple_cnode != nullptr, nullptr, "Failed to create C node.");
     make_tuple_cnode->set_fullname_with_scope("return tuple");
-    auto return_prim_ptr = std::make_shared<lite::Return>();
+    auto return_prim_ptr = std::make_shared<ops::Return>();
     if (return_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new Return failed";
       return nullptr;
@@ -168,7 +155,7 @@ FuncGraphPtr MindIRControlFlowAdjust::AddAfterFuncGraph(const FuncGraphPtr &fg,
     cnode->set_fullname_with_scope("Return");
     after_fg->set_return(cnode);
   } else {
-    auto return_prim_ptr = std::make_shared<lite::Return>();
+    auto return_prim_ptr = std::make_shared<ops::Return>();
     if (return_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new Return failed";
       return nullptr;
@@ -184,25 +171,8 @@ FuncGraphPtr MindIRControlFlowAdjust::AddAfterFuncGraph(const FuncGraphPtr &fg,
   return after_fg;
 }
 
-CNodePtr MindIRControlFlowAdjust::GetMainFgSwitchNode(const FuncGraphPtr &fg) {
-  MS_CHECK_TRUE_MSG(fg != nullptr, nullptr, "fg is nullptr.");
-  auto node_list = TopoSort(fg->get_return());
-  for (auto &node : node_list) {
-    if (IsSwitch(node)) {
-      return node->cast<CNodePtr>();
-    }
-  }
-  return nullptr;
-}
-
 int MindIRControlFlowAdjust::AddAfterFgForInlinedFg(const std::set<FuncGraphPtr> &all_func_graphs,
                                                     const FuncGraphPtr &main_fg) {
-  auto switch_cnode = GetMainFgSwitchNode(main_fg);
-  if (switch_cnode == nullptr) {
-    MS_LOG(DEBUG) << "not a control flow model.";
-    return RET_OK;
-  }
-
   // get all inline fg
   std::vector<FuncGraphPtr> all_inline_fgs{};
   for (auto &graph : all_func_graphs) {
@@ -213,11 +183,12 @@ int MindIRControlFlowAdjust::AddAfterFgForInlinedFg(const std::set<FuncGraphPtr>
   }
 
   // checkout all inline fg
-  if (all_inline_fgs.empty()) {
-    MS_LOG(ERROR) << "graph is not right.";
-    return RET_ERROR;
+  MS_CHECK_TRUE_MSG(!all_inline_fgs.empty(), RET_ERROR, "graph is not right.");
+  // only one graph no need insert partial call.
+  if (all_inline_fgs.size() == 1) {
+    MS_LOG(DEBUG) << "no need add after fg.";
+    return RET_OK;
   }
-
   auto first_fg_output = GetFgOutput(all_inline_fgs.front());
   auto inline_fg_output_size = first_fg_output.size();
   for (auto &graph : all_inline_fgs) {
@@ -231,7 +202,7 @@ int MindIRControlFlowAdjust::AddAfterFgForInlinedFg(const std::set<FuncGraphPtr>
     }
   }
 
-  auto after_fg = AddAfterFuncGraph(main_fg, first_fg_output, switch_cnode->fullname_with_scope());
+  auto after_fg = AddAfterFuncGraph(main_fg, first_fg_output);
   if (after_fg == nullptr) {
     MS_LOG(ERROR) << "AddAfterFuncGraph failed.";
     return RET_ERROR;
@@ -241,6 +212,104 @@ int MindIRControlFlowAdjust::AddAfterFgForInlinedFg(const std::set<FuncGraphPtr>
     if (ModifyFgToCallAfterFg(graph, after_fg) != RET_OK) {
       MS_LOG(ERROR) << "inline fg add call after fg failed.";
       return RET_ERROR;
+    }
+  }
+  return RET_OK;
+}
+
+int MindIRControlFlowAdjust::MoveCallInputsToPartialFusionInputs(const std::set<FuncGraphPtr> &all_func_graphs) {
+  for (auto &graph : all_func_graphs) {
+    auto node_list = TopoSort(graph->get_return());
+    for (auto &node : node_list) {
+      if (!IsCall(node)) {
+        continue;
+      }
+      auto call_cnode = node->cast<CNodePtr>();
+      MS_ASSERT(call_node != nullptr);
+      auto call_cnode_inputs = call_cnode->inputs();
+      if (call_cnode_inputs.size() == 1) {
+        MS_LOG(DEBUG) << "no need move call inputs.";
+        continue;
+      }
+      auto call_first_input = call_cnode->input(0);
+      if (!utils::isa<CNodePtr>(call_first_input)) {
+        // This situation will be handled in the InsertPartialFusionForRawCall function
+        continue;
+      }
+      auto call_first_input_cnode = call_first_input->cast<CNodePtr>();
+      MS_ASSERT(call_first_input_cnode != nullptr);
+      if (IsPartialFusion(call_first_input_cnode)) {
+        auto partial_cnode_inputs = call_first_input_cnode->inputs();
+        std::copy(call_cnode_inputs.begin() + 1, call_cnode_inputs.end(), std::back_inserter(partial_cnode_inputs));
+        call_first_input_cnode->set_inputs(partial_cnode_inputs);
+      }
+
+      if (IsSwitch(call_first_input_cnode)) {
+        auto switch_cnode_inputs = call_first_input_cnode->inputs();
+        if (switch_cnode_inputs.size() == kSwitchInputSize) {
+          MS_LOG(ERROR) << "switch op inputs size not right.";
+          return RET_ERROR;
+        }
+        if (!IsPartialFusion(switch_cnode_inputs[kSwitchTruePartialIndex]) ||
+            !IsPartialFusion(switch_cnode_inputs[kSwitchFalsePartialIndex])) {
+          MS_LOG(ERROR) << "switch inputs not are partial ops, not support now.";
+          return RET_NOT_SUPPORT;
+        }
+
+        auto true_partial_cnode = switch_cnode_inputs.at(kSwitchTruePartialIndex)->cast<CNodePtr>();
+        auto true_partial_cnode_inputs = true_partial_cnode->inputs();
+        std::copy(call_cnode_inputs.begin() + 1, call_cnode_inputs.end(),
+                  std::back_inserter(true_partial_cnode_inputs));
+        true_partial_cnode->set_inputs(true_partial_cnode_inputs);
+
+        auto false_partial_cnode = switch_cnode_inputs.at(kSwitchFalsePartialIndex)->cast<CNodePtr>();
+        auto false_partial_cnode_inputs = false_partial_cnode->inputs();
+        std::copy(call_cnode_inputs.begin() + 1, call_cnode_inputs.end(),
+                  std::back_inserter(false_partial_cnode_inputs));
+        false_partial_cnode->set_inputs(false_partial_cnode_inputs);
+      }
+
+      if (IsSwitchLayer(call_first_input_cnode)) {
+        auto switch_layer_cnode_inputs = call_first_input_cnode->inputs();
+        if (switch_layer_cnode_inputs.size() != kSwitchLayerInputSize) {
+          MS_LOG(ERROR) << "switch layer op inputs size not right.";
+          return RET_ERROR;
+        }
+        if (!IsMakeTuple(switch_layer_cnode_inputs[kSwitchLayerMakeTupleIndex])) {
+          MS_LOG(ERROR) << "SwitchLayer op last input not is MakeTuple ops, not support now.";
+          return RET_NOT_SUPPORT;
+        }
+        auto make_tuple_op = switch_layer_cnode_inputs[kSwitchLayerMakeTupleIndex]->cast<CNodePtr>();
+        auto make_tuple_op_intpus = make_tuple_op->inputs();
+        for (size_t i = 1; i < make_tuple_op_intpus.size(); i++) {
+          if (IsPartialFusion(make_tuple_op_intpus[i])) {
+            auto partial_node = make_tuple_op_intpus[i]->cast<CNodePtr>();
+            auto partial_node_inputs = partial_node->inputs();
+            std::copy(call_cnode_inputs.begin() + 1, call_cnode_inputs.end(), std::back_inserter(partial_node_inputs));
+            partial_node->set_inputs(partial_node_inputs);
+            continue;
+          }
+          if (!utils::isa<ValueNodePtr>(make_tuple_op_intpus[i])) {
+            MS_LOG(ERROR)
+              << "switch layer op make tuple inputs not is partial fusion op or function graph, not support now.";
+            return RET_NOT_SUPPORT;
+          }
+          auto make_tuple_op_value_input = make_tuple_op_intpus[i]->cast<ValueNodePtr>();
+          if (GetValueNode<FuncGraphPtr>(make_tuple_op_value_input) == nullptr) {
+            MS_LOG(ERROR)
+              << "switch layer op make tuple inputs not is partial fusion op or function graph, not support now.";
+            return RET_NOT_SUPPORT;
+          }
+          std::vector<AnfNodePtr> partial_cnode_inputs = {lite::GetPartialFusionPrim(), make_tuple_op_value_input};
+          std::copy(call_cnode_inputs.begin() + 1, call_cnode_inputs.end(), std::back_inserter(partial_cnode_inputs));
+          auto partial_cnode = graph->NewCNode(partial_cnode_inputs);
+          MS_CHECK_TRUE_MSG(partial_cnode != nullptr, RET_NULL_PTR, "Failed to create C node.");
+          partial_cnode->set_fullname_with_scope("partial_" + make_tuple_op->fullname_with_scope() + "_" +
+                                                 std::to_string(i));
+          make_tuple_op->set_input(i, partial_cnode);
+        }
+      }
+      call_cnode->set_inputs({call_first_input_cnode});
     }
   }
   return RET_OK;
@@ -256,14 +325,13 @@ int MindIRControlFlowAdjust::InsertPartialFusionForRawCall(const std::set<FuncGr
       auto call_cnode = node->cast<CNodePtr>();
       MS_ASSERT(call_node != nullptr);
       auto call_cnode_inputs = call_cnode->inputs();
-      auto cnode_first_input = call_cnode->input(0);
-      if (!utils::isa<ValueNodePtr>(cnode_first_input)) {
+      auto call_first_input = call_cnode->input(0);
+      if (!utils::isa<ValueNodePtr>(call_first_input)) {
         continue;
       }
-      if (GetValueNode<FuncGraphPtr>(cnode_first_input->cast<ValueNodePtr>()) == nullptr) {
+      if (GetValueNode<FuncGraphPtr>(call_first_input->cast<ValueNodePtr>()) == nullptr) {
         continue;
       }
-
       std::vector<AnfNodePtr> partial_cnode_inputs = {lite::GetPartialFusionPrim()};
       std::copy(call_cnode_inputs.begin(), call_cnode_inputs.end(), std::back_inserter(partial_cnode_inputs));
       auto partial_cnode = graph->NewCNode(partial_cnode_inputs);
@@ -293,7 +361,7 @@ int MindIRControlFlowAdjust::ResetFuncGraph(const FuncGraphPtr &fg, std::set<Fun
 bool MindIRControlFlowAdjust::Run(const FuncGraphPtr &func_graph) {
   if (this->fmk_type_ != FmkType::kFmkTypeMs) {
     MS_LOG(INFO) << "The framework type of model should be MindIR.";
-    return lite::RET_OK;
+    return true;
   }
   MS_CHECK_TRUE_MSG(func_graph != nullptr, false, "func_graph is nullptr.");
   std::set<FuncGraphPtr> all_func_graphs = {};
@@ -302,7 +370,12 @@ bool MindIRControlFlowAdjust::Run(const FuncGraphPtr &func_graph) {
     MS_LOG(INFO) << "Not is control flow model.";
     return true;
   }
-  int ret = InsertPartialFusionForRawCall(all_func_graphs);
+  int ret = MoveCallInputsToPartialFusionInputs(all_func_graphs);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "MoveCallInputsToPartialFusionInputs failed.";
+    return false;
+  }
+  ret = InsertPartialFusionForRawCall(all_func_graphs);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "InsertPartialFusionForRawCall failed.";
     return false;

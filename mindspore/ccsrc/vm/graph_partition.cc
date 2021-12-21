@@ -27,7 +27,7 @@
 #include "utils/utils.h"
 #include "utils/ms_context.h"
 #include "ps/ps_context.h"
-#include "ir/anf_utils.h"
+#include "utils/anf_utils.h"
 #ifdef ENABLE_GE
 #include "transform/graph_ir/convert.h"
 #endif
@@ -430,7 +430,7 @@ void AddSegmentDependency(const FuncGraphPtr &graph, const std::map<AnfNodePtr, 
       node_segment = node_iter->second;
     }
     for (auto &input : node_inputs) {
-      if (node_segment != nullptr && !node_segment->is_cut_ && input->isa<CNode>()) {
+      if (node_segment != nullptr && !node_segment->is_cut_ && input != nullptr && input->isa<CNode>()) {
         GraphSegmentPtr input_segment{nullptr};
         auto input_iter = node_to_segment.find(input);
         if (input_iter != node_to_segment.end()) {
@@ -452,7 +452,7 @@ void AddSegmentDependency(const FuncGraphPtr &graph, const std::map<AnfNodePtr, 
   }
 }
 
-void RemoveUselessDependency(std::vector<GraphSegmentPtr> *segments) {
+void RemoveUselessDependency(const std::vector<GraphSegmentPtr> *segments) {
   MS_EXCEPTION_IF_NULL(segments);
   for (auto &segment : *segments) {
     MS_EXCEPTION_IF_NULL(segment);

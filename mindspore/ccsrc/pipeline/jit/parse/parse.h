@@ -140,7 +140,7 @@ class Parser {
   AnfNodePtr ParseNone(const FunctionBlockPtr &block, const py::object &node);
   // Process Ellipsis
   AnfNodePtr ParseEllipsis(const FunctionBlockPtr &block, const py::object &node);
-  // Process a integer or float number
+  // Process an integer or float number
   AnfNodePtr ParseNum(const FunctionBlockPtr &block, const py::object &node);
   // Process a string variable
   AnfNodePtr ParseStr(const FunctionBlockPtr &block, const py::object &node);
@@ -187,16 +187,23 @@ class Parser {
   AnfNodePtr ParseListCompIfs(const FunctionBlockPtr &list_body_block, const ParameterPtr &list_param,
                               const py::object &node, const py::object &generator_node);
 
+  // Check if script_text is in global/local params.
+  bool IsScriptInParams(const std::string &script_text, const py::dict &global_dict,
+                        const std::vector<AnfNodePtr> &local_keys, const FuncGraphPtr &func_graph);
+  // Set the interpret flag for the node calling the interpret node.
+  void UpdateInterpretForUserNode(const AnfNodePtr &node, const AnfNodePtr &user_node);
   // Check if the node need interpreting.
   AnfNodePtr HandleInterpret(const FunctionBlockPtr &block, const AnfNodePtr &value_node,
                              const py::object &value_object);
 
-  // Generate argument nodes for ast  function node
+  // Generate argument nodes for ast function node
   void GenerateArgsNodeForFunction(const FunctionBlockPtr &block, const py::object &function_node);
-  // Generate argument default value for ast  function node
+  // Generate argument default value for ast function node
   void GenerateArgsDefaultValueForFunction(const FunctionBlockPtr &block, const py::object &function_node);
   // Parse ast function node
-  FunctionBlockPtr ParseFunction(const py::object &function_node, const FunctionBlockPtr &block = nullptr);
+  FunctionBlockPtr ParseDefFunction(const py::object &function_node, const FunctionBlockPtr &block = nullptr);
+  // Parse lambda function node
+  FunctionBlockPtr ParseLambdaFunction(const py::object &function_node, const FunctionBlockPtr &block = nullptr);
   // Parse ast statements
   FunctionBlockPtr ParseStatements(FunctionBlockPtr block, const py::object &stmt_node);
   // Parse one ast statement node
@@ -222,6 +229,10 @@ class Parser {
   // Assign value to subscript
   void HandleAssignSubscript(const FunctionBlockPtr &block, const py::object &targ, const AnfNodePtr &assigned_node);
 
+  // Interpret the return node.
+  AnfNodePtr HandelReturnExprNode(const FunctionBlockPtr &block, const AnfNodePtr &return_expr_node,
+                                  const py::object &value_object);
+
   // Process a bool operation value list
   AnfNodePtr ProcessBoolOpValueList(const FunctionBlockPtr &block, const py::list &value_list, AstSubType mode);
 
@@ -236,8 +247,8 @@ class Parser {
   bool ParseKeywordsInCall(const FunctionBlockPtr &block, const py::object &node,
                            std::vector<AnfNodePtr> *packed_arguments);
 
-  bool ParseArgsInCall(const FunctionBlockPtr &block, const py::list &args, std::vector<AnfNodePtr> *packed_arguments,
-                       std::vector<AnfNodePtr> *group_arguments);
+  bool ParseArgsInCall(const FunctionBlockPtr &block, const py::list &args, bool *need_fallback,
+                       std::vector<AnfNodePtr> *packed_arguments, std::vector<AnfNodePtr> *group_arguments);
 
   AnfNodePtr GenerateAnfNodeForCall(const FunctionBlockPtr &block, const AnfNodePtr &call_function_anf_node,
                                     const std::vector<AnfNodePtr> &packed_arguments,
@@ -275,12 +286,12 @@ class Parser {
   // so in FunctionBlock class we can use FunctionBlock* in member
   // pre_blocks_ and jumps_ to break reference cycle.
   std::vector<FunctionBlockPtr> func_block_list_;
-  using pStmtFunc = FunctionBlockPtr (Parser::*)(const FunctionBlockPtr &block, const py::object &node);
-  using pExprFunc = AnfNodePtr (Parser::*)(const FunctionBlockPtr &block, const py::object &node);
+  using StmtFunc = FunctionBlockPtr (Parser::*)(const FunctionBlockPtr &block, const py::object &node);
+  using ExprFunc = AnfNodePtr (Parser::*)(const FunctionBlockPtr &block, const py::object &node);
   // Define the function map to parse ast Statement
-  std::map<std::string, pStmtFunc> stmt_method_map_;
+  std::map<std::string, StmtFunc> stmt_method_map_;
   // Define the function map to parse ast expression
-  std::map<std::string, pExprFunc> expr_method_map_;
+  std::map<std::string, ExprFunc> expr_method_map_;
   // Save current loops to support 'continue', 'break' statement.
   std::stack<Loop> loops_;
   string max_for_loop_count_str_;

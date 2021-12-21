@@ -55,106 +55,49 @@ enum WeightQuantType {
   FIXED_BIT_PER_LAYER = 1,
   MIXED_BIT_PER_LAYER = 2,
 };
-constexpr size_t kUint8Quantization = 8;
-constexpr size_t kMaxBit = 8;
+constexpr size_t k8Bit = 8;
+constexpr size_t k16Bit = 16;
 constexpr size_t kMaxNum1024 = 1024;
 constexpr float kPercentBase = 100.0;
 constexpr size_t kMillisecondsBase = 10;
-constexpr size_t kWightIndex = 1;
-constexpr double kScaleThreashold = 1e-38;
+constexpr float delta = 0.1;
+constexpr float ratio = 10.0;
+constexpr int percent = 10;
 
 struct SessionModel {
   session::LiteSession *session{nullptr};
   Model *model{nullptr};
 };
 
-/**
- * 1. when op's weight size > mWeightSize just skip
- * 2. only do conv/deconv/convdepthwise/deconvdepthwise/mul/matmul/batchmatmul quantization
- * 3. when conv/deconv/convdepthwise/deconvdepthwise ops' weight channel size > covWeightQuantChannelThreshold just skip
- * */
-class QuantStrategy {
- public:
-  explicit QuantStrategy(size_t weightSize, size_t covWeightQuantChannelThreshold = 16);
-
-  ~QuantStrategy() = default;
-
-  bool CanConvOpQuantized(const CNodePtr &node) const;
-  bool CanMulOpQuantized(const CNodePtr &node) const;
-  static bool CanOpFullQuantized(const AnfNodePtr &node);
-  bool CanTensorQuantized(const AnfNodePtr &inputNode) const;
-
-  size_t m_weight_size_;
-  size_t m_conv_weight_quant_channel_threshold_;
-
- private:
-  static const std::vector<std::string> conv_types_;
-  static const std::vector<std::string> mul_types_;
-};
-
-constexpr float delta = 0.1;
-constexpr float ratio = 10.0;
-constexpr int percent = 10;
-constexpr int quant_param_size = 32 * 8;
-
 QuantParamHolderPtr GetCNodeQuantHolder(const PrimitivePtr &primitive);
-
-STATUS CalQuantizationParams(schema::QuantParamT *quantParam, double mMin, double mMax, bool narrowRange = false,
-                             int numBits = kUint8Quantization);
 
 std::pair<float, float> OutlierMethod(std::vector<float> min_datas, std::vector<float> max_datas);
 
 std::vector<int8_t> KMeans(float *data, size_t elem_count, size_t k, size_t epochs, schema::QuantParamT *quantParam);
 
-STATUS UpdateTensorDataAndSize(const tensor::TensorPtr &weight, void *quant_datas, int new_size, TypeId new_data_type);
-
-int CalChannels(const ShapeVector &dims, int channel_cnt, bool *channel_at_first);
-
-void CalQuantAssitInfo(const PrimitivePtr &primitive, const ShapeVector &shapes, int index, bool *channel_at_first,
-                       int *channel_cnt);
+int UpdateTensorDataAndSize(const AnfNodePtr &node, const tensor::TensorPtr &weight, void *quant_datas, int new_size,
+                            TypeId new_data_type);
 
 void CalQuantAssitInfo(const schema::PrimitiveT &primitive, const std::vector<int> &shapes, int index,
                        bool *channel_at_first, int *channel_cnt);
 
 bool TensorQuantParamsInited(const schema::TensorT &tensor);
 
-template <typename T>
-STATUS DoBitPack(const tensor::TensorPtr &weight, const size_t &bit_num, const std::vector<T> &quant_datas) {
-  if (bit_num != 8 && bit_num != 16) {
-    std::vector<T> data{};
-    for (size_t i = 0; i < quant_datas.size(); ++i) {
-      data.emplace_back((static_cast<T>(quant_datas[i])));
-    }
-    if (bit_num > 0 && bit_num < 8) {
-      std::vector<uint8_t> pack_data{};
-      BitPack::BitPacking<T, uint8_t>(bit_num, data, &pack_data);
-      auto status =
-        UpdateTensorDataAndSize(weight, pack_data.data(), pack_data.size() * sizeof(uint8_t), kNumberTypeUInt8);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "UpdateTensorDataAndSize error";
-        return RET_ERROR;
-      }
-    } else if (bit_num > 8 && bit_num < 16) {
-      std::vector<uint16_t> pack_data{};
-      BitPack::BitPacking<T, uint16_t>(bit_num, data, &pack_data);
-      auto status =
-        UpdateTensorDataAndSize(weight, pack_data.data(), pack_data.size() * sizeof(uint16_t), kNumberTypeUInt16);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "UpdateTensorDataAndSize error";
-        return RET_ERROR;
-      }
-    }
-  }
-  return RET_OK;
-}
+int MixedBitQuantFilter(const AnfNodePtr &node, const tensor::TensorPtr &weight, const PrimitivePtr &primitive,
+                        QuantType quant_type, WeightQuantType weight_quant_type, TypeId quant_data_type,
+                        double init_scale, int index);
 
-STATUS MixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &primitive, QuantType quant_type,
-                           WeightQuantType weight_quant_type, TypeId quant_data_type, double init_scale, int index);
+int CalChannels(const std::vector<int> &dims, int channel_cnt, bool *channel_at_first);
+
+int GetPreferredDim(const PrimitivePtr &primitive, int input_index, const std::vector<int> &dims);
+
+std::vector<int> ConvertShapeVectorToInt32(const ShapeVector &dims);
 
 template <typename T>
-STATUS FixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &primitive, QuantType quant_type,
-                           int quant_max, int quant_min, size_t bit_num, WeightQuantType weight_quant_type,
-                           TypeId quant_data_type, int index = 1, bool k_means = false) {
+int FixedBitQuantFilter(const AnfNodePtr &parameter, const tensor::TensorPtr &weight, const PrimitivePtr &primitive,
+                        QuantType quant_type, int quant_max, int quant_min, size_t bit_num,
+                        WeightQuantType weight_quant_type, TypeId quant_data_type, int index, bool symmetry = false,
+                        bool narrow_range = false, bool k_means = false) {
   MS_ASSERT(weight != nullptr);
   MS_ASSERT(primitive != nullptr);
   auto dims = weight->shape();
@@ -176,18 +119,12 @@ STATUS FixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
   std::vector<T> quant_data(elem_count);
   int ret = RET_OK;
   if (weight_quant_type == FIXED_BIT_PER_CHANNEL) {
-    bool channel_at_first = true;
-    int channel_cnt = -1;
-    CalQuantAssitInfo(primitive, dims, index, &channel_at_first, &channel_cnt);
-    auto channels = CalChannels(dims, channel_cnt, &channel_at_first);
-    if (channels == 0) {
-      MS_LOG(ERROR) << "channels is zero";
-      return RET_ERROR;
-    }
+    int preferred_dim = GetPreferredDim(primitive, index, ConvertShapeVectorToInt32(dims));
     ret = DoPerChannelQuant<T>(static_cast<float *>(weight->data_c()), weight->DataSize(),
                                static_cast<mindspore::schema::QuantType>(quant_type), &quant_params, quant_max,
-                               quant_min, bit_num, k_means, &quant_data, channels, channel_at_first);
-    if (ret == RET_CONTINUE) {
+                               quant_min, bit_num, &quant_data, ConvertShapeVectorToInt32(dims), preferred_dim,
+                               symmetry, narrow_range, k_means);
+    if (ret == RET_NO_CHANGE) {
       return ret;
     } else if (ret != RET_OK) {
       MS_LOG(ERROR) << "Do per channel quant failed.";
@@ -195,7 +132,7 @@ STATUS FixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
     }
   } else if (weight_quant_type == FIXED_BIT_PER_LAYER) {
     ret = DoPerLayerQuant<T>(static_cast<float *>(weight->data_c()), weight->DataSize(), &quant_params, quant_max,
-                             quant_min, bit_num, k_means, &quant_data);
+                             quant_min, bit_num, &quant_data, symmetry, narrow_range, k_means);
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "Do per layer quant failed.";
       return ret;
@@ -203,7 +140,8 @@ STATUS FixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
   } else {
     MS_LOG(ERROR) << "Unsupported weight quant type:" << weight_quant_type;
   }
-  auto status = UpdateTensorDataAndSize(weight, quant_data.data(), quant_data.size() * sizeof(T), quant_data_type);
+  auto status =
+    UpdateTensorDataAndSize(parameter, weight, quant_data.data(), quant_data.size() * sizeof(T), quant_data_type);
   if (status != RET_OK) {
     MS_LOG(ERROR) << "UpdateTensorDataAndSize error";
     return RET_ERROR;
@@ -223,22 +161,16 @@ STATUS FixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
     return RET_ERROR;
   }
   auto quant_param_holder = GetCNodeQuantHolder(primitive);
-  if (quant_type == QuantType_PostTraining) {
-    quant_param_holder->set_input_quant_param(index, quant_params);
-  } else {
-    quant_param_holder->set_input_quant_param(index, quant_params);
-  }
+  quant_param_holder->set_input_quant_param(index, quant_params);
+  quant_param_holder->set_quant_type(quant_type);
   return ret;
 }
-
-// utils
 
 std::string NodePrimitiveType(const CNodePtr &cnode);
 
 SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const converter::Flags &flags, int thread_num);
-
-FuncGraphPtr CopyFuncGraph(const FuncGraphPtr &);
-
+SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const converter::Flags &flags, int thread_num,
+                                      int *size);
 void GetLiteParameter(const AnfNodePtr &node, ParameterPtr *param_node, tensor::TensorPtr *tensor_info);
 
 bool CheckNodeInSet(const CNodePtr &cnode, const std::set<PrimitivePtr> &support_primitive_types);

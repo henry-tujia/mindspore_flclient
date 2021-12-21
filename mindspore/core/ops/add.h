@@ -27,18 +27,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameAdd = prim::kAdd;
+/// \brief Adds two input tensors element-wise. Refer to Python API @ref mindspore.ops.Add for more details.
 class MS_CORE_API Add : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Add() : PrimitiveC(kNameAdd) { InitIOName({"x", "y"}, {"output"}); }
   explicit Add(const std::string k_name) : PrimitiveC(k_name) { InitIOName({"x", "y"}, {"output"}); }
+  /// \brief Destructor.
   ~Add() = default;
   MS_DECLARE_PARENT(Add, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Add for the inputs.
   void Init() {}
 };
 
 AbstractBasePtr AddInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                          const std::vector<AbstractBasePtr> &input_args);
-using PrimAddPtr = std::shared_ptr<Add>;
 }  // namespace ops
 }  // namespace mindspore
 

@@ -34,9 +34,11 @@ void ConvolutionDepthwiseFp16CPUKernel::PackWeight() {
 int ConvolutionDepthwiseFp16CPUKernel::MallocWeightBiasData() {
   auto weight_tensor = in_tensors_.at(kWeightIndex);
   int channel = weight_tensor->Batch();
+  MS_CHECK_TRUE_RET(channel > 0, RET_ERROR);
   int pack_weight_size = channel * weight_tensor->Height() * weight_tensor->Width();
   if (!op_parameter_->is_train_session_) {
     if (packed_weight_ == nullptr) {
+      CHECK_LESS_RETURN(MAX_MALLOC_SIZE, pack_weight_size * sizeof(float16_t));
       packed_weight_ = reinterpret_cast<float16_t *>(malloc(pack_weight_size * sizeof(float16_t)));
       if (packed_weight_ == nullptr) {
         MS_LOG(ERROR) << "Malloc buffer failed.";
@@ -45,6 +47,7 @@ int ConvolutionDepthwiseFp16CPUKernel::MallocWeightBiasData() {
     }
   }
   if (bias_data_ == nullptr) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, channel * sizeof(float16_t));
     bias_data_ = malloc(channel * sizeof(float16_t));
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "Malloc buffer failed.";
@@ -55,7 +58,7 @@ int ConvolutionDepthwiseFp16CPUKernel::MallocWeightBiasData() {
   return RET_OK;
 }
 
-int ConvolutionDepthwiseFp16CPUKernel::Init() {
+int ConvolutionDepthwiseFp16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   UpdateOriginWeightAndBias();
@@ -79,7 +82,7 @@ int ConvolutionDepthwiseFp16CPUKernel::Init() {
 }
 
 int ConvolutionDepthwiseFp16CPUKernel::ReSize() {
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }
@@ -122,5 +125,4 @@ int ConvolutionDepthwiseFp16CPUKernel::Run() {
   }
   return ret;
 }
-
 }  // namespace mindspore::kernel

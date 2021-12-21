@@ -27,14 +27,14 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Unsqueeze;
 
 namespace mindspore::kernel {
-int Unsqueezeint8CPUKernel::Init() {
+int Unsqueezeint8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto *input_tensor = in_tensors_.at(0);
   CHECK_NULL_RETURN(input_tensor);
   auto quant_params = input_tensor->quant_params();
   MS_CHECK_TRUE_RET(quant_params.size() == 1, RET_ERROR);
-  param_->quant_arg.in_quant_args_.scale_ = quant_params.front().scale;
+  param_->quant_arg.in_quant_args_.scale_ = static_cast<float>(quant_params.front().scale);
   param_->quant_arg.in_quant_args_.zp_ = quant_params.front().zeroPoint;
 
   auto out_quant_args = input_tensor->quant_params();

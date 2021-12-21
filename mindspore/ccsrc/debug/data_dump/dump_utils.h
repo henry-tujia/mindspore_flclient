@@ -27,7 +27,7 @@ namespace mindspore {
 static const size_t PARAMETER_OUTPUT_INDEX = 0;
 static const size_t VALUE_NODE_OUTPUT_INDEX = 0;
 
-std::string GenerateDumpPath(uint32_t graph_id, uint32_t rank_id = 0);
+std::string GenerateDumpPath(uint32_t graph_id, uint32_t rank_id = 0, bool is_cst = false);
 
 void GetFileKernelName(NotNull<std::string *> kernel_name);
 
@@ -39,7 +39,10 @@ void DumpMemToFile(const std::string &file_path, const device::DeviceAddress &ad
                    const TypeId &type, bool trans_flag = false);
 // Get time stamp since epoch in microseconds
 uint64_t GetTimeStamp();
-std::string GetOpNameWithoutScope(const std::string &fullname_with_scope);
+std::string GetOpNameWithoutScope(const std::string &fullname_with_scope, const std::string &separator = "--");
+
+// dump target string into file
+void DumpToFile(const std::string &file_name, const std::string &dump_str);
 }  // namespace mindspore
 
 #endif  // MINDSPORE_MINDSPORE_CCSRC_DEBUG_DATA_DUMP_DUMP_UTILS_H_

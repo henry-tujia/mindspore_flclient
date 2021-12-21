@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
+#include "minddata/dataset/kernels/image/mixup_batch_op.h"
+
+#include <limits>
 #include <string>
 #include <utility>
+
 #include "minddata/dataset/core/cv_tensor.h"
-#include "minddata/dataset/kernels/image/mixup_batch_op.h"
 #include "minddata/dataset/kernels/data/data_utils.h"
 #include "minddata/dataset/util/random.h"
 #include "minddata/dataset/util/status.h"
@@ -42,7 +45,9 @@ Status MixUpBatchOp::ComputeLabels(const TensorRow &input, std::shared_ptr<Tenso
   CHECK_FAIL_RETURN_UNEXPECTED(
     images_size <= static_cast<size_t>(std::numeric_limits<int64_t>::max()),
     "The \'images_size\' must not be more than \'INT64_MAX\', but got: " + std::to_string(images_size));
-  for (int64_t i = 0; i < static_cast<int64_t>(images_size); i++) rand_indx->push_back(i);
+  for (int64_t i = 0; i < static_cast<int64_t>(images_size); i++) {
+    rand_indx->push_back(i);
+  }
   std::shuffle(rand_indx->begin(), rand_indx->end(), rnd_);
 
   RETURN_IF_NOT_OK(TypeCast(std::move(input.at(1)), out_labels, DataType(DataType::DE_FLOAT32)));
@@ -78,7 +83,7 @@ Status MixUpBatchOp::ComputeLabels(const TensorRow &input, std::shared_ptr<Tenso
 Status MixUpBatchOp::Compute(const TensorRow &input, TensorRow *output) {
   if (input.size() < 2) {
     RETURN_STATUS_UNEXPECTED("MixUpBatch: size of input data should be 2 (including images or labels), but got: " +
-                             std::to_string(input.size()));
+                             std::to_string(input.size()) + ", check 'input_columns' when call this operator.");
   }
 
   std::vector<std::shared_ptr<CVTensor>> images;
@@ -107,7 +112,8 @@ Status MixUpBatchOp::Compute(const TensorRow &input, TensorRow *output) {
   }
   if ((image_shape[dimension_one] != value_one && image_shape[dimension_one] != value_three) &&
       (image_shape[dimension_three] != value_one && image_shape[dimension_three] != value_three)) {
-    RETURN_STATUS_UNEXPECTED("MixUpBatch: images shape is not <H,W,C> or <C,H,W>.");
+    RETURN_STATUS_UNEXPECTED("MixUpBatch: images shape should in <N,H,W,C> or <N,C,H,W>, got shape:" +
+                             input.at(0)->shape().ToString());
   }
 
   // Move images into a vector of CVTensors

@@ -20,6 +20,9 @@
 #include "include/errorcode.h"
 #include "src/common/log_adapter.h"
 #include "nnacl/fp32/splice_fp32.h"
+#ifdef ENABLE_FP16
+#include "nnacl/fp16/splice_fp16.h"
+#endif
 
 using mindspore::lite::KernelRegistrar;
 using mindspore::lite::RET_ERROR;
@@ -27,7 +30,7 @@ using mindspore::lite::RET_OK;
 using mindspore::lite::RET_PARAM_INVALID;
 using mindspore::schema::PrimitiveType_Splice;
 namespace mindspore::kernel {
-int SpliceCPUKernel::Init() {
+int SpliceCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(parameter_);
@@ -65,13 +68,24 @@ int SpliceCPUKernel::Run() {
       return RET_PARAM_INVALID;
     }
   }
-  auto input_data = reinterpret_cast<float *>(input_tensor->data());
+  auto input_data = input_tensor->data();
   CHECK_NULL_RETURN(input_data);
-  auto output_data = reinterpret_cast<float *>(output_tensor->data());
+  auto output_data = output_tensor->data();
   CHECK_NULL_RETURN(output_data);
-  SpliceFp32(input_data, src_row, src_col, parameter_, output_data, dst_row, dst_col);
+  if (input_tensor->data_type() == kNumberTypeFloat16) {
+#ifdef ENABLE_FP16
+    SpliceFp16(static_cast<float16_t *>(input_data), src_row, src_col, parameter_,
+               reinterpret_cast<float16_t *>(output_data), dst_row, dst_col);
+#endif
+  } else {
+    SpliceFp32(static_cast<float *>(input_data), src_row, src_col, parameter_, reinterpret_cast<float *>(output_data),
+               dst_row, dst_col);
+  }
   return RET_OK;
 }
-REG_KERNEL(kCPU, kNumberTypeFloat, PrimitiveType_Splice, LiteKernelCreator<SpliceCPUKernel>)
+
 REG_KERNEL(kCPU, kNumberTypeFloat32, PrimitiveType_Splice, LiteKernelCreator<SpliceCPUKernel>)
+#ifdef ENABLE_FP16
+REG_KERNEL(kCPU, kNumberTypeFloat16, PrimitiveType_Splice, LiteKernelCreator<SpliceCPUKernel>)
+#endif
 }  // namespace mindspore::kernel

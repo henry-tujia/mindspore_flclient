@@ -62,7 +62,7 @@ Status TransposeInfo::ComputeAxis() {
   }
   elements = dim_tuple->value();
   if (elements.size() != inputs_shape_[0].size()) {
-    MS_LOG(ERROR) << name_ << ": elements size must equal to inputs shape 0 size.";
+    MS_LOG(ERROR) << name_ << ": elements size must be equal to inputs shape[0] size.";
     return FAILED;
   }
   axis_v_.clear();
@@ -110,25 +110,6 @@ Status TransposeInfo::InferTensorMap() {
 
 // compute axis_v_ during this method
 Status TransposeInfo::GetAttrs() { return ComputeAxis(); }
-
-Status TransposeInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << ": Init success.";
-  return SUCCESS;
-}
-
-Status TransposeInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success.";
-  return SUCCESS;
-}
 
 Status TransposeInfo::SetCostUnderStrategy(const mindspore::parallel::StrategyPtr &strategy) {
   return SetCostUnderStrategyBase(strategy);

@@ -22,7 +22,7 @@
 #include "src/tensor.h"
 #include "src/common/log_adapter.h"
 #ifndef STRING_KERNEL_CLIP
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 #endif
 #include "tools/common/option.h"
 #include "include/errorcode.h"
@@ -30,7 +30,6 @@
 
 namespace mindspore {
 namespace lite {
-
 int StringsToMSTensor(const std::vector<std::string> &inputs, tensor::MSTensor *tensor) {
 #ifndef STRING_KERNEL_CLIP
   if (tensor == nullptr) {

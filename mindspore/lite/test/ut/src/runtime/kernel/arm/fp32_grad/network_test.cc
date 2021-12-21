@@ -39,10 +39,9 @@ namespace mindspore {
 class NetworkTest : public mindspore::CommonTest {
  public:
   NetworkTest() {}
+  int32_t runNet(mindspore::session::LiteSession *session, const std::string &in, const std::string &out,
+                 const char *tensor_name, bool debug = false);
 };
-
-int32_t runNet(mindspore::session::LiteSession *session, const std::string &in, const std::string &out,
-               const char *tensor_name, bool debug = false);
 
 int32_t fileIterator(mindspore::session::LiteSession *session, const std::string &path,
                      std::function<int32_t(mindspore::session::LiteSession *session, const std::string &)> cb) {
@@ -60,8 +59,8 @@ int32_t fileIterator(mindspore::session::LiteSession *session, const std::string
 }
 void replaceExt(const std::string &src, std::string *dst) { *dst = src.substr(0, src.find_last_of('.')) + ".emb"; }
 
-int32_t runNet(mindspore::session::LiteSession *session, const std::string &in, const std::string &out,
-               const char *tensor_name, bool debug) {
+int32_t NetworkTest::runNet(mindspore::session::LiteSession *session, const std::string &in, const std::string &out,
+                            const char *tensor_name, bool debug) {
   // setup input
   auto inputs = session->GetInputs();
   auto inTensor = inputs.at(0);
@@ -115,13 +114,10 @@ TEST_F(NetworkTest, efficient_net) {
 }
 
 TEST_F(NetworkTest, mobileface_net) {
-  char *buf = nullptr;
-  size_t net_size = 0;
-
-  std::string net = "./nets/mobilefacenet0924.ms";
-  ReadFile(net.c_str(), &net_size, &buf);
-  auto model = lite::Model::Import(buf, net_size);
-  delete[] buf;
+  size_t size = 0;
+  char *buff = lite::ReadFile("./nets/mobilefacenet0924.ms", &size);
+  auto model = lite::Model::Import(buff, size);
+  delete[] buff;
   auto context = new lite::Context;
   ASSERT_NE(context, nullptr);
   context->device_list_[0].device_info_.cpu_device_info_.cpu_bind_mode_ = lite::NO_BIND;
@@ -150,7 +146,8 @@ TEST_F(NetworkTest, noname) {
   context.thread_num_ = 1;
 
   lite::TrainCfg cfg;
-  cfg.loss_name_ = "nhwc";
+  cfg.loss_name_.clear();
+  cfg.loss_name_.emplace_back("nhwc");
   auto session = mindspore::session::TrainSession::CreateTrainSession(net, &context, true, &cfg);
   ASSERT_NE(session, nullptr);
   auto tensors_map = session->GetOutputs();
@@ -169,7 +166,8 @@ TEST_F(NetworkTest, setname) {
   context.thread_num_ = 1;
 
   lite::TrainCfg train_cfg;
-  train_cfg.loss_name_ = "nhwc";
+  train_cfg.loss_name_.clear();
+  train_cfg.loss_name_.emplace_back("nhwc");
 
   auto session = mindspore::session::TrainSession::CreateTrainSession(net, &context, true, &train_cfg);
   ASSERT_NE(session, nullptr);

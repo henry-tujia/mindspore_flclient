@@ -53,36 +53,45 @@ int GatherTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     MS_LOG(ERROR) << "network is invalid";
     return RET_ERROR;
   }
-  // convert constant MSTensor to ITensor
-  nvinfer1::ITensor *add_tensor = lite::ConvertConstantTensor(network, this->in_tensors_[1]);
-  if (add_tensor == nullptr) {
-    MS_LOG(ERROR) << "add a new tensor failed for TensorRT GatherTensorRTOp.";
-    return RET_ERROR;
-  }
-
-  nvinfer1::ITensor *gather_input = tensorrt_in_tensors_[0].trt_tensor_;
-  Format out_format = tensorrt_in_tensors_[0].format_;
-  if (tensorrt_in_tensors_[0].trt_tensor_->getDimensions().nbDims == DIMENSION_4D &&
-      tensorrt_in_tensors_[0].format_ == Format::NCHW) {
-    // transpose: NCHW->NHWC
-    nvinfer1::IShuffleLayer *transpose_layer_in = NCHW2NHWC(network, *tensorrt_in_tensors_[0].trt_tensor_);
-    if (transpose_layer_in == nullptr) {
-      MS_LOG(ERROR) << "op action convert failed";
+  if (tensorrt_in_tensors_.size() < INPUT_SIZE2 && in_tensors_.size() >= INPUT_SIZE2) {
+    int const_ms_tensor_index = in_tensors_[0].IsConst() ? 0 : 1;
+    auto const_input = ConvertConstantTensor(network, in_tensors_[const_ms_tensor_index], op_name_);
+    if (const_input == nullptr) {
+      MS_LOG(ERROR) << "add const input tensor failed for " << op_name_;
       return RET_ERROR;
     }
-    transpose_layer_in->setName((op_name_ + "_transpose2NHWC").c_str());
-    gather_input = transpose_layer_in->getOutput(0);
-    out_format = Format::NHWC;
+    tensorrt_in_tensors_.push_back(ITensorHelper{const_input, Format::NHWC, true});
   }
 
-  nvinfer1::IGatherLayer *gather_layer = network->addGather(*gather_input, *add_tensor /* indices */, axis_ /* axis */);
+  int indices_tensor_index = tensorrt_in_tensors_[0].trt_tensor_->getType() == nvinfer1::DataType::kINT32 ? 0 : 1;
+
+  nvinfer1::ITensor *gather_input = PreprocessInputs2SameDim(network, tensorrt_in_tensors_[1 - indices_tensor_index]);
+  nvinfer1::ITensor *indices_tensor = PreprocessInputs2SameDim(network, tensorrt_in_tensors_[indices_tensor_index]);
+
+  nvinfer1::IGatherLayer *gather_layer =
+    network->addGather(*gather_input, *indices_tensor /* indices */, axis_ /* axis */);
   if (gather_layer == nullptr) {
     MS_LOG(ERROR) << "addGather failed for TensorRT.";
     return RET_ERROR;
   }
+
   gather_layer->setName(op_name_.c_str());
-  gather_layer->getOutput(0)->setName(out_tensors_[0].Name().c_str());
-  this->AddInnerOutTensors(ITensorHelper{gather_layer->getOutput(0), out_format});
+  nvinfer1::ITensor *op_output = gather_layer->getOutput(0);
+  // keep shape
+  if (in_tensors_[1].Shape().empty()) {
+    auto squeeze = network->addShuffle(*op_output);
+    if (squeeze == nullptr) {
+      MS_LOG(ERROR) << "add output squeeze failed for " << op_name_;
+      return RET_ERROR;
+    }
+    squeeze->setName((op_name_ + "_squeeze_out").c_str());
+    auto old_shape = ConvertMSShape(op_output->getDimensions());
+    old_shape.erase(old_shape.begin() + axis_);
+    squeeze->setReshapeDimensions(ConvertCudaDims(old_shape));
+    op_output = squeeze->getOutput(0);
+  }
+  op_output->setName((op_name_ + "_output").c_str());
+  this->AddInnerOutTensors(ITensorHelper{op_output, Format::NHWC, true});
   return RET_OK;
 }
 }  // namespace mindspore::lite

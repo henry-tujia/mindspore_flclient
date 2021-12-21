@@ -118,12 +118,7 @@ void TestMain(const std::vector<ArgsTupleWithDtype> &input_infos, const std::vec
     free(op_parameter);
     FAIL();
   }
-  auto ret = inner_kernel->Init();
-  if (ret != RET_OK) {
-    std::cerr << "kernel init failed.";
-    free(op_parameter);
-    FAIL();
-  }
+
   std::shared_ptr<kernel::Kernel> shared_kernel(inner_kernel);
   auto *kernel = new (std::nothrow) kernel::LiteKernel(shared_kernel);
   if (kernel == nullptr) {
@@ -147,9 +142,9 @@ void TestMain(const std::vector<ArgsTupleWithDtype> &input_infos, const std::vec
     return;
   }
 
-  // call sub_graph->Init() after construct subgraph like scheduler.cc
-  MS_LOG(DEBUG) << "call sub_graph->Init()";
-  EXPECT_TRUE(sub_graph->Init() == RET_OK);
+  // call sub_graph->RunPass() after construct subgraph like scheduler.cc
+  MS_LOG(DEBUG) << "call sub_graph->RunPass()";
+  EXPECT_TRUE(sub_graph->RunPass() == RET_OK);
 
   // simulating benchmark:  session_->CompileGraph() -> PrepareKernels() -> OpenCLSubGraph.Prepare()
   MS_LOG(DEBUG) << "call sub_graph->Prepare()";
@@ -262,7 +257,7 @@ void TestMain(const std::vector<ArgsTupleWithDtype> &input_infos, std::tuple<std
 
   const std::vector<int> &output_shape = std::get<0>(output_info);
   float *expect_data = std::get<1>(output_info);
-  auto output = Tensor(kNumberTypeFloat32, output_shape, mindspore::NHWC, VAR);
+  auto output = Tensor(kNumberTypeFloat32, output_shape, mindspore::NHWC, GRAPH_OUTPUT);
 
   // simulating benchmark:  session_->CompileGraph() -> scheduler.Schedule() -> BuildKernels()
   MS_LOG(DEBUG) << "create OpenCLKernel";
@@ -283,12 +278,7 @@ void TestMain(const std::vector<ArgsTupleWithDtype> &input_infos, std::tuple<std
     free(op_parameter);
     FAIL();
   }
-  auto ret = inner_kernel->Init();
-  if (ret != RET_OK) {
-    std::cerr << "kernel init failed.";
-    free(op_parameter);
-    FAIL();
-  }
+
   inner_kernel->set_registry_data_type(key.data_type);
   std::shared_ptr<kernel::Kernel> shared_kernel(inner_kernel);
   auto *kernel = new (std::nothrow) kernel::LiteKernel(shared_kernel);
@@ -312,9 +302,9 @@ void TestMain(const std::vector<ArgsTupleWithDtype> &input_infos, std::tuple<std
     return;
   }
 
-  // call sub_graph->Init() after construct subgraph like scheduler.cc
-  MS_LOG(DEBUG) << "call sub_graph->Init()";
-  EXPECT_TRUE(sub_graph->Init() == RET_OK);
+  // call sub_graph->RunPass() after construct subgraph like scheduler.cc
+  MS_LOG(DEBUG) << "call sub_graph->RunPass()";
+  EXPECT_TRUE(sub_graph->RunPass() == RET_OK);
 
   // simulating benchmark:  session_->CompileGraph() -> PrepareKernels() -> OpenCLSubGraph.Prepare()
   MS_LOG(DEBUG) << "call sub_graph->Prepare()";

@@ -20,11 +20,9 @@
 #include <utility>
 
 #include "actor/actormgr.h"
-#include "actor/actorpolicy.h"
 #include "actor/iomgr.h"
 
 namespace mindspore {
-
 ActorMgr ActorMgr::actorMgr;
 std::map<std::string, std::shared_ptr<IOMgr>> ActorMgr::ioMgrs;
 
@@ -51,23 +49,36 @@ ActorMgr::~ActorMgr() {
   }
 }
 
-void ActorMgr::Initialize(bool use_inner_pool, size_t actor_thread_num, size_t max_thread_num) {
+int ActorMgr::Initialize(bool use_inner_pool, size_t actor_thread_num, size_t max_thread_num) {
   bool expected = false;
   if (!initialized_.compare_exchange_strong(expected, true)) {
     MS_LOG(DEBUG) << "Actor Manager has been initialized before";
-    return;
+    return MINDRT_OK;
   }
   // create inner thread pool only when specified use_inner_pool
   if (use_inner_pool) {
     if (max_thread_num <= actor_thread_num) {
       inner_pool_ = ActorThreadPool::CreateThreadPool(actor_thread_num);
+      if (inner_pool_ == nullptr) {
+        MS_LOG(ERROR) << "ActorMgr CreateThreadPool failed";
+        return MINDRT_ERROR;
+      }
     } else {
       inner_pool_ = ActorThreadPool::CreateThreadPool(actor_thread_num, max_thread_num, {});
+      if (inner_pool_ == nullptr) {
+        MS_LOG(ERROR) << "ActorMgr CreateThreadPool failed";
+        return MINDRT_ERROR;
+      }
       inner_pool_->SetActorThreadNum(actor_thread_num);
       inner_pool_->DisableOccupiedActorThread();
       inner_pool_->SetKernelThreadNum(max_thread_num - actor_thread_num);
     }
+    if (inner_pool_ != nullptr) {
+      inner_pool_->SetMaxSpinCount(kDefaultSpinCount);
+      inner_pool_->SetSpinCountMaxValue();
+    }
   }
+  return MINDRT_OK;
 }
 
 void ActorMgr::SetActorReady(const ActorReference &actor) const {
@@ -122,15 +133,13 @@ void ActorMgr::TerminateAll() {
 
   // send terminal msg to all actors.
   for (auto actorIt = actorsWaiting.begin(); actorIt != actorsWaiting.end(); ++actorIt) {
-    (*actorIt)->SetRunningStatus(true);
-    std::unique_ptr<MessageBase> msg(new (std::nothrow) MessageBase("Terminate", MessageBase::Type::KTERMINATE));
-    MINDRT_OOM_EXIT(msg);
-    (void)(*actorIt)->EnqueMessage(std::move(msg));
+    (*actorIt)->Terminate();
   }
 
-  // wait actor's thread to finish.
+  // wait actor's thread to finish and remove actor.
   for (auto actorIt = actorsWaiting.begin(); actorIt != actorsWaiting.end(); ++actorIt) {
     (*actorIt)->Await();
+    RemoveActor((*actorIt)->GetAID().Name());
   }
 }
 
@@ -144,7 +153,7 @@ void ActorMgr::Finalize() {
   // stop iomgr thread
   for (auto mgrIt = ioMgrs.begin(); mgrIt != ioMgrs.end(); ++mgrIt) {
     MS_LOG(INFO) << "finalize IOMgr=" << mgrIt->first.c_str();
-    mgrIt->second->Finish();
+    mgrIt->second->Finalize();
   }
 
   // delete actor thread pool if use_inner_pool
@@ -153,7 +162,7 @@ void ActorMgr::Finalize() {
   MS_LOG(INFO) << "mindrt IOMGRS finish exiting.";
 }
 
-ActorBase *ActorMgr::GetActor(const AID &id) {
+ActorReference ActorMgr::GetActor(const AID &id) {
 #ifndef MS_COMPILE_IOS
   actorsMutex.lock_shared();
 #else
@@ -167,7 +176,7 @@ ActorBase *ActorMgr::GetActor(const AID &id) {
 #else
     actorsMutex.unlock();
 #endif
-    return result.get();
+    return result;
   } else {
 #ifndef MS_COMPILE_IOS
     actorsMutex.unlock_shared();
@@ -179,7 +188,11 @@ ActorBase *ActorMgr::GetActor(const AID &id) {
   }
 }
 
-int ActorMgr::Send(const AID &to, std::unique_ptr<MessageBase> &&msg, bool remoteLink, bool isExactNotRemote) {
+int ActorMgr::EnqueueMessage(const mindspore::ActorReference actor, std::unique_ptr<mindspore::MessageBase> msg) {
+  return actor->EnqueMessage(std::move(msg));
+}
+
+int ActorMgr::Send(const AID &to, std::unique_ptr<MessageBase> msg, bool remoteLink, bool isExactNotRemote) {
   // The destination is local
   if (IsLocalAddres(to)) {
     auto actor = GetActor(to);
@@ -187,7 +200,7 @@ int ActorMgr::Send(const AID &to, std::unique_ptr<MessageBase> &&msg, bool remot
       if (to.GetProtocol() == MINDRT_UDP && msg->GetType() == MessageBase::Type::KMSG) {
         msg->type = MessageBase::Type::KUDP;
       }
-      return actor->EnqueMessage(std::move(msg));
+      return EnqueueMessage(actor, std::move(msg));
     } else {
       return ACTOR_NOT_FIND;
     }
@@ -212,27 +225,28 @@ int ActorMgr::Send(const AID &to, std::unique_ptr<MessageBase> &&msg, bool remot
   }
 }
 
-AID ActorMgr::Spawn(const ActorReference &actor, bool shareThread, bool start) {
+AID ActorMgr::Spawn(const ActorReference &actor, bool shareThread) {
   actorsMutex.lock();
   if (actors.find(actor->GetAID().Name()) != actors.end()) {
     actorsMutex.unlock();
     MS_LOG(ERROR) << "The actor's name conflicts,name:" << actor->GetAID().Name().c_str();
     MINDRT_EXIT("Actor name conflicts.");
   }
-
   MS_LOG(DEBUG) << "ACTOR was spawned,a=" << actor->GetAID().Name().c_str();
 
-  std::unique_ptr<ActorPolicy> threadPolicy;
-
   if (shareThread) {
-    threadPolicy.reset(new (std::nothrow) ShardedThread(actor));
-    MINDRT_OOM_EXIT(threadPolicy);
-    actor->Spawn(actor, std::move(threadPolicy));
+    auto mailbox = std::unique_ptr<MailBox>(new (std::nothrow) NonblockingMailBox());
+    auto hook = std::unique_ptr<std::function<void()>>(
+      new std::function<void()>([actor]() { ActorMgr::GetActorMgrRef()->SetActorReady(actor); }));
+    // the mailbox has this hook, the hook holds the actor reference, the actor has the mailbox. this is a cycle which
+    // will leads to memory leak. in order to fix this issue, we should explicitly free the mailbox when terminate the
+    // actor
+    mailbox->SetNotifyHook(std::move(hook));
+    actor->Spawn(actor, std::move(mailbox));
 
   } else {
-    threadPolicy.reset(new (std::nothrow) SingleThread());
-    MINDRT_OOM_EXIT(threadPolicy);
-    actor->Spawn(actor, std::move(threadPolicy));
+    auto mailbox = std::unique_ptr<MailBox>(new (std::nothrow) BlockingMailBox());
+    actor->Spawn(actor, std::move(mailbox));
     ActorMgr::GetActorMgrRef()->SetActorReady(actor);
   }
 
@@ -242,28 +256,16 @@ AID ActorMgr::Spawn(const ActorReference &actor, bool shareThread, bool start) {
   // long time
   actor->Init();
 
-  actor->SetRunningStatus(start);
-
   return actor->GetAID();
 }
 
 void ActorMgr::Terminate(const AID &id) {
   auto actor = GetActor(id);
   if (actor != nullptr) {
-    std::unique_ptr<MessageBase> msg(new (std::nothrow) MessageBase("Terminate", MessageBase::Type::KTERMINATE));
-    MINDRT_OOM_EXIT(msg);
-    (void)actor->EnqueMessage(std::move(msg));
-    actor->SetRunningStatus(true);
-
+    actor->Terminate();
     // Wait actor's thread to finish.
     actor->Await();
-  }
-}
-
-void ActorMgr::SetActorStatus(const AID &pid, bool start) {
-  auto actor = GetActor(pid);
-  if (actor != nullptr) {
-    actor->SetRunningStatus(start);
+    RemoveActor(id.Name());
   }
 }
 
@@ -273,5 +275,4 @@ void ActorMgr::Wait(const AID &id) {
     actor->Await();
   }
 }
-
 };  // end of namespace mindspore

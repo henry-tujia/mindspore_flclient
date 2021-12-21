@@ -24,6 +24,12 @@ ATTR_MAP(PadD) = {{"paddings", ATTR_DESC(paddings, AnyTraits<std::vector<std::ve
 OUTPUT_MAP(PadD) = {{0, OUTPUT_DESC(y)}};
 REG_ADPT_DESC(PadD, kNamePadD, ADPT_DESC(PadD))
 
+// Pad
+INPUT_MAP(Pad) = {{1, INPUT_DESC(x)}, {2, INPUT_DESC(paddings)}};
+ATTR_MAP(Pad) = EMPTY_ATTR_MAP;
+OUTPUT_MAP(Pad) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(Pad, kNamePadV1, ADPT_DESC(Pad))
+
 // BroadcastToD
 INPUT_MAP(BroadcastToD) = {{1, INPUT_DESC(x)}};
 ATTR_MAP(BroadcastToD) = {{"shape", ATTR_DESC(shape, AnyTraits<int64_t>(), AnyTraits<std::vector<int64_t>>())}};
@@ -42,10 +48,22 @@ ATTR_MAP(FillD) = {{"dims", ATTR_DESC(dims, AnyTraits<std::vector<int64_t>>())}}
 OUTPUT_MAP(FillD) = {{0, OUTPUT_DESC(y)}};
 REG_ADPT_DESC(FillD, kNameFillD, ADPT_DESC(FillD))
 
+// Fill
+INPUT_MAP(Fill) = {{1, INPUT_DESC(dims)}, {2, INPUT_DESC(value)}};
+ATTR_MAP(Fill) = EMPTY_ATTR_MAP;
+OUTPUT_MAP(Fill) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(Fill, kNameFillV1, ADPT_DESC(Fill))
+
 // PadV3
 INPUT_MAP(PadV3) = {{1, INPUT_DESC(x)}, {2, INPUT_DESC(paddings)}, {3, INPUT_DESC(constant_values)}};
 ATTR_MAP(PadV3) = {{"mode", ATTR_DESC(mode, AnyTraits<std::string>())},
                    {"pad_contiguous", ATTR_DESC(paddings_contiguous, AnyTraits<bool>())}};
 OUTPUT_MAP(PadV3) = {{0, OUTPUT_DESC(y)}};
 REG_ADPT_DESC(PadV3, kNamePadV3, ADPT_DESC(PadV3))
+
+// PadV2
+INPUT_MAP(PadV2) = {{1, INPUT_DESC(x)}, {2, INPUT_DESC(paddings)}, {3, INPUT_DESC(constant_values)}};
+ATTR_MAP(PadV2) = EMPTY_ATTR_MAP;
+OUTPUT_MAP(PadV2) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(PadV2, kNamePadV2, ADPT_DESC(PadV2))
 }  // namespace mindspore::transform

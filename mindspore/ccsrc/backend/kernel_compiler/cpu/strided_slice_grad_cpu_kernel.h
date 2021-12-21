@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_SLICE_GRAD_CPU_KERNEL_H_
-#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_SLICE_GRAD_CPU_KERNEL_H_
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_STRIDED_SLICE_GRAD_CPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_STRIDED_SLICE_GRAD_CPU_KERNEL_H_
 #include <vector>
 #include <memory>
 #include "backend/kernel_compiler/cpu/nnacl/fp32_grad/strided_slice_grad.h"
@@ -26,7 +26,7 @@ namespace kernel {
 class StridedSliceGradCPUKernel : public CPUKernel {
  public:
   StridedSliceGradCPUKernel() = default;
-  ~StridedSliceGradCPUKernel() override = default;
+  ~StridedSliceGradCPUKernel() override;
 
   void InitKernel(const CNodePtr &kernel_node) override;
 
@@ -46,10 +46,7 @@ class StridedSliceGradCPUKernel : public CPUKernel {
   StridedSliceParameter *param_{nullptr};
 };
 
-MS_REG_CPU_KERNEL(StridedSliceGrad, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
-                  StridedSliceGradCPUKernel);
-
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_SLICE_GRAD_CPU_KERNEL_H_
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_STRIDED_SLICE_GRAD_CPU_KERNEL_H_

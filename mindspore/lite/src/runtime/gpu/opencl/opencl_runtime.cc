@@ -16,9 +16,6 @@
 
 #include "src/runtime/gpu/opencl/opencl_runtime.h"
 #include <dlfcn.h>
-#ifdef SHARING_MEM_WITH_OPENGL
-#include <EGL/egl.h>
-#endif
 #include <vector>
 #include <numeric>
 #include <utility>
@@ -173,18 +170,35 @@ int OpenCLRuntime::InitGPUDevice(std::vector<cl::Platform> *platforms) {
 
 int OpenCLRuntime::InitQueue(std::vector<cl::Platform> *platforms) {
   MS_ASSERT(platforms);
-  cl_int ret;
-#if defined(SHARING_MEM_WITH_OPENGL) && defined(CL_HPP_TARGET_OPENCL_VERSION) && (CL_HPP_TARGET_OPENCL_VERSION >= 120)
+  cl_int ret = 0;
+#if defined(ENABLE_OPENGL_TEXTURE) && defined(CL_HPP_TARGET_OPENCL_VERSION) && (CL_HPP_TARGET_OPENCL_VERSION >= 120)
   // create context from glcontext
-  MS_LOG(INFO) << "Create special opencl context to share with OpenGL";
-  cl_context_properties context_prop[] = {CL_GL_CONTEXT_KHR, (cl_context_properties)eglGetCurrentContext(),
-                                          CL_EGL_DISPLAY_KHR, (cl_context_properties)eglGetCurrentDisplay(), 0};
-  context_ = new (std::nothrow) cl::Context(std::vector<cl::Device>{*device_}, context_prop, nullptr, nullptr, &ret);
-  if (context_ == nullptr || ret != CL_SUCCESS) {
-    MS_LOG(ERROR) << "Create special OpenCL context failed, Create common OpenCL context then.";
-    if (context_ != nullptr) {
-      delete context_;
+  if (this->GetGLTextureEnable()) {
+    // create context from glcontext
+    MS_LOG(INFO) << "Create special opencl context to share with OpenGL";
+
+    if (!CheckGLContext()) {
+      MS_LOG(ERROR) << "GL Context error";
+      return RET_ERROR;
     }
+    if (!CheckGLDisplay()) {
+      MS_LOG(ERROR) << "GL Display error";
+      return RET_ERROR;
+    }
+
+    cl_context_properties context_prop[] = {CL_GL_CONTEXT_KHR, (cl_context_properties)*GetGLContext(),
+                                            CL_EGL_DISPLAY_KHR, (cl_context_properties)*GetGLDisplay(), 0};
+    context_ = new (std::nothrow) cl::Context(std::vector<cl::Device>{*device_}, context_prop, nullptr, nullptr, &ret);
+    if (context_ == nullptr || ret != CL_SUCCESS) {
+      MS_LOG(ERROR)
+        << "Create special OpenCL context failed, The device unspport Sharing or OpenGL Context is not Init";
+      this->enable_gl_texture_ = false;
+      if (context_ != nullptr) {
+        delete context_;
+      }
+      return RET_ERROR;
+    }
+  } else {
     context_ = new (std::nothrow) cl::Context(std::vector<cl::Device>{*device_}, nullptr, nullptr, nullptr, &ret);
     if (context_ == nullptr) {
       delete device_;
@@ -383,6 +397,16 @@ bool OpenCLRuntime::SetFp16Enable(bool enable) {
   fp16_enable_ = enable && support_fp16_;
   return fp16_enable_ == enable;
 }
+
+#ifdef ENABLE_OPENGL_TEXTURE
+bool OpenCLRuntime::SetGLTextureEnable(bool enable) {
+  enable_gl_texture_ = enable;
+  return enable_gl_texture_ == enable;
+}
+
+bool OpenCLRuntime::GetGLTextureEnable() const { return enable_gl_texture_; }
+
+#endif
 
 int OpenCLRuntime::BuildKernel(const cl::Kernel &kernel, const std::string &program_name,
                                const std::string &kernel_name, const std::vector<std::string> &build_options_ext,
@@ -719,7 +743,7 @@ void OpenCLRuntime::LoadCache() {
     MS_LOG(ERROR) << "Load opencl cache fail: bins == nullptr";
     return;
   }
-  for (auto i = 0; i < bins->size(); ++i) {
+  for (size_t i = 0; i < bins->size(); ++i) {
     auto *bin = bins->template GetAs<schema::ProgramBinary>(i);
     if (bin == nullptr) {
       MS_LOG(ERROR) << "kernel_bin[" << i << "] null";

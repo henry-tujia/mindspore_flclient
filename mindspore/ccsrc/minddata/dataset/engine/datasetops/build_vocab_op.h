@@ -31,7 +31,7 @@
 
 namespace mindspore {
 namespace dataset {
-class BuildVocabOp : public ParallelOp {
+class BuildVocabOp : public ParallelOp<TensorRow, TensorRow> {
  public:
   BuildVocabOp(std::shared_ptr<Vocab> vocab, std::vector<std::string> col_names, std::pair<int64_t, int64_t> freq_range,
                int64_t top_k, const std::vector<std::string> &tokens, bool prepend, int32_t num_workers,
@@ -66,15 +66,7 @@ class BuildVocabOp : public ParallelOp {
 
   Status operator()() override;
 
-  /// Getter
-  /// @return the number of workers
-  int32_t num_producers() const override { return 1; }
-
-  /// Getter
-  /// @return the number of threads consuming from the previous Connector
-  int32_t num_consumers() const override { return 1; }
-
-  Status Reset() override { RETURN_STATUS_UNEXPECTED("Reset shouldn't be called in BuildVocabOp"); }
+  Status Reset() override { RETURN_STATUS_UNEXPECTED("[Internal ERROR] Reset shouldn't be called in BuildVocabOp"); }
 
  private:
   const int32_t interval_;

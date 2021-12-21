@@ -85,6 +85,7 @@ class TrainSession : virtual public lite::LiteSession {
     return lite::LiteSession::GetOutputByTensorName(tensor_name);
   }
   int Resize(const std::vector<tensor::MSTensor *> &inputs, const std::vector<std::vector<int>> &dims) override;
+  int UpdateWeights(std::vector<tensor::MSTensor *> new_weights) override;
 
   std::vector<tensor::MSTensor *> GetPredictions() const override {
     std::vector<tensor::MSTensor *> outputs;
@@ -141,7 +142,7 @@ class TrainSession : virtual public lite::LiteSession {
   TrainCfg cfg_;
 
  private:
-  std::string get_loss_name() const { return cfg_.loss_name_; }
+  std::vector<std::string> get_loss_name() const { return cfg_.loss_name_; }
   void BuildInferenceKernelsRecursive(kernel::LiteKernel *ker, std::vector<kernel::LiteKernel *> *req_kernels);
   int AdminSetupVirtualBatch(int virtual_batch_multiplier, float lr, float momentum);
   int OptimizerStep();
@@ -157,6 +158,12 @@ class TrainSession : virtual public lite::LiteSession {
   bool AllInputsNeedScale(kernel::LiteKernel *kernel);
   void FreeWorkSpace();
   int AllocTensors(const std::vector<kernel::LiteKernel *> &kernels);
+  bool IsInPlaceKernel(kernel::LiteKernel *kernel);
+  bool IsInPlaceTensor(kernel::LiteKernel *kernel, uint32_t idx,
+                       const std::unordered_map<lite::Tensor *, int> &ref_count, uint32_t *input_idx);
+  size_t GetInplaceTensorOffset(kernel::LiteKernel *kernel,
+                                const std::unordered_map<lite::Tensor *, size_t> &offset_map,
+                                std::unordered_map<lite::Tensor *, int> *ref_count, uint32_t input_idx);
 
   std::map<Tensor *, Tensor *> restored_origin_tensors_;
   int virtual_batch_idx_ = 0;
@@ -166,6 +173,7 @@ class TrainSession : virtual public lite::LiteSession {
   SchedCallBack sched_mix_precision_callback_;
   bool train_mode_ = false;
   void *tensors_data_ = nullptr;
+  unsigned int tensors_data_size_ = 0;
   std::shared_ptr<Allocator> allocator_;
 };
 

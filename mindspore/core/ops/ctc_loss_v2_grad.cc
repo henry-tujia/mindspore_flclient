@@ -27,7 +27,7 @@ namespace mindspore {
 namespace ops {
 namespace {
 constexpr size_t kLenLogProbs = 3;
-constexpr size_t kInputSize = 7;
+constexpr int64_t kInputSize = 7;
 constexpr size_t kIdx2 = 2;
 abstract::ShapePtr CTCLossV2GradInferShape(const PrimitivePtr &primitive,
                                            const std::vector<AbstractBasePtr> &input_args) {
@@ -46,7 +46,7 @@ abstract::ShapePtr CTCLossV2GradInferShape(const PrimitivePtr &primitive,
   int64_t T = log_probs_shape[0];
   int64_t N = log_probs_shape[1];
   int64_t C = log_probs_shape[kIdx2];
-  ShapeVector output_shape = {N, T, C};
+  ShapeVector output_shape = {T, N, C};
   return std::make_shared<abstract::Shape>(output_shape);
 }
 

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/stridedread_conv_stridedwrite_fusion_pass.h"
-
-#include <vector>
-#include <unordered_set>
-#include <memory>
-#include <string>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -33,7 +27,7 @@ void StridedReadConvStridedWriteFusionPass::MatchStridedReadConvStridedWrite(con
                                                                              FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  std::unordered_set<AnfNodePtr> record{cnode};
+  mindspore::HashSet<AnfNodePtr> record{cnode};
   auto write_input = cnode->input(kIndex1);
   if (CheckEltWiseNode(kernel_graph, write_input)) {
     (void)record.insert(write_input);
@@ -42,7 +36,7 @@ void StridedReadConvStridedWriteFusionPass::MatchStridedReadConvStridedWrite(con
     write_input = input_cnode->input(kIndex1);
   }
   MS_EXCEPTION_IF_NULL(write_input);
-  if (!write_input->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(write_input) ||
+  if (!write_input->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(write_input) ||
       fusion_id_allocator->HasFusionIdAttr(write_input)) {
     return;
   }
@@ -55,7 +49,7 @@ void StridedReadConvStridedWriteFusionPass::MatchStridedReadConvStridedWrite(con
     (void)record.insert(write_input);
     auto conv_input = conv_cnode->input(kIndex1);
     MS_EXCEPTION_IF_NULL(conv_input);
-    if (!conv_input->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(conv_input) ||
+    if (!conv_input->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(conv_input) ||
         fusion_id_allocator->HasFusionIdAttr(conv_input)) {
       return;
     }
@@ -72,7 +66,7 @@ void StridedReadConvStridedWriteFusionPass::MatchSingleFusionPattern(const sessi
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

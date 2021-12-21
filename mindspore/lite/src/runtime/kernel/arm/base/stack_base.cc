@@ -68,10 +68,11 @@ int StackBaseCPUKernel::ReSize() {
     copy_size_ = GetCopyNum(input0_shape, axis_, input0_shape.size()) * data_type_size_;
     outer_size_ = GetOuterSize(input0_shape, axis_);
   }
+  MS_CHECK_GT(copy_size_, 0, RET_ERROR);
   return RET_OK;
 }
 
-int StackBaseCPUKernel::Init() {
+int StackBaseCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   data_type_size_ = sizeof(float);

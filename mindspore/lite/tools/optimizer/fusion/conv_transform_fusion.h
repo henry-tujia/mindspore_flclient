@@ -30,15 +30,16 @@ class ConvTransformFusion : public PatternProcessPass {
   ~ConvTransformFusion() override = default;
 
  protected:
-  virtual void InitTransParam(const CNodePtr &, int, float *, float *) const = 0;
+  virtual int InitTransParam(const CNodePtr &, int, float *, float *) const = 0;
 
  private:
   const AnfNodePtr Process(const FuncGraphPtr &, const AnfNodePtr &, const EquivPtr &) const override;
-  void GenTransParam(const CNodePtr &, int, float *, float *) const;
+  int GenTransParam(const CNodePtr &, int, float *, float *) const;
   int GenNewConvTensor(const FuncGraphPtr &, const CNodePtr &, int, const float *, const float *) const;
   int CalNewWeightTensor(const CNodePtr &, const tensor::TensorPtr &, int, const float *) const;
-  static void CalNewBiasTensor(float *, int, bool, const float *, const float *);
-  bool IsVariableWeightConv(const CNodePtr &conv_node) const;
+  int CalNewBiasTensor(float *, int, bool, const float *, const float *) const;
+  bool CheckCanFused(const FuncGraphPtr &func_graph, const CNodePtr &conv_node) const;
+  bool AdjustActivationType(const CNodePtr &conv_node, const CNodePtr &transform_node) const;
 
  protected:
   FmkType fmk_type_ = converter::kFmkTypeTf;

@@ -26,8 +26,9 @@
 #include "src/lite_kernel.h"
 #include "include/ms_tensor.h"
 #include "include/lite_session.h"
-#include "include/model.h"
+#include "src/lite_model.h"
 #include "src/inner_context.h"
+#include "src/runtime/runtime_allocator.h"
 #include "schema/model_generated.h"
 #include "src/executor.h"
 #include "src/tensor.h"
@@ -52,8 +53,13 @@ class LiteSession : public session::LiteSession {
 
   static session::LiteSession *CreateSession(const std::string &model_path, const lite::Context *context);
 
-  static int CreateSessionByBuf(const char *model_buf, size_t size, session::LiteSession *session);
-  static int CreateSessionByPath(const std::string &model_path, session::LiteSession *session);
+  int LoadModelAndCompileByBuf(const char *model_buf, mindspore::ModelType model_type, const size_t &buf_size);
+
+  int LoadModelAndCompileByPath(const std::string &model_path, mindspore::ModelType model_type);
+
+  static mindspore::ModelType LoadModelByBuff(const char *model_buf, const size_t &buf_size, char **lite_buf,
+                                              size_t *size, mindspore::ModelType model_type);
+  static const char *LoadModelByPath(const std::string &file, mindspore::ModelType model_type, size_t *size);
 
   virtual int Init(InnerContext *context);
 
@@ -75,6 +81,10 @@ class LiteSession : public session::LiteSession {
 
   std::unordered_map<std::string, mindspore::tensor::MSTensor *> GetOutputs() const override;
 
+#ifdef ENABLE_OPENGL_TEXTURE
+  int BindGLTexture2DMemory(const std::map<std::string, GLuint> &inputGLTexture,
+                            std::map<std::string, GLuint> *outputGLTexture) override;
+#endif
   int Resize(const std::vector<mindspore::tensor::MSTensor *> &inputs,
              const std::vector<std::vector<int>> &dims) override;
 
@@ -86,19 +96,22 @@ class LiteSession : public session::LiteSession {
 
   const Delegate *get_delegate() const { return this->delegate_.get(); }
 
+  void SetConfigInfo(const std::map<std::string, std::map<std::string, std::string>> *config_info) {
+    config_info_ = config_info;
+  }
+
+  const std::vector<Tensor *> &GetTensors() const { return this->tensors_; }
+
  protected:
   static void ConvertTensorsQuantParam(const schema::Tensor *src_tensor, lite::Tensor *dst_tensor);
 
-  int ConvertTensorsData(const lite::Model *model, size_t tensor_index, const schema::Tensor *src_tensor,
-                         lite::Tensor *dst_tensor);
+  int ConvertTensorsData(const lite::LiteModel *model, size_t tensor_index, lite::Tensor *dst_tensor);
 
   lite::Tensor *ConvertTensor(const schema::Tensor &src_tensor);
 
   int ConvertTensors(const lite::Model *model);
 
   void InitGraphInOutTensorsMap(const lite::Model *model);
-
-  int IsolateOutputTensor();
 
   void InitGraphInputTensors(const lite::Model *model);
 
@@ -118,18 +131,42 @@ class LiteSession : public session::LiteSession {
 
   int SetAllocatorForDelegateKernels(const kernel::LiteKernel *kernel);
 
-  int PrepareKernels(Model *model);
+  int PrepareKernels(const Model *model);
 
   static int ReSizeKernels(const std::vector<kernel::LiteKernel *> &kernels);
 
   static void FreePackOpWeight(const std::vector<kernel::LiteKernel *> &kernels);
 
  private:
+  int PreCheck(Model *model);
+
+  int InitExecutor();
+
   void ResetInputsShape(const std::vector<std::vector<int>> &dims);
+
+  int ContextInit(InnerContext *context);
+
+  int CreateTensorRTDelegate();
+
+  int CreateNPUDelegate();
+
+  int DelegateInit();
 
   int InitGPURuntime();
 
-  bool IsIsolatedSubGraph(kernel::LiteKernel *kernel);
+ private:
+  int IsolateOutputTensor();
+  bool IsIsolatedSubGraph(const kernel::LiteKernel *kernel);
+  std::unordered_map<Tensor *, Tensor *> isolate_graph_output_map_; /* <calculate-tensor,  graph-output-tensor> */
+  std::unordered_map<Tensor *, Tensor *> isolate_input_map_;        /* <calculate-tensor,  src-subgraph-input-tensor> */
+
+ private:
+  int RuntimeAllocatorInit();
+  int RuntimeAllocatorSetData();
+  void RuntimeAllocatorInitGraphOutput();
+  void RuntimeAllocatorInitSubgraph();
+  virtual int RuntimeAllocatorValid();
+  RuntimeAllocatorPtr runtime_allocator_ = nullptr;
 
  protected:
   InnerContext *context_ = nullptr;
@@ -150,7 +187,7 @@ class LiteSession : public session::LiteSession {
   std::vector<std::string> output_tensor_names_;
   // graph output tensor name -- output tensor
   std::unordered_map<std::string, mindspore::tensor::MSTensor *> output_tensor_map_;
-  std::unordered_map<Tensor *, Tensor *> graph_output_map_; /* <calculate-tensor,  graph-output-tensor> */
+
   Executor *executor_ = nullptr;
   Model *model_ = nullptr;
   std::atomic<bool> is_running_ = {false};
@@ -159,10 +196,13 @@ class LiteSession : public session::LiteSession {
 #if GPU_OPENCL
   opencl::OpenCLRuntimeInnerWrapper *opencl_runtime_wrapper_{nullptr};
 #endif
+  int is_infershape_{RET_ERROR};
+  bool is_control_flow_ = false;
   std::unique_ptr<SchedulerCb> sched_cb_;
   std::shared_ptr<Delegate> delegate_ = nullptr;
   int delegate_device_type_ = -1;  // -1: not specified; 0: CPU; 1: GPU; 2: NPU
   std::map<std::string, TypeId> *execution_plan_ = nullptr;
+  const std::map<std::string, std::map<std::string, std::string>> *config_info_ = nullptr;
 };
 }  // namespace lite
 }  // namespace mindspore

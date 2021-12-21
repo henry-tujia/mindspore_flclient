@@ -43,7 +43,7 @@ void LayerNormGradSplit::CreateOutputsOfLayerNormXBackpropV2(const FuncGraphPtr 
   for (size_t i = 1; i < layer_norm_grad->inputs().size(); ++i) {
     layer_norm_x_backprop_inputs.push_back(layer_norm_grad->input(i));
   }
-  auto layer_norm_x_backprop = graph->NewCNode(layer_norm_x_backprop_inputs);
+  auto layer_norm_x_backprop = NewCNode(layer_norm_x_backprop_inputs, graph);
   MS_EXCEPTION_IF_NULL(layer_norm_x_backprop);
   layer_norm_x_backprop->set_scope(layer_norm_grad->scope());
   auto types = {AnfAlgo::GetOutputInferDataType(layer_norm_grad, 0), kNumberTypeFloat32};
@@ -68,7 +68,7 @@ void LayerNormGradSplit::CreateOutputsOfLayerNormBetaGammaBackpropV2(
   auto prim = std::make_shared<Primitive>(kLayerNormBetaGammaBackpropV2OpName);
   std::vector<AnfNodePtr> layer_norm_beta_gamma_backprop_inputs = {NewValueNode(prim), layer_norm_grad->input(kIndex2),
                                                                    res_for_gamma};
-  auto layer_norm_beta_gamma_backprop = graph->NewCNode(layer_norm_beta_gamma_backprop_inputs);
+  auto layer_norm_beta_gamma_backprop = NewCNode(layer_norm_beta_gamma_backprop_inputs, graph);
   MS_EXCEPTION_IF_NULL(layer_norm_beta_gamma_backprop);
   auto kernel_info = std::make_shared<device::KernelInfo>();
   layer_norm_beta_gamma_backprop->set_kernel_info(kernel_info);
@@ -111,8 +111,7 @@ const AnfNodePtr LayerNormGradSplit::Process(const FuncGraphPtr &graph, const An
   std::vector<AnfNodePtr> layer_norm_x_backprop_outputs;
   CreateOutputsOfLayerNormXBackpropV2(graph, cnode, &layer_norm_x_backprop_outputs, is_dynamic_shape);
   if (layer_norm_x_backprop_outputs.size() != kLayerNormXBackpropV2OutputNum) {
-    MS_LOG(EXCEPTION) << "layer_norm_grad_outputs has wrong size"
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "layer_norm_grad_outputs has wrong size" << trace::DumpSourceLines(node);
   }
 
   // create layer_norm_beta_gamma_backprop
@@ -120,8 +119,7 @@ const AnfNodePtr LayerNormGradSplit::Process(const FuncGraphPtr &graph, const An
   CreateOutputsOfLayerNormBetaGammaBackpropV2(graph, cnode, layer_norm_x_backprop_outputs[1],
                                               &layer_norm_beta_gamma_backprop_outputs, is_dynamic_shape);
   if (layer_norm_beta_gamma_backprop_outputs.size() != kLayerNormBetaGammaBackpropOutputNum) {
-    MS_LOG(EXCEPTION) << "layer_norm_beta_gamma_outputs has wrong size"
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "layer_norm_beta_gamma_outputs has wrong size" << trace::DumpSourceLines(node);
   }
 
   std::vector<AnfNodePtr> make_tuple_inputs = {NewValueNode(prim::kPrimMakeTuple), layer_norm_x_backprop_outputs[0],

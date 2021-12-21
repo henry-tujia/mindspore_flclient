@@ -45,6 +45,7 @@ static constexpr size_t GetRelPathPos() noexcept {
 }
 
 namespace mindspore {
+/// \brief The handler map for ACL.
 MS_CORE_API extern std::map<void **, std::thread *> acl_handle_map;
 #define FILE_NAME                                                                             \
   (sizeof(__FILE__) > GetRelPathPos() ? static_cast<const char *>(__FILE__) + GetRelPathPos() \
@@ -79,6 +80,11 @@ struct LocationInfo {
   const char *func_;
 };
 
+template <class T, typename std::enable_if<std::is_enum<T>::value, int>::type = 0>
+constexpr std::ostream &operator<<(std::ostream &stream, const T &value) {
+  return stream << static_cast<typename std::underlying_type<T>::type>(value);
+}
+
 class LogStream {
  public:
   LogStream() { sstream_ = std::make_shared<std::stringstream>(); }
@@ -100,11 +106,6 @@ class LogStream {
  private:
   std::shared_ptr<std::stringstream> sstream_;
 };
-
-template <class T, typename std::enable_if<std::is_enum<T>::value, int>::type = 0>
-constexpr std::ostream &operator<<(std::ostream &stream, const T &value) {
-  return stream << static_cast<typename std::underlying_type<T>::type>(value);
-}
 
 enum MsLogLevel : int { DEBUG = 0, INFO, WARNING, ERROR, EXCEPTION };
 
@@ -134,12 +135,13 @@ enum SubModuleId : int {
   SM_PROFILER,           // profiler
   SM_PS,                 // Parameter Server
   SM_FL,                 // Federated Learning
+  SM_DISTRIBUTED,        // Distributed
   SM_LITE,               // LITE
   SM_ARMOUR,             // ARMOUR
   SM_HCCL_ADPT,          // Hccl Adapter
-  SM_MINDQUANTUM,        // MindQuantum
   SM_RUNTIME_FRAMEWORK,  // Runtime framework
   SM_GE,                 // GraphEngine
+  SM_API,                // MindAPI
   NUM_SUBMODUES          // number of submodules
 };
 
@@ -147,12 +149,44 @@ enum SubModuleId : int {
 #define SUBMODULE_ID mindspore::SubModuleId::SM_ME
 #endif
 
+/// \brief Get sub-module name by the module id.
+///
+/// \param[in] module_id The module id.
+///
+/// \return The sub-module name.
 MS_EXPORT const std::string GetSubModuleName(SubModuleId module_id);
 
+/// \brief Get current time as a string.
+///
+/// \return The string presents current time.
 MS_EXPORT std::string GetTimeString();
 
+/// \brief The log levels of mindspore sub-module.
 MS_EXPORT extern int g_ms_submodule_log_levels[];
 
+#if defined(_WIN32) || defined(_WIN64)
+/// \brief The max log level of current thread.
+MS_EXPORT extern enum MsLogLevel this_thread_max_log_level;
+#define MS_LOG_TRY_CATCH_SCOPE
+#else
+/// \brief The max log level of current thread.
+MS_EXPORT extern thread_local enum MsLogLevel this_thread_max_log_level;
+class TryCatchGuard {
+ public:
+  TryCatchGuard() {
+    origin_log_level_ = this_thread_max_log_level;
+    this_thread_max_log_level = MsLogLevel::WARNING;
+  }
+
+  ~TryCatchGuard() { this_thread_max_log_level = origin_log_level_; }
+
+ private:
+  enum MsLogLevel origin_log_level_;
+};
+#define MS_LOG_TRY_CATCH_SCOPE mindspore::TryCatchGuard mindspore_log_try_catch_guard
+#endif
+
+/// \brief LogWriter defines interface to write log.
 class LogWriter {
  public:
   using ExceptionHandler = std::function<void(ExceptionType, const std::string &msg)>;
@@ -163,7 +197,14 @@ class LogWriter {
       : location_(location), log_level_(log_level), submodule_(submodule), exception_type_(excp_type) {}
   ~LogWriter() = default;
 
+  /// \brief Output log message from the input log stream.
+  ///
+  /// \param[in] stream The input log stream.
   MS_CORE_API void operator<(const LogStream &stream) const noexcept;
+
+  /// \brief Output log message from the input log stream and then throw exception.
+  ///
+  /// \param[in] stream The input log stream.
   MS_CORE_API void operator^(const LogStream &stream) const __attribute__((noreturn));
 
   static void set_exception_handler(ExceptionHandler exception_handler) { exception_handler_ = exception_handler; }
@@ -192,7 +233,8 @@ class LogWriter {
                        excp_type) ^                                                                                    \
     mindspore::LogStream()
 
-#define IS_OUTPUT_ON(level) ((level) >= mindspore::g_ms_submodule_log_levels[SUBMODULE_ID])
+#define IS_OUTPUT_ON(level) \
+  ((level) >= mindspore::g_ms_submodule_log_levels[SUBMODULE_ID] && (level) <= mindspore::this_thread_max_log_level)
 
 #define MS_LOG(level) MS_LOG_##level
 
@@ -210,6 +252,13 @@ class LogWriter {
     if ((ptr) == nullptr) {                                          \
       MS_LOG(EXCEPTION) << ": The pointer[" << #ptr << "] is null."; \
     }                                                                \
+  } while (0)
+
+#define MS_EXCEPTION_IF_CHECK_FAIL(condition, error_info)              \
+  do {                                                                 \
+    if (!(condition)) {                                                \
+      MS_LOG(EXCEPTION) << ": Failure info [" << (error_info) << "]."; \
+    }                                                                  \
   } while (0)
 
 #define MS_EXCEPTION_IF_ZERO(name, value)                   \
@@ -242,6 +291,21 @@ class LogWriter {
       return;                                                    \
     }                                                            \
   } while (0)
+
+#define RETURN_IF_FALSE(condition) \
+  do {                             \
+    if (!(condition)) {            \
+      return false;                \
+    }                              \
+  } while (false)
+
+#define RETURN_IF_FALSE_WITH_LOG(condition, message) \
+  do {                                               \
+    if (!(condition)) {                              \
+      MS_LOG(ERROR) << message;                      \
+      return false;                                  \
+    }                                                \
+  } while (false)
 
 #ifdef DEBUG
 #include <cassert>

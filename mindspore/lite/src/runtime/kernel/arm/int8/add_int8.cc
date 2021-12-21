@@ -19,6 +19,7 @@
 #include "src/kernel_registry.h"
 #include "include/errorcode.h"
 #include "src/common/file_utils.h"
+#include "src/common/log_util.h"
 
 using mindspore::lite::KernelRegistrar;
 using mindspore::lite::RET_ERROR;
@@ -38,7 +39,7 @@ QuantizedAddCPUKernel::~QuantizedAddCPUKernel() {
   }
 }
 
-int QuantizedAddCPUKernel::Init() {
+int QuantizedAddCPUKernel::Prepare() {
   para_ = reinterpret_cast<AddQuantParameter *>(malloc(sizeof(AddQuantParameter)));
   if (para_ == nullptr) {
     MS_LOG(ERROR) << "Malloc AddQuantParameter for add int8 op failed!";
@@ -48,6 +49,12 @@ int QuantizedAddCPUKernel::Init() {
   auto *input1 = in_tensors_.at(1);
   auto *output = out_tensors_.at(0);
 
+  CHECK_NULL_RETURN(input0);
+  CHECK_NULL_RETURN(input1);
+  CHECK_NULL_RETURN(output);
+  MS_CHECK_TRUE_RET(!input0->quant_params().empty(), RET_ERROR);
+  MS_CHECK_TRUE_RET(!input1->quant_params().empty(), RET_ERROR);
+  MS_CHECK_TRUE_RET(!output->quant_params().empty(), RET_ERROR);
   para_->in0_args_.zp_ = input0->quant_params().front().zeroPoint * -1;
   para_->in1_args_.zp_ = input1->quant_params().front().zeroPoint * -1;
   para_->out_zp_ = output->quant_params().front().zeroPoint;
@@ -88,6 +95,8 @@ int QuantizedAddCPUKernel::ReSize() {
   auto *input0 = in_tensors_.at(0);
   auto *input1 = in_tensors_.at(1);
   auto *output = out_tensors_.at(0);
+  MS_CHECK_GT(input0->ElementsNum(), 0, RET_ERROR);
+  MS_CHECK_GT(input1->ElementsNum(), 0, RET_ERROR);
   support_opt_add_ = (input0->ElementsNum() == 1) || (input1->ElementsNum() == 1);
   if (support_opt_add_) {
     arith_para_->broadcasting_ = false;

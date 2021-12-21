@@ -19,10 +19,12 @@
 #include <memory>
 #include <string>
 #include <algorithm>
+#include "backend/optimizer/ascend/ir_fusion/avgpool_3d_fusion.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/optimizer/common/helper.h"
 #include "base/core_ops.h"
 #include "utils/utils.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace opt {
@@ -42,22 +44,22 @@ void GetAttrs(const AnfNodePtr &node, std::vector<int64_t> *kernel_size, std::ve
   MS_EXCEPTION_IF_NULL(node);
   // attr kernel size
   if (!AnfAlgo::HasNodeAttr("kernel_size", node->cast<CNodePtr>())) {
-    MS_LOG(EXCEPTION) << "AvgPool3D should has attr kernel_size";
+    MS_LOG(EXCEPTION) << "AvgPool3D should has attr kernel_size" << trace::DumpSourceLines(node);
   }
   *kernel_size = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "kernel_size");
   // attr strides
   if (!AnfAlgo::HasNodeAttr("strides", node->cast<CNodePtr>())) {
-    MS_LOG(EXCEPTION) << "AvgPool3D should has attr strides";
+    MS_LOG(EXCEPTION) << "AvgPool3D should has attr strides" << trace::DumpSourceLines(node);
   }
   *strides = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "strides");
   // sttr pad_list
   if (!AnfAlgo::HasNodeAttr("pad_list", node->cast<CNodePtr>())) {
-    MS_LOG(EXCEPTION) << "AvgPool3D should has attr pad_list";
+    MS_LOG(EXCEPTION) << "AvgPool3D should has attr pad_list" << trace::DumpSourceLines(node);
   }
   *pad_list = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "pad_list");
   // attr origin input shape
   if (!AnfAlgo::HasNodeAttr("origin_input_shape", node->cast<CNodePtr>())) {
-    MS_LOG(EXCEPTION) << "AvgPool3D should has attr origin_input_shape";
+    MS_LOG(EXCEPTION) << "AvgPool3D should has attr origin_input_shape" << trace::DumpSourceLines(node);
   }
   *origin_input_shape = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "origin_input_shape");
   // attr count include pad
@@ -105,7 +107,7 @@ AnfNodePtr ConstructFilter(const FuncGraphPtr &func_graph, const std::vector<int
   //  assist tensor 1
   int64_t c1 = (fc + kC0 - 1) / kC0;
   std::vector<int64_t> assist_shape = {c1 * kd * kh * kw, 1, kC0, kC0};  // frac_z_3d
-  auto infer_shape = {IntToSize(1), LongToSize(fc), LongToSize(kd), LongToSize(kh), LongToSize(kw)};
+  std::vector<size_t> infer_shape = {IntToSize(1), LongToSize(fc), LongToSize(kd), LongToSize(kh), LongToSize(kw)};
   float val = 1.0;
   if (divisor_override) {
     val = 1.0 / divisor_override;
@@ -113,28 +115,8 @@ AnfNodePtr ConstructFilter(const FuncGraphPtr &func_graph, const std::vector<int
     val = 1.0 / (kd * kh * kw);
   }
   // create value node
-  tensor::TensorPtr assist_tensor = std::make_shared<tensor::Tensor>(kNumberTypeFloat16, assist_shape);
-  TensorTypePtr tensor_type = std::make_shared<TensorType>(kFloat16);
-  tensor::DeviceInfo device_info{kOpFormat_FRACTAL_Z_3D, tensor_type, kOpFormat_FRACTAL_Z_3D};
-  assist_tensor->set_device_info(device_info);
-  auto tensor_data = reinterpret_cast<float16 *>(assist_tensor->data_c());
   int64_t cnt = c1 * kd * kh * kw;
-  for (int64_t i = 0; i < cnt; ++i) {
-    for (int64_t j = 0; j < kC0; ++j) {
-      for (int64_t k = 0; k < kC0; ++k) {
-        float t = j == k ? val : 0;
-        *tensor_data = float16(t);
-        ++tensor_data;
-      }
-    }
-  }
-
-  auto x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat16, assist_shape);
-  auto kernel_graph = func_graph->cast<KernelGraphPtr>();
-  auto value_node = kernel_graph->NewValueNode(x_abstract, assist_tensor);
-  kernel_graph->AddValueNodeToGraph(value_node);
-  AnfAlgo::SetOutputInferTypeAndShape({kNumberTypeFloat16}, {infer_shape}, value_node.get());
-  return value_node;
+  return ConstructFilterValueNode(func_graph, val, assist_shape, infer_shape, cnt);
 }
 
 AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, const std::vector<size_t> &ori_shape,
@@ -147,6 +129,7 @@ AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, const std::vector
   (void)std::transform(ori_shape.begin(), ori_shape.end(), std::back_inserter(grad_shape), SizeToLong);
   std::vector<int64_t> assist_shape = grad_shape;  // NCDHW
   tensor::TensorPtr tensor = std::make_shared<tensor::Tensor>(kNumberTypeFloat16, assist_shape);
+  MS_EXCEPTION_IF_NULL(tensor);
   auto tensor_data = reinterpret_cast<float16 *>(tensor->data_c());
   auto pad_d = pad_list[kDim0] + pad_list[kDim1];
   auto pad_h = pad_list[kDim2] + pad_list[kDim3];
@@ -162,23 +145,26 @@ AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, const std::vector
         for (int64_t hi = 0; hi < grad_shape[kDim3]; hi++) {
           int64_t start_w = 0;
           for (int64_t wi = 0; wi < grad_shape[kDim4]; wi++) {
-            int64_t vaild_d = 0;
-            int64_t vaild_h = 0;
-            int64_t vaild_w = 0;
+            int64_t valid_d = 0;
+            int64_t valid_h = 0;
+            int64_t valid_w = 0;
             if (count_include_pad) {
-              vaild_d = start_d + kernel_size[kDim0] <= len_d ? kernel_size[kDim0] : len_d - start_d;
-              vaild_h = start_h + kernel_size[kDim1] <= len_h ? kernel_size[kDim1] : len_h - start_h;
-              vaild_w = start_w + kernel_size[kDim2] <= len_w ? kernel_size[kDim2] : len_w - start_w;
+              valid_d = start_d + kernel_size[kDim0] <= len_d ? kernel_size[kDim0] : len_d - start_d;
+              valid_h = start_h + kernel_size[kDim1] <= len_h ? kernel_size[kDim1] : len_h - start_h;
+              valid_w = start_w + kernel_size[kDim2] <= len_w ? kernel_size[kDim2] : len_w - start_w;
             } else {
-              vaild_d = std::min(start_d + kernel_size[kDim0], pad_list[kDim0] + ori_input_shape[kDim2]) -
+              valid_d = std::min(start_d + kernel_size[kDim0], pad_list[kDim0] + ori_input_shape[kDim2]) -
                         std::max(pad_list[kDim0], start_d);
-              vaild_h = std::min(start_h + kernel_size[kDim1], pad_list[kDim2] + ori_input_shape[kDim3]) -
+              valid_h = std::min(start_h + kernel_size[kDim1], pad_list[kDim2] + ori_input_shape[kDim3]) -
                         std::max(pad_list[kDim2], start_h);
-              vaild_w = std::min(start_w + kernel_size[kDim2], pad_list[kDim4] + ori_input_shape[kDim4]) -
+              valid_w = std::min(start_w + kernel_size[kDim2], pad_list[kDim4] + ori_input_shape[kDim4]) -
                         std::max(pad_list[kDim4], start_w);
             }
-            auto vaild_data = vaild_d * vaild_h * vaild_w;
-            float val = 1.0 / vaild_data;
+            auto valid_data = valid_d * valid_h * valid_w;
+            if (valid_data == 0) {
+              MS_LOG(EXCEPTION) << "Divisor 'valid_data' should not be 0.";
+            }
+            float val = 1.0 / valid_data;
             *tensor_data = float16(val);
             ++tensor_data;
             start_w += strides[kDim2];
@@ -250,7 +236,7 @@ const AnfNodePtr AvgPool3DGradFusion::Process(const FuncGraphPtr &func_graph, co
       ConstructMultiplier(func_graph, dims_in, origin_input_shape, kernel_size, strides, pad_list, count_include_pad);
     new_inputs.push_back(multiplier);
   }
-  auto new_3d_grad = func_graph->NewCNode(new_inputs);
+  auto new_3d_grad = NewCNode(new_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(new_3d_grad);
   new_3d_grad->set_scope(avg_pool_3d_grad_node->scope());
   new_3d_grad->set_abstract(avg_pool_3d_grad_node->abstract());

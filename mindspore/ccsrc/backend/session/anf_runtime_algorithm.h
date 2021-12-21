@@ -23,8 +23,8 @@
 #include <tuple>
 #include <utility>
 #include <memory>
-#include <unordered_set>
 #include <map>
+#include <optional>
 #include "ir/anf.h"
 #include "ir/dtype.h"
 #include "base/base.h"
@@ -35,11 +35,11 @@
 #include "backend/kernel_compiler/kernel_build_info.h"
 #include "base/core_ops.h"
 #include "utils/contract.h"
+#include "utils/anf_utils.h"
 #include "backend/session/kernel_graph.h"
 
 namespace mindspore {
 namespace session {
-using PrimitiveSet = std::unordered_set<PrimitivePtr, PrimitiveHasher, PrimitiveEqual>;
 using AnfVisitFuncion = std::function<Any(const AnfNodePtr &node, int index)>;
 using DeviceAddress = device::DeviceAddress;
 using DeviceAddressPtr = device::DeviceAddressPtr;
@@ -78,7 +78,7 @@ class AnfRuntimeAlgorithm {
   // get input_anf_node's real kernel by recurse
   static KernelWithIndex VisitKernel(const AnfNodePtr &input_anf_node, size_t output_index);
   static KernelWithIndex VisitKernelWithReturnType(const AnfNodePtr &input_anf_node, size_t output_index,
-                                                   bool visit_nop_node = false,
+                                                   bool skip_nop_node = false,
                                                    const std::vector<PrimitivePtr> &return_types = {
                                                      prim::kPrimMakeTuple});
   static std::vector<AnfNodePtr> GetAllOutput(const AnfNodePtr &node,
@@ -150,7 +150,7 @@ class AnfRuntimeAlgorithm {
   // get input format select of anf node
   static std::string GetInputFormat(const AnfNodePtr &node, size_t input_idx);
   // get prev node output width output index
-  static KernelWithIndex GetPrevNodeOutput(const AnfNodePtr &anf_node, size_t input_idx, bool visit_nop_node = false);
+  static KernelWithIndex GetPrevNodeOutput(const AnfNodePtr &anf_node, size_t input_idx, bool skip_nop_node = false);
   // get output format from prev node,input_index is the input index of current node related to prev node
   static std::string GetPrevNodeOutputFormat(const AnfNodePtr &node, size_t input_idx);
   // get reshape_type of from the output of input node.
@@ -184,18 +184,22 @@ class AnfRuntimeAlgorithm {
   // get output select data type from prev node,input_index is the input index of current node related to prev node
   static TypeId GetPrevNodeOutputDeviceDataType(const AnfNodePtr &node, size_t input_idx);
   // get output device addr of anf_node
-  static const DeviceAddress *GetOutputAddr(const AnfNodePtr &node, size_t output_idx, bool visit_nop_node = true);
+  static const DeviceAddress *GetOutputAddr(const AnfNodePtr &node, size_t output_idx, bool skip_nop_node = true);
   // get mutable output device addr of anf_node
-  static DeviceAddressPtr GetMutableOutputAddr(const AnfNodePtr &node, size_t output_idx, bool visit_nop_node = true);
+  static DeviceAddressPtr GetMutableOutputAddr(const AnfNodePtr &node, size_t output_idx, bool skip_nop_node = true);
+  static DeviceAddressPtr GetMutableOutputAddr(const KernelWithIndex &node_output_index, bool skip_nop_node) {
+    return GetMutableOutputAddr(node_output_index.first, node_output_index.second, skip_nop_node);
+  }
   // check whether output addr is exist or not
-  static bool OutputAddrExist(const AnfNodePtr &node, size_t output_idx, bool visit_nop_node = false);
+  static bool OutputAddrExist(const AnfNodePtr &node, size_t output_idx, bool skip_nop_node = false);
   // check whether workspace addr is exist or not
   static bool WorkspaceAddrExist(const AnfNodePtr &node, size_t output_idx);
   // get address from prev node,input_index is the input index of current node related to prev node
   static const DeviceAddress *GetPrevNodeOutputAddr(const AnfNodePtr &node, size_t input_idx,
-                                                    bool visit_nop_node = true);
+                                                    bool skip_nop_node = true);
   static DeviceAddressPtr GetPrevNodeMutableOutputAddr(const AnfNodePtr &anf_node, size_t input_idx,
-                                                       bool visit_nop_node = true);
+                                                       bool skip_nop_node = true);
+  static size_t GetOutputAddressNum(const AnfNodePtr &node);
   // set output device addr of anf_node
   static void SetOutputAddr(const DeviceAddressPtr &addr, size_t output_idx, AnfNode *node);
   // set workspace device addr of anf_node
@@ -232,10 +236,6 @@ class AnfRuntimeAlgorithm {
   static kernel::KernelMod *GetKernelMod(const AnfNodePtr &node);
   // set kernel mod
   static void SetKernelMod(const kernel::KernelModPtr &kernel_mod, AnfNode *node);
-  // checkout whether the anf node is a real kernel that can run on device,parameter and constant is real kernel too
-  static bool IsRealKernel(const AnfNodePtr &node);
-  // checkout whether the anf node is a real kernel that is a cnode and can run on device
-  static bool IsRealCNodeKernel(const AnfNodePtr &node);
   // checkout whether the anf node is a graph kernel.
   static bool IsGraphKernel(const AnfNodePtr &node);
   // checkout whether the anf node is an inner node of graph kernel.
@@ -246,6 +246,8 @@ class AnfRuntimeAlgorithm {
   static bool IsParameterWeight(const ParameterPtr &node);
   // checkout whether the anf node is include the label_index.
   static bool IsLabelIndexInNode(const AnfNodePtr &node, size_t label_index);
+  // Check whether the cnode update parameter
+  static bool IsUpdateParameterKernel(const CNodePtr &node);
   // set stream id of kernel,which will be set in stream assign and be used in stream generate
   static void SetStreamId(uint32_t stream_id, AnfNode *node);
   // get stream id
@@ -271,12 +273,13 @@ class AnfRuntimeAlgorithm {
   static bool IsFusedCommunicationOp(const AnfNodePtr &node);
   static bool IsInplaceNode(const AnfNodePtr &node, const string &type);
   static bool IsGetNext(const NotNull<AnfNodePtr> &node);
+  static bool IsNeedSkipNopOpAddr(const AnfNodePtr &node);
   static FuncGraphPtr GetValueNodeFuncGraph(const AnfNodePtr &node);
   static std::vector<KernelGraphPtr> GetCallSwitchKernelGraph(const CNodePtr &cnode);
   static bool IsSwitchCall(const CNodePtr &call_node);
   static bool IsScalarInput(const CNodePtr &cnode, size_t index);
   static bool IsScalarOutput(const CNodePtr &cnode, size_t index);
-  static void ReorderOptimizerExecList(NotNull<std::vector<CNodePtr> *> node_list);
+  static void ReorderExecList(NotNull<std::vector<CNodePtr> *> node_list);
   static void ReorderPosteriorExecList(NotNull<std::vector<CNodePtr> *> node_list);
   // get fix output precision of cnode.
   static TypeId GetCNodeOutputPrecision(const AnfNodePtr &node);
@@ -287,6 +290,7 @@ class AnfRuntimeAlgorithm {
   static bool IsCondControlKernel(const CNodePtr &node);
   static bool IsIndependentNode(const CNodePtr &node);
   static bool GetBooleanAttr(const AnfNodePtr &node, const std::string &attr);
+  static std::optional<string> GetDumpFlag(const AnfNodePtr &node);
   static void GetRealDynamicShape(const std::vector<size_t> &shape, NotNull<std::vector<int64_t> *> dynamic_shape);
   static std::vector<int64_t> GetInputMaxShape(const AnfNodePtr &anf_node, size_t index);
   static std::vector<int64_t> GetInputMinShape(const AnfNodePtr &anf_node, size_t index);
@@ -294,6 +298,8 @@ class AnfRuntimeAlgorithm {
   static std::vector<int64_t> GetOutputMinShape(const AnfNodePtr &anf_node, size_t index);
   static bool IsNodeDynamicShape(const AnfNodePtr &node);
   static void InferShape(const CNodePtr &node, std::map<uint32_t, tensor::TensorPtr> *depend_tensors = nullptr);
+  static void AddArgList(AbstractBasePtrList *args_spec_list, const AnfNodePtr &cnode_input,
+                         const AnfNodePtr &real_input, size_t index);
   static std::vector<size_t> GetInputRealDeviceShapeIfExist(const AnfNodePtr &anf_node, size_t index);
   static std::vector<size_t> GetOutputRealDeviceShapeIfExist(const AnfNodePtr &anf_node, size_t index);
   // Find real input nodes.
@@ -301,7 +307,8 @@ class AnfRuntimeAlgorithm {
                                    std::set<AnfNodePtr> *visited);
   static void GetAllVisitedCNode(const CNodePtr &cnode, std::vector<AnfNodePtr> *used_kernels,
                                  std::set<AnfNodePtr> *visited);
-  static void InsertMakeTupleForOutput(NotNull<KernelGraphPtr> root_graph);
+  static AnfNodePtr FetchFrontNodeByBackendNode(const AnfNodePtr &backend_node, const KernelGraph &graph);
+  static void InsertMakeTupleForOutput(const NotNull<KernelGraphPtr> &root_graph);
   static AnfNodeIndexSet GetUpdateStateUsers(const FuncGraphManagerPtr &manager, const AnfNodePtr &node);
   // Get node real inputs, skip `MakeTuple`, `TupleGetItem`, `Depend`, `Load`, `UpdateState` etc.
   static void GetRealInputs(const AnfNodePtr &anf_node, std::vector<session::KernelWithIndex> *inputs);
@@ -316,7 +323,6 @@ class AnfRuntimeAlgorithm {
     }
     return result;
   }
-  static bool IsOneOfPrimitiveCNode(const AnfNodePtr &node, const PrimitiveSet &prim_set);
 
   // Judge a control operator need be compiled into kernel graph rather than be cut into single op and
   // executed in vm. For example, the operator "bprop_cut" will be compiled into kernel graph and be launch
@@ -328,6 +334,34 @@ class AnfRuntimeAlgorithm {
   static void CacheAddrForGraph(const KernelGraphPtr &kernel_graph);
   static void CacheAddrForKernel(const AnfNodePtr &node, kernel::KernelMod *kernel_mod);
   static void CacheAddrForAtomicClean(const AnfNodePtr &node, kernel::KernelMod *kernel_mod);
+  // Check whether node is a call node, there are two types of call nodes:
+  // 1. First input of node is a cnode.
+  // 2. First input of node is a funcgraph value node.
+  static bool IsCallNode(const AnfNodePtr &node);
+  // Get the output number according to abstract, when there is a tuple in abstract, it needs to get recursively.
+  static size_t GetOutputNumByAbstract(const AbstractBasePtr &node_abstract);
+  // Fetch all outputs of call node.
+  static std::vector<KernelWithIndex> GetAllOutputByCallNode(const KernelWithIndex &output_with_index);
+  // Get attr groups
+  static int64_t GetAttrGroups(const AnfNodePtr &node, const size_t index);
+
+  static inline bool IsAllgather(const CNodePtr &cnode) { return GetCNodeName(cnode) == kAllGatherOpName; }
+
+  static inline bool IsFusion(const CNodePtr &cnode) {
+    return HasNodeAttr(kAttrFusion, cnode) && GetNodeAttr<int64_t>(cnode, kAttrFusion) > 0;
+  }
+
+  static inline bool IsFromParallelOptimizer(const CNodePtr &cnode) {
+    auto primitive = GetCNodePrimitive(cnode);
+    return (primitive != nullptr) && primitive->instance_name().find("parallel_optimizer") != std::string::npos;
+  }
+
+  static inline bool IsRecompute(const CNodePtr &cnode) {
+    auto attr_dup = cnode->GetAttr(kAttrDuplicated);
+    return attr_dup != nullptr && GetValue<bool>(attr_dup);
+  }
+
+  static void UpdateGraphValidRefPair(const KernelGraphPtr &graph);
 };
 }  // namespace session
 using AnfAlgo = session::AnfRuntimeAlgorithm;

@@ -25,7 +25,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Size;
 
 namespace mindspore::kernel {
-int SizeCPUKernel::Init() {
+int SizeCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   return RET_OK;
@@ -44,4 +44,7 @@ int SizeCPUKernel::Run() {
 
 REG_KERNEL(kCPU, kNumberTypeInt32, PrimitiveType_Size, LiteKernelCreator<SizeCPUKernel>)
 REG_KERNEL(kCPU, kNumberTypeFloat32, PrimitiveType_Size, LiteKernelCreator<SizeCPUKernel>)
+#ifdef ENABLE_FP16
+REG_KERNEL(kCPU, kNumberTypeFloat16, PrimitiveType_Size, LiteKernelCreator<SizeCPUKernel>)
+#endif
 }  // namespace mindspore::kernel

@@ -26,6 +26,9 @@ option(ENABLE_GLIBCXX "enable_glibcxx" OFF)
 option(MODE_ASCEND_ALL "supports all ascend platform" OFF)
 option(MODE_ASCEND_ACL "supports ascend acl mode only" OFF)
 option(ENABLE_SYM_FILE "enable sym file" OFF)
+option(BUILD_DEV_MODE "MindSpore build nightly dev mode" OFF)
+option(ENABLE_FAST_HASH_TABLE "Enable use fast hash table instead of std ones" ON)
+option(USE_LLVM "use llvm" OFF)
 
 if(NOT ENABLE_D AND NOT ENABLE_TESTCASES AND NOT ENABLE_ACL AND NOT ENABLE_GE)
     set(ENABLE_GLIBCXX ON)
@@ -150,4 +153,12 @@ endif()
 
 if(ENABLE_CPU AND NOT WIN32)
     add_compile_definitions(ENABLE_ARMOUR)
+endif()
+
+if(ENABLE_AKG AND CMAKE_SYSTEM_NAME MATCHES "Linux")
+    add_compile_definitions(ENABLE_AKG)
+endif()
+
+if(USE_LLVM)
+    add_compile_definitions(USE_LLVM)
 endif()

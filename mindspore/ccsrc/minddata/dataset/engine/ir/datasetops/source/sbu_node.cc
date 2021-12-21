@@ -26,7 +26,6 @@
 
 namespace mindspore {
 namespace dataset {
-
 SBUNode::SBUNode(const std::string &dataset_dir, bool decode, const std::shared_ptr<SamplerObj> &sampler,
                  const std::shared_ptr<DatasetCache> &cache)
     : MappableSourceNode(std::move(cache)), dataset_dir_(dataset_dir), decode_(decode), sampler_(sampler) {}
@@ -44,8 +43,8 @@ void SBUNode::Print(std::ostream &out) const {
 
 Status SBUNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  RETURN_IF_NOT_OK(ValidateDatasetDirParam("SBUNode", dataset_dir_));
-  RETURN_IF_NOT_OK(ValidateDatasetSampler("SBUNode", sampler_));
+  RETURN_IF_NOT_OK(ValidateDatasetDirParam("SBUDataset", dataset_dir_));
+  RETURN_IF_NOT_OK(ValidateDatasetSampler("SBUDataset", sampler_));
 
   Path root_dir(dataset_dir_);
 
@@ -53,9 +52,9 @@ Status SBUNode::ValidateParams() {
   Path caption_path = root_dir / Path("SBU_captioned_photo_dataset_captions.txt");
   Path image_path = root_dir / Path("sbu_images");
 
-  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("SBUNode", {url_path.ToString()}));
-  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("SBUNode", {caption_path.ToString()}));
-  RETURN_IF_NOT_OK(ValidateDatasetDirParam("SBUNode", {image_path.ToString()}));
+  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("SBUDataset", {url_path.ToString()}, "url file"));
+  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("SBUDataset", {caption_path.ToString()}, "caption file"));
+  RETURN_IF_NOT_OK(ValidateDatasetDirParam("SBUDataset", {image_path.ToString()}));
 
   return Status::OK();
 }
@@ -70,8 +69,8 @@ Status SBUNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
 
   auto op = std::make_shared<SBUOp>(dataset_dir_, decode_, std::move(schema), std::move(sampler_rt), num_workers_,
                                     connector_que_size_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
 
   return Status::OK();

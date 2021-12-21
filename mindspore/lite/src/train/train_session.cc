@@ -24,6 +24,7 @@
 #include <memory>
 #include <queue>
 #include <map>
+#include <set>
 #include "include/errorcode.h"
 #include "src/executor.h"
 #include "src/lite_model.h"
@@ -125,29 +126,26 @@ int TrainSession::InitCallBack() {
     if (!context_->IsCpuFloat16Enabled()) {
       return false;
     }
-    if (cfg_.mix_precision_cfg_.is_raw_mix_precision_) {
-      auto out_tensor_indexs = node->output_indices_;
-      if (out_tensor_indexs.empty()) {
-        MS_LOG(DEBUG) << "Debug: " << node->name_ << " fp32";
-        return false;
-      }
-      auto is_fp16 = model_->all_tensors_.at(out_tensor_indexs[0])->dataType() == kNumberTypeFloat16;
-      MS_LOG(DEBUG) << "Debug: " << node->name_ << ((is_fp16) ? " fp16" : " fp32");
-      return is_fp16;
-    }
+    bool force_fp16 = false;
     auto node_type = GetPrimitiveType(node->primitive_, SCHEMA_VERSION::SCHEMA_CUR);
     if (node_type == schema::PrimitiveType_Cast) {
-      return false;
-    }
-    auto in_size = node->input_indices_.size();
-    bool force_fp16 = false;
-    for (std::size_t k = 0; k < in_size; k++) {
-      schema::Tensor *tensor = model_->all_tensors_.at(node->input_indices_[k]);
-      if ((tensor->dataType() == kNumberTypeFloat16) && (tensor->nodeType() == NodeType_ValueNode)) {
+      schema::Tensor *tensor = model_.get()->all_tensors_.at(node->input_indices_[0]);
+      if (tensor->dataType() == kNumberTypeFloat16) {
         force_fp16 = true;
-        break;
+      } else if (tensor->dataType() == kNumberTypeFloat32) {
+        return false;
+      }
+    } else {
+      auto in_size = node->input_indices_.size();
+      for (std::size_t k = 0; k < in_size; k++) {
+        schema::Tensor *tensor = model_->all_tensors_.at(node->input_indices_[k]);
+        if ((tensor->dataType() == kNumberTypeFloat16) && (tensor->nodeType() == NodeType_ValueNode)) {
+          force_fp16 = true;
+          break;
+        }
       }
     }
+
     const auto &node_name = node->name_;
     bool is_fp16 = true;
     if (!force_fp16) {
@@ -156,8 +154,12 @@ int TrainSession::InitCallBack() {
         is_fp16 = false;
       }
       // loss function runs in fp32
-      if ((node_name.find(get_loss_name()) != std::string::npos)) {
-        is_fp16 = false;
+      auto v = get_loss_name();
+      for (auto &s : v) {
+        if (node_name.find(s) != std::string::npos) {
+          is_fp16 = false;
+          break;
+        }
       }
       // run bn according to user configuration
       if ((cfg_.mix_precision_cfg_.keep_batchnorm_fp32_) &&
@@ -172,20 +174,116 @@ int TrainSession::InitCallBack() {
   return RET_OK;
 }
 
+static int ReshapeWeightTensor(Tensor *orig_tensor, tensor::MSTensor *new_tensor) {
+  if (orig_tensor->data_type() != new_tensor->data_type()) {
+    MS_LOG(ERROR) << "Cannot reshape tensor of different type: " << new_tensor->tensor_name();
+    return RET_PARAM_INVALID;
+  }
+
+  if (orig_tensor->category() != lite::Category::CONST_TENSOR) {
+    MS_LOG(ERROR) << "Cannot reshape non const tensor: " << new_tensor->tensor_name();
+    return RET_ERROR;
+  }
+
+  auto orig_size = orig_tensor->Size();
+  uint8_t *new_data = reinterpret_cast<uint8_t *>(new_tensor->data());
+  if (new_data == nullptr) {
+    // Copy original data into new_tensor
+    new_data = reinterpret_cast<uint8_t *>(new_tensor->MutableData());
+    if (new_data == nullptr) {
+      MS_LOG(ERROR) << "Allocation of Data Failed" << new_tensor->tensor_name();
+      return RET_ERROR;
+    }
+    if (orig_size == 0) {
+      MS_LOG(ERROR) << "Operation failed: Both new tensors and original one have no data";
+      return RET_ERROR;
+    }
+    uint8_t *orig_data = reinterpret_cast<uint8_t *>(orig_tensor->data());
+    for (unsigned int loc = 0; loc < new_tensor->Size(); loc++) {
+      new_data[loc] = orig_data[loc % orig_size];
+    }
+  }
+
+  orig_tensor->FreeData();
+  orig_tensor->set_data(nullptr);
+  orig_tensor->set_shape(new_tensor->shape());
+
+  uint8_t *dst_data = reinterpret_cast<uint8_t *>(orig_tensor->MutableData());
+  if (dst_data == nullptr) {
+    MS_LOG(ERROR) << "Allocation of Data Failed";
+    return RET_ERROR;
+  }
+  std::copy(new_data, new_data + orig_tensor->Size(), dst_data);
+  return RET_OK;
+}
+
+int TrainSession::UpdateWeights(std::vector<tensor::MSTensor *> modify_tensors) {
+  unsigned int num_of_found_tensors = 0;
+  for (auto tensor : tensors_) {
+    for (auto modify : modify_tensors) {
+      if (modify == nullptr) {
+        MS_LOG(ERROR) << "Tensor is nullptr";
+        return RET_PARAM_INVALID;
+      }
+      if (modify->tensor_name() == tensor->tensor_name()) {
+        auto ret = ReshapeWeightTensor(tensor, modify);
+        num_of_found_tensors++;
+        if (ret != RET_OK) {
+          return ret;
+        }
+        break;
+      }
+    }
+  }
+  if (num_of_found_tensors != modify_tensors.size()) {
+    MS_LOG(ERROR) << "Did not find all the given tensors in the model";
+    return RET_ERROR;
+  }
+  auto ret = ReSizeKernels(kernels_);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Resize kernels fail!";
+    return ret;
+  }
+
+  bool is_eval = IsEval();
+  ret = Train();  // This will trigger proper Allocation of static data;
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "General failure occurred during Update of Weights";
+    return ret;
+  }
+  if (is_eval) {
+    ret = Eval();
+  }
+  return ret;
+}
+
 int TrainSession::AllocTensors(const std::vector<kernel::LiteKernel *> &kernels) {
   if (!IS_STATIC_ALLOCATOR(allocator_)) return RET_OK;
   OptAllocator allocator;
   std::unordered_map<lite::Tensor *, int> ref_count;
   std::unordered_map<lite::Tensor *, size_t> offset_map;
-  for (auto kernel : kernels) {
-    for (auto tensor : kernel->out_tensors()) {
-      size_t size = tensor->Size();
-      size_t offset = allocator.Malloc(size);
+  int counter = 0;
+  uint32_t input_idx = 0;
+  for (auto &kernel : kernels) {
+    for (size_t i = 0; i < kernel->out_tensors().size(); i++) {
+      auto tensor = kernel->out_tensors().at(i);
+      bool in_place = false;
+      if (counter != 0) {
+        in_place = IsInPlaceTensor(kernel, i, ref_count, &input_idx);
+      }
+      counter++;
+      size_t offset;
+      if (in_place) {
+        offset = GetInplaceTensorOffset(kernel, offset_map, &ref_count, input_idx);
+      } else {
+        size_t size = tensor->Size();
+        offset = allocator.Malloc(size);
+      }
       offset_map[tensor] = offset;
       ref_count[tensor] = tensor->init_ref_count();
     }
     for (auto tensor : kernel->in_tensors()) {
-      if (tensor->category() == lite::Tensor::VAR) {
+      if (tensor->category() == lite::Category::VAR) {
         int count = ref_count[tensor] - 1;
         ref_count[tensor] = count;
         if (count == 0) {
@@ -195,8 +293,12 @@ int TrainSession::AllocTensors(const std::vector<kernel::LiteKernel *> &kernels)
     }
   }
   // Set Tensor data
+  auto size = allocator.total_size();
+  if (size > tensors_data_size_) {
+    free(tensors_data_);
+    tensors_data_ = nullptr;
+  }
   if (tensors_data_ == nullptr) {
-    auto size = allocator.total_size();
     auto buf = malloc(size);
     if (buf == nullptr) {
       MS_LOG(ERROR) << "cannot allocate buffer size" << size;
@@ -205,6 +307,7 @@ int TrainSession::AllocTensors(const std::vector<kernel::LiteKernel *> &kernels)
     StaticAllocator *alloc = reinterpret_cast<StaticAllocator *>(allocator_.get());
     alloc->SetContex(buf, size);
     tensors_data_ = buf;
+    tensors_data_size_ = size;
   }
   for (auto kernel : train_kernels_) {
     for (auto tensor : kernel->out_tensors()) {
@@ -320,8 +423,16 @@ void TrainSession::FreeRestoreTensors() {
 
 bool TrainSession::IsLossTensor(Tensor *tensor) {
   MS_ASSERT(tensor != nullptr);
+  bool isLoss = false;
   auto t_n = tensor->tensor_name();
-  return (t_n.find(get_loss_name()) != std::string::npos);
+  auto v = get_loss_name();
+  for (auto &s : v) {
+    if (t_n.find(s) != std::string::npos) {
+      isLoss = true;
+      break;
+    }
+  }
+  return isLoss;
 }
 
 bool TrainSession::AllInputsNeedScale(kernel::LiteKernel *kernel) {
@@ -451,7 +562,7 @@ int TrainSession::RunGraph(const KernelCallBack &before, const KernelCallBack &a
     return lite::RET_NULL_PTR;
   }
   auto &run_kernels = (train_mode_) ? train_kernels_ : inference_kernels_;
-  if (context_->IsCpuFloat16Enabled() && !cfg_.mix_precision_cfg_.is_raw_mix_precision_) {
+  if (context_->IsCpuFloat16Enabled()) {
     ret = MixPrecisionExecKernels(before, after, run_kernels);
   } else {
     ret = ExecKernels(before, after, run_kernels);
@@ -554,10 +665,11 @@ void TrainSession::CompileEvalOutputs() {
             eval_output_node_map_[in_kernel->name()].emplace_back(ms_tensor);
             auto index = TSFindTensor(tensors_, ms_tensor);
             if (index != tensors_.size()) {
-              eval_output_tensor_map_.insert(std::make_pair(std::to_string(index), ms_tensor));
               if (!ms_tensor->tensor_name().empty()) {
+                eval_output_tensor_map_.insert(std::make_pair(ms_tensor->tensor_name(), ms_tensor));
                 eval_output_tensor_names_.emplace_back(ms_tensor->tensor_name());
               } else {
+                eval_output_tensor_map_.insert(std::make_pair(std::to_string(index), ms_tensor));
                 eval_output_tensor_names_.emplace_back(std::to_string(index));
               }
             }
@@ -566,9 +678,9 @@ void TrainSession::CompileEvalOutputs() {
       }
     }
   }
-  if (eval_output_node_map_.size() == 0) eval_output_node_map_ = orig_output_node_map_;
-  if (eval_output_tensor_map_.size() == 0) eval_output_tensor_map_ = orig_output_tensor_map_;
-  if (eval_output_tensor_names_.size() == 0) eval_output_tensor_names_ = orig_output_tensor_names_;
+  if (eval_output_node_map_.empty()) eval_output_node_map_ = orig_output_node_map_;
+  if (eval_output_tensor_map_.empty()) eval_output_tensor_map_ = orig_output_tensor_map_;
+  if (eval_output_tensor_names_.empty()) eval_output_tensor_names_ = orig_output_tensor_names_;
 }
 
 void TrainSession::CompileTrainOutputs() {
@@ -586,19 +698,20 @@ void TrainSession::CompileTrainOutputs() {
         train_output_node_map_[kernel->name()].emplace_back(ms_tensor);
         auto index = TSFindTensor(tensors_, ms_tensor);
         if (index != tensors_.size()) {
-          train_output_tensor_map_.insert(std::make_pair(std::to_string(index), ms_tensor));
           if (!ms_tensor->tensor_name().empty()) {
+            train_output_tensor_map_.insert(std::make_pair(ms_tensor->tensor_name(), ms_tensor));
             train_output_tensor_names_.emplace_back(ms_tensor->tensor_name());
           } else {
+            train_output_tensor_map_.insert(std::make_pair(std::to_string(index), ms_tensor));
             train_output_tensor_names_.emplace_back(std::to_string(index));
           }
         }
       }
     }
   }
-  if (train_output_node_map_.size() == 0) train_output_node_map_ = orig_output_node_map_;
-  if (train_output_tensor_map_.size() == 0) train_output_tensor_map_ = orig_output_tensor_map_;
-  if (train_output_tensor_names_.size() == 0) train_output_tensor_names_ = orig_output_tensor_names_;
+  if (train_output_node_map_.empty()) train_output_node_map_ = orig_output_node_map_;
+  if (train_output_tensor_map_.empty()) train_output_tensor_map_ = orig_output_tensor_map_;
+  if (train_output_tensor_names_.empty()) train_output_tensor_names_ = orig_output_tensor_names_;
 }
 
 void TrainSession::BuildInferenceKernelsRecursive(kernel::LiteKernel *kernel, std::vector<kernel::LiteKernel *> *v) {
@@ -880,13 +993,14 @@ int TrainSession::OptimizerStep() {
 }
 
 bool TrainSession::IsLossKernel(const kernel::LiteKernel *kernel) const {
-  return (kernel->type() == schema::PrimitiveType_SoftmaxCrossEntropyWithLogits ||
-          kernel->type() == schema::PrimitiveType_SparseSoftmaxCrossEntropyWithLogits ||
-          kernel->type() == schema::PrimitiveType_SmoothL1Loss ||
-          kernel->type() == schema::PrimitiveType_SmoothL1LossGrad ||
-          kernel->type() == schema::PrimitiveType_SigmoidCrossEntropyWithLogits ||
-          kernel->type() == schema::PrimitiveType_SigmoidCrossEntropyWithLogitsGrad) ||
-         kernel->name().find(cfg_.loss_name_) != std::string::npos;
+  bool isLoss = false;
+  for (auto &s : cfg_.loss_name_) {
+    if (kernel->name().find(s) != std::string::npos) {
+      isLoss = true;
+      break;
+    }
+  }
+  return isLoss;
 }
 
 bool TrainSession::IsGradKernel(const kernel::LiteKernel *kernel) const {
@@ -1036,6 +1150,13 @@ int TrainSession::Export(const std::string &file_name, ModelType model_type, Qua
     MS_LOG(ERROR) << "cannot export Network";
     return status;
   }
+  if (model_type == MT_INFERENCE) {
+    status = texport.TrainModelFusion();
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "TrainModelFusion failed.";
+      return status;
+    }
+  }
   status = texport.SaveToFile();
   if (status != RET_OK) {
     MS_LOG(ERROR) << "failed to save to " << file_name;
@@ -1079,6 +1200,61 @@ int TrainSession::UpdateFeatureMaps(const std::vector<tensor::MSTensor *> &featu
   }
   return RET_OK;
 }
+
+std::set<schema::PrimitiveType> inPlaceSupportedKernels = {
+  mindspore::schema::PrimitiveType_Activation, mindspore::schema::PrimitiveType_ActivationGrad,
+  mindspore::schema::PrimitiveType_Reshape,    mindspore::schema::PrimitiveType_DivFusion,
+  mindspore::schema::PrimitiveType_AddFusion,  mindspore::schema::PrimitiveType_SubFusion,
+  mindspore::schema::PrimitiveType_RealDiv,    mindspore::schema::PrimitiveType_Select,
+  mindspore::schema::PrimitiveType_BiasAdd,    mindspore::schema::PrimitiveType_BiasAddGrad,
+  mindspore::schema::PrimitiveType_Sqrt,       mindspore::schema::PrimitiveType_Abs,
+  mindspore::schema::PrimitiveType_Cos,        mindspore::schema::PrimitiveType_Log,
+  mindspore::schema::PrimitiveType_Square,     mindspore::schema::PrimitiveType_Rsqrt,
+  mindspore::schema::PrimitiveType_Sin,        mindspore::schema::PrimitiveType_LogicalNot,
+  mindspore::schema::PrimitiveType_LogicalAnd, mindspore::schema::PrimitiveType_LogicalOr,
+  mindspore::schema::PrimitiveType_Floor,      mindspore::schema::PrimitiveType_Ceil,
+  mindspore::schema::PrimitiveType_Round,      mindspore::schema::PrimitiveType_Neg,
+  mindspore::schema::PrimitiveType_Reciprocal, mindspore::schema::PrimitiveType_Erf,
+  mindspore::schema::PrimitiveType_Maximum,    mindspore::schema::PrimitiveType_Minimum,
+  mindspore::schema::PrimitiveType_FloorDiv,   mindspore::schema::PrimitiveType_FloorMod,
+  mindspore::schema::PrimitiveType_Eltwise,    mindspore::schema::PrimitiveType_SquaredDifference,
+  mindspore::schema::PrimitiveType_ExpandDims, mindspore::schema::PrimitiveType_Cast,
+  mindspore::schema::PrimitiveType_Flatten,    mindspore::schema::PrimitiveType_FlattenGrad,
+  mindspore::schema::PrimitiveType_Squeeze,    mindspore::schema::PrimitiveType_Unsqueeze};
+
+bool TrainSession::IsInPlaceKernel(kernel::LiteKernel *kernel) {
+  if (inPlaceSupportedKernels.find(kernel->type()) != inPlaceSupportedKernels.end() &&
+      !(kernel->type() == mindspore::schema::PrimitiveType_Activation &&
+        kernel->op_parameter()->type_ == schema::ActivationType_SIGMOID)) {
+    return true;
+  }
+  return false;
+}
+
+bool TrainSession::IsInPlaceTensor(kernel::LiteKernel *kernel, uint32_t idx,
+                                   const std::unordered_map<lite::Tensor *, int> &ref_count, uint32_t *input_idx) {
+  if (IsInPlaceKernel(kernel)) {
+    auto out_tensor = kernel->out_tensors().at(idx);
+    for (size_t i = 0; i < kernel->in_tensors().size(); i++) {
+      auto tensor = kernel->in_tensors().at(i);
+      if ((tensor->category() == lite::Category::VAR) &&
+          (tensor->init_ref_count() == 1 || (tensor->init_ref_count() > 1 && ref_count.at(tensor) == 1)) &&
+          (out_tensor->Size() == tensor->Size())) {
+        *input_idx = static_cast<uint32_t>(i);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+size_t TrainSession::GetInplaceTensorOffset(kernel::LiteKernel *kernel,
+                                            const std::unordered_map<lite::Tensor *, size_t> &offset_map,
+                                            std::unordered_map<lite::Tensor *, int> *ref_count, uint32_t input_idx) {
+  auto tensor = kernel->in_tensors().at(input_idx);
+  ref_count->at(tensor) = ref_count->at(tensor) + 1;
+  return offset_map.at(tensor);
+}
 }  // namespace lite
 
 session::LiteSession *session::TrainSession::CreateTrainSession(const std::string &fn, const lite::Context *context,
@@ -1093,7 +1269,7 @@ session::LiteSession *session::TrainSession::CreateTrainSession(const std::strin
     return nullptr;
   }
   if (context->allocator == nullptr) {
-    const_cast<lite::Context *>(context)->allocator = std::shared_ptr<Allocator>(new (std::nothrow) StaticAllocator());
+    const_cast<lite::Context *>(context)->allocator = std::make_shared<StaticAllocator>();
     if (context->allocator == nullptr) {
       MS_LOG(ERROR) << " cannot convert to static allocation";
     }

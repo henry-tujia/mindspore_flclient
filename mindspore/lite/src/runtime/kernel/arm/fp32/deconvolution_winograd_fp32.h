@@ -35,11 +35,10 @@ class DeConvolutionWinogradCPUKernel : public ConvolutionBaseCPUKernel {
       : ConvolutionBaseCPUKernel(parameter, inputs, outputs, ctx, inputs.at(kWeightIndex)->data(),
                                  inputs.size() == kInputSize2 ? inputs.at(kBiasIndex)->data() : nullptr) {}
   ~DeConvolutionWinogradCPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int Run() override;
   int ReSize() override;
 
- public:
   int DoDeconv(int task_id);
   int DeDeconvPost(int task_id);
 
@@ -52,7 +51,6 @@ class DeConvolutionWinogradCPUKernel : public ConvolutionBaseCPUKernel {
   int InitRunBuf();
   void FreeRunBuf();
 
- private:
   DeConvParam *deconv_param_ = nullptr;
   float *nhwc_input_ = nullptr;
   float *nhwc_output_ = nullptr;
@@ -60,6 +58,7 @@ class DeConvolutionWinogradCPUKernel : public ConvolutionBaseCPUKernel {
   float *tile_input_ = nullptr;
   float *tile_output_ = nullptr;
   std::mutex lock_;
+  int tile_num_;
   int thread_num_hw_ = 0;
   int thread_stride_hw_ = 0;
   bool valid_weight_shape_ = true;

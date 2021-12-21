@@ -23,6 +23,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -40,21 +41,18 @@ std::string RandomSelectSubpolicyOperation::Name() const { return kRandomSelectS
 Status RandomSelectSubpolicyOperation::ValidateParams() {
   if (policy_.empty()) {
     std::string err_msg = "RandomSelectSubpolicy: policy must not be empty";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   for (int32_t i = 0; i < policy_.size(); i++) {
     if (policy_[i].empty()) {
       std::string err_msg = "RandomSelectSubpolicy: policy[" + std::to_string(i) + "] must not be empty";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
     for (int32_t j = 0; j < policy_[i].size(); j++) {
       if (policy_[i][j].first == nullptr) {
         std::string transform_pos = "[" + std::to_string(i) + "]" + "[" + std::to_string(j) + "]";
         std::string err_msg = "RandomSelectSubpolicy: transform in policy" + transform_pos + " must not be null";
-        MS_LOG(ERROR) << err_msg;
-        RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
       } else {
         RETURN_IF_NOT_OK(policy_[i][j].first->ValidateParams());
       }
@@ -62,8 +60,7 @@ Status RandomSelectSubpolicyOperation::ValidateParams() {
         std::string transform_pos = "[" + std::to_string(i) + "]" + "[" + std::to_string(j) + "]";
         std::string err_msg = "RandomSelectSubpolicy: probability of transform in policy" + transform_pos +
                               " must be between 0.0 and 1.0, got: " + std::to_string(policy_[i][j].second);
-        MS_LOG(ERROR) << err_msg;
-        RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
       }
     }
   }
@@ -104,14 +101,14 @@ Status RandomSelectSubpolicyOperation::to_json(nlohmann::json *out_json) {
 
 Status RandomSelectSubpolicyOperation::from_json(nlohmann::json op_params,
                                                  std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("policy") != op_params.end(), "Failed to find policy");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "policy", kRandomSelectSubpolicyOperation));
   nlohmann::json policy_json = op_params["policy"];
   std::vector<std::vector<std::pair<std::shared_ptr<TensorOperation>, double>>> policy;
   std::vector<std::pair<std::shared_ptr<TensorOperation>, double>> policy_items;
   for (nlohmann::json item : policy_json) {
     for (nlohmann::json item_pair : item) {
-      CHECK_FAIL_RETURN_UNEXPECTED(item_pair.find("prob") != item_pair.end(), "Failed to find prob");
-      CHECK_FAIL_RETURN_UNEXPECTED(item_pair.find("tensor_op") != item_pair.end(), "Failed to find tensor_op");
+      RETURN_IF_NOT_OK(ValidateParamInJson(item_pair, "prob", kRandomSelectSubpolicyOperation));
+      RETURN_IF_NOT_OK(ValidateParamInJson(item_pair, "tensor_op", kRandomSelectSubpolicyOperation));
       std::vector<std::shared_ptr<TensorOperation>> operations;
       std::pair<std::shared_ptr<TensorOperation>, double> policy_pair;
       std::shared_ptr<TensorOperation> operation;

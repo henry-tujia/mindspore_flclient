@@ -40,12 +40,18 @@ ABSTRACT_REPORT_NAME_DEC(KeywordArg)
 ABSTRACT_REPORT_NAME_DEC(Class)
 
 TypePtr CheckType(TypePtr type, const TypePtrList &accepts, const std::string &error_message_prefix) {
+  auto ori_type = type;
+  if (type->isa<TensorType>()) {
+    auto tensor = type->cast<TensorTypePtr>();
+    type = tensor->element();
+    MS_EXCEPTION_IF_NULL(type);
+  }
   bool ok = std::any_of(accepts.begin(), accepts.end(),
                         [type](const TypePtr &accept) -> bool { return IsIdentidityOrSubclass(type, accept); });
   if (ok) {
     return type;
   } else {
-    MS_LOG(EXCEPTION) << error_message_prefix << accepts << " but is " << type->ToString();
+    MS_EXCEPTION(TypeError) << error_message_prefix << " should be " << accepts << ",but got " << ori_type->ToString();
   }
 }
 
@@ -57,13 +63,7 @@ TypePtr CheckTensorDType(const AbstractTensorPtr &tensor, const TypePtrList &acc
   if (!type->isa<TensorType>()) {
     MS_LOG(EXCEPTION) << error_message_prefix << "requires Tensor but got " << type->ToString();
   }
-  auto elem = tensor->element();
-  MS_EXCEPTION_IF_NULL(elem);
-  TypePtr ele_type = elem->BuildType();
-  if (ele_type == nullptr) {
-    MS_LOG(EXCEPTION) << "Abstract tensor element type nullptr";
-  }
-  return CheckType(ele_type, accepts, error_message_prefix);
+  return CheckType(type, accepts, error_message_prefix);
 }
 
 TypePtr CheckTensorsDTypeSame(const AbstractTensorPtrList &tensor_list, const TypePtrList &accepts,
@@ -79,7 +79,8 @@ TypePtr CheckTensorsDTypeSame(const AbstractTensorPtrList &tensor_list, const Ty
   TypePtr sample_type = sample_elem->BuildType();
   MS_EXCEPTION_IF_NULL(sample_type);
   std::ostringstream loginfoBuffer;
-  loginfoBuffer << "same type, got";
+  loginfoBuffer << "[" << sample_tensor->BuildType()->ToString();
+  bool error_flag = false;
   // Check if other elements have the same type with the first element.
   for (size_t index = 1; index < tensor_list.size(); ++index) {
     MS_EXCEPTION_IF_NULL(tensor_list[index]);
@@ -87,11 +88,13 @@ TypePtr CheckTensorsDTypeSame(const AbstractTensorPtrList &tensor_list, const Ty
     MS_EXCEPTION_IF_NULL(elem);
     auto a_type = elem->BuildType();
     MS_EXCEPTION_IF_NULL(a_type);
-    loginfoBuffer << " " << a_type->ToString();
+    loginfoBuffer << "," << tensor_list[index]->BuildType()->ToString();
     if (sample_type->type_id() != a_type->type_id()) {
-      MS_LOG(EXCEPTION) << "Expected type " << sample_type->ToString() << ", but got " << a_type->ToString()
-                        << ", index " << index;
+      error_flag = true;
     }
+  }
+  if (error_flag) {
+    MS_EXCEPTION(ValueError) << error_message_prefix << " must be same, but got " << loginfoBuffer.str() << "]";
   }
   MS_LOG(DEBUG) << error_message_prefix << loginfoBuffer.str();
   return CheckTensorDType(sample_tensor, accepts, error_message_prefix);
@@ -110,18 +113,34 @@ TypePtr CheckScalarType(const AbstractScalarPtr &scalar, const TypePtrList &acce
   return CheckType(type, accepts, error_message_prefix);
 }
 
-ShapePtr CheckShapeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor) {
+void CheckShapeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor) {
   MS_EXCEPTION_IF_NULL(tensor_base);
   ShapePtr shape_base = tensor_base->shape();
   MS_EXCEPTION_IF_NULL(shape_base);
   MS_EXCEPTION_IF_NULL(tensor);
   ShapePtr shape = tensor->shape();
   MS_EXCEPTION_IF_NULL(shape);
-  if (*shape != *shape_base) {
+  if (shape_base->IsDimUnknown() || shape->IsDimUnknown()) {
+    return;
+  }
+
+  auto shape_vector = shape->shape();
+  auto shape_base_vector = shape_base->shape();
+  if (shape_vector.size() != shape_base_vector.size()) {
     MS_LOG(EXCEPTION) << op << " evaluator first arg shape " << shape->ToString()
                       << " are not consistent with second arg shape " << shape_base->ToString();
   }
-  return shape_base;
+
+  for (size_t i = 0; i < shape_vector.size(); i++) {
+    if (shape_vector[i] == Shape::SHP_ANY || shape_base_vector[i] == Shape::SHP_ANY) {
+      continue;
+    }
+    if (shape_vector[i] != shape_base_vector[i]) {
+      MS_LOG(EXCEPTION) << op << " evaluator first arg shape " << shape->ToString()
+                        << " are not consistent with second arg shape " << shape_base->ToString();
+    }
+  }
+  return;
 }
 
 TypePtr CheckDtypeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor) {
@@ -142,7 +161,8 @@ TypePtr CheckDtypeSame(const std::string &op, const AbstractTensorPtr &tensor_ba
   return type_base;
 }
 
-int64_t CheckAxis(const std::string &op, const ValuePtr &axis, int64_t minimum, int64_t max) {
+int64_t CheckAxis(const std::string &op, const std::string &args_name, const ValuePtr &axis, int64_t minimum,
+                  int64_t max) {
   if (axis == nullptr) {
     MS_LOG(EXCEPTION) << op << " evaluator axis is null";
   }
@@ -150,16 +170,20 @@ int64_t CheckAxis(const std::string &op, const ValuePtr &axis, int64_t minimum, 
     MS_LOG(EXCEPTION) << op << " evaluator axis should be int64_t, but got " << axis->type_name();
   }
   int64_t axis_value = GetValue<int64_t>(axis);
-  if (axis_value > max || axis_value < minimum) {
-    MS_LOG(EXCEPTION) << op << " evaluator axis value should be in the range [" << minimum << ", " << max
-                      << "], but get " << axis_value;
+  if (axis_value >= max || axis_value < minimum) {
+    MS_LOG(EXCEPTION) << "The primitive[" << op << "]'s \'" << args_name << "\' value should be in the range ["
+                      << minimum << ", " << max << "), but got " << axis_value;
+  }
+  if (axis_value < 0) {
+    axis_value = axis_value + SizeToLong(max);
   }
   return axis_value;
 }
 void CheckArgsSize(const std::string &op, const mindspore::abstract::AbstractBasePtrList &args_spec_list,
                    size_t size_expect) {
   if (args_spec_list.size() != size_expect) {
-    MS_LOG(EXCEPTION) << op << " input args size should be " << size_expect << ", but got " << args_spec_list.size();
+    MS_LOG(EXCEPTION) << "For '" << op << "', the number of input should be " << size_expect << ", but got "
+                      << args_spec_list.size();
   }
 
   for (size_t i = 0; i < size_expect; i++) {
@@ -184,65 +208,6 @@ void CheckShapeAnyAndPositive(const std::string &op, const ShapeVector &shape) {
   }
 }
 
-int64_t CheckAttrPositiveInt64(const std::string &op, const ValuePtr &attr, const std::string &attr_name) {
-  MS_EXCEPTION_IF_NULL(attr);
-  auto int64_value = attr->cast<Int64ImmPtr>();
-  MS_EXCEPTION_IF_NULL(int64_value);
-  int64_t attr_val = int64_value->value();
-  if (attr_val <= 0) {
-    MS_LOG(EXCEPTION) << op << " invalid " << attr_name << " value: " << attr_val << ", should be greater then 0";
-  }
-  return attr_val;
-}
-
-std::vector<int64_t> CheckAttrIntOrTuple(const std::string &op, const ValuePtr &attr, const size_t start_idx,
-                                         const size_t num_element) {
-  std::vector<int64_t> result;
-  MS_EXCEPTION_IF_NULL(attr);
-  if (attr->isa<ValueTuple>()) {
-    auto tuple_attr = attr->cast<ValueTuplePtr>();
-    MS_EXCEPTION_IF_NULL(tuple_attr);
-    std::vector<ValuePtr> attr_vec = tuple_attr->value();
-    if (start_idx > attr_vec.size() || start_idx + num_element > attr_vec.size()) {
-      MS_EXCEPTION(IndexError) << op << " attr index is out of range, attr size is " << attr_vec.size()
-                               << "but start idx got" << start_idx << " num element " << num_element;
-    }
-    auto it_start = attr_vec.begin() + start_idx;
-    (void)std::transform(it_start, it_start + num_element, std::back_inserter(result),
-                         [](const ValuePtr &e) -> int64_t { return GetValue<int64_t>(e); });
-  } else {
-    auto int64_imm = attr->cast<Int64ImmPtr>();
-    MS_EXCEPTION_IF_NULL(int64_imm);
-    int64_t attr_val = int64_imm->value();
-    (void)result.insert(result.begin(), num_element, attr_val);
-  }
-  return result;
-}
-
-std::string CheckAttrStringSet(const std::string &op, const ValuePtr &attr, const std::string &attr_name,
-                               const std::set<std::string> &val_set) {
-  MS_EXCEPTION_IF_NULL(attr);
-  auto string_attr = attr->cast<StringImmPtr>();
-  MS_EXCEPTION_IF_NULL(string_attr);
-  std::string attr_val = string_attr->value();
-  if (val_set.find(attr_val) == val_set.end()) {
-    std::ostringstream buffer;
-    bool f_begin = true;
-    buffer << "{";
-    for (auto &x : val_set) {
-      if (!f_begin) {
-        buffer << ", ";
-      } else {
-        f_begin = false;
-      }
-      buffer << x;
-    }
-    buffer << "}";
-    MS_LOG(EXCEPTION) << op << "Unsupported " << attr_name << ": " << attr_val << ". use " << buffer.str();
-  }
-  return attr_val;
-}
-
 void CheckRequiredArgsSize(const std::string &op, const mindspore::abstract::AbstractBasePtrList &args_spec_list,
                            size_t size_expect) {
   if (args_spec_list.size() < size_expect) {
@@ -252,6 +217,5 @@ void CheckRequiredArgsSize(const std::string &op, const mindspore::abstract::Abs
     MS_EXCEPTION_IF_NULL(args_spec_list[i]);
   }
 }
-
 }  // namespace abstract
 }  // namespace mindspore

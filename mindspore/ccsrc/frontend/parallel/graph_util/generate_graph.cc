@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,7 +50,7 @@ std::string GetOpPythonPath(const OperatorName &op_name) {
   return functional_op_module;
 }
 
-ValuePtr CreatOpInstance(const OperatorAttrs &attrs, const OperatorName &op_name, const std::string &instance_name) {
+ValuePtr CreateOpInstance(const OperatorAttrs &attrs, const OperatorName &op_name, const std::string &instance_name) {
   std::string op_path = GetOpPythonPath(op_name);
   py::module mod = py::module::import(common::SafeCStr(op_path));
   if (!py::hasattr(mod, common::SafeCStr(op_name))) {
@@ -77,7 +77,7 @@ AnfNodePtr ValuePtrToAnfNodePtr(const ValuePtr &value_ptr) {
   return value_node->cast<AnfNodePtr>();
 }
 
-static std::unordered_map<int64_t, AnfNodePtr> int_tensor_map = {};
+static mindspore::HashMap<int64_t, AnfNodePtr> int_tensor_map = {};
 AnfNodePtr CreateInt32Tensor(int64_t value) {
   auto it = int_tensor_map.find(value);
   if (it != int_tensor_map.end()) {
@@ -102,8 +102,8 @@ AnfNodePtr CreatInt64Imm(int64_t value) {
 
 AnfNodePtr CreateTuple(const std::vector<int64_t> &tuple) {
   std::vector<ValuePtr> value_list;
-  std::transform(tuple.begin(), tuple.end(), std::back_inserter(value_list),
-                 [](const int64_t value) { return MakeValue(value); });
+  (void)std::transform(tuple.begin(), tuple.end(), std::back_inserter(value_list),
+                       [](const int64_t value) { return MakeValue(value); });
   ValueTuplePtr value_tuple_ptr = std::make_shared<ValueTuple>(value_list);
   return ValuePtrToAnfNodePtr(value_tuple_ptr);
 }
@@ -173,9 +173,9 @@ AnfNodePtr GenerateGraph::PushBack(const std::vector<AnfNodePtr> &inputs) {
 
 AnfNodePtr GenerateGraph::NewOpInst(const OperatorName &op_name, const OperatorAttrs &attrs) {
   name_idx_++;
-  ValuePtr pyop_instance = CreatOpInstance(attrs, op_name, instance_name_base_ + op_name + std::to_string(name_idx_));
+  ValuePtr pyop_instance = CreateOpInstance(attrs, op_name, instance_name_base_ + op_name + std::to_string(name_idx_));
   if (pyop_instance == nullptr) {
-    MS_LOG(EXCEPTION) << "Failure:" << op_name << " CreatOpInstance failed";
+    MS_LOG(EXCEPTION) << "Failure:" << op_name << " CreateOpInstance failed";
   }
   auto value_node = NewValueNode(pyop_instance);
   return value_node->cast<AnfNodePtr>();
@@ -184,9 +184,9 @@ AnfNodePtr GenerateGraph::NewOpInst(const OperatorName &op_name, const OperatorA
 AnfNodePtr GenerateGraph::NewOpInst(const OperatorName &op_name) {
   name_idx_++;
   OperatorAttrs attrs;
-  ValuePtr pyop_instance = CreatOpInstance(attrs, op_name, instance_name_base_ + std::to_string(name_idx_));
+  ValuePtr pyop_instance = CreateOpInstance(attrs, op_name, instance_name_base_ + std::to_string(name_idx_));
   if (pyop_instance == nullptr) {
-    MS_LOG(EXCEPTION) << "Failure:" << op_name << " CreatOpInstance failed";
+    MS_LOG(EXCEPTION) << "Failure:" << op_name << " CreateOpInstance failed";
   }
   auto value_node = NewValueNode(pyop_instance);
   return value_node->cast<AnfNodePtr>();

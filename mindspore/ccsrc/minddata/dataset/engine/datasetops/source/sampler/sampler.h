@@ -42,7 +42,7 @@ class RandomAccessOp {
   // @param std::map<int64_t, std::vector<int64_t>> * map
   // @return Status The status code returned
   virtual Status GetClassIds(std::map<int32_t, std::vector<int64_t>> *map) const {
-    RETURN_STATUS_UNEXPECTED("GetClassIds needs to be override to support PK");
+    RETURN_STATUS_UNEXPECTED("[Internal ERROR] GetClassIds needs to be override to support PK.");
   }
 
   // default destructor
@@ -121,7 +121,7 @@ class SamplerRT {
   // @return Status The status code returned
   Status AddChild(std::shared_ptr<SamplerRT> child);
 
-  // A helper function to create a int64_t 1-D Tensor specifically used to hold sampleIds for Sampler
+  // A helper function to create an int64_t 1-D Tensor specifically used to hold sampleIds for Sampler
   // @param std::shared_ptr<Tensor>* sampleIds
   // @param int64_t numElements - must be a non 0 number
   // @return Status The status code returned

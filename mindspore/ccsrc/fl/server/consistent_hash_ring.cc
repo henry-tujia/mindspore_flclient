@@ -26,7 +26,7 @@ bool ConsistentHashRing::Insert(uint32_t rank) {
     MS_LOG(DEBUG) << "Insert virtual node " << physical_node_hash_key << " for node " << rank << ", hash value is "
                   << hash_value;
     if (ring_.count(hash_value) != 0) {
-      MS_LOG(INFO) << "Virtual node " << physical_node_hash_key << " is already mapped to the ring.";
+      MS_LOG(WARNING) << "Virtual node " << physical_node_hash_key << " is already mapped to the ring.";
       continue;
     }
     ring_[hash_value] = rank;
@@ -39,7 +39,7 @@ bool ConsistentHashRing::Erase(uint32_t rank) {
     if (iterator->second == rank) {
       (void)ring_.erase(iterator++);
     } else {
-      iterator++;
+      ++iterator;
     }
   }
   return true;

@@ -45,13 +45,12 @@ class GradWrap(nn.Cell):
     def construct(self, x, y):
         return grad_all(self.network)(x, y)
 
-
 class Net(nn.Cell):
-    def __init__(self, axis=0, strategy1=None, strategy2=None, shape=None, target=""):
+    def __init__(self, axis=0, strategy1=None, strategy2=None, shape=None, target="", gather_out_strategy=None):
         super().__init__()
         if shape is None:
             shape = [64, 64]
-        self.gatherv2 = P.Gather().shard(strategy1).add_prim_attr("primitive_target", target)
+        self.gatherv2 = P.Gather().shard(strategy1, gather_out_strategy).add_prim_attr("primitive_target", target)
         self.mul = P.Mul().shard(strategy2)
         self.index = Tensor(np.ones(shape), dtype=ms.int32)
         self.axis = axis
@@ -61,176 +60,315 @@ class Net(nn.Cell):
         out = self.mul(out, y)
         return out
 
+def compile_graph(net, device_num, parallel_mode, x, y):
+    context.set_auto_parallel_context(device_num=device_num, global_rank=0, parallel_mode=parallel_mode)
+    net.set_auto_parallel()
+    net.set_train()
+    _cell_graph_executor.compile(net, x, y)
 
 def test_gatherv2_semi_auto0():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((1, 8), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto1():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((8, 1), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto2():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((2, 4), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto3():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 1.
+    Expectation: compile done without error.
+    """
     strategy1 = ((1, 8), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(1, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
-
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 def test_gatherv2_semi_auto4():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 1.
+    Expectation: compile done without error.
+    """
     strategy1 = ((8, 1), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(1, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
-
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 def test_gatherv2_semi_auto5():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 1.
+    Expectation: compile done without error.
+    """
     strategy1 = ((2, 4), (1, 1))
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(1, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto6():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(0, None, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 32]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto7():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 1.
+    Expectation: compile done without error.
+    """
     strategy2 = ((4, 2, 1), (4, 2, 1))
     net = GradWrap(NetWithLoss(Net(1, None, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_semi_auto8():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((8,), (1, 1))
     strategy2 = ((4, 2), (4, 2))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2)))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_forward_all_reduce():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net using forward all_reduce in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((8, 1), (1, 1))
     strategy2 = ((2, 4, 1), (2, 4, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, shape=[2, 64])))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([2, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_shard_batch_and_axis():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with batch and axis sharding strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((4, 1), (2, 1))
     strategy2 = ((2, 4, 1), (2, 4, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, shape=[2, 64])))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([2, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_split_axis_0_repeat_calc():
-    context.set_auto_parallel_context(device_num=8, global_rank=7, parallel_mode="semi_auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net with repeat calculate strategy in semi auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     strategy1 = ((4, 1), (1, 1))
     strategy2 = ((2, 4, 1), (2, 4, 1))
     net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, shape=[2, 64])))
-    net.set_auto_parallel()
-
     x = Tensor(np.ones([64, 64]), dtype=ms.float32)
     y = Tensor(np.ones([2, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
 
 
 def test_gatherv2_auto0():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net without strategy in auto parallel, gather axis is 0.
+    Expectation: compile done without error.
+    """
     net = GradWrap(NetWithLoss(Net(0)))
-    net.set_auto_parallel()
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 32]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "auto_parallel", x, y)
 
 
 def test_gatherv2_auto1():
-    context.set_auto_parallel_context(device_num=8, global_rank=0, parallel_mode="auto_parallel")
+    """
+    Feature: distribute operator gather in auto parallel.
+    Description: gather net without strategy in auto parallel, gather axis is 1.
+    Expectation: compile done without error.
+    """
     net = GradWrap(NetWithLoss(Net(1)))
-    net.set_auto_parallel()
     x = Tensor(np.ones([64, 32]), dtype=ms.float32)
     y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
-    net.set_train()
-    _cell_graph_executor.compile(net, x, y)
+    compile_graph(net, 8, "auto_parallel", x, y)
+
+
+def test_gatherv2_out_strategy_allreduce():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis with device num and out strategy use allreduce.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((8, 1), (1, 1))
+    out_strategy = ((1, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_out_strategy_allreduce_repeat_calc():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis, split num small than device num and out strategy use allreduce.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((4, 1), (1, 1))
+    out_strategy = ((1, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_out_strategy_reducescatter():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis with device num and out strategy use reducescatter.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((8, 1), (1, 1))
+    out_strategy = ((8, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_out_strategy_reducescatter_repeat_calc():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis, split num small than device num and out strategy use reducescatter.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((4, 1), (1, 1))
+    out_strategy = ((4, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_shard_batch_and_axis_out_strategy_allreduce():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis and batch, out strategy use allreduce.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((4, 1), (2, 1))
+    out_strategy = ((2, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_shard_batch_and_axis_out_strategy_reducescatter():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis and batch, out strategy use reducescatter.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((4, 1), (2, 1))
+    out_strategy = ((8, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_target_cpu_reducescatter():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis and batch, out strategy use reducescatter.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((4, 1), (2, 1))
+    out_strategy = ((8, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, target="CPU", gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)
+
+
+def test_gatherv2_target_cpu_allreduce():
+    """
+    Feature: distribute operator gather in semi auto parallel.
+    Description: axis is 0, split axis and batch, out strategy use allreduce.
+    Expectation: compile done without error.
+    """
+    strategy1 = ((8, 1), (1, 1))
+    out_strategy = ((1, 1, 1),)
+    strategy2 = ((2, 4, 1), (2, 4, 1))
+    net = GradWrap(NetWithLoss(Net(0, strategy1, strategy2, target="CPU", gather_out_strategy=out_strategy)))
+    x = Tensor(np.ones([64, 64]), dtype=ms.float32)
+    y = Tensor(np.ones([64, 64, 64]), dtype=ms.float32)
+    compile_graph(net, 8, "semi_auto_parallel", x, y)

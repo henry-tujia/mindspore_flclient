@@ -29,7 +29,7 @@ using mindspore::lite::RET_PARAM_INVALID;
 using mindspore::schema::PrimitiveType_QuantDTypeCast;
 
 namespace mindspore::kernel {
-int QuantDTypeCastCPUKernel::Init() {
+int QuantDTypeCastCPUKernel::Prepare() {
   if (in_tensors_.size() != 1) {
     MS_LOG(ERROR) << "inputs number should be 1, but " << in_tensors_.size() << " is given.";
     return RET_PARAM_INVALID;
@@ -62,10 +62,7 @@ int QuantDTypeCastCPUKernel::ReSize() {
   MS_ASSERT(in_tensor != nullptr);
   num_unit_ = static_cast<int>(in_tensor->ElementsNum());
   thread_n_num_ = MSMIN(thread_num_, num_unit_);
-  if (thread_n_num_ == 0) {
-    MS_LOG(ERROR) << "div zero";
-    return RET_ERROR;
-  }
+  MS_CHECK_GT(thread_n_num_, 0, RET_ERROR);
   thread_n_stride_ = UP_DIV(num_unit_, thread_n_num_);
   return RET_OK;
 }
@@ -89,12 +86,14 @@ int QuantDTypeCastCPUKernel::QuantDTypeCast(int task_id) {
     ret = DoDequantizeInt8ToFp32(int8_ptr_ + thread_offset, float32_ptr_ + thread_offset, quant_arg.scale,
                                  quant_arg.zeroPoint, num_unit_thread);
   } else if (src_dtype == TypeId::kNumberTypeFloat32 && dst_dtype == TypeId::kNumberTypeInt8) {
-    bool from_uint8_src = false;
     if (quant_arg.dstDtype == TypeId::kNumberTypeUInt8) {
-      from_uint8_src = true;
+      ret =
+        DoQuantizeFp32ToInt8FromUint8Source(float32_ptr_ + thread_offset, int8_ptr_ + thread_offset, quant_arg.scale,
+                                            quant_arg.zeroPoint, num_unit_thread, (int32_t)INT8_MIN, (int32_t)INT8_MAX);
+    } else {
+      ret = DoQuantizeFp32ToInt8(float32_ptr_ + thread_offset, int8_ptr_ + thread_offset, quant_arg.scale,
+                                 quant_arg.zeroPoint, num_unit_thread, (int32_t)INT8_MIN, (int32_t)INT8_MAX);
     }
-    ret = DoQuantizeFp32ToInt8(float32_ptr_ + thread_offset, int8_ptr_ + thread_offset, quant_arg.scale,
-                               quant_arg.zeroPoint, num_unit_thread, from_uint8_src);
   } else if (src_dtype == TypeId::kNumberTypeInt8 && dst_dtype == TypeId::kNumberTypeUInt8) {
     ret = Int8ToUInt8(int8_ptr_ + thread_offset, uint8_ptr_ + thread_offset, num_unit_thread);
   } else if (src_dtype == TypeId::kNumberTypeUInt8 && dst_dtype == TypeId::kNumberTypeFloat32) {
@@ -111,12 +110,14 @@ int QuantDTypeCastCPUKernel::QuantDTypeCast(int task_id) {
                                  input_quant_arg.zeroPoint, num_unit_thread);
     if (ret) {
       auto output_quant_arg = out_tensors_.front()->quant_params().front();
-      bool from_uint8_src = false;
       if (quant_arg.dstDtype == TypeId::kNumberTypeUInt8) {
-        from_uint8_src = true;
+        ret = DoQuantizeFp32ToInt8FromUint8Source(float32_ptr_ + thread_offset, int8_out_ptr_ + thread_offset,
+                                                  output_quant_arg.scale, output_quant_arg.zeroPoint, num_unit_thread,
+                                                  (int32_t)INT8_MIN, (int32_t)INT8_MAX);
+      } else {
+        ret = DoQuantizeFp32ToInt8(float32_ptr_ + thread_offset, int8_out_ptr_ + thread_offset, output_quant_arg.scale,
+                                   output_quant_arg.zeroPoint, num_unit_thread, (int32_t)INT8_MIN, (int32_t)INT8_MAX);
       }
-      ret = DoQuantizeFp32ToInt8(float32_ptr_ + thread_offset, int8_out_ptr_ + thread_offset, output_quant_arg.scale,
-                                 output_quant_arg.zeroPoint, num_unit_thread, from_uint8_src);
     }
   } else {
     MS_LOG(ERROR) << "param data type not supported:"
@@ -178,6 +179,7 @@ int QuantDTypeCastCPUKernel::Run() {
     if (int8_ptr_ == nullptr || int8_out_ptr_ == nullptr) {
       return RET_NULL_PTR;
     }
+    MS_CHECK_GT(in_tensors_[0]->ElementsNum(), 0, RET_ERROR);
     float32_ptr_ = new (std::nothrow) float[in_tensors_[0]->ElementsNum()];
     if (float32_ptr_ == nullptr) {
       MS_LOG(ERROR) << "new float[] failed";
@@ -208,12 +210,14 @@ int QuantDTypeCastCPUKernel::Run() {
     if (in_tensors_[0]->data_type() == TypeId::kNumberTypeInt8 &&
         out_tensors_[0]->data_type() == TypeId::kNumberTypeInt8) {
       delete (float32_ptr_);
+      float32_ptr_ = nullptr;
     }
     return RET_ERROR;
   }
   if (in_tensors_[0]->data_type() == TypeId::kNumberTypeInt8 &&
       out_tensors_[0]->data_type() == TypeId::kNumberTypeInt8) {
     delete (float32_ptr_);
+    float32_ptr_ = nullptr;
   }
   return RET_OK;
 }

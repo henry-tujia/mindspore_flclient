@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_NN_FTRL_GPU_KERNEL_H_
 
 #include <vector>
+#include <string>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/ftrl_impl.cuh"
@@ -35,7 +36,9 @@ class FtrlGpuKernel : public GpuKernel {
         learning_rate_size_(0),
         l1_regularization_size_(0),
         l2_regularization_size_(0),
-        learning_rate_power_size_(0) {}
+        learning_rate_power_size_(0),
+        is_null_input_(false),
+        kernel_name_("ApplyFtrl") {}
 
   ~FtrlGpuKernel() override = default;
 
@@ -45,6 +48,9 @@ class FtrlGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
               void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *variable = GetDeviceAddress<T>(inputs, 0);
     T *accumulation = GetDeviceAddress<T>(inputs, 1);
     T *linear = GetDeviceAddress<T>(inputs, 2);
@@ -59,10 +65,11 @@ class FtrlGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != INPUT_NUM) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but ftrl needs " << INPUT_NUM << " inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be " << INPUT_NUM << ", but got "
+                        << input_num;
     }
 
     variable_size_ = sizeof(T);
@@ -75,21 +82,29 @@ class FtrlGpuKernel : public GpuKernel {
     learning_rate_power_size_ = sizeof(T);
 
     auto variable_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto accumulation_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
+    auto linear_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
+    is_null_input_ = CHECK_SHAPE_NULL(variable_shape, kernel_name_, "var") ||
+                     CHECK_SHAPE_NULL(accumulation_shape, kernel_name_, "accum") ||
+                     CHECK_SHAPE_NULL(linear_shape, kernel_name_, "linear") ||
+                     CHECK_SHAPE_NULL(gradient_shape, kernel_name_, "grad");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < variable_shape.size(); i++) {
       variable_size_ *= variable_shape[i];
     }
 
-    auto accumulation_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     for (size_t i = 0; i < accumulation_shape.size(); i++) {
       accumulation_size_ *= accumulation_shape[i];
     }
 
-    auto linear_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     for (size_t i = 0; i < linear_shape.size(); i++) {
       linear_size_ *= linear_shape[i];
     }
 
-    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
     for (size_t i = 0; i < gradient_shape.size(); i++) {
       gradient_size_ *= gradient_shape[i];
     }
@@ -120,6 +135,8 @@ class FtrlGpuKernel : public GpuKernel {
   size_t l1_regularization_size_;
   size_t l2_regularization_size_;
   size_t learning_rate_power_size_;
+  bool is_null_input_;
+  std::string kernel_name_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

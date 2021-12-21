@@ -87,102 +87,12 @@ bool Common::CommonFuncForConfigPath(const std::string &default_path, const std:
   return true;
 }
 
-std::optional<std::string> Common::GetRealPath(const std::string &input_path) {
-  if (input_path.length() >= PATH_MAX) {
-    MS_LOG(ERROR) << "The length of path: " << input_path << " exceeds limit: " << PATH_MAX;
-    return std::nullopt;
-  }
-  auto path_split_pos = input_path.find_last_of('/');
-  if (path_split_pos == std::string::npos) {
-    path_split_pos = input_path.find_last_of('\\');
-  }
-  // get real path
-  char real_path[PATH_MAX] = {0};
-  // input_path is dir + file_name
-  if (path_split_pos != std::string::npos) {
-    std::string prefix_path = input_path.substr(0, path_split_pos);
-    std::string file_name = input_path.substr(path_split_pos);
-    if (!CreateNotExistDirs(prefix_path)) {
-      MS_LOG(ERROR) << "Create dir " << prefix_path << " Failed!";
-      return std::nullopt;
-    }
-#if defined(SYSTEM_ENV_POSIX)
-    if (file_name.length() > NAME_MAX) {
-      MS_LOG(ERROR) << "The length of file name : " << file_name.length() << " exceeds limit: " << NAME_MAX;
-      return std::nullopt;
-    }
-    if (realpath(common::SafeCStr(prefix_path), real_path) == nullptr) {
-      MS_LOG(ERROR) << "The dir " << prefix_path << " does not exist.";
-      return std::nullopt;
-    }
-#elif defined(SYSTEM_ENV_WINDOWS)
-    if (_fullpath(real_path, common::SafeCStr(prefix_path), PATH_MAX) == nullptr) {
-      MS_LOG(ERROR) << "The dir " << prefix_path << " does not exist.";
-      return std::nullopt;
-    }
-#endif
-    return std::string(real_path) + file_name;
-  }
-  // input_path is only file_name
-#if defined(SYSTEM_ENV_POSIX)
-  if (input_path.length() > NAME_MAX) {
-    MS_LOG(ERROR) << "The length of file name : " << input_path.length() << " exceeds limit: " << NAME_MAX;
-    return std::nullopt;
-  }
-  if (realpath(common::SafeCStr(input_path), real_path) == nullptr) {
-    MS_LOG(INFO) << "The file " << input_path << " does not exist, it will be created.";
-  }
-#elif defined(SYSTEM_ENV_WINDOWS)
-  if (_fullpath(real_path, common::SafeCStr(input_path), PATH_MAX) == nullptr) {
-    MS_LOG(INFO) << "The file " << input_path << " does not exist, it will be created.";
-  }
-#endif
-  return std::string(real_path);
-}
-
-bool Common::CreateNotExistDirs(const std::string &path) {
-  std::shared_ptr<system::FileSystem> fs = system::Env::GetFileSystem();
-  MS_EXCEPTION_IF_NULL(fs);
-  char temp_path[PATH_MAX] = {0};
-  if (path.length() >= PATH_MAX) {
-    MS_LOG(ERROR) << "Path length is equal to or max than " << PATH_MAX;
-    return false;
-  }
-  for (uint32_t i = 0; i < path.length(); i++) {
-    temp_path[i] = path[i];
-    if (temp_path[i] == '\\' || temp_path[i] == '/') {
-      if (i != 0) {
-        char tmp_char = temp_path[i];
-        temp_path[i] = '\0';
-        std::string path_handle(temp_path);
-        if (!fs->FileExist(path_handle)) {
-          MS_LOG(INFO) << "Dir " << path_handle << " does not exit, creating...";
-          if (!fs->CreateDir(path_handle)) {
-            MS_LOG(ERROR) << "Create " << path_handle << " dir error";
-            return false;
-          }
-        }
-        temp_path[i] = tmp_char;
-      }
-    }
-  }
-
-  if (!fs->FileExist(path)) {
-    MS_LOG(INFO) << "Dir " << path << " does not exit, creating...";
-    if (!fs->CreateDir(path)) {
-      MS_LOG(ERROR) << "Create " << path << " dir error";
-      return false;
-    }
-  }
-  return true;
-}
-
 std::optional<std::string> Common::GetConfigFile(const std::string &env) {
   if (env.empty()) {
     MS_LOG(EXCEPTION) << "Invalid env";
   }
-  auto config_path_str = std::getenv(env.c_str());
-  if (config_path_str == nullptr) {
+  auto config_path_str = common::GetEnv(env);
+  if (config_path_str.empty()) {
     MS_LOG(ERROR) << "Please export env:" << env;
     return std::nullopt;
   }
@@ -333,7 +243,7 @@ bool Common::SaveStringToFile(const std::string filename, const std::string stri
     MS_LOG(ERROR) << "File path " << filename << " is too long.";
     return false;
   }
-  auto real_path = GetRealPath(filename);
+  auto real_path = CreatePrefixPath(filename);
   if (!real_path.has_value()) {
     MS_LOG(ERROR) << "Get real path failed. path=" << filename;
     return false;
@@ -344,8 +254,7 @@ bool Common::SaveStringToFile(const std::string filename, const std::string stri
   ofs.open(real_path.value());
 
   if (!ofs.is_open()) {
-    MS_LOG(ERROR) << "Open dump file '" << real_path.value() << "' failed!"
-                  << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+    MS_LOG(ERROR) << "Open dump file '" << real_path.value() << "' failed!" << ErrnoToString(errno);
     return false;
   }
   ofs << string_info << std::endl;
@@ -362,6 +271,31 @@ bool Common::FileExists(const std::string &filepath) {
   return cache_file_existed;
 }
 
+std::string Common::GetUserDefineCachePath() {
+  static std::string config_path = "";
+  if (config_path != "") {
+    return config_path;
+  }
+  const char *value = ::getenv(kCOMPILER_CACHE_PATH);
+  if (value == nullptr) {
+    config_path = "./";
+  } else {
+    config_path = std::string(value);
+    FileUtils::CreateNotExistDirs(config_path);
+    if (config_path[config_path.length() - 1] != '/') {
+      config_path += "/";
+    }
+  }
+  return config_path;
+}
+
+std::string Common::GetCompilerCachePath() {
+  static const std::string user_defined_path = GetUserDefineCachePath();
+  static uint32_t rank_id = IsStandAlone() ? 0 : GetRank();
+  static const std::string compile_cache_dir = user_defined_path + "rank_" + std::to_string(rank_id) + "/";
+  return compile_cache_dir;
+}
+
 struct GlogLogDirRegister {
   GlogLogDirRegister() {
     const char *logtostderr = std::getenv("GLOG_logtostderr");
@@ -369,6 +303,9 @@ struct GlogLogDirRegister {
     if (logtostderr != nullptr && log_dir != nullptr) {
       std::string logtostderr_str = std::string(logtostderr);
       std::string log_dir_str = std::string(log_dir);
+      if (logtostderr_str != "0") {
+        return;
+      }
       const char *rank_id = std::getenv("RANK_ID");
       const char *gpu_rank_id = std::getenv("OMPI_COMM_WORLD_RANK");
       std::string rank = "0";
@@ -381,19 +318,11 @@ struct GlogLogDirRegister {
         rank = std::string(rank_id);
         both_exist = true;
       }
-      log_dir_str += "/rank_" + rank + "/logs";
-      auto real_log_dir_str = Common::CreatePrefixPath(log_dir_str);
+      log_dir_str += "/rank_" + rank + "/logs/";
+      auto real_log_dir_str = Common::CreatePrefixPath(log_dir_str, true);
       // While 'GLOG_logtostderr' = 0, logs output to files. 'GLOG_log_dir' must be specified as the path of log files.
       // Here can not throw exception and use python to catch, because the PYBIND11_MODULE is not yet been initialed.
-      if (logtostderr_str == "0" && real_log_dir_str.has_value()) {
-        if (!Common::IsPathValid(real_log_dir_str.value(), MAX_DIRECTORY_LENGTH, "")) {
-          MS_LOG(ERROR) << "The path of log files, which set by 'GLOG_log_dir', is invalid";
-          exit(EXIT_FAILURE);
-        } else if (!FileUtils::CreateNotExistDirs(real_log_dir_str.value())) {
-          MS_LOG(ERROR) << "Create the path of log files, which set by 'GLOG_log_dir', failed.";
-          exit(EXIT_FAILURE);
-        }
-      } else if (logtostderr_str == "0") {
+      if (!real_log_dir_str.has_value()) {
         MS_LOG(ERROR) << "The path of log files, which set by 'GLOG_log_dir', is invalid.";
         exit(EXIT_FAILURE);
       }

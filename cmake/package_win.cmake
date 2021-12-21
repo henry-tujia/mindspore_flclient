@@ -12,19 +12,34 @@ set(CPACK_TEMPORARY_PACKAGE_FILE_NAME ${CMAKE_SOURCE_DIR}/build/package/mindspor
 set(CPACK_TEMPORARY_INSTALL_DIRECTORY ${CMAKE_SOURCE_DIR}/build/package/mindspore)
 set(CPACK_PACK_ROOT_DIR ${BUILD_PATH}/package/)
 set(CPACK_CMAKE_SOURCE_DIR ${CMAKE_SOURCE_DIR})
+set(CPACK_PYTHON_EXE ${Python3_EXECUTABLE})
+set(CPACK_PYTHON_VERSION ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR})
 
 if(ENABLE_GPU)
   set(CPACK_MS_BACKEND "ms")
   set(CPACK_MS_TARGET "gpu or cpu")
-  set(CPACK_MS_PACKAGE_NAME "mindspore-gpu")
+  if(BUILD_DEV_MODE)
+    # providing cuda11 version of dev package only
+    set(CPACK_MS_PACKAGE_NAME "mindspore_cuda11_dev")
+  else()
+    set(CPACK_MS_PACKAGE_NAME "mindspore_gpu")
+  endif()
 elseif(ENABLE_CPU)
   set(CPACK_MS_BACKEND "ms")
   set(CPACK_MS_TARGET "cpu")
-  set(CPACK_MS_PACKAGE_NAME "mindspore")
+  if(BUILD_DEV_MODE)
+    set(CPACK_MS_PACKAGE_NAME "mindspore_dev")
+  else()
+    set(CPACK_MS_PACKAGE_NAME "mindspore")
+  endif()
 else()
   set(CPACK_MS_BACKEND "debug")
   set(CPACK_MS_TARGET "ascend or gpu or cpu")
-  set(CPACK_MS_PACKAGE_NAME "mindspore")
+  if(BUILD_DEV_MODE)
+    set(CPACK_MS_PACKAGE_NAME "mindspore_dev")
+  else()
+    set(CPACK_MS_PACKAGE_NAME "mindspore")
+  endif()
 endif()
 include(CPack)
 
@@ -127,6 +142,11 @@ if(ENABLE_MPI)
       DESTINATION ${INSTALL_LIB_DIR}
       COMPONENT mindspore
     )
+    install(
+      TARGETS mpi_collective
+      DESTINATION ${INSTALL_LIB_DIR}
+      COMPONENT mindspore
+    )
   endif()
 endif()
 
@@ -134,6 +154,11 @@ if(ENABLE_GPU)
   if(ENABLE_MPI)
     install(
       TARGETS gpu_collective
+      DESTINATION ${INSTALL_LIB_DIR}
+      COMPONENT mindspore
+    )
+    install(
+      TARGETS nvidia_collective
       DESTINATION ${INSTALL_LIB_DIR}
       COMPONENT mindspore
     )
@@ -160,7 +185,7 @@ install(
 )
 
 # set python files
-file(GLOB MS_PY_LIST ${CMAKE_SOURCE_DIR}/mindspore/*.py)
+file(GLOB MS_PY_LIST ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/*.py)
 install(
   FILES ${MS_PY_LIST}
   DESTINATION ${INSTALL_PY_DIR}
@@ -169,41 +194,26 @@ install(
 
 install(
   DIRECTORY
-  ${CMAKE_SOURCE_DIR}/mindspore/nn
-  ${CMAKE_SOURCE_DIR}/mindspore/_extends
-  ${CMAKE_SOURCE_DIR}/mindspore/parallel
-  ${CMAKE_SOURCE_DIR}/mindspore/mindrecord
-  ${CMAKE_SOURCE_DIR}/mindspore/numpy
-  ${CMAKE_SOURCE_DIR}/mindspore/train
-  ${CMAKE_SOURCE_DIR}/mindspore/boost
-  ${CMAKE_SOURCE_DIR}/mindspore/common
-  ${CMAKE_SOURCE_DIR}/mindspore/ops
-  ${CMAKE_SOURCE_DIR}/mindspore/communication
-  ${CMAKE_SOURCE_DIR}/mindspore/profiler
-  ${CMAKE_SOURCE_DIR}/mindspore/explainer
-  ${CMAKE_SOURCE_DIR}/mindspore/compression
-  ${CMAKE_SOURCE_DIR}/mindspore/run_check
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/nn
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/_extends
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/parallel
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/mindrecord
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/numpy
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/train
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/boost
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/common
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/ops
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/communication
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/profiler
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/compression
+  ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/run_check
   DESTINATION ${INSTALL_PY_DIR}
   COMPONENT mindspore
 )
 
-if((ENABLE_D OR ENABLE_GPU) AND ENABLE_AKG)
-  set (AKG_PATH ${CMAKE_SOURCE_DIR}/build/mindspore/akg)
-  file(REMOVE_RECURSE ${AKG_PATH}/_akg)
-  file(MAKE_DIRECTORY ${AKG_PATH}/_akg)
-  file(TOUCH ${AKG_PATH}/_akg/__init__.py)
-  install(DIRECTORY "${AKG_PATH}/akg" DESTINATION "${AKG_PATH}/_akg")
+if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/dataset)
   install(
-    DIRECTORY
-    ${AKG_PATH}/_akg
-    DESTINATION ${INSTALL_PY_DIR}/
-    COMPONENT mindspore
-  )
-endif()
-
-if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/dataset)
-  install(
-    DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/dataset
+    DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/dataset
     DESTINATION ${INSTALL_PY_DIR}
     COMPONENT mindspore
   )

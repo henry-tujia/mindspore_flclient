@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -55,8 +56,14 @@ Status RandomResizedCropOperation::ValidateParams() {
   if (max_attempts_ < 1) {
     std::string err_msg =
       Name() + ": max_attempts must be greater than or equal to 1, got: " + std::to_string(max_attempts_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+  // interpolation
+  if (interpolation_ != InterpolationMode::kLinear && interpolation_ != InterpolationMode::kNearestNeighbour &&
+      interpolation_ != InterpolationMode::kCubic && interpolation_ != InterpolationMode::kArea &&
+      interpolation_ != InterpolationMode::kCubicPil) {
+    std::string err_msg = "RandomResizedCrop: Invalid InterpolationMode, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -90,11 +97,11 @@ Status RandomResizedCropOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status RandomResizedCropOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Failed to find size");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("scale") != op_params.end(), "Failed to find scale");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("ratio") != op_params.end(), "Failed to find ratio");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("interpolation") != op_params.end(), "Failed to find interpolation");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("max_attempts") != op_params.end(), "Failed to find max_attempts");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kRandomResizedCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "scale", kRandomResizedCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "ratio", kRandomResizedCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "interpolation", kRandomResizedCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "max_attempts", kRandomResizedCropOperation));
   std::vector<int32_t> size = op_params["size"];
   std::vector<float> scale = op_params["scale"];
   std::vector<float> ratio = op_params["ratio"];

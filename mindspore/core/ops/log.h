@@ -26,15 +26,18 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameLog = prim::kLog;
+/// \brief Returns the natural logarithm of a tensor element-wise.
+/// Refer to Python API @ref mindspore.ops.Log for more details.
 class MS_CORE_API Log : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Log() : PrimitiveC(prim::kPrimLog->name()) { InitIOName({"x"}, {"y"}); }
+  /// \brief Destructor.
   ~Log() = default;
   MS_DECLARE_PARENT(Log, PrimitiveC);
 };
 AbstractBasePtr LogInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                          const std::vector<AbstractBasePtr> &input_args);
-using PrimLogPtr = std::shared_ptr<Log>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_LOG_H_

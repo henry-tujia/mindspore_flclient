@@ -106,7 +106,7 @@ int ConvolutionDelegateCPUKernel::GetBiasData() {
   return RET_OK;
 }
 
-int ConvolutionDelegateCPUKernel::Init() {
+int ConvolutionDelegateCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto ret = GetWeightAndBias();
@@ -215,9 +215,9 @@ kernel::InnerKernel *ConvolutionDelegateCPUKernel::CpuConvFp32KernelSelect() {
   }
 
   if (kernel != nullptr) {
-    auto ret = kernel->Init();
+    auto ret = kernel->Prepare();
     if (ret != RET_OK) {
-      MS_LOG(ERROR) << "conv kernel init failed.";
+      MS_LOG(ERROR) << "conv kernel prepare failed.";
       delete kernel;
       op_parameter_ = nullptr;
       return nullptr;
@@ -226,6 +226,16 @@ kernel::InnerKernel *ConvolutionDelegateCPUKernel::CpuConvFp32KernelSelect() {
 
   kernel->set_name("act_" + name_);
   return kernel;
+}
+
+bool ConvolutionDelegateCPUKernel::CheckInputsValid() const {
+  // the data type of input and weight must be the same, while the bias data type of int8 convolution is int32.
+  MS_CHECK_TRUE_RET(in_tensors_.size() >= kInputSize1, false);
+  auto input_tensor = in_tensors_.at(kInputIndex);
+  auto weight_tensor = in_tensors_.at(kWeightIndex);
+  MS_CHECK_TRUE_RET(input_tensor != nullptr && weight_tensor != nullptr, false);
+  MS_CHECK_TRUE_RET(input_tensor->data() != nullptr, false);
+  return input_tensor->data_type() == weight_tensor->data_type();
 }
 
 kernel::InnerKernel *CpuConvDwFp32KernelCreator(const std::vector<lite::Tensor *> &inputs,

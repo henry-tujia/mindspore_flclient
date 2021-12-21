@@ -15,8 +15,6 @@
  */
 
 #include "backend/kernel_compiler/tbe/tbe_json/fusion_tbe_json_creator.h"
-#include <memory>
-#include <list>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -122,7 +120,7 @@ bool FusionBuildTbeJsonCreator::CheckInput(const FusionScopeInfo &fusion_scope_i
   return true;
 }
 
-bool FusionBuildTbeJsonCreator::GenDataJson(const std::vector<AnfNodePtr> &compute_nodes,
+void FusionBuildTbeJsonCreator::GenDataJson(const std::vector<AnfNodePtr> &compute_nodes,
                                             const std::vector<nlohmann::json> &compute_json,
                                             std::vector<nlohmann::json> *op_list_json,
                                             const ANodeFusionDataTypeMap &spec_data_input) {
@@ -153,7 +151,6 @@ bool FusionBuildTbeJsonCreator::GenDataJson(const std::vector<AnfNodePtr> &compu
     }
   }
   MS_LOG(DEBUG) << "End.";
-  return true;
 }
 AnfNodePtr FusionBuildTbeJsonCreator::GetInputCNode(const AnfNodePtr &node, const nlohmann::json &input_desc) {
   auto input_name = GetJsonValue<std::string>(input_desc, kJName);
@@ -202,7 +199,9 @@ bool FusionBuildTbeJsonCreator::GenInputsJson(const AnfNodePtr &anf_node, nlohma
   }
   std::vector<size_t> inputs_tensor_num;
   auto op_info = tbe::TbeDynamicShapeUtil::FindOp(op_name, anf_node);
-  TbeJsonUtils::GetInputsRealNum(anf_node, op_info->inputs_ptr(), &inputs_tensor_num);
+  if (!TbeJsonUtils::GetInputsRealNum(anf_node, op_info->inputs_ptr(), &inputs_tensor_num)) {
+    return false;
+  }
   size_t need_input_num = std::accumulate(inputs_tensor_num.begin(), inputs_tensor_num.end(), static_cast<size_t>(0));
 
   for (size_t i = input_index; i < need_input_num; ++i) {
@@ -214,7 +213,7 @@ bool FusionBuildTbeJsonCreator::GenInputsJson(const AnfNodePtr &anf_node, nlohma
     input_desc_list_tmp.emplace_back(optional_input_desc);
   }
   std::vector<nlohmann::json> input_desc_list;
-  TbeAdapter::InputOrderPass<nlohmann::json>(anf_node, input_desc_list_tmp, &input_desc_list);
+  TbeAdapter::InputOrderPass<nlohmann::json>(cnode, input_desc_list_tmp, &input_desc_list);
   (*compute_json)[kJInputDesc] = input_desc_list;
   return true;
 }
@@ -306,5 +305,11 @@ bool FusionBuildTbeJsonCreator::AttrsJsonPostProcessing(const AnfNodePtr &anf_no
   // just keep it
   // tbe::TbeAdapter::CastAttrJsonPost(anf_node, attrs_json);
   return true;
+}
+
+void FusionBuildTbeJsonCreator::GenOtherJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
+  MS_EXCEPTION_IF_NULL(anf_node);
+  MS_EXCEPTION_IF_NULL(compute_json);
+  (*compute_json)[kJUnknowShape] = tbe::TbeDynamicShapeUtil::GetDynamicShapeAttr(anf_node);
 }
 }  // namespace mindspore::kernel

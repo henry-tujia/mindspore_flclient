@@ -27,17 +27,22 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameReLUV2 = prim::kReLUV2;
+/// \brief Rectified Linear Unit activation function.
+/// Refer to Python API @ref mindspore.ops.ReLUV2 for more details.
 class MS_CORE_API ReLUV2 : public PrimitiveC {
  public:
+  /// \brief Constructor.
   ReLUV2() : PrimitiveC(prim::kPrimReluV2->name()) { InitIOName({"x"}, {"output", "mask"}); }
+  /// \brief Constructor.
   explicit ReLUV2(const std::string k_name) : PrimitiveC(k_name) { InitIOName({"x"}, {"output", "mask"}); }
+  /// \brief Destructor.
   ~ReLUV2() = default;
   MS_DECLARE_PARENT(ReLUV2, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr ReLUV2Infer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                             const std::vector<AbstractBasePtr> &input_args);
-using PrimReLUV2Ptr = std::shared_ptr<ReLUV2>;
 }  // namespace ops
 }  // namespace mindspore
 

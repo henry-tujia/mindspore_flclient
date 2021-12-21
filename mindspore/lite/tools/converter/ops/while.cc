@@ -26,7 +26,7 @@ constexpr auto kBodySubgraphIndex = "body_subgraph_index";
 
 namespace mindspore {
 namespace lite {
-void While::Init(const int64_t cond_subgraph_index, const int64_t body_subgraph_index) {
+void While::Prepare(const int64_t cond_subgraph_index, const int64_t body_subgraph_index) {
   this->set_cond_subgraph_index(cond_subgraph_index);
   this->set_body_subgraph_index(body_subgraph_index);
 }
@@ -64,10 +64,10 @@ int64_t While::get_body_subgraph_index() const {
 AbstractBasePtr WhileInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args) {
   MS_CHECK_TRUE_RET(primitive != nullptr, nullptr);
-  auto While_prim = primitive->cast<PrimWhilePtr>();
-  MS_CHECK_TRUE_RET(While_prim != nullptr, nullptr);
+  auto while_prim = primitive->cast<PrimWhilePtr>();
+  MS_CHECK_TRUE_RET(while_prim != nullptr, nullptr);
   AbstractBasePtrList output;
-  for (int64_t i = 0; i < (int64_t)input_args.size(); i++) {
+  for (size_t i = 0; i < input_args.size(); i++) {
     auto build_shape_ptr = input_args[i]->BuildShape();
     MS_CHECK_TRUE_RET(build_shape_ptr != nullptr, nullptr);
     auto shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(build_shape_ptr)[kShape];

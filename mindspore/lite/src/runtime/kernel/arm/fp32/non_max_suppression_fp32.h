@@ -34,14 +34,15 @@ class NonMaxSuppressionCPUKernel : public InnerKernel {
 
   ~NonMaxSuppressionCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override { return RET_OK; };
   int PreProcess() override;
   int Run() override;
 
  private:
   int GetParams();
-  int Run_Selecte(bool simple_out, int box_num, int batch_num, int class_num, float *scores_data, float *box_data);
+  int Run_Selecte(bool simple_out, int box_num, int batch_num, int class_num, const float *scores_data,
+                  const float *box_data);
 
  private:
   int center_point_box_ = 0;
@@ -84,6 +85,15 @@ class NMSBox {
   }
 
  public:
+  const float get_score() const { return score_; }
+  const int get_index() const { return index_; }
+  const float get_y1() const { return y1_; }
+  const float get_y2() const { return y2_; }
+  const float get_x1() const { return x1_; }
+  const float get_x2() const { return x2_; }
+  const float get_area() const { return area_; }
+
+ private:
   float score_;
   int index_;
   float y1_;  // y1 x1 y2 x2 ascending order

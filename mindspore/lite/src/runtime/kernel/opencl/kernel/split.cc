@@ -39,7 +39,7 @@ int SplitOpenCLKernel::RunAxis0() {
     return RET_ERROR;
   }
   auto src_area = cl::array<cl::size_type, 3U>{0, 0, 0};
-  for (int i = 0; i < out_tensors_.size(); i++) {
+  for (size_t i = 0; i < out_tensors_.size(); i++) {
     auto dst_data = out_tensors_[i]->data();
     CHECK_NULL_RETURN(dst_data);
     ImageSize img_size;
@@ -69,34 +69,34 @@ int SplitOpenCLKernel::CheckSpecs() {
   if ((out_tensors_.size() != OUTPUT_TENSOR_SIZE_2 ||
        (out_tensors_.size() != OUTPUT_TENSOR_SIZE_3 && param->split_dim_ == 0)) &&
       in_tensors_.size() != INPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   if (in_tensors_.at(0)->IsConst()) {
-    MS_LOG(ERROR) << "in_tensors_ must be tensor";
+    MS_LOG(WARNING) << "in_tensors_ must be tensor";
     return RET_ERROR;
   }
   for (auto &out_tensor : out_tensors_) {
     if (out_tensor->IsConst()) {
-      MS_LOG(ERROR) << "out_tensor must be tensor";
+      MS_LOG(WARNING) << "out_tensor must be tensor";
       return RET_ERROR;
     }
   }
 
   if (!(param->num_split_ == 2 || param->split_dim_ == 0)) {
-    MS_LOG(ERROR) << "num_split_ only supported = 2 or split_dim_ = 0 yet";
+    MS_LOG(WARNING) << "num_split_ only supported = 2 or split_dim_ = 0 yet";
     return RET_ERROR;
   }
   if (param->split_dim_ < 0 || param->split_dim_ > 3) {
-    MS_LOG(ERROR) << "split_dim_ must between 0~3";
+    MS_LOG(WARNING) << "split_dim_ must between 0~3";
     return RET_ERROR;
   }
   if (param->split_sizes_ == nullptr) {
-    MS_LOG(ERROR) << "split_sizes_ can not nullptr";
+    MS_LOG(WARNING) << "split_sizes_ can not nullptr";
     return RET_ERROR;
   }
   if (param->num_split_ == 1 && param->split_sizes_[0] == 0) {
-    MS_LOG(ERROR) << "param->split_sizes_[0] is zero.";
+    MS_LOG(WARNING) << "param->split_sizes_[0] is zero.";
     return RET_ERROR;
   }
   return RET_OK;
@@ -104,7 +104,7 @@ int SplitOpenCLKernel::CheckSpecs() {
 
 int SplitOpenCLKernel::AlignSplitSizes(SplitParameter *param, const std::vector<int> &in_shape) {
   auto allocator = ocl_runtime_->GetAllocator();
-  CHECK_LESS_RETURN(in_shape.size(), param->split_dim_ + 1);
+  CHECK_LESS_RETURN(static_cast<int>(in_shape.size()), param->split_dim_ + 1);
   int shape_dim = in_shape.at(param->split_dim_);
   if (num_split_ == 1) {
     CHECK_LESS_RETURN(param->split_sizes_[0], 1);
@@ -114,7 +114,7 @@ int SplitOpenCLKernel::AlignSplitSizes(SplitParameter *param, const std::vector<
       MS_LOG(ERROR) << "Malloc failed.";
       return RET_ERROR;
     }
-    for (int i = 0; i < num_split - 1; ++i) {
+    for (size_t i = 0; i < num_split - 1; ++i) {
       split_sizes_[i] = (i + 1) * param->split_sizes_[0];
     }
   } else {
@@ -124,7 +124,7 @@ int SplitOpenCLKernel::AlignSplitSizes(SplitParameter *param, const std::vector<
       MS_LOG(ERROR) << "Malloc failed.";
       return RET_ERROR;
     }
-    for (int i = 0; i < num_split_ - 1; ++i) {
+    for (size_t i = 0; i < num_split_ - 1; ++i) {
       sum += param->split_sizes_[i];
       split_sizes_[i] = sum;
     }
@@ -142,7 +142,7 @@ int SplitOpenCLKernel::Prepare() {
   if (split_dim_ == 0) {
     return RET_OK;
   }
-  for (int i = 0; i < out_tensors_.size(); ++i) {
+  for (size_t i = 0; i < out_tensors_.size(); ++i) {
     int length = out_tensors_[0]->shape().size();
     if (split_dim_ == 3) {
       if (out_tensors_[i]->shape()[length - 1] % C4NUM != 0) {
@@ -186,7 +186,7 @@ int SplitOpenCLKernel::Prepare() {
 int SplitOpenCLKernel::SetConstArgs() {
   int arg_cn = out_tensors_.size() + 2;
   cl_int4 shape = {};
-  for (int i = 0; i < in_tensors_[0]->shape().size(); ++i) {
+  for (size_t i = 0; i < in_tensors_[0]->shape().size(); ++i) {
     shape.s[i] = in_tensors_[0]->shape()[i];
   }
   Broadcast2GpuShape(in_shape_.s, shape.s, out_tensors_[0]->shape().size(), 1);
@@ -198,9 +198,9 @@ int SplitOpenCLKernel::SetConstArgs() {
     return RET_ERROR;
   }
 
-  for (int i = 0; i < out_tensors_.size(); ++i) {
+  for (size_t i = 0; i < out_tensors_.size(); ++i) {
     cl_int4 temp = {};
-    for (int j = 0; j < out_tensors_[i]->shape().size(); ++j) {
+    for (size_t j = 0; j < out_tensors_[i]->shape().size(); ++j) {
       temp.s[j] = out_tensors_[i]->shape()[j];
     }
     Broadcast2GpuShape(out_shape_.s, temp.s, out_tensors_[i]->shape().size(), 1);
@@ -257,7 +257,7 @@ int SplitOpenCLKernel::Run() {
       return RET_ERROR;
     }
   }
-  for (int i = 0; i < out_tensors_.size(); ++i) {
+  for (size_t i = 0; i < out_tensors_.size(); ++i) {
     if (ocl_runtime_->SetKernelArg(kernel_, arg_cn++, out_tensors_.at(i)->data()) != CL_SUCCESS) {
       MS_LOG(ERROR) << "SetKernelArg failed.";
       return RET_ERROR;

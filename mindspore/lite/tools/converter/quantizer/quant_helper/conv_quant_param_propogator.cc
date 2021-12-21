@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #include "tools/converter/quantizer/quant_helper/conv_quant_param_propogator.h"
+#include <vector>
+#include <memory>
+#include <utility>
 #include "mindspore/core/ir/dtype/type_id.h"
 #include "src/common/log_adapter.h"
 #include "nnacl/op_base.h"
@@ -21,8 +24,8 @@
 namespace mindspore::lite {
 static constexpr size_t kBiasAdd = 3;
 
-STATUS ConvQuantParamPropogator::PropogateQuantParams(mindspore::schema::MetaGraphT *graph,
-                                                      const mindspore::schema::CNodeT &node) {
+int ConvQuantParamPropogator::PropogateQuantParams(mindspore::schema::MetaGraphT *graph,
+                                                   const mindspore::schema::CNodeT &node) {
   MS_CHECK_TRUE_MSG(graph != nullptr, RET_NULL_PTR, "graph is nullptr.");
   if (node.inputIndex.size() == kBiasAdd) {
     MS_ASSERT(graph->allTensors.size() > node.inputIndex.at(kBiasAdd - 1));

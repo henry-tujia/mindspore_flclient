@@ -17,13 +17,13 @@
 #include "frontend/optimizer/irpass/less_batch_normalization.h"
 
 #include <set>
-#include <unordered_map>
+#include "utils/hash_map.h"
 
 namespace mindspore {
 namespace opt {
 namespace irpass {
 namespace {
-enum RemoveNodeType { kOtherNode = 0, kOptimizerNode };
+enum class RemoveNodeType { kOtherNode = 0, kOptimizerNode };
 const char kLessBatchNormalizationPassName[] = "less_bn";
 constexpr auto kValidResidualStructureIndex = 1;
 constexpr auto kBNParametersStartIndex = 2;
@@ -250,7 +250,7 @@ static const std::vector<std::vector<kStructureTuple>> kNeedMatchPattern = {Resi
 const std::set<PrimitivePtr> kNeedRemoveNodeSet{
   prim::kPrimLoad,      prim::kPrimRefToEmbed, prim::kPrimApplyMomentum, prim::kPrimMomentum,
   prim::kPrimApplyFtrl, prim::kPrimSGD,        prim::kPrimApplyRMSProp,  prim::kPrimAdam};
-static std::unordered_map<RemoveNodeType, std::unordered_set<size_t>> kRemoveIndex{
+static mindspore::HashMap<RemoveNodeType, mindspore::HashSet<size_t>> kRemoveIndex{
   {RemoveNodeType::kOtherNode, {2}}, {RemoveNodeType::kOptimizerNode, {3, 5, 6}}};
 
 bool NeedRemove(const ParameterPtr &a, const std::vector<AnfNodePtr> &parameter_list) {
@@ -356,7 +356,8 @@ bool LessBatchNormalization::MatchStructureNode(const CNodePtr &cnode, const int
   }
   const auto &use_pattern = std::get<1>(patternTuple);
   int32_t use_index = index % static_cast<int32_t>(use_pattern.size());
-  if (!IsPrimitiveCNode(cnode, use_pattern[use_index]) && use_pattern[use_index] != prim::kPrimTupleGetItem) {
+  if (!IsPrimitiveCNode(cnode, use_pattern[IntToSize(use_index)]) &&
+      use_pattern[IntToSize(use_index)] != prim::kPrimTupleGetItem) {
     return false;
   }
   return true;
@@ -411,9 +412,9 @@ AnfNodePtr LessBatchNormalization::operator()(const OptimizerPtr &optimizer, con
     Reset();
     const auto &current_pattern = kNeedMatchPattern.at(match_pattern_);
     size_t sum_match_node = 0;
-    (void)std::for_each(current_pattern.begin(), current_pattern.end(), [&](const kStructureTuple &t) {
+    (void)std::for_each(current_pattern.begin(), current_pattern.end(), [&, this](const kStructureTuple &t) {
       sum_match_node += std::get<0>(t);
-      (void)total_match_node_.emplace_back(sum_match_node);
+      (void)this->total_match_node_.emplace_back(sum_match_node);
     });
     auto cnode = node->cast<CNodePtr>();
     if (cnode == nullptr || cnode->inputs().empty()) {

@@ -22,31 +22,34 @@
 #include "utils/contract.h"
 #include "utils/ms_context.h"
 #include "utils/comm_manager.h"
+#include "utils/system/base.h"
 
 namespace mindspore {
 static const int MAX_DIRECTORY_LENGTH = 1024;
 static const int MAX_FILENAME_LENGTH = 128;
 static const int MAX_OS_FILENAME_LENGTH = 255;
+static const char kCOMPILER_CACHE_PATH[] = "MS_COMPILER_CACHE_PATH";
+
 class Common {
  public:
   Common() = default;
   ~Common() = default;
   static std::optional<std::string> CreatePrefixPath(const std::string &input_path,
                                                      const bool support_relative_path = false);
-  static std::optional<std::string> GetRealPath(const std::string &input_path);
   static std::optional<std::string> GetConfigFile(const std::string &env);
   static bool IsStrLengthValid(const std::string &str, size_t length_limit, const std::string &error_message = "");
   static bool IsPathValid(const std::string &path, size_t length_limit, const std::string &error_message = "");
   static bool IsFilenameValid(const std::string &filename, size_t length_limit, const std::string &error_message = "");
-  static bool CreateNotExistDirs(const std::string &path);
 
   static std::string AddId(const std::string &filename, const std::string &suffix);
   static bool SaveStringToFile(const std::string filename, const std::string string_info);
   static bool FileExists(const std::string &filepath);
   static bool CommonFuncForConfigPath(const std::string &default_path, const std::string &env_path, std::string *value);
+  static std::string GetCompilerCachePath();
 
  private:
   static bool IsEveryFilenameValid(const std::string &path, size_t length_limit, const std::string &error_message);
+  static string GetUserDefineCachePath();
 };
 
 inline std::string GetSaveGraphsPathName(const std::string &file_name, const std::string &save_path = "") {
@@ -65,6 +68,27 @@ inline std::string GetSaveGraphsPathName(const std::string &file_name, const std
     return save_graphs_path + "/" + file_name;
   }
   return save_graphs_path + "/rank_" + std::to_string(GetRank()) + "/" + file_name;
+}
+
+inline std::string ErrnoToString(const int error_number) {
+  std::ostringstream ret_info;
+  ret_info << " Errno: " << error_number;
+#if defined(__APPLE__)
+  char err_info[MAX_FILENAME_LENGTH];
+  (void)strerror_r(error_number, err_info, sizeof(err_info));
+  ret_info << ", ErrInfo: " << err_info;
+#elif defined(SYSTEM_ENV_POSIX)
+  char err_info[MAX_FILENAME_LENGTH];
+  char *ret = strerror_r(error_number, err_info, sizeof(err_info));
+  if (ret != nullptr) {
+    ret_info << ", ErrInfo: " << ret;
+  }
+#elif defined(SYSTEM_ENV_WINDOWS)
+  char err_info[MAX_FILENAME_LENGTH];
+  (void)strerror_s(err_info, sizeof(err_info), error_number);
+  ret_info << ", ErrInfo: " << err_info;
+#endif
+  return ret_info.str();
 }
 }  // namespace mindspore
 #endif  // MINDSPORE_CCSRC_DEBUG_COMMON_H_

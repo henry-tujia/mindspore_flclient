@@ -28,11 +28,11 @@ class PartialFusionKernel : public InnerKernel {
                       const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~PartialFusionKernel() override = default;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   void set_subgraph_kernel(LiteKernel *subgraph_kernel) { subgraph_kernel_ = subgraph_kernel; }
-  LiteKernel *subgraph_kernel() { return subgraph_kernel_; }
+  LiteKernel *subgraph_kernel() const { return subgraph_kernel_; }
 
  private:
   LiteKernel *subgraph_kernel_ = nullptr;

@@ -42,6 +42,7 @@ constexpr char SEMI_AUTO_PARALLEL[] = "semi_auto_parallel";
 
 constexpr char DYNAMIC_PROGRAMMING[] = "dynamic_programming";
 constexpr char RECURSIVE_PROGRAMMING[] = "recursive_programming";
+constexpr char SHARDING_PROPAGATION[] = "sharding_propagation";
 
 constexpr char TRAINING[] = "training";
 constexpr char ACCUMULATION[] = "accumulation";
@@ -51,6 +52,11 @@ constexpr char SAME_SERVER_GROUP_PARALLEL[] = "same_server_group_parallel";
 constexpr char NO_GROUP_PARALLEL[] = "no_group_parallel";
 
 constexpr char IS_FIRST_ITERATION[] = "is_first_iteration";
+
+constexpr char FUSION_AUTO[] = "auto";
+constexpr char FUSION_SIZE[] = "size";
+constexpr char FUSION_INDEX[] = "index";
+constexpr int64_t FUSUION_THRESHOLD = 64;
 class ParallelContext {
  public:
   ~ParallelContext() = default;
@@ -76,6 +82,11 @@ class ParallelContext {
 
   void set_device_num(int64_t device_num);
   int64_t device_num() const { return device_num_; }
+
+  void set_fusion_threshold_mb(int64_t fusion_threshold);
+  int64_t fusion_threshold_mb() const { return fusion_threshold_mb_; }
+  bool set_fusion_mode(const std::string &fusion_mode);
+  std::string get_fusion_mode() const { return fusion_mode_; }
 
   void set_pipeline_stage_split_num(const int64_t stages);
   int64_t pipeline_stage_split_num() const { return pipeline_stage_split_num_; }
@@ -125,19 +136,30 @@ class ParallelContext {
   }
   bool enable_parallel_optimizer() const { return enable_parallel_optimizer_; }
 
+  void set_hccl_test_available(bool hccl_test_available) { hccl_test_available_ = hccl_test_available; }
+  bool hccl_test_available() const { return hccl_test_available_; }
+  void set_grad_accumulation_shard(const bool grad_accumulation_shard) {
+    grad_accumulation_shard_ = grad_accumulation_shard;
+  }
+  bool grad_accumulation_shard() const { return grad_accumulation_shard_; }
+
   bool set_communi_parallel_mode(const std::string &communi_parallel_mode);
   std::string communi_parallel_mode() const { return communi_parallel_mode_; }
-  void set_sharding_propagation(const bool);
-  bool sharding_propagation() const { return sharding_propagation_; }
   void set_enable_all2all(const bool);
   bool enable_all2all() const { return enable_all2all_; }
+  void set_dataset_repeat_dim_right(const bool dataset_repeat_dim_right) {
+    dataset_repeat_dim_right_ = dataset_repeat_dim_right;
+  }
+  bool dataset_repeat_dim_right() const { return dataset_repeat_dim_right_; }
 
   void Reset();
   void ParallelParameterContextInitShape(const FuncGraphPtr &func_graph);
   void ParallelParameterContextRestoreShape(const FuncGraphPtr &func_graph, const ParameterPtr &param_node,
-                                            AbstractBasePtr ptr);
+                                            const AbstractBasePtr &ptr);
   void ParallelParameterContextCkptShape(const FuncGraphPtr &func_graph, const ParameterPtr &param_node,
                                          const AbstractBasePtr &ptr);
+  void set_sharding_propagation(const bool);
+  bool sharding_propagation() const { return sharding_propagation_; }
 
  private:
   ParallelContext();
@@ -147,6 +169,7 @@ class ParallelContext {
   bool gradient_fp32_sync_;
   bool loss_repeated_mean_;
   int64_t device_num_;
+  int64_t fusion_threshold_mb_;
   int64_t global_rank_;
   int64_t grad_accumulation_step_;
   std::string parallel_mode_;
@@ -154,6 +177,7 @@ class ParallelContext {
   int64_t pipeline_stage_split_num_;
   bool parameter_broadcast_;
   bool device_num_is_set_;
+  bool fusion_threshold_is_set_;
   bool global_rank_is_set_;
   bool parameter_broadcast_is_set_;
   bool enable_all_reduce_fusion_;
@@ -167,12 +191,14 @@ class ParallelContext {
   std::string communi_parallel_mode_;
   int64_t optimizer_weight_shard_size_;
   bool optimizer_weight_shard_aggregated_save_;
-  // In AUTO_PARALLEL mode, 'sharding_propagation_' = True indicates that sharding-configured operators
-  // will propagate the sharding strategies to other operators with minimum redistribution cost.
-  bool sharding_propagation_;
+  bool grad_accumulation_shard_;
   // Enable AllToAll or not. If false, use AllGather and Split.
   bool enable_all2all_;
   std::vector<std::vector<int64_t>> dataset_strategy_;
+  bool dataset_repeat_dim_right_ = false;
+  bool hccl_test_available_ = false;
+  bool sharding_propagation_;
+  std::string fusion_mode_;
 };
 
 }  // namespace parallel

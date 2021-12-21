@@ -45,8 +45,8 @@ void FilterNode::Print(std::ostream &out) const {
 
 Status FilterNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<FilterOp>(input_columns_, num_workers_, connector_que_size_, predicate_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -55,8 +55,7 @@ Status FilterNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (predicate_ == nullptr) {
     std::string err_msg = "FilterNode: predicate is not specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (!input_columns_.empty()) {
     RETURN_IF_NOT_OK(ValidateDatasetColumnParam("FilterNode", "input_columns", input_columns_));

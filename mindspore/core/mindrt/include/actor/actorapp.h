@@ -25,7 +25,6 @@
 #include "actor/actor.h"
 
 namespace mindspore {
-
 class MessageLocal : public MessageBase {
  public:
   MessageLocal(const AID &from, const AID &to, const std::string &name, void *aPtr)
@@ -45,7 +44,8 @@ class AppActor : public ActorBase {
   // send T message to the actor
   template <typename M>
   int Send(const std::string &to, const std::string &msgName, std::unique_ptr<M> msg) {
-    std::unique_ptr<MessageLocal> localMsg(new (std::nothrow) MessageLocal(GetAID(), to, msgName, msg.release()));
+    auto localMsg =
+      std::unique_ptr<MessageLocal>(new (std::nothrow) MessageLocal(GetAID(), to, msgName, msg.release()));
     MINDRT_OOM_EXIT(localMsg);
     return Send(to, std::move(localMsg));
   }
@@ -90,7 +90,6 @@ class AppActor : public ActorBase {
  private:
   std::map<std::string, APPBehavior> appBehaviors;
 };
-
 }  // namespace mindspore
 
 #endif

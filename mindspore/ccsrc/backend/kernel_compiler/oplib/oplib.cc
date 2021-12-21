@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,7 @@ constexpr auto kCUDA = "CUDA";
 constexpr auto kTbe = "TBE";
 constexpr auto kAkg = "AKG";
 constexpr auto kCpu = "CPU";
+constexpr auto kGpu = "GPU";
 constexpr auto kName = "name";
 constexpr auto kParamType = "param_type";
 constexpr auto kDtype = "dtype";
@@ -74,6 +75,10 @@ static std::string ImplTypeToStr(OpImplyType impl_type) {
       return kAkg;
     case kAICPU:
       return kAiCPU;
+    case kCPU:
+      return kCpu;
+    case kGPU:
+      return kGpu;
     default:
       return "unknown";
   }
@@ -95,6 +100,9 @@ bool OpLib::RegOp(const std::string &json_string, const std::string &impl_path) 
       ret = DecodeOpInfo(op_json, imply_type, impl_path);
     } else if (imply_type_string == kCpu) {
       OpImplyType imply_type = kCPU;
+      ret = DecodeOpInfo(op_json, imply_type, impl_path);
+    } else if (imply_type_string == kGpu) {
+      OpImplyType imply_type = kGPU;
       ret = DecodeOpInfo(op_json, imply_type, impl_path);
     } else {
       MS_LOG(ERROR) << "Not support imply_type";
@@ -164,7 +172,8 @@ bool OpLib::RegOpFromLocalInfo() {
   }
   char real_path[PATH_MAX] = {0};
   if (dir.size() >= PATH_MAX) {
-    MS_LOG(ERROR) << "Op info path is invalid: " << dir;
+    MS_LOG(ERROR) << "Invalid environment variable 'MINDSPORE_OP_INFO_PATH', the path length should be smaller than "
+                  << PATH_MAX << ", but got " << dir;
     return false;
   }
 #if defined(_WIN32) || defined(_WIN64)
@@ -174,11 +183,14 @@ bool OpLib::RegOpFromLocalInfo() {
   }
 #else
   if (realpath(common::SafeCStr(dir), real_path) == nullptr) {
-    MS_LOG(ERROR) << "Op info path is invalid: " << dir;
+    MS_LOG(ERROR) << "Invalid environment variable 'MINDSPORE_OP_INFO_PATH', the path is: " << dir
+                  << ". Please check (1) whether the path exists, (2) whether the path has the access permission, "
+                  << "(3) whether the path is too long. ";
     return false;
   }
   if (strlen(real_path) >= PATH_MAX) {
-    MS_LOG(ERROR) << "Op info path is invalid, the absolute path length is greater than PATH_MAX";
+    MS_LOG(ERROR) << "Invalid environment variable 'MINDSPORE_OP_INFO_PATH', the absolute path length should be smaller"
+                  << " than " << PATH_MAX << ", but got " << real_path;
     return false;
   }
 #endif

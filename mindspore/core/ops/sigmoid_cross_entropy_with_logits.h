@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #ifndef MINDSPORE_CORE_OPS_SIGMOID_CROSS_ENTROPY_WITH_LOGITS_H_
 #define MINDSPORE_CORE_OPS_SIGMOID_CROSS_ENTROPY_WITH_LOGITS_H_
-#include <map>
 #include <vector>
-#include <string>
 #include <memory>
+#include <string>
+#include <set>
+#include <map>
 #include "ops/primitive_c.h"
 #include "abstract/abstract_value.h"
 #include "utils/check_convert_utils.h"
@@ -27,18 +28,23 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSigmoidCrossEntropyWithLogits = "SigmoidCrossEntropyWithLogits";
+/// \brief Uses the given logits to compute sigmoid cross entropy between the logits and the label.
+/// Refer to Python API @ref mindspore.ops.SigmoidCrossEntropyWithLogits for more details.
 class MS_CORE_API SigmoidCrossEntropyWithLogits : public PrimitiveC {
  public:
+  /// \brief Constructor.
   SigmoidCrossEntropyWithLogits() : PrimitiveC(kNameSigmoidCrossEntropyWithLogits) {
     InitIOName({"predict", "target"}, {"loss"});
   }
+  /// \brief Destructor.
   ~SigmoidCrossEntropyWithLogits() = default;
   MS_DECLARE_PARENT(SigmoidCrossEntropyWithLogits, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr SigmoidCrossEntropyWithLogitsInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                                    const std::vector<AbstractBasePtr> &input_args);
-using PrimSigmoidCrossEntropyWithLogitsPtr = std::shared_ptr<SigmoidCrossEntropyWithLogits>;
+using kPrimSigmoidCrossEntropyWithLogitsPtr = std::shared_ptr<SigmoidCrossEntropyWithLogits>;
 }  // namespace ops
 }  // namespace mindspore
 

@@ -16,7 +16,6 @@
 
 #ifndef MINDSPORE_CORE_OPS_STRIDED_SLICE_GRAD_H_
 #define MINDSPORE_CORE_OPS_STRIDED_SLICE_GRAD_H_
-
 #include <map>
 #include <vector>
 #include <string>
@@ -27,10 +26,12 @@
 
 namespace mindspore {
 namespace ops {
-constexpr auto kNameStridedSliceGrad = "StridedSliceGrad";
 class MS_CORE_API StridedSliceGrad : public PrimitiveC {
  public:
-  StridedSliceGrad() : PrimitiveC(kNameStridedSliceGrad) {}
+  StridedSliceGrad() : PrimitiveC(prim::kPrimStridedSliceGrad->name()) {
+    InitIOName({"dy", "shapex", "begin", "end", "strides"}, {"output"});
+  }
+
   ~StridedSliceGrad() = default;
   MS_DECLARE_PARENT(StridedSliceGrad, PrimitiveC);
   void Init(int64_t begin_mask = 0, int64_t end_mask = 0, int64_t ellipsis_mask = 0, int64_t new_axis_mask = 0,
@@ -46,6 +47,10 @@ class MS_CORE_API StridedSliceGrad : public PrimitiveC {
   int64_t get_new_axis_mask() const;
   int64_t get_shrink_axis_mask() const;
 };
+
+AbstractBasePtr StridedSliceGradInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                                      const std::vector<AbstractBasePtr> &input_args);
+using PrimStridedSliceGradPtr = std::shared_ptr<StridedSliceGrad>;
 }  // namespace ops
 }  // namespace mindspore
 

@@ -63,8 +63,8 @@ class DeviceQueueOp : public PipelineOp {
 
   //  Name: constructor
   //  Description
-  DeviceQueueOp(std::string channel_name, DeviceType device_type, int32_t device_id, int32_t prefetch_size,
-                bool send_epoch_end, int32_t total_batch, bool create_data_info_queue);
+  DeviceQueueOp(std::string channel_name, DeviceType device_type, int32_t device_id, bool send_epoch_end,
+                int32_t total_batch, bool create_data_info_queue);
 
   //  Name: destructor
   //  Description
@@ -75,8 +75,6 @@ class DeviceQueueOp : public PipelineOp {
   int32_t ConnectorSize() const { return ChildOpConnectorSize(); }
 
   Status EoeReceived(int32_t worker_id) override;
-
-  const int32_t get_prefetch_size() { return prefetch_size_; }
 
   void StopSend() { stop_send_ = true; }
 
@@ -105,11 +103,11 @@ class DeviceQueueOp : public PipelineOp {
   Status operator()() override;
 #ifndef ENABLE_SECURITY
   // Record the pipeline profiling info
-  void ProfilingRecorder(bool isProfilingEnable, std::shared_ptr<DeviceQueueTracing> profiling_node, int64_t send_batch,
-                         int32_t tdt_cost, uint64_t *batch_start_time, uint64_t *end_time, int32_t connector_capacity,
-                         int32_t connector_size);
-#endif
+  void ProfilingRecorder(bool is_profiling_enable, std::shared_ptr<DeviceQueueTracing> profiling_node,
+                         int64_t send_batch, int32_t tdt_cost, uint64_t *batch_start_time, uint64_t *end_time,
+                         int32_t connector_capacity, int32_t connector_size);
 
+#endif
   // Op name getter
   // @return Name of the current Op
   std::string Name() const override { return kDeviceQueueOp; }
@@ -119,23 +117,31 @@ class DeviceQueueOp : public PipelineOp {
   // Description: Auto filter metadata column before sending to device.
   Status FilterMetadata(TensorRow *row);
 
-  //  Name: checkExceptions(TensorRow);
-  //  Description: Check whether the TensorRow meets the condition for performing DeviceQueueOp
+  // Name: CheckExceptions(TensorRow);
+  // Description: Check whether the TensorRow meets the condition for performing DeviceQueueOp
   Status CheckExceptions(const TensorRow &row) const;
+
+  // Name: PrintBeginInfoWhenFirstBatch(bool)
+  // Description: Print info when first batch begin to send in sink_mode
+  void PrintBeginInfoWhenFirstBatch(const bool &first_push_flag);
+
+  // Name: PrintEndInfoWhenFirstBatch(bool)
+  // Description: Print info when first batch send successful in sink_mode
+  void PrintEndInfoWhenFirstBatch(bool *first_push_flag);
 
  private:
 #ifdef ENABLE_TDTQUE
   void WaitContinueSignal() const;
   Status SendDataToAscend();
   void LimitSendingBatches(int64_t send_batch, int64_t *sending_num, std::shared_ptr<ConfigManager> cfg);
-  Status SendRowToTdt(TensorRow currRow, bool isProfilingEnable, int32_t *tdt_cost);
+  Status SendRowToTdt(TensorRow curr_row, bool is_profiling_enable, int32_t *tdt_cost);
   bool ascend_keep_waiting_;
 #endif
 
 #ifdef ENABLE_GPUQUE
   Status SendDataToGPU();
   Status MallocForGPUData(std::vector<device::DataItemGpu> *items, const TensorRow &curr_row, const int32_t &worker_id);
-  Status RetryPushData(unsigned int handle, const std::vector<DataItemGpu> &data);
+  Status RetryPushData(unsigned int handle, const std::vector<DataItemGpu> &data, bool profiling, uint64_t *push_time);
   void ReleaseData(void *addr, int32_t worker_id);
   Status LaunchParallelCopyThread();
   Status PushDataToGPU();
@@ -144,7 +150,7 @@ class DeviceQueueOp : public PipelineOp {
 
   QueueList<TensorRow> receive_queues_;
   std::vector<std::shared_ptr<MemoryPool>> pool_;
-  std::unique_ptr<GpuItemConnector> gpu_item_connector_;
+  std::unique_ptr<GpuConnector> gpu_connector_;
   const uint32_t kDeviceQueGpuNumThreads = 2;
   const uint32_t kDeviceQueGpuQueueCapacity = 8;
   const uint32_t kDeviceQueGpuThreadMemory = 1024;
@@ -162,31 +168,29 @@ class DeviceQueueOp : public PipelineOp {
   Status DetectFirstBatch();
 
   // Detect the cost time of each batch, present alarm message if cost too long
-  void DetectPerBatchTime(uint64_t *start_time, uint64_t *end_time);
+  void DetectPerBatchTime(const uint64_t *start_time, uint64_t *end_time);
 #endif
-  std::atomic<bool> first_fetch_flag_;
 
   std::unique_ptr<ChildIterator> child_iterator_;
   std::string channel_name_;
   DeviceType device_type_;
   const int32_t device_id_;
-  const int32_t prefetch_size_;
   const bool send_epoch_end_;
   bool stop_send_;
+  bool send_finished_;
   int32_t total_batch_;
   bool create_data_info_queue_;
   std::unique_ptr<DATA_INFO_QUEUE> data_info_queue_ptr_;
+  std::atomic<bool> first_fetch_flag_;
   std::mutex data_info_mutex_;
-  bool send_finished_;
-#ifdef ENABLE_DUMP_IR
-  std::shared_ptr<MDChannelInfo> md_channel_info_;
-#endif
+  bool first_push_flag_;  // default: false, when first push, it will be true
 
 #ifdef ENABLE_TDTQUE
   std::shared_ptr<TdtPlugin> tdtInstancePtr;
 #endif
-
-  bool first_push_flag_;  // default: false, when first push, it will be true
+#ifdef ENABLE_DUMP_IR
+  std::shared_ptr<MDChannelInfo> md_channel_info_;
+#endif
 };
 }  // namespace dataset
 }  // namespace mindspore

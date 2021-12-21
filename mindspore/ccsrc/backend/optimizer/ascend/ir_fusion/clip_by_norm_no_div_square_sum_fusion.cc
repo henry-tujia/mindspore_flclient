@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "ir/primitive.h"
 #include "utils/utils.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
@@ -46,10 +45,6 @@ const AnfNodePtr ClipByNormNoDivSquareSumFusion::Process(const FuncGraphPtr &gra
   MS_EXCEPTION_IF_NULL(node);
   MS_EXCEPTION_IF_NULL(equiv);
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::ClipByNormNoDivSquareSumFusion)) {
-    return node;
-  }
-
   BaseRef &input_gnode = (*equiv)[input_];
   BaseRef &constant_select_gnode = (*equiv)[constant_select_];
   BaseRef &constant_greater_gnode = (*equiv)[constant_greater_];
@@ -66,7 +61,7 @@ const AnfNodePtr ClipByNormNoDivSquareSumFusion::Process(const FuncGraphPtr &gra
   auto prim = std::make_shared<Primitive>(kClipByNormNoDivSumOpName);
   MS_EXCEPTION_IF_NULL(prim);
   std::vector<AnfNodePtr> inputs = {NewValueNode(prim), input, constant_greater, constant_select, constant_maximum};
-  auto fusion_node = graph->NewCNode(inputs);
+  auto fusion_node = NewCNode(inputs, graph);
   MS_EXCEPTION_IF_NULL(fusion_node);
   auto types = {AnfAlgo::GetOutputInferDataType(node, 0)};
   auto shapes = {AnfAlgo::GetOutputInferShape(node, 0)};

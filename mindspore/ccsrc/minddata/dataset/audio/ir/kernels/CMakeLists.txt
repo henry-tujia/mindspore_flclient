@@ -11,17 +11,32 @@ add_library(audio-ir-kernels OBJECT
         bass_biquad_ir.cc
         biquad_ir.cc
         complex_norm_ir.cc
+        compute_deltas_ir.cc
         contrast_ir.cc
+        db_to_amplitude_ir.cc
         dc_shift_ir.cc
         deemph_biquad_ir.cc
+        detect_pitch_frequency_ir.cc
+        dither_ir.cc
         equalizer_biquad_ir.cc
         fade_ir.cc
+        flanger_ir.cc
         frequency_masking_ir.cc
+        gain_ir.cc
         highpass_biquad_ir.cc
         lfilter_ir.cc
         lowpass_biquad_ir.cc
+        magphase_ir.cc
         mu_law_decoding_ir.cc
+        mu_law_encoding_ir.cc
+        overdrive_ir.cc
+        phaser_ir.cc
+        riaa_biquad_ir.cc
+        sliding_window_cmn_ir.cc
+        spectrogram_ir.cc
         time_masking_ir.cc
         time_stretch_ir.cc
+        treble_biquad_ir.cc
+        vol_ir.cc
         )
 

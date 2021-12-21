@@ -18,8 +18,8 @@
 
 #include <memory>
 #include <utility>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "ir/func_graph.h"
 #include "frontend/operator/ops.h"
 
@@ -53,6 +53,7 @@ bool InConvertWhiteList(const AnfNodePtr &node, size_t index) {
   // node because it is attribute or ge specific reason.
   // Example : when convert CNode(kPrimReduceSum, x, axis), node of index 2 in CNode->inputs is axis which should not be
   // converted to switch guarded.
+#ifndef ENABLE_SECURITY
   std::vector<std::pair<PrimitivePtr, std::vector<size_t>>> white_list({{prim::kPrimApplyMomentum, {1, 2}},
                                                                         {prim::kPrimMomentum, {2, 3}},
                                                                         {prim::kPrimStateSetItem, {1}},
@@ -78,6 +79,20 @@ bool InConvertWhiteList(const AnfNodePtr &node, size_t index) {
                                                                         {prim::kPrimTile, {2}},
                                                                         {prim::kPrimExpandDims, {2}},
                                                                         {prim::kPrimHistogramSummary, {1}}});
+#else
+  std::vector<std::pair<PrimitivePtr, std::vector<size_t>>> white_list(
+    {{prim::kPrimApplyMomentum, {1, 2}}, {prim::kPrimMomentum, {2, 3}},
+     {prim::kPrimStateSetItem, {1}},     {prim::kPrimTupleGetItem, {2}},
+     {prim::kPrimEnvGetItem, {1}},       {prim::kPrimEnvSetItem, {1}},
+     {prim::kPrimReduceSum, {2}},        {prim::kPrimReduceMean, {2}},
+     {prim::kPrimReduceAll, {2}},        {prim::kPrimCast, {2}},
+     {prim::kPrimTranspose, {2}},        {prim::kPrimOneHot, {2}},
+     {prim::kPrimGather, {3}},           {prim::kPrimReshape, {2}},
+     {prim::kPrimAssign, {1}},           {prim::kPrimAssignAdd, {1}},
+     {prim::kPrimAssignSub, {1}},        {prim::kPrimApplyRMSProp, {6, 7, 8}},
+     {prim::kPrimCumSum, {2}},           {prim::kPrimTile, {2}},
+     {prim::kPrimExpandDims, {2}}});
+#endif
   for (auto &item : white_list) {
     auto matched = std::any_of(item.second.begin(), item.second.end(), [&item, &node, &index](size_t idx) {
       return IsPrimitiveCNode(node, item.first) && idx == index;
@@ -96,10 +111,10 @@ bool InConvertWhiteList(const AnfNodePtr &node, size_t index) {
   return false;
 }
 
-using NodeInputReplMap = std::unordered_map<std::pair<AnfNodePtr, size_t>, AnfNodePtr, PairHasher>;
+using NodeInputReplMap = mindspore::HashMap<std::pair<AnfNodePtr, size_t>, AnfNodePtr, PairHasher>;
 // replace the nodes which should be changed
 void RunSwitchNodeReplace(const FuncGraphManagerPtr &manager, std::vector<std::pair<CNodePtr, CNodePtr>> nodes_changed,
-                          std::unordered_map<AnfNodePtr, AnfNodePtr> repl_node, NodeInputReplMap repl_node_inputs,
+                          mindspore::HashMap<AnfNodePtr, AnfNodePtr> repl_node, NodeInputReplMap repl_node_inputs,
                           const FuncGraphPtr &func_graph) {
   for (auto &node_pair : nodes_changed) {
     CNodePtr old_node = node_pair.first;
@@ -138,7 +153,7 @@ FuncGraphPtr TransformGraphCondBranchNodes(
   // record the node that has been changed
   std::vector<std::pair<CNodePtr, CNodePtr>> nodes_changed;
   // record the node to be replaced
-  std::unordered_map<AnfNodePtr, AnfNodePtr> repl_node;
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> repl_node;
   // record the node input to be replaced
   NodeInputReplMap repl_node_inputs;
   const AnfNodeSet &nodes = graph->nodes();
@@ -307,7 +322,7 @@ bool IsNetOutputNode(const FuncGraphManagerPtr &manager, const AnfNodePtr &node)
 // generate node for Depended MakeTuple
 void GenerateReplNodeForDependMakeTuple(
   const AnfNodePtr &depended_node, const FuncGraphPtr &graph, const AnfNodePtr &cond,
-  const std::shared_ptr<std::unordered_map<AnfNodePtr, AnfNodePtr>> &repl_node,
+  const std::shared_ptr<mindspore::HashMap<AnfNodePtr, AnfNodePtr>> &repl_node,
   const std::function<AnfNodePtr(FuncGraphPtr graph, AnfNodePtr cond, AnfNodePtr data)> &generate_func) {
   MS_EXCEPTION_IF_NULL(graph->manager());
 
@@ -341,7 +356,7 @@ void GenerateReplNodeForDependMakeTuple(
 // generate a replace depend node for a single network output node
 void GenerateRepDepend(
   const CNodePtr &node, const FuncGraphPtr &graph, const AnfNodePtr &cond,
-  const std::shared_ptr<std::unordered_map<AnfNodePtr, AnfNodePtr>> &repl_node,
+  const std::shared_ptr<mindspore::HashMap<AnfNodePtr, AnfNodePtr>> &repl_node,
   const std::function<AnfNodePtr(FuncGraphPtr graph, AnfNodePtr cond, AnfNodePtr data)> &generate_func) {
   MS_EXCEPTION_IF_NULL(graph->manager());
 
@@ -378,8 +393,8 @@ FuncGraphPtr TransformGraphDependNode(
   MS_EXCEPTION_IF_NULL(manager);
 
   ResetSharedOp();
-  std::shared_ptr<std::unordered_map<AnfNodePtr, AnfNodePtr>> repl_node =
-    std::make_shared<std::unordered_map<AnfNodePtr, AnfNodePtr>>();  // record the node to be replaced
+  std::shared_ptr<mindspore::HashMap<AnfNodePtr, AnfNodePtr>> repl_node =
+    std::make_shared<mindspore::HashMap<AnfNodePtr, AnfNodePtr>>();  // record the node to be replaced
   const AnfNodeSet &nodes = graph->nodes();
   for (auto &node : nodes) {
     MS_EXCEPTION_IF_NULL(node);
@@ -568,7 +583,7 @@ void ConvertSwitchReplacement::TransformSwitchBranchReplace(const AnfNodePtr &no
   auto cloned_g1 = InlineClone(trans_g1, fg, params);
   auto cloned_g2 = InlineClone(trans_g2, fg, params);
   auto new_node = internal::TransformMergeBranches({cond, cloned_g1, cloned_g2}, {true_output, false_output}, fg);
-  fg->manager()->Replace(node, new_node);
+  (void)fg->manager()->Replace(node, new_node);
 }
 }  // namespace irpass
 }  // namespace opt

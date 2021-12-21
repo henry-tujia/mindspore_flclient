@@ -61,7 +61,7 @@ int FillOpenCLKernel::RunShape() {
   auto tensor_shape = in_tensors_[0]->shape();
   void *tensor_shape_data = tensor_shape.data();
   CHECK_NULL_RETURN(tensor_shape_data);
-  for (int i = 0; i < tensor_shape.size(); ++i) {
+  for (size_t i = 0; i < tensor_shape.size(); ++i) {
     fill_value.s[i] = reinterpret_cast<int *>(tensor_shape_data)[i];
   }
   auto src_origin = cl::array<cl::size_type, 3U>{0, 0, 0};
@@ -81,7 +81,7 @@ void FillOpenCLKernel::SetGlobalLocal() {}
 
 int FillOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_1 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   auto param = this->op_parameter_;
@@ -89,13 +89,13 @@ int FillOpenCLKernel::CheckSpecs() {
   auto input = in_tensors_.at(0);
   CHECK_NULL_RETURN(input);
   if (input->shape().size() > DIMENSION_1D && param->type_ == PrimitiveType_Fill) {
-    MS_LOG(ERROR) << " fill only support dim = 1";
+    MS_LOG(WARNING) << " fill only support dim = 1";
     return RET_ERROR;
   }
   auto output = out_tensors_.at(0);
   CHECK_NULL_RETURN(output);
   if (output->shape().size() > OUTPUT_TENSOR_SIZE_4) {
-    MS_LOG(ERROR) << " only support dim <= 4";
+    MS_LOG(WARNING) << " only support dim <= 4";
     return RET_ERROR;
   }
   return RET_OK;

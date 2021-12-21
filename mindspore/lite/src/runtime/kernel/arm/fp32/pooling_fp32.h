@@ -29,10 +29,10 @@ class PoolingCPUKernel : public PoolingBaseCPUKernel {
       : PoolingBaseCPUKernel(parameter, inputs, outputs, ctx) {}
   ~PoolingCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-  int RunImpl(int task_id);
+  int RunImpl(int task_id) const;
 
  private:
 };

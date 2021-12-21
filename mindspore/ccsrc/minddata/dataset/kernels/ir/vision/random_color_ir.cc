@@ -23,6 +23,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -38,17 +39,15 @@ std::string RandomColorOperation::Name() const { return kRandomColorOperation; }
 Status RandomColorOperation::ValidateParams() {
   if (t_lb_ < 0 || t_ub_ < 0) {
     std::string err_msg =
-      "RandomColor: lower bound or upper bound must be greater than or equal to 0, got t_lb: " + std::to_string(t_lb_) +
-      ", t_ub: " + std::to_string(t_ub_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      "RandomColor: lower bound or upper bound must be greater than or equal to 0, got 'degree'(t_lb): " +
+      std::to_string(t_lb_) + ", 'degree'(t_ub): " + std::to_string(t_ub_);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (t_lb_ > t_ub_) {
     std::string err_msg =
-      "RandomColor: lower bound must be less or equal to upper bound, got t_lb: " + std::to_string(t_lb_) +
-      ", t_ub: " + std::to_string(t_ub_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      "RandomColor: lower bound must be less or equal to upper bound, got 'degree'(t_lb): " + std::to_string(t_lb_) +
+      ", 'degree'(t_ub): " + std::to_string(t_ub_);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -64,7 +63,7 @@ Status RandomColorOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status RandomColorOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("degrees") != op_params.end(), "Failed to find degrees");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "degrees", kRandomColorOperation));
   std::vector<float> degrees = op_params["degrees"];
   CHECK_FAIL_RETURN_UNEXPECTED(degrees.size() == 2, "The number of degrees should be 2");
   float t_lb = degrees[0];

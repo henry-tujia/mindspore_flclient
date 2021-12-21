@@ -21,10 +21,11 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <stack>
+#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "pipeline/jit/static_analysis/static_analysis.h"
 #include "pipeline/jit/static_analysis/async_eval_result.h"
 #include "utils/ms_context.h"
@@ -54,6 +55,7 @@ class Evaluator : public Base {
 
   virtual EvalResultPtr Eval(AnalysisEnginePtr engine, const AbstractBasePtrList &args_spec_list,
                              const AnfNodeConfigPtr &out_conf) = 0;
+
   virtual EvalResultPtr SingleRun(AnalysisEnginePtr engine, const ConfigPtrList &args_conf_list,
                                   const AnfNodeConfigPtr &out_conf);
 
@@ -348,6 +350,41 @@ class JEvaluator : public Evaluator {
   }
   EvalResultPtr Run(AnalysisEnginePtr engine, const ConfigPtrList &args_conf_list,
                     const AnfNodeConfigPtr &out_conf) override;
+  std::string ToString() const override { return identifier_ + "_" + evaluator_->ToString(); }
+
+ private:
+  EvaluatorPtr evaluator_;
+  AbstractFunctionPtr orig_func_;
+};
+
+class ShardEvaluator : public Evaluator {
+ public:
+  ShardEvaluator(const EvaluatorPtr &evaluator, const AbstractFunctionPtr &orig_func)
+      : Evaluator("ShardEvaluator"), evaluator_(evaluator), orig_func_(orig_func) {}
+  ~ShardEvaluator() override = default;
+  MS_DECLARE_PARENT(ShardEvaluator, Evaluator);
+
+  AnfNodePtr bound_node() const override {
+    if (evaluator_ != nullptr) {
+      return evaluator_->bound_node();
+    }
+    return bound_node_.lock();
+  }
+
+  void set_bound_node(const AnfNodePtr &node) override {
+    if (evaluator_ != nullptr) {
+      evaluator_->set_bound_node(node);
+    }
+    bound_node_ = AnfNodeWeakPtr(node);
+  }
+
+  EvalResultPtr Eval(AnalysisEnginePtr, const AbstractBasePtrList &, const AnfNodeConfigPtr &) override {
+    MS_LOG(EXCEPTION) << "Should not be called, Run() method should be called";
+  }
+
+  EvalResultPtr Run(AnalysisEnginePtr engine, const ConfigPtrList &args_conf_list,
+                    const AnfNodeConfigPtr &out_conf) override;
+
   std::string ToString() const override { return identifier_ + "_" + evaluator_->ToString(); }
 
  private:

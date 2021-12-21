@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,14 @@
 #include <set>
 #include <memory>
 #include <sstream>
-#include <unordered_set>
 #include <algorithm>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "debug/trace.h"
+#include "debug/anf_ir_dump.h"
+#include "pybind_api/api_register.h"
+#include "pybind_api/pybind_patch.h"
 #include "pybind_api/ir/tensor_py.h"
 #include "ir/param_info.h"
 #include "ir/anf.h"
@@ -37,35 +41,29 @@
 #include "utils/config_manager.h"
 #include "utils/convert_utils_py.h"
 #include "utils/scoped_long_running.h"
+#include "frontend/optimizer/ad/grad.h"
+#include "frontend/optimizer/ad/prim_bprop_optimizer.h"
 #include "frontend/operator/ops.h"
 #include "frontend/operator/composite/do_signature.h"
+#include "frontend/parallel/context.h"
+#include "pipeline/jit/action.h"
+#include "pipeline/jit/pass.h"
 #include "pipeline/jit/parse/data_converter.h"
 #include "pipeline/jit/parse/parse_dynamic.h"
 #include "pipeline/jit/static_analysis/prim.h"
 #include "pipeline/jit/static_analysis/auto_monad.h"
 #include "pipeline/jit/pipeline.h"
+#include "pipeline/jit/resource.h"
+#include "pipeline/pynative/base.h"
 #include "backend/session/session_factory.h"
 #include "backend/optimizer/common/const_input_to_attr_registry.h"
 #include "backend/optimizer/common/helper.h"
-#include "pipeline/jit/action.h"
-
-#include "pipeline/pynative/base.h"
-#include "pybind_api/api_register.h"
-#include "pybind_api/pybind_patch.h"
+#include "runtime/hardware/device_context_manager.h"
 #include "vm/transform.h"
-
-#include "frontend/optimizer/ad/grad.h"
-#include "pipeline/jit/resource.h"
-#include "pipeline/jit/pass.h"
-#include "frontend/parallel/context.h"
-#include "frontend/optimizer/ad/prim_bprop_optimizer.h"
 
 #ifdef ENABLE_GE
 #include "pipeline/pynative/pynative_execute_ge.h"
 #endif
-
-#include "debug/anf_ir_dump.h"
-#include "runtime/hardware/device_context_manager.h"
 
 using mindspore::tensor::TensorPy;
 
@@ -84,8 +82,9 @@ const size_t MAX_TOP_CELL_COUNTS = 20;
 const std::set<std::string> kVmOperators = {"make_ref", "HookBackward", "InsertGradientOf", "stop_gradient",
                                             "mixed_precision_cast"};
 const char kOpsFunctionModelName[] = "mindspore.ops.functional";
-std::shared_ptr<session::SessionBasic> kSession = nullptr;
-std::shared_ptr<compile::MindRTBackend> mind_rt_backend = nullptr;
+const char kGrad[] = "grad";
+std::map<std::string, std::shared_ptr<session::SessionBasic>> kSessionBackends;
+std::map<std::string, std::shared_ptr<compile::MindRTBackend>> kMindRtBackends;
 PyObjectIdCache g_pyobj_id_cache;
 
 template <typename T, typename... Args>
@@ -125,8 +124,10 @@ void PynativeExecutorTry(const std::function<void(T *ret, const Args &...)> &met
     throw(std::runtime_error(ex.what()));
   } catch (...) {
     inst->ClearRes();
-    std::string exName(abi::__cxa_current_exception_type()->name());
-    MS_LOG(EXCEPTION) << "Error occurred when compile graph. Exception name: " << exName;
+    auto exception_type = abi::__cxa_current_exception_type();
+    MS_EXCEPTION_IF_NULL(exception_type);
+    std::string ex_name(exception_type->name());
+    MS_LOG(EXCEPTION) << "Error occurred when compile graph. Exception name: " << ex_name;
   }
 }
 
@@ -149,6 +150,11 @@ std::string GetPyObjId(const py::handle &obj) {
 std::string GetId(const py::handle &obj) {
   if (py::isinstance<tensor::Tensor>(obj)) {
     auto tensor_ptr = py::cast<tensor::TensorPtr>(obj);
+    if (tensor_ptr->is_parameter()) {
+      const auto &param_info = tensor_ptr->param_info();
+      MS_EXCEPTION_IF_NULL(param_info);
+      return param_info->name();
+    }
     return tensor_ptr->id();
   } else if (py::isinstance<mindspore::Type>(obj)) {
     auto type_ptr = py::cast<mindspore::TypePtr>(obj);
@@ -173,11 +179,11 @@ std::string GetId(const py::handle &obj) {
   }
 
   if (py::isinstance<Cell>(obj) || py::isinstance<py::function>(obj)) {
-    const auto &it = g_pyobj_id_cache.find(obj);
+    auto it = g_pyobj_id_cache.find(obj);
     if (it == g_pyobj_id_cache.end()) {
-      auto &&id = GetPyObjId(obj);
-      g_pyobj_id_cache[obj] = id;
-      return std::move(id);
+      auto id = GetPyObjId(obj);
+      g_pyobj_id_cache.emplace(obj, id);
+      return id;
     } else {
       return it->second;
     }
@@ -187,7 +193,7 @@ std::string GetId(const py::handle &obj) {
 }
 
 void GetTypeIndex(const std::vector<SignatureEnumDType> &dtypes,
-                  std::unordered_map<SignatureEnumDType, std::vector<size_t>> *type_indexes) {
+                  mindspore::HashMap<SignatureEnumDType, std::vector<size_t>> *type_indexes) {
   MS_EXCEPTION_IF_NULL(type_indexes);
   for (size_t i = 0; i < dtypes.size(); ++i) {
     auto it = type_indexes->find(dtypes[i]);
@@ -218,9 +224,44 @@ TypeId JudgeMaxType(TypeId max_type, bool has_scalar_float32, bool has_scalar_in
   return max_type;
 }
 
+std::string GetCurrentDeviceTarget(const std::string &device_target, const PrimitivePyPtr &op_prim) {
+  MS_EXCEPTION_IF_NULL(op_prim);
+  const auto &attr_map = op_prim->attrs();
+  auto iter = attr_map.find("primitive_target");
+  if (iter != attr_map.end()) {
+    return GetValue<std::string>(iter->second);
+  }
+  return device_target;
+}
+
+session::SessionPtr GetCurrentSession(const std::string &device_target, uint32_t device_id) {
+  auto iter = kSessionBackends.find(device_target);
+  if (iter == kSessionBackends.end()) {
+    auto session = session::SessionFactory::Get().Create(device_target);
+    MS_EXCEPTION_IF_NULL(session);
+    session->Init(device_id);
+    kSessionBackends[device_target] = session;
+    return session;
+  } else {
+    return iter->second;
+  }
+}
+
+compile::MindRTBackendPtr GetMindRtBackend(const std::string &device_target, uint32_t device_id) {
+  auto iter = kMindRtBackends.find(device_target);
+  if (iter == kMindRtBackends.end()) {
+    auto backend = std::make_shared<compile::MindRTBackend>("ms", device_target, device_id);
+    MS_EXCEPTION_IF_NULL(backend);
+    kMindRtBackends[device_target] = backend;
+    return backend;
+  } else {
+    return iter->second;
+  }
+}
+
 void GetDstType(const py::tuple &py_args,
-                const std::unordered_map<SignatureEnumDType, std::vector<size_t>> &type_indexes,
-                std::unordered_map<SignatureEnumDType, TypeId> *dst_type) {
+                const mindspore::HashMap<SignatureEnumDType, std::vector<size_t>> &type_indexes,
+                mindspore::HashMap<SignatureEnumDType, TypeId> *dst_type) {
   for (auto it = type_indexes.begin(); it != type_indexes.end(); (void)++it) {
     const auto &type = it->first;
     const auto &indexes = it->second;
@@ -234,6 +275,9 @@ void GetDstType(const py::tuple &py_args,
     bool has_tensor_int8 = false;
     // Find the maximum priority of the same dtype
     for (size_t index : indexes) {
+      if (index >= py_args.size()) {
+        MS_LOG(EXCEPTION) << "The index " << index << " exceeds the size of py_args " << py_args.size();
+      }
       const auto &obj = py_args[index];
       if (py::isinstance<py::float_>(obj)) {
         has_scalar_float32 = true;
@@ -258,6 +302,7 @@ void GetDstType(const py::tuple &py_args,
       }
     }
     max_type = JudgeMaxType(max_type, has_scalar_float32, has_scalar_int64, has_tensor_int8);
+    MS_EXCEPTION_IF_NULL(dst_type);
     (void)dst_type->emplace(std::make_pair(type, max_type));
   }
 }
@@ -271,6 +316,7 @@ const std::string &TypeIdToMsTypeStr(const TypeId &type_id) {
 }
 
 bool GetSignatureType(const PrimitivePyPtr &prim, std::vector<SignatureEnumDType> *dtypes) {
+  MS_EXCEPTION_IF_NULL(prim);
   MS_EXCEPTION_IF_NULL(dtypes);
   const auto &signature = prim->signatures();
   bool has_sig_dtype = false;
@@ -287,11 +333,17 @@ bool GetSignatureType(const PrimitivePyPtr &prim, std::vector<SignatureEnumDType
 
 void PynativeInfer(const PrimitivePyPtr &prim, OpExecInfo *const op_exec_info,
                    const abstract::AbstractBasePtrList &args_spec_list) {
+  MS_EXCEPTION_IF_NULL(prim);
   MS_LOG(DEBUG) << "Prim " << prim->name() << " input infer " << mindspore::ToString(args_spec_list);
   prim->BeginRecordAddAttr();
-  AbstractBasePtr infer_res = EvalOnePrim(prim, args_spec_list)->abstract();
+  auto eval_ret = EvalOnePrim(prim, args_spec_list);
+  MS_EXCEPTION_IF_NULL(eval_ret);
+  AbstractBasePtr infer_res = eval_ret->abstract();
+  MS_EXCEPTION_IF_NULL(infer_res);
   prim->EndRecordAddAttr();
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   op_exec_info->abstract = infer_res;
+  MS_EXCEPTION_IF_NULL(op_exec_info->abstract);
   MS_LOG(DEBUG) << "Prim " << prim->name() << " infer result " << op_exec_info->abstract->ToString();
 }
 
@@ -323,10 +375,13 @@ void GetSingleOpGraphInfo(const OpExecInfoPtr &op_exec_info, const std::vector<t
     // For constant input
     if (tensors_mask[index] == kValueNodeTensorMask) {
       has_const_input = true;
-      if (input_tensors[index]->Dtype()->type_id() == kNumberTypeInt64) {
+      auto dtype = input_tensors[index]->Dtype();
+      MS_EXCEPTION_IF_NULL(dtype);
+      if (dtype->type_id() == kNumberTypeBool) {
+        buf << *reinterpret_cast<bool *>(input_tensors[index]->data_c());
+      } else if (dtype->type_id() == kNumberTypeInt64) {
         buf << *reinterpret_cast<int *>(input_tensors[index]->data_c());
-      } else if (input_tensors[index]->Dtype()->type_id() == kNumberTypeFloat32 ||
-                 input_tensors[index]->Dtype()->type_id() == kNumberTypeFloat16) {
+      } else if (dtype->type_id() == kNumberTypeFloat32 || dtype->type_id() == kNumberTypeFloat16) {
         buf << *reinterpret_cast<float *>(input_tensors[index]->data_c());
       } else {
         MS_LOG(EXCEPTION) << "The dtype of the constant input is not int64 or float32!";
@@ -376,7 +431,8 @@ py::list FilterTensorArgs(const py::args &args, bool has_sens = false) {
 }
 
 bool RunOpConvertConstInputToAttr(const py::object &input_object, size_t input_index, const PrimitivePtr &op_prim,
-                                  const std::unordered_set<size_t> &input_attrs) {
+                                  const mindspore::HashSet<size_t> &input_attrs, std::vector<size_t> *input_to_attr_idx,
+                                  std::vector<string> *input_to_attr_name) {
   MS_EXCEPTION_IF_NULL(op_prim);
   const auto &input_names_value = op_prim->GetAttr(kAttrInputNames);
   if (input_names_value == nullptr) {
@@ -391,6 +447,8 @@ bool RunOpConvertConstInputToAttr(const py::object &input_object, size_t input_i
     const auto &value = PyObjToValue(input_object);
     auto input_name = input_names_vec[input_index];
     op_prim->AddAttr(input_name, value);
+    input_to_attr_idx->push_back(input_index);
+    input_to_attr_name->push_back(input_name);
     return true;
   }
   return false;
@@ -414,6 +472,7 @@ void PlantTensorTupleToVector(const py::tuple &tuple_inputs, const PrimitivePtr 
 void ConvertValueTupleToTensor(const py::object &input_object, std::vector<tensor::TensorPtr> *input_tensors) {
   MS_EXCEPTION_IF_NULL(input_tensors);
   const auto &input_value = PyObjToValue(input_object);
+  MS_EXCEPTION_IF_NULL(input_value);
   if (!input_value->isa<ValueTuple>()) {
     MS_LOG(EXCEPTION) << "The input object is not a value tuple!";
   }
@@ -422,6 +481,25 @@ void ConvertValueTupleToTensor(const py::object &input_object, std::vector<tenso
   tensor::TensorPtr tensor_ptr = opt::CreateTupleTensor(value_tuple);
   MS_EXCEPTION_IF_NULL(tensor_ptr);
   input_tensors->emplace_back(tensor_ptr);
+}
+
+void ConvertCSRTensorToTensorList(const py::object &input_object, const PrimitivePtr &op_prim,
+                                  std::vector<tensor::TensorPtr> *input_tensors) {
+  MS_EXCEPTION_IF_NULL(op_prim);
+  MS_EXCEPTION_IF_NULL(input_tensors);
+  if (!py::isinstance<tensor::CSRTensor>(input_object)) {
+    MS_LOG(EXCEPTION) << "The input should be a csr_tensor! ";
+  }
+  auto input_names = op_prim->GetAttr(kAttrInputNames);
+  if (input_names == nullptr) {
+    MS_LOG(DEBUG) << "input_names are nullptr";
+    return;
+  }
+  auto csr_inputs = py::cast<tensor::CSRTensor>(input_object);
+  input_tensors->emplace_back(csr_inputs.GetIndptr());
+  input_tensors->emplace_back(csr_inputs.GetIndices());
+  input_tensors->emplace_back(csr_inputs.GetValues());
+  op_prim->set_attr("is_csr", MakeValue(true));
 }
 
 void ConvertMultiPyObjectToTensor(const py::object &input_object, const PrimitivePtr &op_prim,
@@ -437,9 +515,8 @@ void ConvertMultiPyObjectToTensor(const py::object &input_object, const Primitiv
   if (tuple_inputs.empty()) {
     MS_LOG(EXCEPTION) << "The size of input list or tuple is 0!";
   }
-  auto inputs = py::cast<py::tuple>(input_object);
-  if (py::isinstance<tensor::Tensor>(inputs[0])) {
-    PlantTensorTupleToVector(inputs, op_prim, input_tensors);
+  if (py::isinstance<tensor::Tensor>(tuple_inputs[0])) {
+    PlantTensorTupleToVector(tuple_inputs, op_prim, input_tensors);
   } else {
     ConvertValueTupleToTensor(input_object, input_tensors);
     *tensor_mask = kValueNodeTensorMask;
@@ -458,6 +535,9 @@ void ConvertPyObjectToTensor(const py::object &input_object, const PrimitivePtr 
     double input_value = py::cast<py::float_>(input_object);
     tensor_ptr = std::make_shared<tensor::Tensor>(input_value, kFloat32);
     *tensor_mask = kValueNodeTensorMask;
+  } else if (py::isinstance<py::bool_>(input_object)) {
+    tensor_ptr = std::make_shared<tensor::Tensor>(py::cast<bool>(input_object), kBool);
+    *tensor_mask = kValueNodeTensorMask;
   } else if (py::isinstance<py::int_>(input_object)) {
     tensor_ptr = std::make_shared<tensor::Tensor>(py::cast<int64_t>(input_object), kInt64);
     *tensor_mask = kValueNodeTensorMask;
@@ -473,6 +553,9 @@ void ConvertPyObjectToTensor(const py::object &input_object, const PrimitivePtr 
     return;
   } else if (py::isinstance<py::tuple>(input_object)) {
     ConvertMultiPyObjectToTensor(input_object, op_prim, input_tensors, tensor_mask);
+    return;
+  } else if (py::isinstance<tensor::CSRTensor>(input_object)) {
+    ConvertCSRTensorToTensorList(input_object, op_prim, input_tensors);
     return;
   } else if (py::isinstance<py::none>(input_object)) {
     return;
@@ -490,9 +573,20 @@ void ConstructInputTensor(const OpExecInfoPtr &op_run_info, std::vector<int64_t>
   MS_EXCEPTION_IF_NULL(input_tensors);
   PrimitivePtr op_prim = op_run_info->py_primitive;
   MS_EXCEPTION_IF_NULL(op_prim);
-
+  // Checking whether attr conversion is needed.
   opt::ConstInputToAttrInfoRegister reg;
-  bool reg_exist = opt::ConstInputToAttrInfoRegistry::Instance().GetRegisterByOpName(op_run_info->op_name, &reg);
+  bool reg_exist = false;
+  if (op_run_info->op_name == prim::kPrimCustom->name()) {
+    // Custom op needs to set reg dynamically
+    mindspore::HashSet<size_t> attr_indexes;
+    opt::GetCustomOpAttrIndex(op_prim, &attr_indexes);
+    if (!attr_indexes.empty()) {
+      reg_exist = true;
+      (void)reg.SetConstInputToAttr(attr_indexes);
+    }
+  } else {
+    reg_exist = opt::ConstInputToAttrInfoRegistry::Instance().GetRegisterByOpName(op_run_info->op_name, &reg);
+  }
   if (op_run_info->is_dynamic_shape &&
       dynamic_shape_const_input_to_attr.find(op_run_info->op_name) == dynamic_shape_const_input_to_attr.end()) {
     MS_LOG(DEBUG) << "current node is dynamic shape: " << op_run_info->op_name;
@@ -502,19 +596,32 @@ void ConstructInputTensor(const OpExecInfoPtr &op_run_info, std::vector<int64_t>
   MS_EXCEPTION_IF_NULL(ms_context);
   const auto &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
   if (device_target != kCPUDevice && op_run_info->op_name == prim::kPrimEmbeddingLookup->name()) {
-    reg_exist = false;
+    auto cur_target = GetCurrentDeviceTarget(device_target, op_run_info->py_primitive);
+    if (cur_target != kCPUDevice) {
+      reg_exist = false;
+    }
   }
   // Gather op needs converting const input to attr on GPU device
   if (device_target != kGPUDevice && op_run_info->op_name == prim::kPrimGatherD->name()) {
-    reg_exist = false;
+    auto cur_target = GetCurrentDeviceTarget(device_target, op_run_info->py_primitive);
+    if (cur_target != kGPUDevice) {
+      reg_exist = false;
+    }
   }
-
+  // Get input tensors.
   op_prim->BeginRecordAddAttr();
   size_t input_num = op_run_info->op_inputs.size();
+  if (input_num != op_run_info->inputs_mask.size()) {
+    MS_LOG(EXCEPTION) << "The op input size " << input_num << ", but the size of input mask "
+                      << op_run_info->inputs_mask.size();
+  }
+  std::vector<size_t> input_to_attr_idx;
+  std::vector<string> input_to_attr_name;
   for (size_t index = 0; index < input_num; ++index) {
     // convert const input to attr
     if (reg_exist &&
-        RunOpConvertConstInputToAttr(op_run_info->op_inputs[index], index, op_prim, reg.GetConstInputAttrInfo())) {
+        RunOpConvertConstInputToAttr(op_run_info->op_inputs[index], index, op_prim, reg.GetConstInputAttrInfo(),
+                                     &input_to_attr_idx, &input_to_attr_name)) {
       continue;
     }
     // convert const and tuple input to tensor
@@ -524,6 +631,13 @@ void ConstructInputTensor(const OpExecInfoPtr &op_run_info, std::vector<int64_t>
     op_run_info->inputs_mask[index] = tensor_mask;
     std::vector<int64_t> new_mask(input_tensors->size() - tensors_mask->size(), tensor_mask);
     tensors_mask->insert(tensors_mask->end(), new_mask.begin(), new_mask.end());
+  }
+  bool exec_on_ascend =
+    (op_prim->HasAttr(kAttrPrimitiveTarget) && GetValue<string>(op_prim->GetAttr(kAttrPrimitiveTarget)) == "Ascend") ||
+    ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice;
+  if (!input_to_attr_idx.empty() && exec_on_ascend) {
+    op_prim->set_attr(kAttrInputToAttrIdx, MakeValue(input_to_attr_idx));
+    op_prim->set_attr(kAttrInputToAttrName, MakeValue(input_to_attr_name));
   }
   op_prim->EndRecordAddAttr();
 }
@@ -560,10 +674,17 @@ size_t GetTupleSize(const py::tuple &args) {
 }
 
 void ConvertTupleArg(py::tuple *res, size_t *const index, const py::tuple &arg) {
+  MS_EXCEPTION_IF_NULL(res);
+  MS_EXCEPTION_IF_NULL(index);
+  auto res_size = res->size();
   for (size_t i = 0; i < arg.size(); i++) {
     if (py::isinstance<py::tuple>(arg[i])) {
       ConvertTupleArg(res, index, arg[i]);
     } else {
+      if (*index >= res_size) {
+        MS_LOG(EXCEPTION) << "Convert tuple error, index is greater than tuple size, index " << (*index)
+                          << ", tuple size " << res_size;
+      }
       (*res)[(*index)++] = arg[i];
     }
   }
@@ -577,6 +698,10 @@ py::tuple ConvertArgs(const py::tuple &args) {
     if (py::isinstance<py::tuple>(args[i])) {
       ConvertTupleArg(&res, &index, args[i]);
     } else {
+      if (index >= tuple_size) {
+        MS_LOG(EXCEPTION) << "Convert error, index is greater than tuple size, index " << index << ", tuple size "
+                          << tuple_size;
+      }
       res[index++] = args[i];
     }
   }
@@ -595,58 +720,33 @@ void ResetTopCellInfo(const TopCellInfoPtr &top_cell, const py::args &args) {
   top_cell->set_input_args_id(input_args_id);
 }
 
-void CreateNewTensorsInGradGraph(const TopCellInfoPtr &top_cell, const OpExecInfoPtr &op_exec_info,
-                                 const ValuePtr &added_out, const FuncGraphPtr &ms_func_graph,
-                                 const FuncGraphPtr &grad_graph) {
-  MS_EXCEPTION_IF_NULL(top_cell);
+void RunReplace(const CNodePtr &added_make_tuple, const std::vector<tensor::TensorPtr> &total_output_tensors,
+                const FuncGraphPtr &grad_graph) {
   MS_EXCEPTION_IF_NULL(grad_graph);
-  MS_EXCEPTION_IF_NULL(op_exec_info);
-  MS_EXCEPTION_IF_NULL(ms_func_graph);
-  // Get Added forward nodes.
-  auto merge_node = ms_func_graph->output();
-  MS_EXCEPTION_IF_NULL(merge_node);
-  auto merge_make_tuple = merge_node->cast<CNodePtr>();
-  MS_EXCEPTION_IF_NULL(merge_make_tuple);
-  if (merge_make_tuple->size() != 3) {
-    MS_LOG(EXCEPTION) << "The input size of merge make tuple node should be 3, but it is: " << merge_make_tuple->size();
-  }
-  const auto &added_forward_node = merge_make_tuple->input(2);
-  MS_EXCEPTION_IF_NULL(added_forward_node);
-  if (added_forward_node->isa<ValueNode>()) {
-    MS_LOG(DEBUG) << "The added forward make tuple node info: " << added_forward_node->DebugString();
-    std::vector<tensor::TensorPtr> total_output_tensors;
-    TensorValueToTensor(added_out, &total_output_tensors);
-    top_cell->set_op_info_with_ms_func_forward_tensors(op_exec_info->op_info, total_output_tensors);
-    return;
-  }
-  auto added_make_tuple = added_forward_node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(added_make_tuple);
-  MS_LOG(DEBUG) << "The added forward make tuple node info: " << added_make_tuple->DebugString();
-
-  // Get Added forward output tensors when forward func graph has been ran.
-  std::vector<tensor::TensorPtr> total_output_tensors;
-  TensorValueToTensor(added_out, &total_output_tensors);
-  // Create new output tensors for forward nodes, it will also work in grad graph with same value node.
   size_t index = 0;
   for (size_t i = 1; i < added_make_tuple->size(); ++i) {
-    auto cnode = added_make_tuple->input(i)->cast<CNodePtr>();
+    const auto &input_i = added_make_tuple->input(i);
+    MS_EXCEPTION_IF_NULL(input_i);
+    auto cnode = input_i->cast<CNodePtr>();
     MS_EXCEPTION_IF_NULL(cnode);
-    MS_LOG(DEBUG) << "Create New output tensor for cnode: " << cnode->DebugString();
+    MS_LOG(DEBUG) << "Replace new output tensors for cnode: " << cnode->DebugString();
     auto output_vnode = cnode->forward().first;
     MS_EXCEPTION_IF_NULL(output_vnode);
     grad_graph->AddValueNode(output_vnode);
     MS_LOG(DEBUG) << "Original output value node: " << output_vnode << " info: " << output_vnode->ToString();
-    // Create new tensor.
     size_t output_num = AnfAlgo::GetOutputTensorNum(cnode);
     if (index + output_num > total_output_tensors.size()) {
       MS_LOG(EXCEPTION) << "The size of total_output_tensors: " << total_output_tensors.size()
                         << ", but the current index: " << index << ", output num: " << output_num;
     }
+    // Get new tensors.
     std::vector<ValuePtr> new_values;
-    std::for_each(total_output_tensors.begin() + index, total_output_tensors.begin() + index + output_num,
-                  [&new_values](const auto &tensor) { new_values.push_back(tensor); });
+    for (size_t j = index; j < index + output_num; ++j) {
+      new_values.push_back(total_output_tensors[j]);
+    }
     index = index + output_num;
-    // Create new value.
+    // Replace new tensors.
     if (output_num == 1) {
       output_vnode->set_value(new_values[0]);
     } else if (output_num > 1) {
@@ -656,12 +756,46 @@ void CreateNewTensorsInGradGraph(const TopCellInfoPtr &top_cell, const OpExecInf
     }
     MS_LOG(DEBUG) << "New output value node: " << output_vnode << " info: " << output_vnode->ToString();
   }
-
   // Save op info with new tensors for current running ms_function func graph.
   if (index != total_output_tensors.size()) {
     MS_LOG(EXCEPTION) << "The index: " << index
                       << " should be equal to the size of total_output_tensors: " << total_output_tensors.size();
   }
+}
+
+void ReplaceNewTensorsInGradGraph(const TopCellInfoPtr &top_cell, const OpExecInfoPtr &op_exec_info,
+                                  const ValuePtr &added_out, const FuncGraphPtr &ms_func_graph,
+                                  const FuncGraphPtr &grad_graph) {
+  MS_EXCEPTION_IF_NULL(top_cell);
+  MS_EXCEPTION_IF_NULL(grad_graph);
+  MS_EXCEPTION_IF_NULL(op_exec_info);
+  MS_EXCEPTION_IF_NULL(ms_func_graph);
+  // Get added forward nodes.
+  auto merge_node = ms_func_graph->output();
+  MS_EXCEPTION_IF_NULL(merge_node);
+  auto merge_make_tuple = merge_node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(merge_make_tuple);
+  constexpr size_t merge_output_size = 3;
+  if (merge_make_tuple->size() != merge_output_size) {
+    MS_LOG(EXCEPTION) << "The input size of merge make tuple node should be 3, but it is: " << merge_make_tuple->size();
+  }
+  constexpr size_t added_output_index = 2;
+  const auto &added_forward_node = merge_make_tuple->input(added_output_index);
+  MS_EXCEPTION_IF_NULL(added_forward_node);
+  if (added_forward_node->isa<ValueNode>()) {
+    MS_LOG(DEBUG) << "The added forward output node is value node: " << added_forward_node->DebugString();
+    std::vector<tensor::TensorPtr> total_output_tensors;
+    TensorValueToTensor(added_out, &total_output_tensors);
+    top_cell->set_op_info_with_ms_func_forward_tensors(op_exec_info->op_info, total_output_tensors);
+    return;
+  }
+  // Replace new output tensors for forward nodes, it will also work in grad graph with same value node.
+  auto added_make_tuple = added_forward_node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(added_make_tuple);
+  MS_LOG(DEBUG) << "The added forward make tuple node info: " << added_make_tuple->DebugString();
+  std::vector<tensor::TensorPtr> total_output_tensors;
+  TensorValueToTensor(added_out, &total_output_tensors);
+  RunReplace(added_make_tuple, total_output_tensors, grad_graph);
   top_cell->set_op_info_with_ms_func_forward_tensors(op_exec_info->op_info, total_output_tensors);
 }
 
@@ -682,36 +816,52 @@ void SaveOpInfo(const TopCellInfoPtr &top_cell, const std::string &op_info,
 
 void UpdateTensorInfo(const tensor::TensorPtr &new_tensor, const std::vector<tensor::TensorPtr> &pre_tensors) {
   MS_EXCEPTION_IF_NULL(new_tensor);
-  if (pre_tensors.empty()) {
-    MS_LOG(EXCEPTION) << "The size of pre tensors is empty.";
+  if (pre_tensors.empty() || new_tensor->device_address() == nullptr) {
+    MS_LOG(DEBUG) << "The number of pre tensors is zero or the device address of new tensor is nullptr.";
+    return;
   }
-
   const auto &device_target = MsContext::GetInstance()->get_param<std::string>(MS_CTX_DEVICE_TARGET);
   for (auto &pre_tensor : pre_tensors) {
     MS_EXCEPTION_IF_NULL(pre_tensor);
-    MS_LOG(DEBUG) << "Replace Old tensor " << pre_tensor.get() << " id " << pre_tensor->id()
-                  << " device_address: " << pre_tensor->device_address() << " shape and type "
-                  << pre_tensor->GetShapeAndDataTypeInfo() << " with New tensor " << new_tensor.get() << " id "
+    MS_LOG(DEBUG) << "Replace Old tensor id " << pre_tensor->id() << " device_address: " << pre_tensor->device_address()
+                  << " shape and type " << pre_tensor->GetShapeAndDataTypeInfo() << " with New tensor id "
                   << new_tensor->id() << " device_address " << new_tensor->device_address() << " shape and dtype "
                   << new_tensor->GetShapeAndDataTypeInfo();
     pre_tensor->set_shape(new_tensor->shape());
     pre_tensor->set_data_type(new_tensor->data_type());
-    if (device_target != kCPUDevice) {
+    auto device_address = std::dynamic_pointer_cast<device::DeviceAddress>(new_tensor->device_address());
+    MS_EXCEPTION_IF_NULL(device_address);
+    if (device_target != kCPUDevice && device_address->DeviceType() != device::DeviceAddressType::kCPU) {
       pre_tensor->set_device_address(new_tensor->device_address());
       continue;
+    }
+    for (auto &item : kMindRtBackends) {
+      MS_EXCEPTION_IF_NULL(item.second);
+      item.second->SyncLazyTasks();
     }
     // Replace data in device address when run in CPU device.
     if (pre_tensor->device_address() != nullptr) {
       auto old_device_address = std::dynamic_pointer_cast<device::DeviceAddress>(pre_tensor->device_address());
+      MS_EXCEPTION_IF_NULL(old_device_address);
       auto new_device_address = std::dynamic_pointer_cast<device::DeviceAddress>(new_tensor->device_address());
+      MS_EXCEPTION_IF_NULL(new_device_address);
       auto old_ptr = old_device_address->GetMutablePtr();
       MS_EXCEPTION_IF_NULL(old_ptr);
       auto new_ptr = new_device_address->GetPtr();
       MS_EXCEPTION_IF_NULL(new_ptr);
-      auto ret = memcpy_s(old_ptr, old_device_address->GetSize(), new_ptr, new_device_address->GetSize());
-      if (ret != EOK) {
-        MS_LOG(EXCEPTION) << "Memory copy failed. ret: " << ret;
+      MS_EXCEPTION_IF_CHECK_FAIL(old_device_address->GetSize() == new_device_address->GetSize(), "Size not equal");
+      if (old_device_address->GetSize() < SECUREC_MEM_MAX_LEN) {
+        auto ret_code = memcpy_s(old_ptr, old_device_address->GetSize(), new_ptr, new_device_address->GetSize());
+        MS_EXCEPTION_IF_CHECK_FAIL(ret_code == EOK, "Memory copy failed, ret code: " + std::to_string(ret_code));
+      } else {
+        auto ret_code = std::memcpy(old_ptr, new_ptr, old_device_address->GetSize());
+        MS_EXCEPTION_IF_CHECK_FAIL(ret_code == old_ptr, "Memory copy failed");
       }
+    } else {
+      pre_tensor->set_device_address(device_address);
+      pre_tensor->data_sync();
+      pre_tensor->set_device_address(nullptr);
+      pre_tensor->set_sync_status(kNeedSyncHostToDevice);
     }
   }
 }
@@ -754,6 +904,36 @@ py::object GetDstType(const TypeId &type_id) {
   MS_EXCEPTION_IF_NULL(value);
   return py::cast(value);
 }
+
+bool IsPyObjTypeInvalid(const py::object &obj) {
+  return !py::isinstance<tensor::Tensor>(obj) && !py::isinstance<tensor::CSRTensor>(obj) &&
+         !py::isinstance<py::int_>(obj) && !py::isinstance<py::float_>(obj);
+}
+
+// Shallow Copy Value and change shape
+ValuePtr ShallowCopyValue(const OpExecInfoPtr &op_exec_info, const ValuePtr &value) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
+  MS_EXCEPTION_IF_NULL(value);
+  auto tensor_abs = op_exec_info->abstract;
+  if (tensor_abs->isa<abstract::AbstractRef>()) {
+    tensor_abs = tensor_abs->cast<abstract::AbstractRefPtr>()->CloneAsTensor();
+  }
+  auto new_shape = tensor_abs->BuildShape()->cast<abstract::ShapePtr>();
+  MS_EXCEPTION_IF_NULL(new_shape);
+  if (value->isa<mindspore::tensor::Tensor>()) {
+    auto tensor_value = value->cast<mindspore::tensor::TensorPtr>();
+    return std::make_shared<mindspore::tensor::Tensor>(tensor_value->data_type(), new_shape->shape(),
+                                                       tensor_value->data_c(), tensor_value->Size());
+  } else if (value->isa<ValueTuple>()) {
+    std::vector<ValuePtr> values;
+    auto value_tuple = value->cast<ValueTuplePtr>();
+    (void)std::transform(value_tuple->value().begin(), value_tuple->value().end(), std::back_inserter(values),
+                         [op_exec_info](const ValuePtr &elem) { return ShallowCopyValue(op_exec_info, elem); });
+    return std::make_shared<ValueTuple>(values);
+  } else {
+    return value;
+  }
+}
 }  // namespace
 
 py::object RealRunOp(const py::args &args) {
@@ -786,7 +966,9 @@ bool TopCellInfo::IsSubCell(const std::string &cell_id) const {
 
 void TopCellInfo::ClearDeviceMemory() {
   MS_LOG(DEBUG) << "Clear device memory in value nodes of bprop graph, top cell: " << cell_id_;
-  const auto &device_target = MsContext::GetInstance()->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  const auto &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
   if (device_target == kCPUDevice) {
     MS_LOG(DEBUG) << "No need to clear device address when run in CPU device.";
     return;
@@ -794,18 +976,21 @@ void TopCellInfo::ClearDeviceMemory() {
   k_pynative_cell_ptr_ = nullptr;
   // Get all tensors obj in value node of running graph
   std::vector<tensor::TensorPtr> tensors_in_bprop_graph;
+  MS_EXCEPTION_IF_NULL(resource_);
   const auto &bprop_graph = resource_->func_graph();
   MS_EXCEPTION_IF_NULL(bprop_graph);
   const auto &value_node_list = bprop_graph->value_nodes();
   for (const auto &elem : value_node_list) {
-    auto value_node = elem.first->cast<ValueNodePtr>();
+    auto &node = elem.first;
+    MS_EXCEPTION_IF_NULL(node);
+    auto value_node = node->cast<ValueNodePtr>();
     MS_EXCEPTION_IF_NULL(value_node);
     TensorValueToTensor(value_node->value(), &tensors_in_bprop_graph);
   }
-  for (const auto &elem : tensors_in_bprop_graph) {
-    MS_EXCEPTION_IF_NULL(elem);
-    MS_LOG(DEBUG) << "Clear device address for tensor: " << elem->ToString();
-    elem->set_device_address(nullptr);
+  for (const auto &tensor : tensors_in_bprop_graph) {
+    MS_EXCEPTION_IF_NULL(tensor);
+    MS_LOG(DEBUG) << "Clear device address for tensor: " << tensor->ToString();
+    tensor->set_device_address(nullptr);
   }
 }
 
@@ -822,9 +1007,11 @@ void TopCellInfo::Clear() {
   all_op_info_.clear();
   resource_ = nullptr;
   df_builder_ = nullptr;
+  fg_ = nullptr;
   k_pynative_cell_ptr_ = nullptr;
   graph_info_map_.clear();
   sub_cell_list_.clear();
+  outputs_id_.clear();
   op_info_with_tensor_id_.clear();
   tensor_id_with_tensor_object_.clear();
   op_info_with_ms_func_forward_tensors_.clear();
@@ -860,6 +1047,7 @@ OpExecInfoPtr ForwardExecutor::GenerateOpExecInfo(const py::args &args) {
   const auto &op_exec_info = std::make_shared<OpExecInfo>();
   const auto &op_name = py::cast<std::string>(args[PY_NAME]);
   op_exec_info->op_name = op_name;
+  op_exec_info->is_nop_prim = false;
 
   const auto &adapter = py::cast<PrimitivePyAdapterPtr>(args[PY_PRIM]);
   MS_EXCEPTION_IF_NULL(adapter);
@@ -881,7 +1069,7 @@ OpExecInfoPtr ForwardExecutor::GenerateOpExecInfo(const py::args &args) {
 void ForwardExecutor::SetCastForInputs(const OpExecInfoPtr &op_exec_info) {
   MS_EXCEPTION_IF_NULL(op_exec_info);
   // No need cast self
-  if (op_exec_info->op_name == prim::kPrimCast->name()) {
+  if (op_exec_info->op_name == prim::kPrimCast->name() || op_exec_info->is_nop_prim) {
     return;
   }
 
@@ -892,6 +1080,8 @@ void ForwardExecutor::SetCastForInputs(const OpExecInfoPtr &op_exec_info) {
 }
 
 void ForwardExecutor::RunMixedPrecisionCastOp(const OpExecInfoPtr &op_exec_info, py::object *ret) {
+  MS_EXCEPTION_IF_NULL(ret);
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   py::tuple res = RunOpWithInitBackendPolicy(op_exec_info);
   if (res.size() == 1) {
     *ret = res[0];
@@ -900,10 +1090,30 @@ void ForwardExecutor::RunMixedPrecisionCastOp(const OpExecInfoPtr &op_exec_info,
   *ret = std::move(res);
 }
 
+void ForwardExecutor::SetNonCostantValueAbs(const AbstractBasePtr &abs, size_t i, const std::string &id) {
+  MS_EXCEPTION_IF_NULL(abs);
+  if (abs->isa<abstract::AbstractTensor>()) {
+    abs->set_value(kAnyValue);
+  } else if (abs->isa<abstract::AbstractTuple>() || abs->isa<abstract::AbstractList>()) {
+    const auto &abs_seq = abs->cast<abstract::AbstractSequencePtr>();
+    MS_EXCEPTION_IF_NULL(abs_seq);
+    for (auto &item : abs_seq->elements()) {
+      MS_EXCEPTION_IF_NULL(item);
+      if (item->isa<abstract::AbstractTensor>()) {
+        item->set_value(kAnyValue);
+      }
+    }
+  }
+  MS_LOG(DEBUG) << "Set " << i << "th abs " << abs->ToString();
+  node_abs_map_[id] = abs;
+}
+
 void ForwardExecutor::GetInputsArgsSpec(const OpExecInfoPtr &op_exec_info,
                                         abstract::AbstractBasePtrList *args_spec_list) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   MS_EXCEPTION_IF_NULL(args_spec_list);
   auto prim = op_exec_info->py_primitive;
+  MS_EXCEPTION_IF_NULL(prim);
   for (size_t i = 0; i < op_exec_info->op_inputs.size(); i++) {
     abstract::AbstractBasePtr abs = nullptr;
     const auto &obj = op_exec_info->op_inputs[i];
@@ -923,19 +1133,7 @@ void ForwardExecutor::GetInputsArgsSpec(const OpExecInfoPtr &op_exec_info,
     if (abs == nullptr || is_const_prim || is_const_input) {
       abs = PyObjToValue(obj)->ToAbstract();
       if (!is_const_prim && !is_const_input) {
-        MS_EXCEPTION_IF_NULL(abs);
-        if (abs->isa<abstract::AbstractTensor>()) {
-          abs->set_value(kAnyValue);
-        } else if (abs->isa<abstract::AbstractTuple>() || abs->isa<abstract::AbstractList>()) {
-          const auto &abs_seq = abs->cast<abstract::AbstractSequeuePtr>();
-          for (auto &item : abs_seq->elements()) {
-            if (item->isa<abstract::AbstractTensor>()) {
-              item->set_value(kAnyValue);
-            }
-          }
-        }
-        MS_LOG(DEBUG) << "Set " << i << "th abs " << abs->ToString();
-        node_abs_map_[id] = abs;
+        SetNonCostantValueAbs(abs, i, id);
       }
     }
     args_spec_list->emplace_back(abs);
@@ -943,6 +1141,7 @@ void ForwardExecutor::GetInputsArgsSpec(const OpExecInfoPtr &op_exec_info,
 }
 
 CNodePtr ForwardExecutor::ConstructForwardGraph(const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   auto prim = op_exec_info->py_primitive;
   std::vector<AnfNodePtr> inputs;
   std::vector<int64_t> op_masks;
@@ -990,6 +1189,7 @@ void ForwardExecutor::GetOpOutputAbstract(const OpExecInfoPtr &op_exec_info,
   MS_EXCEPTION_IF_NULL(prim_cache_hit);
   auto op_name = op_exec_info->op_name;
   auto prim = op_exec_info->py_primitive;
+  MS_EXCEPTION_IF_NULL(prim);
 
   AbsCacheKey key{prim->name(), prim->Hash(), prim->attrs()};
   auto temp = prim_abs_list_.find(key);
@@ -1023,22 +1223,37 @@ void ForwardExecutor::GetOpOutputAbstract(const OpExecInfoPtr &op_exec_info,
   }
 }
 
+void ForwardExecutor::DoNopOutput(const OpExecInfoPtr &op_exec_info, ValuePtr *out_real_value) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
+  // Get First input
+  if (op_exec_info->op_inputs.empty()) {
+    MS_LOG(EXCEPTION) << "Inputs of " << op_exec_info->op_name << " is empty";
+  }
+  const auto &obj = op_exec_info->op_inputs[0];
+  if (!py::isinstance<tensor::Tensor>(obj)) {
+    MS_LOG(EXCEPTION) << "First input of " << op_exec_info->op_name << " must be a tensor";
+  }
+  const auto &tensor_ptr = py::cast<tensor::TensorPtr>(obj);
+  *out_real_value = ShallowCopyValue(op_exec_info, tensor_ptr);
+  MS_LOG(DEBUG) << "New copy value is " << (*out_real_value)->ToString();
+}
+
 void ForwardExecutor::GetOpOutput(const OpExecInfoPtr &op_exec_info,
                                   const abstract::AbstractBasePtrList &args_spec_list, const CNodePtr &cnode,
                                   bool prim_cache_hit, py::object *ret) {
   MS_EXCEPTION_IF_NULL(op_exec_info);
-  auto prim = op_exec_info->py_primitive;
+  const auto &prim = op_exec_info->py_primitive;
   MS_EXCEPTION_IF_NULL(prim);
   // Infer output value by constant folding
-  py::dict output = abstract::ConvertAbstractToPython(op_exec_info->abstract);
-  if (!output["value"].is_none()) {
-    *ret = output["value"];
-    grad()->RecordGradOpInfo(op_exec_info, PyObjToValue(*ret));
+  MS_EXCEPTION_IF_NULL(ret);
+  py::dict output = abstract::ConvertAbstractToPython(op_exec_info->abstract, true);
+  if (!output[ATTR_VALUE].is_none()) {
+    *ret = output[ATTR_VALUE];
+    grad()->RecordGradOpInfo(op_exec_info);
     return;
-  }
-  if (prim->is_const_prim()) {
+  } else if (prim->is_const_prim()) {
     *ret = py::cast("");
-    grad()->RecordGradOpInfo(op_exec_info, PyObjToValue(*ret));
+    grad()->RecordGradOpInfo(op_exec_info);
     return;
   }
 
@@ -1049,33 +1264,39 @@ void ForwardExecutor::GetOpOutput(const OpExecInfoPtr &op_exec_info,
     out[args_spec_list].abs = op_exec_info->abstract;
     out[args_spec_list].attrs = prim->evaluate_added_attrs();
   }
-  // run op with selected backend
-  auto result = RunOpWithInitBackendPolicy(op_exec_info);
-  py::object out_real = result;
-  if (result.size() == 1 && op_exec_info->abstract != nullptr &&
-      !op_exec_info->abstract->isa<abstract::AbstractSequeue>()) {
-    out_real = result[0];
-  }
-  // get output value
+
+  // Run op with selected backend, nop is no need run backend
   ValuePtr out_real_value = nullptr;
-  if (grad()->grad_flag()) {
-    out_real_value = PyObjToValue(out_real);
+  if (op_exec_info->is_nop_prim) {
+    DoNopOutput(op_exec_info, &out_real_value);
+    *ret = BaseRefToPyData(out_real_value);
+  } else {
+    auto result = RunOpWithInitBackendPolicy(op_exec_info);
+    py::object out_real = result;
+    if (result.size() == 1 && op_exec_info->abstract != nullptr &&
+        !op_exec_info->abstract->isa<abstract::AbstractSequence>()) {
+      out_real = result[0];
+    }
+    // get output value
+    if (grad()->grad_flag()) {
+      out_real_value = PyObjToValue(out_real);
+    }
+    *ret = out_real;
   }
-  // Save cnode info and build grad graph
+
   if (grad()->need_construct_graph() && !grad()->in_cell_with_custom_bprop_()) {
     MS_EXCEPTION_IF_NULL(cnode);
-    const auto &obj_id = GetId(out_real);
+    const auto &obj_id = GetId(*ret);
     cnode->set_abstract(op_exec_info->abstract);
     node_abs_map_[obj_id] = op_exec_info->abstract;
-    grad()->SaveOutputNodeMap(obj_id, out_real, cnode);
+    grad()->SaveOutputNodeMap(obj_id, *ret, cnode);
     grad()->DoOpGrad(op_exec_info, cnode, out_real_value);
   } else {
     node_abs_map_.clear();
   }
   // Record op info for judge whether the construct of cell has been changed
-  grad()->RecordGradOpInfo(op_exec_info, out_real_value);
+  grad()->RecordGradOpInfo(op_exec_info);
   grad()->UpdateForwardTensorInfoInBpropGraph(op_exec_info, out_real_value);
-  *ret = out_real;
 }
 
 py::object ForwardExecutor::DoAutoCast(const py::object &arg, const TypeId &type_id, const std::string &op_name,
@@ -1154,13 +1375,16 @@ py::object ForwardExecutor::DoParamMixPrecisionCastTuple(bool *is_cast, const py
   return std::move(result);
 }
 
-void ForwardExecutor::DoSignatrueCast(const PrimitivePyPtr &prim,
-                                      const std::unordered_map<SignatureEnumDType, TypeId> &dst_type,
+void ForwardExecutor::DoSignatureCast(const PrimitivePyPtr &prim,
+                                      const mindspore::HashMap<SignatureEnumDType, TypeId> &dst_type,
                                       const std::vector<SignatureEnumDType> &dtypes,
                                       const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(prim);
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   const auto &signature = prim->signatures();
   auto &input_args = op_exec_info->op_inputs;
-  for (size_t i = 0; i < input_args.size(); ++i) {
+  size_t input_args_size = input_args.size();
+  for (size_t i = 0; i < input_args_size; ++i) {
     // No need to implicit cast if no dtype.
     if (dtypes.empty() || dtypes[i] == SignatureEnumDType::kDTypeEmptyDefaultValue) {
       continue;
@@ -1173,6 +1397,10 @@ void ForwardExecutor::DoSignatrueCast(const PrimitivePyPtr &prim,
     const auto &obj = input_args[i];
     auto sig = SignatureEnumRW::kRWDefault;
     if (!signature.empty()) {
+      if (i >= signature.size()) {
+        MS_EXCEPTION(ValueError) << "Signature size is not equal to index, signature size " << signature.size()
+                                 << ", index " << i;
+      }
       sig = signature[i].rw;
     }
     TypeId arg_type_id = kTypeUnknown;
@@ -1193,11 +1421,11 @@ void ForwardExecutor::DoSignatrueCast(const PrimitivePyPtr &prim,
       continue;
     }
 
-    if (!py::isinstance<tensor::Tensor>(obj) && !py::isinstance<py::int_>(obj) && !py::isinstance<py::float_>(obj)) {
-      MS_EXCEPTION(TypeError) << "For '" << prim->name() << "', the " << i
-                              << "th input is a not support implicit conversion type: "
-                              << py::cast<std::string>(obj.attr("__class__").attr("__name__")) << ", and the value is "
-                              << py::cast<py::str>(obj) << ".";
+    if (IsPyObjTypeInvalid(obj)) {
+      MS_EXCEPTION(TypeError) << "For '" << prim->name() << "', the " << i << "th input " << signature[i].name
+                              << " is a not support implicit conversion. "
+                              << "Its type is " << py::cast<std::string>(obj.attr("__class__").attr("__name__"))
+                              << ", and the value is " << py::cast<py::str>(obj) << ". Only support Tensor or Scalar.";
     }
     py::object cast_output = DoAutoCast(input_args[i], it->second, op_exec_info->op_name, i);
     input_args[i] = cast_output;
@@ -1205,12 +1433,18 @@ void ForwardExecutor::DoSignatrueCast(const PrimitivePyPtr &prim,
 }
 
 void ForwardExecutor::SetTensorMixPrecisionCast(const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   const auto &prim = op_exec_info->py_primitive;
+  MS_EXCEPTION_IF_NULL(prim);
   const auto &signature = prim->signatures();
   for (size_t i = 0; i < op_exec_info->op_inputs.size(); i++) {
     const auto &obj = op_exec_info->op_inputs[i];
     auto sig = SignatureEnumRW::kRWDefault;
     if (!signature.empty()) {
+      if (i >= signature.size()) {
+        MS_EXCEPTION(ValueError) << "Signature size is not equal to index, signature size " << signature.size()
+                                 << ", index " << i;
+      }
       sig = signature[i].rw;
     }
     MS_LOG(DEBUG) << "Check mix precision " << op_exec_info->op_name << " input " << i;
@@ -1237,6 +1471,7 @@ void ForwardExecutor::SetTensorMixPrecisionCast(const OpExecInfoPtr &op_exec_inf
 }
 
 void ForwardExecutor::SetImplicitCast(const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   const auto &prim = op_exec_info->py_primitive;
   MS_EXCEPTION_IF_NULL(prim);
   const auto &it = implicit_cast_map_.find(prim->name());
@@ -1256,13 +1491,13 @@ void ForwardExecutor::SetImplicitCast(const OpExecInfoPtr &op_exec_info) {
                                << "signature size " << sig_size;
     }
     std::vector<SignatureEnumDType> dtypes;
-    std::unordered_map<SignatureEnumDType, std::vector<size_t>> type_indexes;
+    mindspore::HashMap<SignatureEnumDType, std::vector<size_t>> type_indexes;
     bool has_dtype_sig = GetSignatureType(op_exec_info->py_primitive, &dtypes);
     if (has_dtype_sig) {
-      std::unordered_map<SignatureEnumDType, TypeId> dst_type;
+      mindspore::HashMap<SignatureEnumDType, TypeId> dst_type;
       GetTypeIndex(dtypes, &type_indexes);
       GetDstType(op_exec_info->op_inputs, type_indexes, &dst_type);
-      DoSignatrueCast(op_exec_info->py_primitive, dst_type, dtypes, op_exec_info);
+      DoSignatureCast(op_exec_info->py_primitive, dst_type, dtypes, op_exec_info);
     }
     PrimSignature sig_value{has_dtype_sig, dtypes, type_indexes};
     implicit_cast_map_[prim->name()] = sig_value;
@@ -1272,9 +1507,9 @@ void ForwardExecutor::SetImplicitCast(const OpExecInfoPtr &op_exec_info) {
       return;
     }
     MS_LOG(DEBUG) << "Do signature for " << op_exec_info->op_name << " with cache";
-    std::unordered_map<SignatureEnumDType, TypeId> dst_type;
+    mindspore::HashMap<SignatureEnumDType, TypeId> dst_type;
     GetDstType(op_exec_info->op_inputs, it->second.type_indexes, &dst_type);
-    DoSignatrueCast(op_exec_info->py_primitive, dst_type, it->second.dtypes, op_exec_info);
+    DoSignatureCast(op_exec_info->py_primitive, dst_type, it->second.dtypes, op_exec_info);
   }
 }
 
@@ -1291,6 +1526,7 @@ AnfNodePtr GradExecutor::GetInput(const py::object &obj, bool op_mask) {
     }
     const auto &param_name = py::cast<std::string>(name_attr);
     auto df_builder = top_cell()->df_builder();
+    MS_EXCEPTION_IF_NULL(df_builder);
     auto graph_info = top_cell()->graph_info_map().at(df_builder);
     MS_EXCEPTION_IF_NULL(graph_info);
     if (graph_info->params.find(obj_id) == graph_info->params.end()) {
@@ -1301,18 +1537,18 @@ AnfNodePtr GradExecutor::GetInput(const py::object &obj, bool op_mask) {
       free_param->set_default_param(value);
       MS_LOG(DEBUG) << "Top graph set free parameter " << obj_id;
       SetParamNodeMapInGraphInfoMap(df_builder, obj_id, free_param);
-      SetParamNodeMapInGraphInfoMap(curr_g_, obj_id, free_param);
+      SetParamNodeMapInGraphInfoMap(curr_g(), obj_id, free_param);
       SetNodeMapInGraphInfoMap(df_builder, obj_id, free_param);
-      SetNodeMapInGraphInfoMap(curr_g_, obj_id, free_param);
+      SetNodeMapInGraphInfoMap(curr_g(), obj_id, free_param);
       return free_param;
     }
     node = graph_info->params.at(obj_id);
     MS_EXCEPTION_IF_NULL(node);
-    MS_LOG(DEBUG) << "Get input param node " << node->ToString() << " " << obj_id;
+    MS_LOG(DEBUG) << "Get input param node " << node->ToString() << ", obj id " << obj_id;
     return node;
   }
 
-  auto curr_graph_info = top_cell()->graph_info_map().at(curr_g_);
+  auto curr_graph_info = top_cell()->graph_info_map().at(curr_g());
   MS_EXCEPTION_IF_NULL(curr_graph_info);
   if (curr_graph_info->node_map.find(obj_id) != curr_graph_info->node_map.end()) {
     // op(x, y)
@@ -1334,8 +1570,8 @@ AnfNodePtr GradExecutor::GetInput(const py::object &obj, bool op_mask) {
     for (size_t i = 0; i < tuple_size; i++) {
       args.emplace_back(GetInput(tuple[i], false));
     }
-    auto cnode = curr_g_->NewCNode(args);
-    SetNodeMapInGraphInfoMap(curr_g_, GetId(obj), cnode);
+    auto cnode = curr_g()->NewCNode(args);
+    SetNodeMapInGraphInfoMap(curr_g(), GetId(obj), cnode);
     node = cnode;
   } else {
     node = MakeValueNode(obj, obj_id);
@@ -1344,63 +1580,125 @@ AnfNodePtr GradExecutor::GetInput(const py::object &obj, bool op_mask) {
                   : MS_LOG(DEBUG) << "Get input node " << node->ToString() << ", id " << obj_id;
   return node;
 }
+
 AnfNodePtr GradExecutor::GetObjNode(const py::object &obj, const std::string &obj_id) {
-  auto graph_info = top_cell()->graph_info_map().at(curr_g_);
+  auto graph_info = top_cell()->graph_info_map().at(curr_g());
   MS_EXCEPTION_IF_NULL(graph_info);
+  if (graph_info->node_map.find(obj_id) == graph_info->node_map.end()) {
+    // A tuple returns in this case: x = op1, y = op2, return (x, y)
+    // or a constant returns in this case
+    auto make_tuple = CreateMakeTupleNode(obj, obj_id);
+    if (make_tuple == nullptr) {
+      MS_LOG(DEBUG) << "Create value node for obj id: " << obj_id;
+      return MakeValueNode(obj, obj_id);
+    }
+    return make_tuple;
+  }
+  // single output CNode
   const auto &out = graph_info->node_map.at(obj_id);
   if (out.second.size() == 1 && out.second[0] == -1) {
     return out.first;
   }
-  MS_LOG(DEBUG) << "Output size " << out.second.size();
-
   // Params node
   if (graph_info->params.find(obj_id) != graph_info->params.end()) {
     auto para_node = out.first;
     for (auto &v : out.second) {
       std::vector<AnfNodePtr> tuple_get_item_inputs{NewValueNode(prim::kPrimTupleGetItem), para_node, NewValueNode(v)};
-      para_node = curr_g_->NewCNode(tuple_get_item_inputs);
+      para_node = curr_g()->NewCNode(tuple_get_item_inputs);
     }
     return para_node;
   }
-
-  // Normal node
-  auto node = out.first->cast<CNodePtr>();
-  MS_EXCEPTION_IF_NULL(node);
-  auto abs = node->abstract();
-  ValuePtr out_obj = nullptr;
-  if (node->forward().first != nullptr) {
-    out_obj = node->forward().first->value();
-  } else {
-    out_obj = PyObjToValue(obj);
-  }
-  for (const auto idx : out.second) {
-    std::vector<AnfNodePtr> tuple_get_item_inputs{NewValueNode(prim::kPrimTupleGetItem), node, NewValueNode(idx)};
-    node = curr_g_->NewCNode(tuple_get_item_inputs);
-    if (out_obj->isa<ValueTuple>()) {
-      node->add_input_value(out_obj, "");
-      node->add_input_value(MakeValue(idx), "");
-      out_obj = (*out_obj->cast<ValueTuplePtr>())[static_cast<size_t>(idx)];
-      node->set_forward(NewValueNode(out_obj), "");
-    }
-    if (abs != nullptr && abs->isa<abstract::AbstractTuple>()) {
-      auto prim_abs = dyn_cast<abstract::AbstractTuple>(abs)->elements()[static_cast<size_t>(idx)];
-      MS_LOG(DEBUG) << "Set tuple getitem abs " << prim_abs->ToString();
-      node->set_abstract(prim_abs);
-    }
-  }
-  if (node->abstract() != nullptr) {
-    forward()->node_abs_map()[obj_id] = node->abstract();
-  }
-  MS_LOG(DEBUG) << "GetObjNode output " << node->DebugString();
-  return node;
+  // Create tuple get item node for multiple output CNode
+  return CreateTupleGetItemNode(obj_id);
 }
 
 AnfNodePtr GradExecutor::MakeValueNode(const py::object &obj, const std::string &obj_id) {
   ValuePtr converted_ret = nullptr;
-  parse::ConvertData(obj, &converted_ret);
+  if (!parse::ConvertData(obj, &converted_ret)) {
+    MS_LOG(EXCEPTION) << "Failed to convert obj to value node.";
+  }
   auto node = NewValueNode(converted_ret);
-  SetNodeMapInGraphInfoMap(curr_g_, obj_id, node);
+  SetNodeMapInGraphInfoMap(curr_g(), obj_id, node);
   return node;
+}
+
+AnfNodePtr GradExecutor::CreateMakeTupleNode(const py::object &obj, const std::string &obj_id) {
+  if (!py::isinstance<py::tuple>(obj) && !py::isinstance<py::list>(obj)) {
+    MS_LOG(DEBUG) << "The input obj is not a tuple or list.";
+    return nullptr;
+  }
+  // get input node and value
+  const auto &obj_tuple = obj.cast<py::tuple>();
+  ValuePtrList input_args;
+  std::vector<size_t> value_index;
+  std::vector<AnfNodePtr> inputs{NewValueNode(prim::kPrimMakeTuple)};
+  for (size_t i = 0; i < obj_tuple.size(); ++i) {
+    const auto &v = PyObjToValue(obj_tuple[i]);
+    // Graph have no define for grad
+    if (v->isa<FuncGraph>()) {
+      continue;
+    }
+    value_index.emplace_back(i);
+    input_args.emplace_back(v);
+    (void)CreateMakeTupleNode(obj_tuple[i], GetId(obj_tuple[i]));
+    inputs.emplace_back(GetInput(obj_tuple[i], false));
+  }
+  py::tuple value_outs(value_index.size());
+  for (size_t i = 0; i < value_index.size(); ++i) {
+    value_outs[i] = obj_tuple[value_index[i]];
+  }
+  // create make tuple node and record in graph info map
+  auto cnode = curr_g()->NewCNode(inputs);
+  MS_LOG(DEBUG) << "Create make tuple node: " << cnode->DebugString();
+  SetTupleArgsToGraphInfoMap(curr_g(), obj, cnode);
+  SetNodeMapInGraphInfoMap(curr_g(), obj_id, cnode);
+  // run ad for make tuple node
+  if (grad_flag_) {
+    if (grad_is_running_ && !bprop_grad_stack_.empty() && !bprop_grad_stack_.top().second) {
+      MS_LOG(DEBUG) << "Running custom bprop, no need to do GradPynativeOp.";
+    } else {
+      (void)ad::GradPynativeOp(top_cell()->k_pynative_cell_ptr(), cnode, input_args, PyObjToValue(value_outs));
+    }
+  }
+  return cnode;
+}
+
+AnfNodePtr GradExecutor::CreateTupleGetItemNode(const std::string &obj_id) {
+  // obj_id is obtained by calling the 'GetId()'
+  auto graph_info = top_cell()->graph_info_map().at(curr_g());
+  MS_EXCEPTION_IF_NULL(graph_info);
+  if (graph_info->node_map.find(obj_id) == graph_info->node_map.end()) {
+    MS_LOG(DEBUG) << "Can not find CNode for obj id: " << obj_id;
+    return nullptr;
+  }
+  const auto &out = graph_info->node_map.at(obj_id);
+  MS_LOG(DEBUG) << "Output size: " << out.second.size();
+  auto c_node = out.first->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(c_node);
+  auto abs = c_node->abstract();
+  // Create tuple get item node
+  for (const auto &idx : out.second) {
+    std::vector<AnfNodePtr> tuple_get_item_inputs{NewValueNode(prim::kPrimTupleGetItem), c_node, NewValueNode(idx)};
+    c_node = curr_g()->NewCNode(tuple_get_item_inputs);
+    if (abs != nullptr && abs->isa<abstract::AbstractTuple>()) {
+      auto abs_tuple = dyn_cast<abstract::AbstractTuple>(abs);
+      MS_EXCEPTION_IF_NULL(abs_tuple);
+      const auto &elements = abs_tuple->elements();
+      if (static_cast<size_t>(idx) >= elements.size()) {
+        MS_LOG(EXCEPTION) << "Index exceeds the size of elements. Index " << idx << ", element size "
+                          << elements.size();
+      }
+      auto prim_abs = elements[static_cast<size_t>(idx)];
+      MS_EXCEPTION_IF_NULL(prim_abs);
+      MS_LOG(DEBUG) << "Set tuple getitem abs " << prim_abs->ToString();
+      c_node->set_abstract(prim_abs);
+    }
+  }
+  if (c_node->abstract() != nullptr) {
+    forward()->node_abs_map()[obj_id] = c_node->abstract();
+  }
+  MS_LOG(DEBUG) << "Create tuple get item node: " << c_node->DebugString();
+  return c_node;
 }
 
 TopCellInfoPtr GradExecutor::GetTopCell(const std::string &already_run_cell_id) {
@@ -1441,13 +1739,12 @@ void GradExecutor::EnableOpGraphCache(bool is_enable) {
   inst->set_param<bool>(MS_CTX_ENABLE_PYNATIVE_OP_GRAPH_CACHE, is_enable);
 }
 
-void GradExecutor::RecordGradOpInfo(const OpExecInfoPtr &op_exec_info, const ValuePtr &op_out) {
+void GradExecutor::RecordGradOpInfo(const OpExecInfoPtr &op_exec_info) {
   if (!grad_flag_) {
     MS_LOG(DEBUG) << "Grad flag is set to false, no need to record op info";
     return;
   }
   MS_EXCEPTION_IF_NULL(op_exec_info);
-  MS_EXCEPTION_IF_NULL(op_out);
   std::string input_args_info;
   // Record input args info (weight or data)
   for (const auto mask : op_exec_info->inputs_mask) {
@@ -1462,11 +1759,12 @@ void GradExecutor::RecordGradOpInfo(const OpExecInfoPtr &op_exec_info, const Val
   const auto &curr_op_num = top_cell()->op_num();
   op_exec_info->op_info += op_exec_info->op_name + "-" + std::to_string(curr_op_num) + "-" + input_args_info;
   // The out shape is added to determine those ops that change the shape
-  auto out_abs = op_out->ToAbstract();
+  const auto &out_abs = op_exec_info->abstract;
   if (out_abs != nullptr) {
-    auto out_shape = out_abs->BuildShape()->ToString();
-    if (out_shape.find("()") == std::string::npos && out_shape.find("NoShape") == std::string::npos) {
-      op_exec_info->op_info += "-" + out_shape;
+    auto shape = out_abs->BuildShape();
+    MS_EXCEPTION_IF_NULL(shape);
+    if (!shape->isa<abstract::NoShape>() && !shape->IsDimZero()) {
+      op_exec_info->op_info += "-" + shape->ToString();
     }
   }
   top_cell()->all_op_info() += "-" + op_exec_info->op_info;
@@ -1479,18 +1777,18 @@ void GradExecutor::SaveOutputNodeMap(const std::string &obj_id, const py::object
     return;
   }
   MS_EXCEPTION_IF_NULL(cnode);
-  MS_LOG(DEBUG) << "Cnode is " << cnode->DebugString() << " id " << obj_id;
+  MS_LOG(DEBUG) << "Cnode is " << cnode->DebugString() << ", out value id " << obj_id;
   if (py::isinstance<py::tuple>(out_real)) {
     auto value = py::cast<py::tuple>(out_real);
     auto size = static_cast<int64_t>(value.size());
     if (size > 1) {
       for (int64_t i = 0; i < size; ++i) {
         auto value_id = GetId(value[static_cast<size_t>(i)]);
-        SetNodeMapInGraphInfoMap(curr_g_, value_id, cnode, i);
+        SetNodeMapInGraphInfoMap(curr_g(), value_id, cnode, i);
       }
     }
   }
-  SetNodeMapInGraphInfoMap(curr_g_, obj_id, cnode);
+  SetNodeMapInGraphInfoMap(curr_g(), obj_id, cnode);
 }
 
 // Run ad grad for curr op and connect grad graph with previous op
@@ -1554,6 +1852,7 @@ void GradExecutor::MakeCNodeForMsFunction(const FuncGraphPtr &ms_func_graph, con
 
   // Get dfbuilder and graph info map
   auto df_builder = top_cell()->df_builder();
+  MS_EXCEPTION_IF_NULL(df_builder);
   const auto &graph_info = top_cell()->graph_info_map().at(df_builder);
   MS_EXCEPTION_IF_NULL(graph_info);
   // Get weights info of ms_function
@@ -1591,8 +1890,8 @@ void GradExecutor::MakeCNodeForMsFunction(const FuncGraphPtr &ms_func_graph, con
 
   // Make a CNode which includes ms_function fprop graph and inputs node
   MS_EXCEPTION_IF_NULL(ms_function_cnode);
-  *ms_function_cnode = curr_g_->NewCNode(input_nodes);
-  MS_LOG(DEBUG) << "Make a nested cnode: " << (*ms_function_cnode)->DebugString();
+  *ms_function_cnode = curr_g()->NewCNode(input_nodes);
+  MS_LOG(DEBUG) << "Make ms function forward cnode: " << (*ms_function_cnode)->DebugString();
 }
 
 // Make adjoint for ms_function fprop graph and connect it with previous op
@@ -1603,8 +1902,8 @@ void GradExecutor::MakeAdjointForMsFunction(const FuncGraphPtr &ms_func_graph, c
   CNodePtr ms_function_cnode = nullptr;
   MakeCNodeForMsFunction(ms_func_graph, args, &input_values, &ms_function_cnode);
   MS_EXCEPTION_IF_NULL(ms_function_cnode);
-  SetTupleArgsToGraphInfoMap(curr_g_, actual_out, ms_function_cnode);
-  SetNodeMapInGraphInfoMap(curr_g_, GetId(actual_out), ms_function_cnode);
+  SetTupleArgsToGraphInfoMap(curr_g(), actual_out, ms_function_cnode);
+  SetNodeMapInGraphInfoMap(curr_g(), GetId(actual_out), ms_function_cnode);
 
   // Connect grad graph of ms_function to context.
   auto k_pynative_cell_ptr = top_cell()->k_pynative_cell_ptr();
@@ -1673,7 +1972,7 @@ void GradExecutor::UpdateForwardTensorInfoInBpropGraph(const OpExecInfoPtr &op_e
 void GradExecutor::SaveForwardTensorInfoInBpropGraph(const pipeline::ResourcePtr &resource) const {
   MS_EXCEPTION_IF_NULL(resource);
   // Get all tensors id of forward op
-  std::unordered_set<std::string> forward_op_tensor_id;
+  mindspore::HashSet<std::string> forward_op_tensor_id;
   const auto &op_info_with_tensor_id = top_cell()->op_info_with_tensor_id();
   for (const auto &record : op_info_with_tensor_id) {
     std::for_each(record.second.begin(), record.second.end(),
@@ -1702,6 +2001,7 @@ void GradExecutor::SaveForwardTensorInfoInBpropGraph(const pipeline::ResourcePtr
       continue;
     }
     tensor_id_with_tensor_object[tensor->id()].emplace_back(tensor);
+    top_cell()->outputs_id().insert(tensor->id());
     MS_LOG(DEBUG) << "Save forward tensor " << tensor.get() << " id " << tensor->id()
                   << " device address: " << tensor->device_address() << " shape and dtype "
                   << tensor->GetShapeAndDataTypeInfo();
@@ -1709,6 +2009,7 @@ void GradExecutor::SaveForwardTensorInfoInBpropGraph(const pipeline::ResourcePtr
 }
 
 py::tuple ForwardExecutor::RunOpWithInitBackendPolicy(const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   auto backend_policy = InitEnv(op_exec_info);
   PynativeStatusCode status = PYNATIVE_UNKNOWN_STATE;
   // returns a null py::tuple on error
@@ -1721,6 +2022,7 @@ py::tuple ForwardExecutor::RunOpWithInitBackendPolicy(const OpExecInfoPtr &op_ex
 }
 
 MsBackendPolicy ForwardExecutor::InitEnv(const OpExecInfoPtr &op_exec_info) {
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   MS_LOG(DEBUG) << "RunOp start, op name is: " << op_exec_info->op_name;
   parse::python_adapter::set_python_env_flag(true);
   MsBackendPolicy backend_policy;
@@ -1834,20 +2136,28 @@ py::object ForwardExecutor::RunOpInVM(const OpExecInfoPtr &op_exec_info, Pynativ
   return std::move(tuple_result);
 }
 
+void ForwardExecutor::CheckIfNeedSyncForHeterogeneous(const std::string &cur_target) {
+  if (last_target_ != "Unknown" && last_target_ != cur_target) {
+    auto executor = PynativeExecutor::GetInstance();
+    executor->Sync();
+  }
+  last_target_ = cur_target;
+}
+
 py::object ForwardExecutor::RunOpInMs(const OpExecInfoPtr &op_exec_info, PynativeStatusCode *status) {
   MS_EXCEPTION_IF_NULL(op_exec_info);
   MS_EXCEPTION_IF_NULL(status);
+  compile::SetMindRTEnable();
   MS_LOG(DEBUG) << "Start run op [" << op_exec_info->op_name << "] with backend policy ms";
   auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
   ms_context->set_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER, true);
-  compile::SetMindRTEnable();
+  const std::string &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  uint32_t device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
+  auto enable_mind_rt = ms_context->get_param<bool>(MS_CTX_ENABLE_MINDRT);
 
-  if (kSession == nullptr && !ms_context->get_param<bool>(MS_CTX_ENABLE_MINDRT)) {
-    const auto &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-    kSession = session::SessionFactory::Get().Create(device_target);
-    MS_EXCEPTION_IF_NULL(kSession);
-    kSession->Init(ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID));
-  }
+  std::string cur_target = GetCurrentDeviceTarget(device_target, op_exec_info->py_primitive);
+  CheckIfNeedSyncForHeterogeneous(cur_target);
 
   std::vector<tensor::TensorPtr> input_tensors;
   std::vector<int64_t> tensors_mask;
@@ -1857,38 +2167,43 @@ py::object ForwardExecutor::RunOpInMs(const OpExecInfoPtr &op_exec_info, Pynativ
   // get graph info for checking it whether existing in the cache
   GetSingleOpGraphInfo(op_exec_info, input_tensors, tensors_mask, &graph_info);
 #if defined(__APPLE__)
-  session::OpRunInfo op_run_info = {op_exec_info->op_name,
-                                    op_exec_info->py_primitive,
+  session::OpRunInfo op_run_info = {false,
+                                    op_exec_info->op_name,
+                                    op_exec_info->py_primitive.get(),
                                     op_exec_info->abstract,
                                     op_exec_info->is_dynamic_shape,
                                     op_exec_info->is_mixed_precision_cast,
                                     op_exec_info->lazy_build,
                                     op_exec_info->next_op_name,
-                                    static_cast<int>(op_exec_info->next_input_index)};
+                                    static_cast<int>(op_exec_info->next_input_index),
+                                    graph_info,
+                                    tensors_mask,
+                                    input_tensors};
 #else
-  session::OpRunInfo op_run_info = {op_exec_info->op_name,
-                                    op_exec_info->py_primitive,
+  session::OpRunInfo op_run_info = {false,
+                                    op_exec_info->op_name,
+                                    op_exec_info->py_primitive.get(),
                                     op_exec_info->abstract,
                                     op_exec_info->is_dynamic_shape,
                                     op_exec_info->is_mixed_precision_cast,
                                     op_exec_info->lazy_build,
                                     op_exec_info->next_op_name,
-                                    op_exec_info->next_input_index};
+                                    op_exec_info->next_input_index,
+                                    graph_info,
+                                    tensors_mask,
+                                    input_tensors};
 #endif
-  VectorRef outputs;
-  if (!ms_context->get_param<bool>(MS_CTX_ENABLE_MINDRT)) {
-    kSession->RunOp(&op_run_info, graph_info, &input_tensors, &outputs, tensors_mask);
-  } else {
-    if (mind_rt_backend == nullptr) {
-      const auto &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-      uint32_t device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
-      mind_rt_backend = std::make_shared<compile::MindRTBackend>("ms", device_target, device_id);
-    }
 
+  VectorRef outputs;
+  if (!enable_mind_rt) {
+    auto cur_session = GetCurrentSession(cur_target, device_id);
+    MS_EXCEPTION_IF_NULL(cur_session);
+    cur_session->RunOp(&op_run_info, &outputs);
+  } else {
+    auto cur_mind_rt_backend = GetMindRtBackend(cur_target, device_id);
+    MS_EXCEPTION_IF_NULL(cur_mind_rt_backend);
     mindspore::ScopedLongRunning long_running;
-    const compile::ActorInfo &actor_info =
-      mind_rt_backend->CompileGraph(op_run_info, graph_info, &tensors_mask, &input_tensors);
-    mind_rt_backend->RunGraph(actor_info, &op_run_info, &tensors_mask, &input_tensors, &outputs);
+    cur_mind_rt_backend->RunOp(&op_run_info, &outputs);
   }
 
   if (op_exec_info->is_dynamic_shape) {
@@ -1903,6 +2218,7 @@ py::object ForwardExecutor::RunOpInMs(const OpExecInfoPtr &op_exec_info, Pynativ
 
 void ForwardExecutor::ClearRes() {
   MS_LOG(DEBUG) << "Clear forward res";
+  lazy_build_ = false;
   implicit_cast_map_.clear();
   prim_abs_list_.clear();
   node_abs_map_.clear();
@@ -1920,22 +2236,21 @@ TopCellInfoPtr GradExecutor::top_cell() const {
 }
 
 FuncGraphPtr GradExecutor::curr_g() const {
-  MS_EXCEPTION_IF_NULL(curr_g_);
-  return curr_g_;
+  auto fg = top_cell()->fg();
+  MS_EXCEPTION_IF_NULL(fg);
+  return fg;
 }
 
 void GradExecutor::PushCellStack(const std::string &cell_id) { cell_stack_.push(cell_id); }
 
 void GradExecutor::PopCellStack() {
   if (cell_stack_.empty()) {
-    MS_LOG(EXCEPTION) << "Stack cell_statck_ is empty";
+    MS_LOG(EXCEPTION) << "Stack cell_stack_ is empty";
   }
   cell_stack_.pop();
 }
 
-void GradExecutor::PushHighOrderGraphStack(const TopCellInfoPtr &top_cell) {
-  high_order_stack_.push(std::make_pair(curr_g_, top_cell));
-}
+void GradExecutor::PushHighOrderGraphStack(const TopCellInfoPtr &top_cell) { high_order_stack_.push(top_cell); }
 
 TopCellInfoPtr GradExecutor::PopHighOrderGraphStack() {
   if (high_order_stack_.empty()) {
@@ -1944,9 +2259,7 @@ TopCellInfoPtr GradExecutor::PopHighOrderGraphStack() {
   high_order_stack_.pop();
   TopCellInfoPtr top_cell = nullptr;
   if (!high_order_stack_.empty()) {
-    auto t = high_order_stack_.top();
-    curr_g_ = t.first;
-    top_cell = t.second;
+    top_cell = high_order_stack_.top();
   }
   return top_cell;
 }
@@ -1957,16 +2270,29 @@ std::string GradExecutor::GetCellId(const py::object &cell, const py::args &args
     const auto &arg_id = GetId(args[i]);
     auto it = forward()->node_abs_map().find(arg_id);
     if (it != forward()->node_abs_map().end()) {
-      cell_id += "_" + it->second->BuildShape()->ToString();
-      cell_id += it->second->BuildType()->ToString();
+      auto &abs = it->second;
+      MS_EXCEPTION_IF_NULL(abs);
+      auto shape = abs->BuildShape();
+      MS_EXCEPTION_IF_NULL(shape);
+      auto type = abs->BuildType();
+      MS_EXCEPTION_IF_NULL(type);
+      cell_id += "_" + shape->ToString();
+      cell_id += type->ToString();
     } else {
-      auto abs = PyObjToValue(args[i])->ToAbstract();
+      auto value = PyObjToValue(args[i]);
+      MS_EXCEPTION_IF_NULL(value);
+      auto abs = value->ToAbstract();
+      MS_EXCEPTION_IF_NULL(abs);
       if (abs->isa<abstract::AbstractTensor>()) {
         abs->set_value(kAnyValue);
       }
       forward()->node_abs_map()[arg_id] = abs;
-      cell_id += "_" + abs->BuildShape()->ToString();
-      cell_id += abs->BuildType()->ToString();
+      auto shape = abs->BuildShape();
+      MS_EXCEPTION_IF_NULL(shape);
+      auto type = abs->BuildType();
+      MS_EXCEPTION_IF_NULL(type);
+      cell_id += "_" + shape->ToString();
+      cell_id += type->ToString();
     }
   }
   return cell_id;
@@ -1974,7 +2300,9 @@ std::string GradExecutor::GetCellId(const py::object &cell, const py::args &args
 
 void GradExecutor::DumpGraphIR(const std::string &filename, const FuncGraphPtr &graph) {
 #ifdef ENABLE_DUMP_IR
-  if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  if (ms_context->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
     DumpIR(filename, graph);
   }
 #endif
@@ -2011,6 +2339,7 @@ void GradExecutor::ClearCellRes(const std::string &cell_id) {
     MS_LOG(DEBUG) << "Clear all cell resources";
     clear_all_cell_res = true;
     for (const auto &iter : top_cell_list_) {
+      MS_EXCEPTION_IF_NULL(iter);
       iter->Clear();
     }
     top_cell_list_.clear();
@@ -2024,6 +2353,7 @@ void GradExecutor::ClearCellRes(const std::string &cell_id) {
   }
   // clear when cell destruction
   for (auto it = top_cell_list_.begin(); it != top_cell_list_.end();) {
+    MS_EXCEPTION_IF_NULL(*it);
     const auto &top_cell_id = (*it)->cell_id();
     const auto &already_run_cell_id = (*it)->already_run_cell_id();
     if (IsCellObjIdEq(cell_id, top_cell_id)) {
@@ -2042,11 +2372,11 @@ void GradExecutor::HandleInputArgsForTopCell(const py::args &args, bool is_bprop
     // Convert input args to parameters for top cell graph in bprop.
     for (size_t i = 0; i < args.size(); ++i) {
       auto param = args[i];
-      auto new_param = curr_g_->add_parameter();
+      auto new_param = curr_g()->add_parameter();
       const auto &param_id = GetId(param);
-      SetTupleArgsToGraphInfoMap(curr_g_, param, new_param, true);
-      SetNodeMapInGraphInfoMap(curr_g_, param_id, new_param);
-      SetParamNodeMapInGraphInfoMap(curr_g_, param_id, new_param);
+      SetTupleArgsToGraphInfoMap(curr_g(), param, new_param, true);
+      SetNodeMapInGraphInfoMap(curr_g(), param_id, new_param);
+      SetParamNodeMapInGraphInfoMap(curr_g(), param_id, new_param);
     }
     return;
   }
@@ -2054,7 +2384,7 @@ void GradExecutor::HandleInputArgsForTopCell(const py::args &args, bool is_bprop
   std::vector<ValuePtr> input_param_values;
   const auto &only_tensors = FilterTensorArgs(args);
   for (size_t i = 0; i < only_tensors.size(); ++i) {
-    auto new_param = curr_g_->add_parameter();
+    auto new_param = curr_g()->add_parameter();
     auto param_i = only_tensors[i];
     const auto &param_i_value = PyObjToValue(param_i);
     input_param_values.emplace_back(param_i_value);
@@ -2062,12 +2392,12 @@ void GradExecutor::HandleInputArgsForTopCell(const py::args &args, bool is_bprop
     MS_EXCEPTION_IF_NULL(param_i_abs);
     new_param->set_abstract(param_i_abs->Broaden());
     const auto &param_i_id = GetId(param_i);
-    SetTupleArgsToGraphInfoMap(curr_g_, param_i, new_param, true);
-    SetNodeMapInGraphInfoMap(curr_g_, param_i_id, new_param);
-    SetParamNodeMapInGraphInfoMap(curr_g_, param_i_id, new_param);
+    SetTupleArgsToGraphInfoMap(curr_g(), param_i, new_param, true);
+    SetNodeMapInGraphInfoMap(curr_g(), param_i_id, new_param);
+    SetParamNodeMapInGraphInfoMap(curr_g(), param_i_id, new_param);
     SetParamNodeMapInGraphInfoMap(top_cell_->df_builder(), param_i_id, new_param);
   }
-  top_cell()->set_k_pynative_cell_ptr(ad::GradPynativeCellBegin(curr_g_->parameters(), input_param_values));
+  top_cell()->set_k_pynative_cell_ptr(ad::GradPynativeCellBegin(curr_g()->parameters(), input_param_values));
 }
 
 void GradExecutor::InitResourceAndDfBuilder(const std::string &cell_id, const py::args &args) {
@@ -2077,9 +2407,10 @@ void GradExecutor::InitResourceAndDfBuilder(const std::string &cell_id, const py
       MakeNewTopGraph(cell_id, args, true);
     } else if (grad_is_running_ && IsBpropGraph(cell_id)) {
       MS_LOG(DEBUG) << "Run bprop cell";
-      curr_g_ = std::make_shared<FuncGraph>();
+      auto fg = std::make_shared<FuncGraph>();
+      top_cell()->set_fg(fg);
       auto graph_info_cg = std::make_shared<GraphInfo>(cell_id);
-      top_cell()->graph_info_map()[curr_g_] = graph_info_cg;
+      top_cell()->graph_info_map()[fg] = graph_info_cg;
       HandleInputArgsForTopCell(args, true);
       bprop_grad_stack_.push(std::make_pair(cell_id, false));
     } else if (grad_is_running_ && top_cell()->grad_order() != grad_order_) {
@@ -2091,8 +2422,6 @@ void GradExecutor::InitResourceAndDfBuilder(const std::string &cell_id, const py
       auto cur_top_is_dynamic = top_cell()->is_dynamic();
       MakeNewTopGraph(cell_id, args, false);
       top_cell()->set_is_dynamic(cur_top_is_dynamic);
-    } else {
-      MS_LOG(EXCEPTION) << "cell stack size " << cell_stack_.size() << ", grad_order_ " << grad_order_;
     }
   }
 
@@ -2100,7 +2429,7 @@ void GradExecutor::InitResourceAndDfBuilder(const std::string &cell_id, const py
   // Init kPynativeCellPtr with input parameters of top cell
   if (!top_cell()->is_init_kpynative()) {
     auto graph_info_cg = std::make_shared<GraphInfo>(cell_id);
-    top_cell()->graph_info_map()[curr_g_] = graph_info_cg;
+    top_cell()->graph_info_map()[curr_g()] = graph_info_cg;
     auto graph_info_df = std::make_shared<GraphInfo>(cell_id);
     top_cell()->graph_info_map()[top_cell_->df_builder()] = graph_info_df;
     HandleInputArgsForTopCell(args, false);
@@ -2123,6 +2452,7 @@ void GradExecutor::NewGraphInner(py::object *ret, const py::object &cell, const 
     if (top_it != already_run_top_cell_.end()) {
       // Top cell forward run.
       const auto &pre_top_cell = top_it->second;
+      MS_EXCEPTION_IF_NULL(pre_top_cell);
       if (!pre_top_cell->is_dynamic()) {
         MS_LOG(DEBUG) << "Top cell " << cell_id << " is not dynamic, no need to run NewGraphInner again";
         ResetTopCellInfo(pre_top_cell, args);
@@ -2171,22 +2501,23 @@ void GradExecutor::MakeNewTopGraph(const string &cell_id, const py::args &args, 
     EnableOpGraphCache(false);
     const auto last_top_cell = top_cell_list_.back();
     top_cell_list_.pop_back();
+    MS_EXCEPTION_IF_NULL(last_top_cell);
     last_top_cell->Clear();
     (void)already_run_top_cell_.erase(last_top_cell->already_run_cell_id());
   }
   // Create top cell
-  curr_g_ = std::make_shared<FuncGraph>();
+  auto fg = std::make_shared<FuncGraph>();
   auto df_builder = std::make_shared<FuncGraph>();
   auto resource = std::make_shared<pipeline::Resource>();
   const auto &already_run_cell_id = GetAlreadyRunCellId(cell_id);
   auto top_cell =
-    std::make_shared<TopCellInfo>(is_topest, grad_order_, resource, df_builder, cell_id, already_run_cell_id);
+    std::make_shared<TopCellInfo>(is_topest, grad_order_, resource, fg, df_builder, cell_id, already_run_cell_id);
   top_cell->set_forward_already_run(true);
   top_cell->set_input_args_id(input_args_id);
   top_cell_list_.emplace_back(top_cell);
   PushHighOrderGraphStack(top_cell);
   set_top_cell(top_cell);
-  MS_LOG(DEBUG) << "New top graph, curr_g ptr " << curr_g_.get() << " resource ptr " << resource.get();
+  MS_LOG(DEBUG) << "New top graph, fg ptr " << fg.get() << " resource ptr " << resource.get();
 }
 
 void GradExecutor::SetTupleArgsToGraphInfoMap(const FuncGraphPtr &g, const py::object &args, const AnfNodePtr &node,
@@ -2214,6 +2545,7 @@ void GradExecutor::SetTupleItemArgsToGraphInfoMap(const FuncGraphPtr &g, const p
   if (!py::isinstance<py::tuple>(args) && !py::isinstance<py::list>(args)) {
     return;
   }
+  MS_EXCEPTION_IF_NULL(node);
   auto tuple = args.cast<py::tuple>();
   auto tuple_size = static_cast<int64_t>(tuple.size());
   for (int64_t i = 0; i < tuple_size; ++i) {
@@ -2231,48 +2563,11 @@ void GradExecutor::SetTupleItemArgsToGraphInfoMap(const FuncGraphPtr &g, const p
   }
 }
 
-void GradExecutor::CreateMakeTupleNodeForMultiOut(const FuncGraphPtr &curr_g, const py::object &out,
-                                                  const std::string &out_id) {
-  MS_EXCEPTION_IF_NULL(curr_g);
-  const auto &out_tuple = out.cast<py::tuple>();
-  // get input node and value
-  std::vector<AnfNodePtr> inputs{NewValueNode(prim::kPrimMakeTuple)};
-  ValuePtrList input_args;
-  std::vector<size_t> value_index;
-  for (size_t i = 0; i < out_tuple.size(); i++) {
-    const auto &v = PyObjToValue(out_tuple[i]);
-    // Graph have no define for grad
-    if (v->isa<FuncGraph>()) {
-      continue;
-    }
-    value_index.emplace_back(i);
-    input_args.emplace_back(v);
-    inputs.emplace_back(GetInput(out_tuple[i], false));
-  }
-  py::tuple value_outs(value_index.size());
-  for (size_t i = 0; i < value_index.size(); ++i) {
-    value_outs[i] = out_tuple[value_index[i]];
-  }
-  auto cnode = curr_g_->NewCNode(inputs);
-  MS_LOG(DEBUG) << "Tuple output node info " << cnode->DebugString();
-  // record node info in graph map
-  SetTupleArgsToGraphInfoMap(curr_g_, out, cnode);
-  SetNodeMapInGraphInfoMap(curr_g_, out_id, cnode);
-  if (grad_is_running_ && !bprop_grad_stack_.top().second) {
-    MS_LOG(DEBUG) << "Custom bprop, no need GradPynativeOp";
-    return;
-  }
-  // run ad for maketuple node
-  const auto &out_value = PyObjToValue(value_outs);
-  ad::GradPynativeOp(top_cell()->k_pynative_cell_ptr(), cnode, input_args, out_value);
-}
-
 void GradExecutor::EndGraphInner(py::object *ret, const py::object &cell, const py::object &out, const py::args &args) {
   MS_EXCEPTION_IF_NULL(ret);
   const auto &cell_id = GetCellId(cell, args);
   MS_LOG(DEBUG) << "EndGraphInner start " << args.size() << " " << cell_id;
   if (cell_stack_.empty()) {
-    MS_LOG(DEBUG) << "Current cell " << cell_id << " no need to run EndGraphInner again";
     if (cell_id == top_cell()->cell_id()) {
       if (top_cell()->is_topest()) {
         set_grad_flag(false);
@@ -2284,57 +2579,43 @@ void GradExecutor::EndGraphInner(py::object *ret, const py::object &cell, const 
         }
       }
     }
+    MS_LOG(DEBUG) << "Current cell " << cell_id << " no need to run EndGraphInner again";
     return;
   }
-  // Make output node in this case: x = op1, y = op2, return (x, y)
-  const auto &out_id = GetId(out);
-  const auto &graph_info = top_cell()->graph_info_map().at(curr_g_);
-  MS_EXCEPTION_IF_NULL(graph_info);
-  if (graph_info->node_map.find(out_id) == graph_info->node_map.end()) {
-    if (py::isinstance<py::tuple>(out) || py::isinstance<py::list>(out)) {
-      CreateMakeTupleNodeForMultiOut(curr_g_, out, out_id);
-    } else {
-      MS_LOG(DEBUG) << "Set ValueNode as output for graph, out id: " << out_id;
-      MakeValueNode(out, out_id);
-    }
-  }
   DoGradForCustomBprop(cell, out, args);
-  // Set output node for forward graph when need.
   PopCellStack();
   if (grad_is_running_ && !bprop_grad_stack_.empty()) {
     if (!bprop_grad_stack_.top().second) {
+      curr_g()->set_output(GetObjNode(out, GetId(out)));
       bprop_grad_stack_.pop();
-      curr_g_->set_output(GetObjNode(out, out_id));
       return;
     } else if (bprop_grad_stack_.top().first == cell_id) {
       bprop_grad_stack_.pop();
     }
   }
-
-  bool is_top_cell_end = cell_id == top_cell()->cell_id();
   // Just only dump the last forward graph
+  bool is_top_cell_end = cell_id == top_cell()->cell_id();
   if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG) && is_top_cell_end) {
-    curr_g_->set_output(GetObjNode(out, out_id));
+    curr_g()->set_output(GetObjNode(out, GetId(out)));
 #ifdef ENABLE_DUMP_IR
-    DumpIR("fg.ir", curr_g_);
+    DumpIR("fg.ir", curr_g());
 #endif
   }
-
-  // Reset grad flag and update output node of top cell
+  // Reset grad flag and update output node of the outermost cell
   if (cell_stack_.empty() && is_top_cell_end) {
     MS_LOG(DEBUG) << "Cur top last cell " << cell_id;
-    set_grad_flag(false);
     PopHighOrderGraphStack();
-    // Update real output node of top cell for generating bprop graph
-    AnfNodePtr output_node = GetObjNode(out, out_id);
-    MS_EXCEPTION_IF_NULL(output_node);
     auto k_pynative_cell_ptr = top_cell()->k_pynative_cell_ptr();
     MS_EXCEPTION_IF_NULL(k_pynative_cell_ptr);
-    k_pynative_cell_ptr->UpdateOutputNodeOfTopCell(output_node);
+    k_pynative_cell_ptr->UpdateOutputNodeOfTopCell(GetObjNode(out, GetId(out)));
+    set_grad_flag(false);
   }
-
-  // Checkout whether need to compile graph when top cell has ran finished
+  // Checkout whether need to compile graph when each top cell has ran finished
   if (is_top_cell_end) {
+    // In high grad cases, the output of the internal graph may be a tuple, and node needs to be created in the getobj
+    if (!cell_stack_.empty()) {
+      (void)GetObjNode(out, GetId(out));
+    }
     CheckNeedCompileGraph();
   }
 }
@@ -2356,7 +2637,12 @@ void GradExecutor::DoGradForCustomBprop(const py::object &cell, const py::object
   auto bprop_func_cellid = GetId(bprop_func);
   bprop_cell_list_.emplace_back(bprop_func_cellid);
   auto fake_prim = std::make_shared<PrimitivePy>(prim::kPrimHookBackward->name());
+  if (py::isinstance<Cell>(cell)) {
+    auto cell_ptr = py::cast<CellPtr>(cell);
+    fake_prim->set_bprop_cls_name(cell_ptr->name());
+  }
   fake_prim->set_hook(bprop_func);
+
   const auto &cell_id = GetCellId(cell, args);
   (void)fake_prim->AddAttr("cell_id", MakeValue(cell_id));
   (void)fake_prim->AddAttr(parse::CUSTOM_BPROP_NAME, MakeValue(true));
@@ -2389,12 +2675,8 @@ void GradExecutor::DoGradForCustomBprop(const py::object &cell, const py::object
 }
 
 std::string GradExecutor::GetAlreadyRunCellId(const std::string &cell_id) {
-  std::string already_run_cell_id;
-  if (IsNestedGrad()) {
-    already_run_cell_id = cell_id + "0";
-  } else {
-    already_run_cell_id = cell_id + "1";
-  }
+  std::string already_run_cell_id(cell_id);
+  already_run_cell_id += std::to_string(grad_order_ == 0 ? 1 : grad_order_);
   already_run_cell_id += "_" + grad_operation_;
   MS_LOG(DEBUG) << "Get already run top cell id " << already_run_cell_id;
   return already_run_cell_id;
@@ -2416,7 +2698,7 @@ std::string GradExecutor::GetGradCellId(bool has_sens, const py::object &cell, c
 }
 
 void GradExecutor::GradNetInner(py::object *ret, const prim::GradOperationPtr &grad, const py::object &cell,
-                                const py::object &weights, const py::args &args) {
+                                const py::object &weights, const py::object &grad_position, const py::args &args) {
   MS_EXCEPTION_IF_NULL(ret);
   MS_EXCEPTION_IF_NULL(grad);
   auto size = args.size();
@@ -2424,23 +2706,29 @@ void GradExecutor::GradNetInner(py::object *ret, const prim::GradOperationPtr &g
   MS_LOG(DEBUG) << "GradNet start " << size << " " << cell_id;
   if (!top_cell()->need_compile_graph()) {
     MS_LOG(DEBUG) << "No need compile graph";
-    UpdateTopCellInfo(false, false, false);
+    if (!cell_stack_.empty()) {
+      UpdateTopCellInfo(false, false, true);
+    } else {
+      UpdateTopCellInfo(false, false, false);
+    }
     return;
   }
   top_cell()->set_grad_operation(grad_operation_);
   auto resource = top_cell()->resource();
+  MS_EXCEPTION_IF_NULL(resource);
   auto df_builder = top_cell()->df_builder();
   MS_EXCEPTION_IF_NULL(df_builder);
-  MS_LOG(DEBUG) << "curr_g ptr " << curr_g_.get() << " resource ptr " << resource.get();
+  MS_LOG(DEBUG) << "fg ptr " << curr_g().get() << " resource ptr " << resource.get();
 
   // Get params(weights) require derivative
   auto w_args = GetWeightsArgs(weights, df_builder);
+  auto p_args = GetGradPositionArgs(grad_position);
   if (w_args.empty() && !df_builder->parameters().empty()) {
     MS_LOG(DEBUG) << "Add weights params to w_args";
     w_args.insert(w_args.end(), df_builder->parameters().begin(), df_builder->parameters().end());
   }
   // Get bprop graph of top cell
-  auto bprop_graph = GetBpropGraph(grad, cell, w_args, size, args);
+  auto bprop_graph = GetBpropGraph(grad, cell, w_args, p_args, size, args);
   resource->set_func_graph(bprop_graph);
   auto manager = resource->manager();
   MS_EXCEPTION_IF_NULL(manager);
@@ -2508,16 +2796,27 @@ std::vector<AnfNodePtr> GradExecutor::GetWeightsArgs(const py::object &weights, 
   return w_args;
 }
 
-abstract::AbstractBasePtrList GradExecutor::GetArgsSpec(const py::list &args, const FuncGraphPtr &bprop_graph) {
+std::vector<size_t> GradExecutor::GetGradPositionArgs(const py::object &grad_position) {
+  std::vector<size_t> pos_args;
+  if (py::isinstance<py::tuple>(grad_position)) {
+    const auto &tuple = grad_position.cast<py::tuple>();
+    for (size_t it = 0; it < tuple.size(); ++it) {
+      auto param = tuple[it];
+      auto param_id = GetId(param);
+      pos_args.push_back(std::stoi(param_id));
+    }
+    return pos_args;
+  }
+  MS_LOG(EXCEPTION) << "Grad position only support tuple.";
+}
+
+void GradExecutor::UpdateParamAbsByArgs(const py::list &args, const FuncGraphPtr &bprop_graph) {
   MS_EXCEPTION_IF_NULL(bprop_graph);
-  std::size_t size = args.size();
-  abstract::AbstractBasePtrList args_spec;
   const auto &bprop_params = bprop_graph->parameters();
   // bprop_params include inputs, parameters, more than size(inputs)
-  if (bprop_params.size() < size) {
-    MS_LOG(EXCEPTION) << "Df parameters size " << bprop_params.size() << " less than " << size;
+  if (bprop_params.size() < args.size()) {
+    MS_LOG(EXCEPTION) << "Df parameters size " << bprop_params.size() << " less than " << args.size();
   }
-  // Update abstract info for parameters in bprop graph
   size_t index = 0;
   for (const auto &param : bprop_params) {
     auto param_node = param->cast<ParameterPtr>();
@@ -2525,14 +2824,13 @@ abstract::AbstractBasePtrList GradExecutor::GetArgsSpec(const py::list &args, co
     if (param_node->has_default()) {
       // update abstract info for weights
       ValuePtr value = param_node->default_param();
+      MS_EXCEPTION_IF_NULL(value);
       auto ptr = value->ToAbstract();
       MS_EXCEPTION_IF_NULL(ptr);
-      args_spec.emplace_back(ptr);
       param_node->set_abstract(ptr->Broaden());
     } else {
       // update abstract info for input params
-      const auto &input_value = PyObjToValue(args[index]);
-      auto input_abs = abstract::FromValue(input_value, true);
+      auto input_abs = abstract::FromValue(PyObjToValue(args[index]), true);
       if (param_node->abstract() != nullptr) {
         auto input_shape = input_abs->BuildShape()->ToString();
         auto param_tensor_abs = param_node->abstract();
@@ -2553,18 +2851,19 @@ abstract::AbstractBasePtrList GradExecutor::GetArgsSpec(const py::list &args, co
                                     << param->DebugString();
           }
         }
+        if (param_node->debug_info()->name() == "sens" && ir_shape != input_shape) {
+          need_renormalize_ = true;
+        }
       }
-      args_spec.emplace_back(input_abs);
       param_node->set_abstract(input_abs->Broaden());
       index++;
     }
   }
-  MS_LOG(DEBUG) << "Args_spec size " << args_spec.size();
-  return args_spec;
 }
 
 FuncGraphPtr GradExecutor::GetBpropGraph(const prim::GradOperationPtr &grad, const py::object &cell,
-                                         const std::vector<AnfNodePtr> &weights, size_t arg_size,
+                                         const std::vector<AnfNodePtr> &weights,
+                                         const std::vector<size_t> &grad_position, size_t arg_size,
                                          const py::args &args) {
   bool build_formal_param = false;
   if (!py::hasattr(cell, parse::CUSTOM_BPROP_NAME) && !cell_stack_.empty() && IsNestedGrad()) {
@@ -2578,8 +2877,8 @@ FuncGraphPtr GradExecutor::GetBpropGraph(const prim::GradOperationPtr &grad, con
   auto k_pynative_cell_ptr = top_cell()->k_pynative_cell_ptr();
   MS_EXCEPTION_IF_NULL(k_pynative_cell_ptr);
   MS_EXCEPTION_IF_NULL(grad);
-  FuncGraphPtr bprop_graph = ad::GradPynativeCellEnd(k_pynative_cell_ptr, weights, grad->get_all_, grad->get_by_list_,
-                                                     grad->sens_param_, build_formal_param);
+  FuncGraphPtr bprop_graph = ad::GradPynativeCellEnd(k_pynative_cell_ptr, weights, grad_position, grad->get_all_,
+                                                     grad->get_by_list_, grad->sens_param_, build_formal_param);
   MS_EXCEPTION_IF_NULL(bprop_graph);
 
   MS_LOG(DEBUG) << "Top graph input params size " << arg_size;
@@ -2588,7 +2887,7 @@ FuncGraphPtr GradExecutor::GetBpropGraph(const prim::GradOperationPtr &grad, con
   bprop_graph->set_flag(FUNC_GRAPH_FLAG_CORE, true);
   bprop_graph->debug_info()->set_name(ss.str());
   // Get the parameters items and add the value to args_spec
-  (void)GetArgsSpec(FilterTensorArgs(args, grad->sens_param_), bprop_graph);
+  UpdateParamAbsByArgs(FilterTensorArgs(args, grad->sens_param_), bprop_graph);
 
   // Do opt for final bprop graph
   pipeline::ResourcePtr resource = std::make_shared<pipeline::Resource>();
@@ -2637,28 +2936,32 @@ py::object GradExecutor::CheckAlreadyRun(const prim::GradOperationPtr &grad, con
   bool forward_run = false;
   // Get cell id and input args info
   const auto &cell_id = GetCellId(cell, args);
-  grad_operation_ = std::to_string(grad->get_all_) + std::to_string(grad->get_by_list_);
+  grad_operation_ = std::to_string(grad->get_all_) + std::to_string(grad->get_by_list_) + grad->grad_position_;
 
   std::string input_args_id;
   for (size_t i = 0; i < args.size(); ++i) {
     input_args_id += GetId(args[i]) + "_";
   }
-  // Check whether need to run forward process
-  const auto &check_already_run_cell_id = GetAlreadyRunCellId(cell_id);
-  auto find_top_cell = GetTopCell(check_already_run_cell_id);
-  if (find_top_cell != nullptr) {
-    forward_run = find_top_cell->forward_already_run();
-    auto curr_top_cell = top_cell();
-    set_top_cell(find_top_cell);
-    bool input_args_changed =
-      !find_top_cell->input_args_id().empty() && find_top_cell->input_args_id() != input_args_id;
-    if (forward_run && input_args_changed && find_top_cell->is_dynamic()) {
-      MS_LOG(WARNING) << "The construct of running cell is dynamic and the input info of this cell has changed, "
-                         "forward process will run again";
-      forward_run = false;
-    }
-    if (forward_run && GetHighOrderStackSize() >= 1) {
-      PushHighOrderGraphStack(curr_top_cell);
+  // Under the condition that the stack is empty (forward process completed or no forward process),
+  // check whether need to run forward process
+  if (cell_stack_.empty() && top_cell_ != nullptr) {
+    const auto &check_already_run_cell_id = GetAlreadyRunCellId(cell_id);
+    auto find_top_cell = GetTopCell(check_already_run_cell_id);
+    if (find_top_cell != nullptr) {
+      MS_LOG(DEBUG) << "Find already run top cell";
+      forward_run = find_top_cell->forward_already_run();
+      auto curr_top_cell = top_cell();
+      set_top_cell(find_top_cell);
+      bool input_args_changed =
+        !find_top_cell->input_args_id().empty() && find_top_cell->input_args_id() != input_args_id;
+      if (forward_run && input_args_changed && find_top_cell->is_dynamic()) {
+        MS_LOG(WARNING) << "The construct of running cell is dynamic and the input info of this cell has changed, "
+                           "forward process will run again";
+        forward_run = false;
+      }
+      if (forward_run && GetHighOrderStackSize() >= 1) {
+        PushHighOrderGraphStack(curr_top_cell);
+      }
     }
   }
   MS_LOG(DEBUG) << "Graph have already ran " << forward_run << " top cell id " << cell_id;
@@ -2677,8 +2980,9 @@ void GradExecutor::CheckNeedCompileGraph() {
 
   MS_LOG(DEBUG) << "Top cell " << new_top_cell->cell_id() << " has been ran";
   auto pre_top_cell = already_run_top_cell_.at(already_top_cell_id);
-  auto pre_all_op_info = pre_top_cell->all_op_info();
-  auto new_all_op_info = new_top_cell->all_op_info();
+  MS_EXCEPTION_IF_NULL(pre_top_cell);
+  const auto &pre_all_op_info = pre_top_cell->all_op_info();
+  const auto &new_all_op_info = new_top_cell->all_op_info();
   MS_LOG(DEBUG) << "Pre all op info : " << pre_all_op_info;
   MS_LOG(DEBUG) << "New all op info : " << new_all_op_info;
   if (pre_all_op_info != new_all_op_info) {
@@ -2697,6 +3001,12 @@ void GradExecutor::CheckNeedCompileGraph() {
   } else {
     MS_LOG(DEBUG) << "The op info has not been changed, no need to compile graph again";
     pre_top_cell->set_input_args_id(new_top_cell->input_args_id());
+    // In high order situations, the internal top cell remains unchanged, but the external top cell has changed. Then
+    // the graph info of the internal top cell needs to be updated so that the external top cell can perceive it.
+    if (!cell_stack_.empty()) {
+      pre_top_cell->graph_info_map()[pre_top_cell->df_builder()] =
+        new_top_cell->graph_info_map()[new_top_cell->df_builder()];
+    }
     EraseTopCellFromTopCellList(new_top_cell);
     new_top_cell->Clear();
     pre_top_cell->set_forward_already_run(true);
@@ -2719,6 +3029,7 @@ void GradExecutor::RunGradGraph(py::object *ret, const py::object &cell, const p
   VectorRef arg_list;
   py::tuple converted_args = ConvertArgs(FilterTensorArgs(args, has_sens));
   pipeline::ProcessVmArgInner(converted_args, resource, &arg_list);
+  MS_LOG(DEBUG) << "Convert args size " << converted_args.size() << ", graph param size " << arg_list.size();
   if (resource->results().find(pipeline::kOutput) == resource->results().end()) {
     MS_LOG(EXCEPTION) << "Can't find run graph output";
   }
@@ -2743,7 +3054,7 @@ void GradExecutor::RunGradGraph(py::object *ret, const py::object &cell, const p
   }
   // High order
   if (top_cell()->vm_compiled()) {
-    MakeNestedCnode(cell, cell_id, converted_args, resource, *ret);
+    MakeNestedCnode(cell, converted_args, resource, *ret);
   } else if (GetHighOrderStackSize() >= ARG_SIZE) {
     SwitchTopcell();
   }
@@ -2752,7 +3063,6 @@ void GradExecutor::RunGradGraph(py::object *ret, const py::object &cell, const p
 void GradExecutor::SwitchTopcell() {
   const auto &inner_top_cell_all_op_info = top_cell()->all_op_info();
   bool inner_top_cell_is_dynamic = top_cell()->is_dynamic();
-  top_cell()->set_grad_order(1);
 
   // Get outer top cell
   auto outer_top_cell = PopHighOrderGraphStack();
@@ -2765,21 +3075,10 @@ void GradExecutor::SwitchTopcell() {
   set_top_cell(outer_top_cell);
 }
 
-void GradExecutor::MakeNestedCnode(const py::object &cell, const std::string &cell_id, const py::tuple &forward_args,
-                                   const pipeline::ResourcePtr &resource, const py::object &out) {
-  if (cell_stack_.empty()) {
-    MS_LOG(DEBUG) << "No nested grad find";
-    return;
-  }
-  FuncGraphPtr first_grad_fg = nullptr;
-  if (py::hasattr(cell, parse::CUSTOM_BPROP_NAME)) {
-    first_grad_fg = curr_g_;
-    MS_LOG(DEBUG) << "Bprop nested";
-  } else {
-    first_grad_fg = resource->func_graph();
-  }
-  MS_EXCEPTION_IF_NULL(first_grad_fg);
-  DumpGraphIR("first_grad_fg.ir", first_grad_fg);
+void GradExecutor::DoParameterReplace(const FuncGraphPtr &first_grad_fg, const py::tuple &forward_args,
+                                      std::vector<AnfNodePtr> *inputs, ValuePtrList *weights_args) {
+  MS_EXCEPTION_IF_NULL(inputs);
+  MS_EXCEPTION_IF_NULL(weights_args);
 
   auto first_df_builder = top_cell()->df_builder();
   MS_EXCEPTION_IF_NULL(first_df_builder);
@@ -2791,9 +3090,8 @@ void GradExecutor::MakeNestedCnode(const py::object &cell, const std::string &ce
   auto second_graph_info = top_cell()->graph_info_map().at(second_df_builder);
   MS_EXCEPTION_IF_NULL(second_graph_info);
 
-  std::vector<AnfNodePtr> inputs{NewValueNode(first_grad_fg)};
-  std::unordered_set<std::string> params_weights_set;
-  std::unordered_set<std::string> params_inputs_set;
+  mindspore::HashSet<std::string> params_weights_set;
+  mindspore::HashSet<std::string> params_inputs_set;
   for (const auto &sec : second_graph_info->params) {
     if (sec.second->has_default()) {
       params_weights_set.emplace(sec.first);
@@ -2809,40 +3107,64 @@ void GradExecutor::MakeNestedCnode(const py::object &cell, const std::string &ce
       // Can find in second graph
       const auto &input_param_second = second_graph_info->params.at(id);
       manager->Replace(first_graph_info->params.at(id), input_param_second);
-      inputs.emplace_back(input_param_second);
+      inputs->emplace_back(input_param_second);
     } else {
-      inputs.emplace_back(GetInput(forward_args[i], false));
+      inputs->emplace_back(GetInput(forward_args[i], false));
     }
   }
 
   // Replace weights param
-  ValuePtrList weights_args;
   for (const auto &fir : first_graph_info->params) {
     if (!fir.second->has_default()) {
       continue;
     }
     // Second graph no this weight param, need add to second graph
     if (!params_weights_set.count(fir.first)) {
+      MS_LOG(DEBUG) << "Can't find " << fir.first << " in outer graph, add it";
+      second_df_builder->add_parameter(fir.second);
       SetParamNodeMapInGraphInfoMap(second_df_builder, fir.first, fir.second);
-      inputs.emplace_back(fir.second);
-      weights_args.emplace_back(fir.second->default_param());
+      inputs->emplace_back(fir.second);
+      weights_args->emplace_back(fir.second->default_param());
     } else {
       // Need replace
-      for (const auto &sec : second_graph_info->params) {
-        MS_LOG(DEBUG) << "Param name " << fir.first << " ptr " << fir.second.get();
-        if (sec.second->has_default() && fir.second->name() == sec.second->name()) {
-          manager->Replace(fir.second, sec.second);
-          inputs.emplace_back(sec.second);
-          weights_args.emplace_back(sec.second->default_param());
-          break;
-        }
+      MS_LOG(DEBUG) << "Param name " << fir.first << " ptr " << fir.second.get();
+      auto it = std::find_if(second_graph_info->params.begin(), second_graph_info->params.end(),
+                             [&fir](const std::pair<std::string, ParameterPtr> &sec) {
+                               return sec.second->has_default() && fir.second->name() == sec.second->name();
+                             });
+      if (it != second_graph_info->params.end()) {
+        manager->Replace(fir.second, it->second);
+        inputs->emplace_back(it->second);
+        weights_args->emplace_back(it->second->default_param());
       }
     }
   }
+}
+
+void GradExecutor::MakeNestedCnode(const py::object &cell, const py::tuple &forward_args,
+                                   const pipeline::ResourcePtr &resource, const py::object &out) {
+  if (cell_stack_.empty()) {
+    MS_LOG(DEBUG) << "No nested grad find";
+    return;
+  }
+  FuncGraphPtr first_grad_fg = nullptr;
+  if (py::hasattr(cell, parse::CUSTOM_BPROP_NAME)) {
+    first_grad_fg = curr_g();
+    MS_LOG(DEBUG) << "Bprop nested";
+  } else {
+    first_grad_fg = resource->func_graph();
+  }
+  MS_EXCEPTION_IF_NULL(first_grad_fg);
+  DumpGraphIR("first_grad_fg.ir", first_grad_fg);
+
+  std::vector<AnfNodePtr> inputs{NewValueNode(first_grad_fg)};
+  ValuePtrList weights_args;
+  DoParameterReplace(first_grad_fg, forward_args, &inputs, &weights_args);
 
   pipeline::ResourcePtr r = std::make_shared<pipeline::Resource>();
   r->manager()->AddFuncGraph(first_grad_fg);
   set_eliminate_forward(false);
+  first_grad_fg->transforms().erase(kGrad);
   FuncGraphPtr second_grad_fg = ad::Grad(first_grad_fg, r);
   set_eliminate_forward(true);
   DumpGraphIR("second_grad_fg.ir", second_grad_fg);
@@ -2881,10 +3203,11 @@ void GradExecutor::EraseTopCellFromTopCellList(const TopCellInfoPtr &top_cell) {
   auto iter = std::find_if(top_cell_list_.begin(), top_cell_list_.end(),
                            [&](const TopCellInfoPtr &elem) { return elem.get() == top_cell.get(); });
   if (iter == top_cell_list_.end()) {
-    MS_LOG(EXCEPTION) << "Can not find top cell " << top_cell.get() << " cell id " << top_cell->cell_id()
-                      << " from top cell list";
+    MS_LOG(WARNING) << "Can not find top cell " << top_cell.get() << " cell id " << top_cell->cell_id()
+                    << " from top cell list";
+  } else {
+    (void)top_cell_list_.erase(iter);
   }
-  (void)top_cell_list_.erase(iter);
 }
 
 void GradExecutor::GradMsFunctionInner(const std::string &phase, const py::object &out, const py::args &args,
@@ -2894,7 +3217,8 @@ void GradExecutor::GradMsFunctionInner(const std::string &phase, const py::objec
     MS_LOG(EXCEPTION) << "The output value of ms_function func graph should be a tuple.";
   }
   auto tuple_out = py::cast<py::tuple>(out);
-  if (tuple_out.size() != 2) {
+  constexpr size_t tuple_out_size = 2;
+  if (tuple_out.size() != tuple_out_size) {
     MS_LOG(EXCEPTION) << "The tuple size of output value of ms_function func graph should be 2.";
   }
   py::object actual_out = tuple_out[0];
@@ -2905,7 +3229,8 @@ void GradExecutor::GradMsFunctionInner(const std::string &phase, const py::objec
   // Identity op info for current running ms_func graph.
   OpExecInfoPtr op_exec_info = std::make_shared<OpExecInfo>();
   op_exec_info->op_name = phase;
-  RecordGradOpInfo(op_exec_info, actual_out_v);
+  op_exec_info->abstract = actual_out_v->ToAbstract();
+  RecordGradOpInfo(op_exec_info);
   MS_LOG(DEBUG) << "ms_function cnode op info: " << op_exec_info->op_info;
 
   // Step 1: Update actual output tensors used in grad graph.
@@ -2921,7 +3246,7 @@ void GradExecutor::GradMsFunctionInner(const std::string &phase, const py::objec
   if (!need_construct_graph()) {
     MS_LOG(EXCEPTION) << "The flag of need construct graph is False.";
   }
-  CreateNewTensorsInGradGraph(top_cell(), op_exec_info, added_out, ms_func_graph, grad_graph);
+  ReplaceNewTensorsInGradGraph(top_cell(), op_exec_info, added_out, ms_func_graph, grad_graph);
 
   // Clone new ms_function func graph and grad graph.
   auto new_ms_func_graph = BasicClone(ms_func_graph);
@@ -2960,7 +3285,6 @@ py::object GradExecutor::GradMsFunction(const py::object &out, const py::args &a
   FuncGraphPtr grad_graph = executor->GetGradGraph(phase);
   MS_EXCEPTION_IF_NULL(grad_graph);
   GradMsFunctionInner(phase, out, args, ms_func_graph, grad_graph);
-
   set_graph_phase("");
   return ret;
 }
@@ -2979,20 +3303,24 @@ void GradExecutor::ClearGrad(const py::object &cell, const py::args &args) {
 
 void GradExecutor::ClearRes() {
   MS_LOG(DEBUG) << "Clear grad res";
-  grad_order_ = 0;
-  top_cell_switch_counts_ = 0;
   grad_flag_ = false;
   enable_op_cache_ = true;
   grad_is_running_ = false;
   need_renormalize_ = false;
   eliminate_forward_ = true;
+  custom_bprop_cell_count_ = 0;
+  grad_order_ = 0;
+  top_cell_switch_counts_ = 0;
+
+  check_graph_cell_id_.clear();
+  grad_operation_.clear();
   top_cell_ = nullptr;
-  curr_g_ = nullptr;
   bprop_cell_list_.clear();
+  already_run_top_cell_.clear();
   ClearCellRes();
   std::stack<std::pair<std::string, bool>>().swap(bprop_grad_stack_);
   std::stack<std::string>().swap(cell_stack_);
-  std::stack<std::pair<FuncGraphPtr, TopCellInfoPtr>>().swap(high_order_stack_);
+  std::stack<TopCellInfoPtr>().swap(high_order_stack_);
 }
 
 GradExecutorPtr PynativeExecutor::grad_executor() const {
@@ -3034,6 +3362,10 @@ py::object PynativeExecutor::CheckGraph(const py::object &cell, const py::args &
   return grad_executor()->CheckGraph(cell, args);
 }
 
+void PynativeExecutor::set_grad_position(const prim::GradOperationPtr &grad, const py::object &grad_position) {
+  grad->set_grad_position(std::string(py::str(grad_position)));
+}
+
 py::object PynativeExecutor::CheckAlreadyRun(const prim::GradOperationPtr &grad, const py::object &cell,
                                              const py::args &args) {
   return grad_executor()->CheckAlreadyRun(grad, cell, args);
@@ -3058,6 +3390,10 @@ void PynativeExecutor::ClearGrad(const py::object &cell, const py::args &args) {
 void PynativeExecutor::ClearRes() {
   MS_LOG(DEBUG) << "Clear all res";
   session::PynativeTaskManager::GetInstance().Reset();
+  for (auto &item : kMindRtBackends) {
+    MS_EXCEPTION_IF_NULL(item.second);
+    item.second->ClearOpBuilderResource();
+  }
   SetLazyBuild(false);
   cell_depth_ = 0;
 
@@ -3075,8 +3411,8 @@ void PynativeExecutor::ClearRes() {
   }
   ad::CleanRes();
   pipeline::ReclaimOptimizer();
-  kSession = nullptr;
-  mind_rt_backend = nullptr;
+  kSessionBackends.clear();
+  kMindRtBackends.clear();
   g_pyobj_id_cache.clear();
 }
 
@@ -3106,27 +3442,31 @@ py::object PynativeExecutor::GradMsFunction(const py::object &out, const py::arg
 }
 
 void PynativeExecutor::GradNet(const prim::GradOperationPtr &grad, const py::object &cell, const py::object &weights,
-                               const py::args &args) {
+                               const py::object &grad_position, const py::args &args) {
   py::object ret;
-  PynativeExecutorTry(grad_executor()->GradGraph, &ret, grad, cell, weights, args);
+  PynativeExecutorTry(grad_executor()->GradGraph, &ret, grad, cell, weights, grad_position, args);
 }
 
 void PynativeExecutor::Sync() {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
 
+  ExecuteAllTask();
+
   if (!ms_context->get_param<bool>(MS_CTX_ENABLE_MINDRT)) {
-    if (kSession == nullptr) {
-      MS_EXCEPTION(NotExistsError) << "No session has been created!";
+    for (auto &item : kSessionBackends) {
+      MS_EXCEPTION_IF_NULL(item.second);
+      item.second->SyncStream();
     }
-    kSession->SyncStream();
   } else {
-    std::string device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-    uint32_t device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
-    const auto &device_context =
-      device::DeviceContextManager::GetInstance().GetOrCreateDeviceContext({device_target, device_id});
-    MS_EXCEPTION_IF_NULL(device_context);
-    (void)device_context->SyncStream();
+    for (auto &item : kMindRtBackends) {
+      MS_EXCEPTION_IF_NULL(item.second);
+      item.second->SyncStream();
+    }
+    for (auto &item : kSessionBackends) {
+      MS_EXCEPTION_IF_NULL(item.second);
+      item.second->SyncStream();
+    }
   }
 }
 
@@ -3148,7 +3488,13 @@ void PynativeExecutor::ExitCell() {
 
 bool PynativeExecutor::IsTopCell() const { return cell_depth_ == 0; }
 
-void PynativeExecutor::ExecuteAllTask() { session::PynativeTaskManager::GetInstance().ExecuteRemainingTasks(); }
+void PynativeExecutor::ExecuteAllTask() {
+  session::PynativeTaskManager::GetInstance().ExecuteRemainingTasks();
+  for (auto &item : kMindRtBackends) {
+    MS_EXCEPTION_IF_NULL(item.second);
+    item.second->SyncLazyTasks();
+  }
+}
 
 REGISTER_PYBIND_DEFINE(PynativeExecutor_, ([](const py::module *m) {
                          (void)py::class_<PynativeExecutor, std::shared_ptr<PynativeExecutor>>(*m, "PynativeExecutor_")
@@ -3171,6 +3517,7 @@ REGISTER_PYBIND_DEFINE(PynativeExecutor_, ([](const py::module *m) {
                            .def("__call__", &PynativeExecutor::Run, "pynative executor run grad graph.")
                            .def("set_graph_phase", &PynativeExecutor::set_graph_phase, "pynative set graph phase")
                            .def("grad_flag", &PynativeExecutor::grad_flag, "pynative grad flag")
+                           .def("set_grad_position", &PynativeExecutor::set_grad_position, "set pynative grad position")
                            .def("set_grad_flag", &PynativeExecutor::set_grad_flag, py::arg("flag") = py::bool_(false),
                                 "Executor set grad flag.")
                            .def("set_py_exe_path", &PynativeExecutor::set_py_exe_path,

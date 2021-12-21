@@ -22,7 +22,7 @@
 #include "src/common/file_utils.h"
 #include "common/common_test.h"
 #include "src/common/log_adapter.h"
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 
 namespace mindspore {
 using mindspore::lite::StringPack;
@@ -74,7 +74,7 @@ TEST_F(TestNormalize, TestSentence) {
   ASSERT_NE(creator_, nullptr);
   kernel_ = creator_(inputs_, outputs_, &parameter_, &ctx_, desc_);
   ASSERT_NE(kernel_, nullptr);
-  auto ret = kernel_->Init();
+  auto ret = kernel_->Prepare();
   ASSERT_EQ(ret, 0);
   ret = kernel_->Run();
   ASSERT_EQ(ret, 0);

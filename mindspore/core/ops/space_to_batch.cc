@@ -35,18 +35,20 @@ abstract::ShapePtr InferShape(const PrimitivePtr &primitive, const std::vector<A
   std::vector<int64_t> output_shape(input_shape.size());
   auto block_shape_vector = GetValue<std::vector<int64_t>>(primitive->GetAttr(kBlockSize));
   auto paddings = GetValue<std::vector<std::vector<int64_t>>>(primitive->GetAttr(kPaddings));
-  for (size_t i = 0; i < 2; i++) {
-    auto padded = output_shape[i + 2] + paddings[i][0] + paddings[i][1];
-    (void)CheckAndConvertUtils::CheckInteger("padded shape", SizeToLong(padded % block_shape_vector.size()), kEqual, 0,
-                                             prim_name);
-    output_shape[i + 2] = SizeToLong(padded / block_shape_vector.size());
+  const size_t kDimsOffset = 2;
+  for (size_t i = 0; i < kDimsOffset; i++) {
+    auto padded = output_shape[i + kDimsOffset] + paddings[i][0] + paddings[i][1];
+    const int64_t input_num = 0;
+    (void)CheckAndConvertUtils::CheckInteger("padded shape", SizeToLong(padded % block_shape_vector.size()), kEqual,
+                                             input_num, prim_name);
+    output_shape[i + kDimsOffset] = padded / SizeToLong(block_shape_vector.size());
   }
   output_shape[0] *= SizeToLong(block_shape_vector.size() * block_shape_vector.size());
   return std::make_shared<abstract::Shape>(output_shape);
 }
 
 TypePtr InferType(const PrimitivePtr &prim, const std::vector<AbstractBasePtr> &input_args) {
-  if (std::any_of(input_args.begin(), input_args.end(), [](AbstractBasePtr a) { return a == nullptr; })) {
+  if (std::any_of(input_args.begin(), input_args.end(), [](const AbstractBasePtr arg) { return arg == nullptr; })) {
     MS_LOG(EXCEPTION) << "nullptr";
   }
   std::map<std::string, TypePtr> types;

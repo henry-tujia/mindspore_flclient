@@ -33,7 +33,18 @@ constexpr int INPUT_SIZE4 = 4;
 struct ITensorHelper {
   nvinfer1::ITensor *trt_tensor_{nullptr};
   mindspore::Format format_;
+  bool same_format_;
 };
+
+struct BindingHelper {
+  std::string name_;
+  void *data_{nullptr};
+  nvinfer1::DataType data_type_;
+  size_t size_;
+  bool is_input_binding_{false};
+};
+
+class TensorRTRuntime;
 
 class TensorRTOp {
  public:
@@ -54,6 +65,8 @@ class TensorRTOp {
                         const std::vector<mindspore::MSTensor> &out_tensors) = 0;
 
   virtual int AddInnerOp(nvinfer1::INetworkDefinition *network) = 0;
+
+  virtual int Prepare(void **network_tensor_bindings, nvinfer1::ICudaEngine *engine);
 
   const schema::Primitive *GetPrimitive();
 
@@ -81,10 +94,10 @@ class TensorRTOp {
 
   const std::vector<TensorRTOp *> &out_ops() const;
 
+  void SetRuntime(TensorRTRuntime *runtime);
+
  protected:
   bool IsShapeKnown();
-
-  std::vector<nvinfer1::ILayer *> layers_;
 
   const schema::Primitive *op_primitive_;
 
@@ -103,6 +116,10 @@ class TensorRTOp {
   std::string op_name_;
 
   schema::PrimitiveType type_ = schema::PrimitiveType_NONE;
+
+  std::vector<BindingHelper> op_binding_tensor_;
+
+  TensorRTRuntime *runtime_{nullptr};
 };
 
 template <class T>
@@ -116,7 +133,7 @@ TensorRTOp *GetTensorRTOp(const schema::Primitive *primitive, const std::vector<
 
   auto ret = op->IsSupport(primitive, in_tensors, out_tensors);
   if (ret != RET_OK) {
-    MS_LOG(ERROR) << "TensorRT op is not supported.";
+    MS_LOG(ERROR) << "TensorRT op is not supported: " << name;
     delete op;
     return nullptr;
   }

@@ -19,9 +19,10 @@
 
 #include <vector>
 #include <utility>
-#include <unordered_map>
 #include <memory>
+#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "frontend/optimizer/irpass.h"
 #include "ir/func_graph.h"
 #include "pipeline/jit/resource.h"

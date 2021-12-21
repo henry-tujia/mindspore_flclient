@@ -26,17 +26,19 @@ using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_OK;
 
 namespace mindspore::kernel {
-int ArithmeticSelfInt8CPUKernel::Init() {
+int ArithmeticSelfInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), kInputIndex + 1);
   CHECK_LESS_RETURN(out_tensors_.size(), kOutputIndex + 1);
   auto *input_tensor = in_tensors_.at(kInputIndex);
   CHECK_NULL_RETURN(input_tensor);
   auto in_quant_args = input_tensor->quant_params();
+  CHECK_LESS_RETURN(in_quant_args.size(), 1);
   para_->quant_arg_.in_args_.scale_ = in_quant_args.front().scale;
   para_->quant_arg_.in_args_.zp_ = in_quant_args.front().zeroPoint * (-1);
 
   auto *out_tensor = out_tensors_.at(kOutputIndex);
   auto out_quant_args = out_tensor->quant_params();
+  CHECK_LESS_RETURN(out_quant_args.size(), 1);
   para_->quant_arg_.out_args_.scale_ = out_quant_args.front().scale;
   para_->quant_arg_.out_args_.zp_ = out_quant_args.front().zeroPoint;
 
@@ -62,6 +64,7 @@ int ArithmeticSelfInt8CPUKernel::Init() {
 
 int ArithmeticSelfInt8CPUKernel::ReSize() {
   data_size_ = in_tensors_[0]->ElementsNum();
+  MS_CHECK_GT(data_size_, 0, RET_ERROR);
   thread_sz_count_ = MSMIN(thread_count_, static_cast<int>(data_size_));
   if (thread_sz_count_ == 0) {
     MS_LOG(ERROR) << "div zero";

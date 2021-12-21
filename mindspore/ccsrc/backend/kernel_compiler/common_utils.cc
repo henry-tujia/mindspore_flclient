@@ -24,53 +24,20 @@
 #include <thread>
 #include "nlohmann/json.hpp"
 #include "backend/session/anf_runtime_algorithm.h"
+#include "utils/file_utils.h"
 #include "utils/ms_utils.h"
 #include "ir/manager.h"
 #include "ir/meta_tensor.h"
 #include "base/core_ops.h"
 #include "ir/graph_utils.h"
 #include "utils/ms_context.h"
+#include "utils/trace_base.h"
 #include "mindspore/ccsrc/debug/common.h"
 
 namespace mindspore {
 namespace kernel {
 constexpr char kAxis[] = "axis";
 constexpr char kTypeInt32[] = "Int32";
-const std::unordered_map<std::string, TypeId> type_id_maps = {{"float", TypeId::kNumberTypeFloat32},
-                                                              {"float16", TypeId::kNumberTypeFloat16},
-                                                              {"float32", TypeId::kNumberTypeFloat32},
-                                                              {"float64", TypeId::kNumberTypeFloat64},
-                                                              {"int", TypeId::kNumberTypeInt},
-                                                              {"int8", TypeId::kNumberTypeInt8},
-                                                              {"int16", TypeId::kNumberTypeInt16},
-                                                              {"int32", TypeId::kNumberTypeInt32},
-                                                              {"int64", TypeId::kNumberTypeInt64},
-                                                              {"uint", TypeId::kNumberTypeUInt},
-                                                              {"uint8", TypeId::kNumberTypeUInt8},
-                                                              {"uint16", TypeId::kNumberTypeUInt16},
-                                                              {"uint32", TypeId::kNumberTypeUInt32},
-                                                              {"uint64", TypeId::kNumberTypeUInt64},
-                                                              {"bool", TypeId::kNumberTypeBool},
-                                                              {"complex64", TypeId::kNumberTypeComplex64},
-                                                              {"complex128", TypeId::kNumberTypeComplex128}};
-
-const std::map<TypeId, std::string> type_id_str_map = {{TypeId::kNumberTypeFloat32, "float32"},
-                                                       {TypeId::kNumberTypeFloat16, "float16"},
-                                                       {TypeId::kNumberTypeFloat, "float"},
-                                                       {TypeId::kNumberTypeFloat64, "float64"},
-                                                       {TypeId::kNumberTypeInt, "int"},
-                                                       {TypeId::kNumberTypeInt8, "int8"},
-                                                       {TypeId::kNumberTypeInt16, "int16"},
-                                                       {TypeId::kNumberTypeInt32, "int32"},
-                                                       {TypeId::kNumberTypeInt64, "int64"},
-                                                       {TypeId::kNumberTypeUInt, "uint"},
-                                                       {TypeId::kNumberTypeUInt8, "uint8"},
-                                                       {TypeId::kNumberTypeUInt16, "uint16"},
-                                                       {TypeId::kNumberTypeUInt32, "uint32"},
-                                                       {TypeId::kNumberTypeUInt64, "uint64"},
-                                                       {TypeId::kNumberTypeBool, "bool"},
-                                                       {TypeId::kNumberTypeComplex64, "complex64"},
-                                                       {TypeId::kNumberTypeComplex128, "complex128"}};
 
 const std::unordered_map<std::string, std::string> dtype_shortdtype_map_ = {
   {"float16", "f16"}, {"float32", "f32"}, {"float64", "f64"}, {"int8", "i8"},    {"int16", "i16"},  {"int32", "i32"},
@@ -150,24 +117,34 @@ FusionType GetFusionTypeByName(const std::string &name) {
       transform(name_upper.begin(), name_upper.end(), name_upper.begin(), ::toupper);
       return fusion_name_upper == name_upper;
     });
-
   if (iter == fusion_type_name_maps.end()) {
     MS_LOG(EXCEPTION) << "Illegal fusion name: " << name;
   }
   return iter->first;
 }
 
-void KernelMeta::Initialize() {
-  kernel_meta_path_ = std::string(kGpuKernelMeta) + "/";
-
-#if defined(_WIN32) || defined(_WIN64)
-  auto ret = mkdir(kernel_meta_path_.c_str());
-#else
-  auto ret = mkdir(kernel_meta_path_.c_str(), S_IRWXG | S_IRWXU);
-#endif
-  if (ret != 0) {
-    MS_LOG(INFO) << "kernel dir [" << kernel_meta_path_ << "], will be created later";
+std::string GetCompilerCachePath() {
+  static std::string config_path = "";
+  if (config_path != "") {
+    return config_path;
   }
+  const char *value = ::getenv(kCOMPILER_CACHE_PATH);
+  if (value == nullptr) {
+    config_path = "./";
+  } else {
+    config_path = std::string(value);
+    FileUtils::CreateNotExistDirs(config_path);
+    if (config_path[config_path.length() - 1] != '/') {
+      config_path += "/";
+    }
+  }
+  return config_path;
+}
+
+void KernelMeta::Initialize() {
+  auto config_path = GetCompilerCachePath();
+  kernel_meta_path_ = config_path + std::string(kAkgKernelMeta);
+  FileUtils::CreateNotExistDirs(kernel_meta_path_);
   initialized_ = true;
 }
 
@@ -237,11 +214,7 @@ KernelPackPtr InsertCache(const std::string &kernel_name, const std::string &pro
   MS_LOG(INFO) << "Insert cache for kernel:" << kernel_name << ", processr:" << processor;
   KernelMeta *bin_map = KernelMeta::GetInstance();
   std::string kernel_json;
-  if (processor == kProcessorAiCore || processor == kProcessorAiCpu) {
-    kernel_json = kCceKernelMeta;
-  } else {
-    kernel_json = bin_map->kernel_meta_path();
-  }
+  kernel_json = bin_map->kernel_meta_path();
   (void)kernel_json.append(kernel_name).append(kJsonSuffix);
   KernelPackPtr kernel_pack = std::make_shared<KernelPack>();
   if (!kernel_pack->ReadFromJsonFile(kernel_json, processor)) {
@@ -260,24 +233,13 @@ KernelPackPtr InsertCache(const std::string &kernel_name, const std::string &pro
 }
 
 TypeId DtypeToTypeId(const std::string &dtypes) {
-  auto iter = type_id_maps.find(dtypes);
-  if (iter != type_id_maps.end()) {
-    return iter->second;
-  } else {
-    MS_EXCEPTION(ArgumentError) << "Illegal input device dtype:" << dtypes;
+  if (dtypes == "float") {
+    return TypeId::kNumberTypeFloat32;
   }
-}
-
-std::string TypeId2String(TypeId type_id, bool unknown_as_default) {
-  auto iter = type_id_str_map.find(type_id);
-  if (iter == type_id_str_map.end()) {
-    if (!unknown_as_default) {
-      MS_EXCEPTION(ArgumentError) << "Illegal input dtype." << TypeIdLabel(type_id);
-    }
-    MS_LOG(INFO) << "Using default dtype: float32";
-    return "float32";
+  if (dtypes.empty()) {
+    return TypeId::kMetaTypeNone;
   }
-  return iter->second;
+  return StringToTypeId(dtypes);
 }
 
 std::string Dtype2ShortType(const std::string &dtype) {
@@ -420,6 +382,10 @@ void SetKernelBuildInfo(const std::shared_ptr<KernelBuildInfo::KernelBuildInfoBu
 
   if (imply_type == kAKG) {
     builder->SetKernelType(AKG_KERNEL);
+  } else if (imply_type == kGPU) {
+    builder->SetKernelType(GPU_KERNEL);
+  } else if (imply_type == kCPU) {
+    builder->SetKernelType(CPU_KERNEL);
   } else if (imply_type == kAICPU) {
     builder->SetKernelType(AICPU_KERNEL);
   } else {
@@ -565,86 +531,6 @@ int Sign(float x) {
   return 0;
 }
 
-std::pair<AnfNodePtr, size_t> GetKernelInput(const AnfNodePtr &anf_node, size_t index) {
-  MS_EXCEPTION_IF_NULL(anf_node);
-
-  if (index >= AnfAlgo::GetInputTensorNum(anf_node)) {
-    MS_EXCEPTION(ArgumentError) << "Index is out of the size of anf_node inputs. Node info : ["
-                                << anf_node->DebugString() << "]";
-  }
-
-  auto cnode = anf_node->cast<CNodePtr>();
-  if (cnode == nullptr) {
-    return AnfAlgo::VisitKernel(anf_node, 0);
-  } else {
-    return AnfAlgo::VisitKernel(anf_node->cast<CNodePtr>()->input(index + 1), 0);
-  }
-}
-
-std::vector<std::pair<AnfNodePtr, std::pair<size_t, size_t>>> GetInputIndex(const std::vector<AnfNodePtr> &node_list,
-                                                                            const std::vector<AnfNodePtr> &input_list) {
-  std::vector<std::pair<AnfNodePtr, std::pair<size_t, size_t>>> input_index;
-  for (size_t i = 0; i < input_list.size(); ++i) {
-    auto const &input = input_list[i];
-    MS_EXCEPTION_IF_NULL(input);
-    bool found = false;
-    auto mng = input->func_graph()->manager();
-    MS_EXCEPTION_IF_NULL(mng);
-    const NodeUsersMap &users = mng->node_users();
-    auto input_users = users.find(input);
-    if (input_users == users.end() || input_users->second.empty()) {
-      MS_EXCEPTION(ArgumentError) << "Input [" << i << "][" << input->DebugString(2) << "] of ["
-                                  << input->func_graph()->ToString() << "] has no users.";
-    }
-
-    for (auto const &input_user : input_users->second) {
-      for (auto const &anf_node : node_list) {
-        if (anf_node != input_user.first) {
-          continue;
-        }
-
-        std::vector<int64_t> dyn_input_sizes;
-        auto prim = AnfAlgo::GetCNodePrimitive(anf_node);
-        MS_EXCEPTION_IF_NULL(prim);
-        if (prim->GetAttr(kAttrDynInputSizes) != nullptr) {
-          dyn_input_sizes = GetValue<const std::vector<int64_t>>(prim->GetAttr(kAttrDynInputSizes));
-        }
-
-        if (dyn_input_sizes.empty()) {
-          input_index.push_back(std::make_pair(anf_node, std::make_pair(IntToSize(input_user.second - 1), 0)));
-          found = true;
-          break;
-        } else {
-          int used_as_idx = input_user.second - 1;
-          int accum_idx = 0;
-          size_t dyn_i = 0;
-          for (; dyn_i < dyn_input_sizes.size(); ++dyn_i) {
-            accum_idx += LongToInt(dyn_input_sizes[dyn_i]);
-            if (used_as_idx < accum_idx) {
-              input_index.push_back(std::make_pair(
-                anf_node, std::make_pair(dyn_i, IntToSize(used_as_idx - (accum_idx - dyn_input_sizes[dyn_i])))));
-              break;
-            }
-          }
-          if (dyn_i != dyn_input_sizes.size()) {
-            found = true;
-            break;
-          }
-        }
-      }
-      if (found) {
-        break;
-      }
-    }
-
-    if (!found) {
-      MS_EXCEPTION(ArgumentError) << "Input [" << i << "][" << input->DebugString(2) << "] of ["
-                                  << input->func_graph()->ToString() << "] found no related kernel info.";
-    }
-  }
-  return input_index;
-}
-
 std::vector<std::pair<AnfNodePtr, size_t>> GetOutputIndex(const std::vector<AnfNodePtr> &node_list,
                                                           const std::vector<AnfNodePtr> &input_list,
                                                           const std::vector<AnfNodePtr> &output_list) {
@@ -677,7 +563,7 @@ void GetValidKernelNodes(const FuncGraphPtr &func_graph, std::vector<AnfNodePtr>
   MS_EXCEPTION_IF_NULL(func_graph);
   std::vector<AnfNodePtr> node_lists = TopoSort(func_graph->get_return());
   for (auto const &node : node_lists) {
-    if (!AnfAlgo::IsRealKernel(node) || !node->isa<CNode>()) {
+    if (!AnfUtils::IsRealKernel(node) || !node->isa<CNode>()) {
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
@@ -732,67 +618,6 @@ void GetFuncGraphOutputNodes(const FuncGraphPtr &func_graph, std::vector<AnfNode
   }
 }
 
-bool GetInputTensorValue(const AnfNodePtr &anf_node, size_t input_idx, nlohmann::json *const node_json) {
-  MS_EXCEPTION_IF_NULL(anf_node);
-  MS_EXCEPTION_IF_NULL(node_json);
-  auto cnode = anf_node->cast<CNodePtr>();
-  MS_EXCEPTION_IF_NULL(cnode);
-  if (input_idx + 1 >= cnode->size()) {
-    MS_EXCEPTION(ArgumentError) << "input_idx [" << input_idx << "] is out of index of inputs of ["
-                                << cnode->inputs().size() << "][" << cnode->DebugString() << "]";
-  }
-
-  auto input_node = cnode->input(input_idx + 1);
-  if (!IsValueNode<tensor::Tensor>(input_node)) {
-    return false;
-  }
-
-  auto tensor = GetValueNode<tensor::TensorPtr>(input_node);
-  if (tensor == nullptr) {
-    MS_LOG(DEBUG) << "Value of input node is nullptr, op: [" << input_node->DebugString() << "]";
-    return false;
-  }
-
-  auto type_id = tensor->data_type();
-  auto *data = tensor->data_c();
-  MS_EXCEPTION_IF_NULL(data);
-  if (tensor->DataSize() > 1) {
-    // not const tensor.
-    MS_LOG(WARNING) << "Not take value of tensor whose datasize greater than 1, [" << input_node->DebugString(2) << "]";
-    return false;
-  }
-
-  if (type_id == kFloat64->type_id()) {
-    (*node_json)["value"] = static_cast<double *>(data)[0];
-  } else if (type_id == kFloat32->type_id()) {
-    (*node_json)["value"] = static_cast<float *>(data)[0];
-  } else if (type_id == kFloat16->type_id()) {
-    float16 *val = static_cast<float16 *>(data);
-    (*node_json)["value"] = static_cast<float>(val[0]);
-  } else if (type_id == kUInt64->type_id()) {
-    (*node_json)["value"] = static_cast<uint64_t *>(data)[0];
-  } else if (type_id == kUInt32->type_id()) {
-    (*node_json)["value"] = static_cast<uint32_t *>(data)[0];
-  } else if (type_id == kUInt16->type_id()) {
-    (*node_json)["value"] = static_cast<uint16_t *>(data)[0];
-  } else if (type_id == kUInt8->type_id()) {
-    (*node_json)["value"] = static_cast<uint8_t *>(data)[0];
-  } else if (type_id == kInt64->type_id()) {
-    (*node_json)["value"] = static_cast<int64_t *>(data)[0];
-  } else if (type_id == kInt32->type_id()) {
-    (*node_json)["value"] = static_cast<int32_t *>(data)[0];
-  } else if (type_id == kInt16->type_id()) {
-    (*node_json)["value"] = static_cast<int16_t *>(data)[0];
-  } else if (type_id == kInt8->type_id()) {
-    (*node_json)["value"] = static_cast<int8_t *>(data)[0];
-  } else if (type_id == kBool->type_id()) {
-    (*node_json)["value"] = static_cast<bool *>(data)[0];
-  } else {
-    MS_LOG(EXCEPTION) << "Unknown value type of tensor[" << cnode->DebugString() << "]";
-  }
-  return true;
-}
-
 bool IsWeightBoundary(const AnfNodePtr &node) {
   if (node->isa<ValueNode>()) {
     return true;
@@ -805,7 +630,8 @@ bool IsWeightBoundary(const AnfNodePtr &node) {
 
 std::vector<int64_t> GetReduceAttrAxis(const CNodePtr &cnode) {
   if (AnfAlgo::GetInputTensorNum(cnode) != 1 || AnfAlgo::GetOutputTensorNum(cnode) != 1) {
-    MS_LOG(EXCEPTION) << "The reduce node [" << cnode->DebugString() << "] is not single input or single output.";
+    MS_LOG(EXCEPTION) << "The reduce node [" << cnode->DebugString() << "] is not single input or single output."
+                      << trace::DumpSourceLines(cnode);
   }
   std::vector<int64_t> axis;
   auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(cnode, 0);
@@ -873,6 +699,8 @@ Processor GetProcessorFromContext() {
     processor = kernel::Processor::CUDA;
   } else if (device_info == kAscendDevice) {
     processor = kernel::Processor::AICORE;
+  } else if (device_info == kCPUDevice) {
+    processor = kernel::Processor::CPU;
   }
   return processor;
 }
@@ -884,6 +712,8 @@ std::string GetStrProcessorFromContext() {
     str_processor = kernel::kProcessorCuda;
   } else if (processor == kernel::Processor::AICORE) {
     str_processor = kernel::kProcessorAiCore;
+  } else if (processor == kernel::Processor::CPU) {
+    str_processor = kernel::kProcessorCpu;
   }
   return str_processor;
 }
@@ -915,7 +745,7 @@ bool GetShapeSize(const std::vector<size_t> &shape, const TypePtr &type_ptr, int
     return false;
   }
   for (size_t j = 0; j < shape.size(); j++) {
-    size_i[0] = LongMulWithOverflowCheck(size_i[0], static_cast<int>(shape[j]));
+    size_i[0] = LongMulWithOverflowCheck(size_i[0], static_cast<int64_t>(shape[j]));
   }
   size_i[0] = LongMulWithOverflowCheck(size_i[0], SizeToInt(type_byte));
   return true;
@@ -923,7 +753,7 @@ bool GetShapeSize(const std::vector<size_t> &shape, const TypePtr &type_ptr, int
 
 void CastShapeSizeToLong(const std::vector<size_t> &shape, std::vector<int64_t> *long_shape) {
   MS_EXCEPTION_IF_NULL(long_shape);
-  std::transform(shape.begin(), shape.end(), std::back_inserter(*long_shape), SizeToLong);
+  (void)std::transform(shape.begin(), shape.end(), std::back_inserter(*long_shape), SizeToLong);
 }
 
 void CheckSliceValid(const std::vector<int64_t> &start, const std::vector<int64_t> &stop,
@@ -986,7 +816,7 @@ size_t CalOffset(const std::vector<int64_t> &start, const std::vector<int64_t> &
   size_t size = start.size();
   size_t offset = 0;
   for (size_t i = 0; i < size; ++i) {
-    offset += SizetMulWithOverflowCheck(LongToSize(dim_offset[i]), start[i]);
+    offset += SizetMulWithOverflowCheck(LongToSize(dim_offset[i]), LongToSize(start[i]));
     if (stop[i] - start[i] != 1) {
       break;
     }

@@ -31,6 +31,7 @@ constexpr auto kE2eDumpSettings = "e2e_dump_settings";
 constexpr auto kDumpMode = "dump_mode";
 constexpr auto kPath = "path";
 constexpr auto kNetName = "net_name";
+constexpr auto kSavedData = "saved_data";
 constexpr auto kIteration = "iteration";
 constexpr auto kInputOutput = "input_output";
 constexpr auto kKernels = "kernels";
@@ -38,6 +39,10 @@ constexpr auto kSupportDevice = "support_device";
 constexpr auto kEnable = "enable";
 constexpr auto kOpDebugMode = "op_debug_mode";
 constexpr auto kTransFlag = "trans_flag";
+constexpr auto kStatisticDump = "statistic";
+constexpr auto kTensorDump = "tensor";
+constexpr auto kFullDump = "full";
+constexpr auto kFileFormat = "file_format";
 constexpr auto kDumpInputAndOutput = 0;
 constexpr auto kDumpInputOnly = 1;
 constexpr auto kDumpOutputOnly = 2;
@@ -75,8 +80,7 @@ bool DumpJsonParser::IsDumpEnabled() {
   auto context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context);
   if (context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
-    MS_LOG(WARNING) << "Dump is disabled in PyNative mode";
-    return false;
+    MS_LOG(EXCEPTION) << "Dump is disabled in PyNative mode. Please set mode to GRAPH_MODE in context.";
   }
   return true;
 }
@@ -99,7 +103,7 @@ void DumpJsonParser::Parse() {
   std::ifstream json_file(dump_config_file.value());
   if (!json_file.is_open()) {
     MS_LOG(EXCEPTION) << "Dump file:" << dump_config_file.value() << " open failed."
-                      << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+                      << " Errno:" << errno;
   }
 
   nlohmann::json j;
@@ -123,31 +127,34 @@ void DumpJsonParser::Parse() {
   JudgeDumpEnabled();
 }
 
-void DumpJsonParser::CopyJsonToDir(uint32_t rank_id) {
+void WriteJsonFile(const std::string &file_path, const std::ifstream &json_file) {
+  ChangeFileMode(file_path, S_IWUSR);
+  std::ofstream json_copy(file_path);
+  if (!json_copy.is_open()) {
+    MS_LOG(EXCEPTION) << "Json file " << file_path << "open failed!";
+  }
+  json_copy << json_file.rdbuf();
+  json_copy.close();
+  ChangeFileMode(file_path, S_IRUSR);
+}
+
+void DumpJsonParser::CopyDumpJsonToDir(uint32_t rank_id) {
   this->Parse();
   if (!IsDumpEnabled()) {
     return;
   }
   auto dump_config_file = Common::GetConfigFile(kMindsporeDumpConfig);
   if (!dump_config_file.has_value()) {
-    MS_LOG(EXCEPTION) << "Get dump config file failed";
+    MS_LOG(EXCEPTION) << "Get dump config file failed.";
   }
   std::ifstream json_file(dump_config_file.value());
   if (async_dump_enabled_ || e2e_dump_enabled_) {
     auto realpath =
       Common::CreatePrefixPath(path_ + "/rank_" + std::to_string(rank_id) + "/.dump_metadata/data_dump.json");
     if (!realpath.has_value()) {
-      MS_LOG(ERROR) << "Get real path failed in CopyJsonDir.";
+      MS_LOG(ERROR) << "Get real path failed in CopyDumpJsonToDir.";
     } else {
-      const std::string file_path = realpath.value();
-      ChangeFileMode(file_path, S_IWUSR);
-      std::ofstream json_copy(file_path);
-      if (!json_copy.is_open()) {
-        MS_LOG(EXCEPTION) << "Json file " << file_path << "open failed!";
-      }
-      json_copy << json_file.rdbuf();
-      json_copy.close();
-      ChangeFileMode(file_path, S_IRUSR);
+      WriteJsonFile(realpath.value(), json_file);
     }
   }
 }
@@ -169,15 +176,7 @@ void DumpJsonParser::CopyHcclJsonToDir(uint32_t rank_id) {
   if (!realpath.has_value()) {
     MS_LOG(ERROR) << "Get real path failed in CopyHcclJsonToDir.";
   } else {
-    const std::string file_path = realpath.value();
-    ChangeFileMode(file_path, S_IWUSR);
-    std::ofstream json_copy(file_path);
-    if (!json_copy.is_open()) {
-      MS_LOG(EXCEPTION) << "Json file " << file_path << "open failed!";
-    }
-    json_copy << json_file.rdbuf();
-    json_copy.close();
-    ChangeFileMode(file_path, S_IRUSR);
+    WriteJsonFile(realpath.value(), json_file);
   }
 }
 
@@ -193,7 +192,7 @@ void DumpJsonParser::CopyMSCfgJsonToDir(uint32_t rank_id) {
     auto context = MsContext::GetInstance();
     MS_EXCEPTION_IF_NULL(context);
     ms_info["device_target"] = context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-    ms_info["ms_version"] = "1.5.0";
+    ms_info["ms_version"] = MSVERSION;
     const std::string file_path = realpath.value();
     ChangeFileMode(file_path, S_IWUSR);
     std::ofstream json_create(file_path);
@@ -224,8 +223,7 @@ bool DumpJsonParser::DumpToFile(const std::string &filename, const void *data, s
   ChangeFileMode(file_path_str, S_IWUSR);
   std::ofstream fd(file_path_str, std::ios::out | std::ios::trunc | std::ios::binary);
   if (!fd.is_open()) {
-    MS_LOG(EXCEPTION) << "Open file " << file_path_str << " failed."
-                      << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+    MS_LOG(EXCEPTION) << "Open file " << file_path_str << " failed." << ErrnoToString(errno);
   }
   std::string npy_header = GenerateNpyHeader(shape, type);
   if (!npy_header.empty()) {
@@ -276,7 +274,10 @@ void DumpJsonParser::ParseCommonDumpSetting(const nlohmann::json &content) {
   ParseSupportDevice(*support_device);
   if (!e2e_dump_enabled_) {
     ParseOpDebugMode(*op_debug_mode);
+    ParseFileFormat(
+      *common_dump_settings);  // Pass in the whole json string to parse because file_format field is optional.
   }
+  ParseSavedData(*common_dump_settings);  // saved data optional
 }
 
 void DumpJsonParser::ParseE2eDumpSetting(const nlohmann::json &content) {
@@ -317,10 +318,17 @@ void CheckJsonArrayType(const nlohmann::json &content, const std::string &key) {
 }
 
 void DumpJsonParser::ParseDumpMode(const nlohmann::json &content) {
+  auto context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context);
   CheckJsonUnsignedType(content, kDumpMode);
   dump_mode_ = content;
-  if (dump_mode_ != 0 && dump_mode_ != 1) {
-    MS_LOG(EXCEPTION) << "Dump config parse failed, dump_mode should be 0 or 1, but got " << dump_mode_;
+  if (dump_mode_ < DUMP_ALL || dump_mode_ > DUMP_KERNELS_WITH_FLAG) {
+    MS_LOG(EXCEPTION) << "Dump config parse failed, dump_mode should be 0, 1 or 2, but got " << dump_mode_;
+  }
+  if (dump_mode_ == DUMP_KERNELS_WITH_FLAG) {
+    if (context->get_param<std::string>(MS_CTX_DEVICE_TARGET) != kAscendDevice || e2e_dump_enabled_) {
+      MS_LOG(EXCEPTION) << "Cell dump is only supported in Ascend async dump. Please set dump_mode to 0 or 1.";
+    }
   }
 }
 
@@ -362,9 +370,38 @@ void DumpJsonParser::ParseNetName(const nlohmann::json &content) {
   }
 }
 
+void DumpJsonParser::ParseSavedData(const nlohmann::json &content) {
+  saved_data_ = kTensorDump;  // default to tensor data dump
+  auto json_iter = content.find(kSavedData);
+  if (json_iter != content.end()) {
+    CheckJsonStringType(*json_iter, kSavedData);
+    saved_data_ = *json_iter;
+  }
+  if (saved_data_ != kStatisticDump && saved_data_ != kTensorDump && saved_data_ != kFullDump) {
+    MS_LOG(EXCEPTION) << "Dump Json parse failed, saved_data only supports statistic, tensor, or full, but got: "
+                      << saved_data_ << ". Please set saved_data to either statistic, tensor, or full";
+  }
+  auto context = MsContext::GetInstance();
+  if (IsStatisticDump() && context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kCPUDevice) {
+    MS_LOG(EXCEPTION) << "Dump Json parse failed, storing statistic dump is only supported on GPU and Ascend, please "
+                         "set saved_data to tensor or use a GPU or Ascend device";
+  }
+  if (IsStatisticDump() && context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice) {
+    if (file_format_ != JsonFileFormat::FORMAT_NPY) {
+      MS_LOG(EXCEPTION) << "Dump Json parse failed, storing statistic dump is only supported on Ascend when "
+                           "file_format is set to 'npy'.";
+    }
+    if (e2e_dump_enabled_) {
+      MS_LOG(EXCEPTION)
+        << "Dump Json parse failed, storing statistic dump is only supported on Ascend asynchronous mode.";
+    }
+  }
+}
+
 void DumpJsonParser::ParseIteration(const nlohmann::json &content) {
   CheckJsonStringType(content, kIteration);
   auto context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context);
   if (e2e_dump_enabled_ || async_dump_enabled_) {
     iteration_ = content;
     if (iteration_.empty() || (!std::all_of(iteration_.begin(), iteration_.end(), [](char c) {
@@ -379,48 +416,55 @@ void DumpJsonParser::ParseIteration(const nlohmann::json &content) {
   }
 }
 
+bool IsIterInRange(uint32_t iteration, const std::string &range) {
+  if (range.empty()) {
+    return false;
+  }
+  const std::string dash = "-";
+  std::size_t range_idx = range.find(dash);
+  // no dash in range, compare the value directly
+  if (range_idx == std::string::npos) {
+    return iteration == std::stoul(range);
+  }
+  // make sure there is only one dash in range
+  if (range.find(dash, range_idx + 1) != std::string::npos) {
+    return false;
+  }
+  auto low_range_str = range.substr(0, range_idx);
+  auto high_range_str = range.substr(range_idx + 1);
+  if (low_range_str.empty() || high_range_str.empty()) {
+    return false;
+  }
+  uint32_t low_range = static_cast<uint32_t>(std::stoul(low_range_str));
+  uint32_t high_range = static_cast<uint32_t>(std::stoul(high_range_str));
+  return (low_range <= iteration) && (iteration <= high_range);
+}
+
+bool DumpJsonParser::IsStatisticDump() const { return saved_data_ == kStatisticDump || IsFullDump(); }
+
+bool DumpJsonParser::IsTensorDump() const { return saved_data_ == kTensorDump || IsFullDump(); }
+
+bool DumpJsonParser::IsFullDump() const { return saved_data_ == kFullDump; }
+
 bool DumpJsonParser::IsDumpIter(uint32_t iteration) const {
   // bool DumpJsonParser::IsDumpIter(uint32_t iteration) --> checks if iteration should be dumped or not.
   if (iteration_ == "all") {
     return true;
   }
-  int start = 0;
-  int end = iteration_.find("|");
-  while (end != -1) {
-    std::string temp = iteration_.substr(IntToSize(start), IntToSize(end - start));
-    int range_idx = temp.find("-");
-    if (range_idx != -1) {
-      uint32_t low_range = std::stoul(temp.substr(0, IntToSize(range_idx)));
-      uint32_t high_range = std::stoul(temp.substr(IntToSize(range_idx + 1), -1));
-      if ((low_range <= iteration) && (iteration <= high_range)) {
-        return true;
-      }
-    } else if (iteration == std::stoul(temp)) {
+  const std::string vertical_bar = "|";
+  std::size_t start = 0;
+  std::size_t end = iteration_.find(vertical_bar);
+  while (end != std::string::npos) {
+    std::string temp = iteration_.substr(start, end - start);
+    auto found = IsIterInRange(iteration, temp);
+    if (found) {
       return true;
     }
     start = end + 1;
-    end = iteration_.find("|", start);
+    end = iteration_.find(vertical_bar, start);
   }
-  std::string temp = iteration_.substr(IntToSize(start), IntToSize(end - start));
-  int range_idx = temp.find("-");
-  if (range_idx != -1) {
-    uint32_t low_range = std::stoul(temp.substr(0, IntToSize(range_idx)));
-    uint32_t high_range = std::stoul(temp.substr((range_idx + 1), -1));
-    if ((low_range <= iteration) && (iteration <= high_range)) {
-      return true;
-    }
-  } else if (iteration == std::stoul(temp)) {
-    return true;
-  }
-  return false;
-}
-
-bool DumpJsonParser::IsSingleIter() {
-  // bool DumpJsonParser::IsSingleIter() --> checks if iteration in json dump file is single or not.
-  if (iteration_ != "all" && iteration_.find("-") == std::string::npos && iteration_.find("|") == std::string::npos) {
-    return true;
-  }
-  return false;
+  std::string temp = iteration_.substr(start);
+  return IsIterInRange(iteration, temp);
 }
 
 void DumpJsonParser::ParseInputOutput(const nlohmann::json &content) {
@@ -474,6 +518,23 @@ void DumpJsonParser::ParseOpDebugMode(const nlohmann::json &content) {
   }
 }
 
+void DumpJsonParser::ParseFileFormat(const nlohmann::json &content) {
+  auto iter = content.find(kFileFormat);
+  if (iter == content.end()) {
+    file_format_ = JsonFileFormat::FORMAT_BIN;
+  } else {
+    CheckJsonStringType(*iter, kFileFormat);
+    std::string file_format = *iter;
+    const std::map<std::string, JsonFileFormat> str_to_fmt_enum = {{"bin", JsonFileFormat::FORMAT_BIN},
+                                                                   {"npy", JsonFileFormat::FORMAT_NPY}};
+    if (str_to_fmt_enum.find(file_format) == str_to_fmt_enum.end()) {
+      MS_LOG(EXCEPTION) << "Dump Json Parse Failed. 'file_format' should be either 'npy' or 'bin', but got: "
+                        << file_format;
+    }
+    file_format_ = str_to_fmt_enum.at(file_format);
+  }
+}
+
 void DumpJsonParser::JsonConfigToString() {
   std::string cur_config;
   cur_config.append("dump_mode:");
@@ -522,11 +583,23 @@ void DumpJsonParser::JudgeDumpEnabled() {
 }
 
 bool DumpJsonParser::NeedDump(const std::string &op_full_name) const {
-  if (dump_mode_ == 0) {
-    return true;
+  bool need_dump = false;
+  switch (dump_mode_) {
+    case DUMP_ALL:
+      need_dump = true;
+      break;
+    case DUMP_KERNEL:
+      if (kernels_.find(op_full_name) != kernels_.end()) {
+        need_dump = true;
+      }
+      break;
+    case DUMP_KERNELS_WITH_FLAG:
+      if (std::find(cell_dump_kernels_.begin(), cell_dump_kernels_.end(), op_full_name) != cell_dump_kernels_.end()) {
+        need_dump = true;
+      }
+      break;
   }
-  auto iter = kernels_.find(op_full_name);
-  return iter != kernels_.end();
+  return need_dump;
 }
 
 void DumpJsonParser::MatchKernel(const std::string &kernel_name) {
@@ -586,13 +659,31 @@ bool DumpJsonParser::OutputNeedDump() const {
   return input_output_ == kDumpInputAndOutput || input_output_ == kDumpOutputOnly;
 }
 
-void DumpJsonParser::UpdateNeedDumpKernels(NotNull<const session::KernelGraph *> kernel_graph) {
+void DumpJsonParser::GetCellDumpFlag(const session::KernelGraph &kernel_graph) {
+  if (dump_mode_ != DUMP_KERNELS_WITH_FLAG) {
+    return;
+  }
+  for (const auto &kernel : kernel_graph.execution_order()) {
+    MS_EXCEPTION_IF_NULL(kernel);
+    auto dump_flag = AnfAlgo::GetDumpFlag(kernel);
+    if (dump_flag.has_value() && dump_flag.value().compare("true") == 0) {
+      MS_LOG(DEBUG) << "Dump flag is true for " << GetKernelNodeName(kernel);
+      cell_dump_kernels_.push_back(GetKernelNodeName(kernel));
+    }
+  }
+}
+
+void DumpJsonParser::UpdateNeedDumpKernels(const session::KernelGraph &kernel_graph) {
   if (!async_dump_enabled_) {
     return;
   }
+
+  MS_LOG(INFO) << "Get async kernel dump flag";
+  GetCellDumpFlag(kernel_graph);
+
   MS_LOG(INFO) << "Update async dump kernel list for hccl";
   std::map<std::string, uint32_t> update_kernels;
-  for (const auto &kernel : kernel_graph->execution_order()) {
+  for (const auto &kernel : kernel_graph.execution_order()) {
     MS_EXCEPTION_IF_NULL(kernel);
     if (AnfAlgo::GetKernelType(kernel) == HCCL_KERNEL &&
         DumpJsonParser::GetInstance().NeedDump(GetKernelNodeName(kernel))) {
@@ -600,6 +691,7 @@ void DumpJsonParser::UpdateNeedDumpKernels(NotNull<const session::KernelGraph *>
       for (size_t i = 0; i < input_size; ++i) {
         auto input_with_index = AnfAlgo::GetPrevNodeOutput(kernel, i);
         auto input = input_with_index.first;
+        MS_EXCEPTION_IF_NULL(input);
         if (input->isa<CNode>()) {
           MS_LOG(INFO) << "[AsyncDump] Match Hccl Node:" << GetKernelNodeName(kernel)
                        << " Input:" << GetKernelNodeName(input);

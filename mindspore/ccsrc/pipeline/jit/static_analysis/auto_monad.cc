@@ -15,20 +15,21 @@
  */
 
 #include "pipeline/jit/static_analysis/auto_monad.h"
-#include <set>
-#include <map>
 #include <list>
-#include <unordered_map>
 #include <vector>
 #include <stack>
 #include <utility>
+#include <memory>
 #include <algorithm>
 #include "pipeline/jit/parse/resolve.h"
 #include "frontend/operator/ops.h"
 #include "frontend/operator/composite/multitype_funcgraph.h"
 #include "utils/flags.h"
 #include "utils/utils.h"
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "utils/ordered_map.h"
+#include "utils/ordered_set.h"
 #include "base/core_ops.h"
 #include "abstract/abstract_value.h"
 
@@ -206,9 +207,9 @@ prim::MultitypeFuncGraphPtr GetFuncMultitypeFuncGraph(const CNodePtr &cnode) {
 // --------------------------------------------------------------------
 // SCC (Strongly Connected Components) related types.
 // --------------------------------------------------------------------
-using SccVector = std::set<FuncGraphPtr>;
+using SccVector = mindspore::HashSet<FuncGraphPtr>;
 using SccPtr = std::shared_ptr<SccVector>;
-using SccMap = std::unordered_map<FuncGraphPtr, SccPtr>;
+using SccMap = mindspore::HashMap<FuncGraphPtr, SccPtr>;
 
 // ---------------------------------------------------------------------
 // SccFinder find SCCs using Tarjan's algorithm.
@@ -218,7 +219,7 @@ class SccFinder {
   explicit SccFinder(const FuncGraphPtr &root) : root_(root) {}
   ~SccFinder() = default;
   void Run() { (void)Search(root_); }
-  const SccMap &scc_map() const { return scc_map_; }
+  SccMap scc_map() { return std::move(scc_map_); }
 
  private:
   // Save state of a func graph.
@@ -231,14 +232,14 @@ class SccFinder {
   };
 
   // Search SCCs from the given graph.
-  const State &Search(FuncGraphPtr graph) {
+  State &Search(FuncGraphPtr graph) {
     // Create graph state, set it as visited.
     MS_EXCEPTION_IF_NULL(graph);
-    auto [inserted, ok] = visited_.emplace(graph, State(index_++));
+    auto [inserted, ok] = visited_.emplace(graph, std::make_unique<State>(index_++));
     if (!ok) {
       MS_LOG(EXCEPTION) << "Already visited: " << graph->ToString();
     }
-    auto &state = inserted->second;
+    auto &state = *(inserted->second);
     // Push visited graph to stack.
     stack_.push(graph);
     state.in_stack = true;
@@ -250,9 +251,9 @@ class SccFinder {
         // Successor graph has not yet been visited, recurse on it.
         auto &sg_state = Search(sg);
         state.lowlink = std::min(state.lowlink, sg_state.lowlink);
-      } else if (iter->second.in_stack) {
+      } else if (iter->second->in_stack) {
         // Successor graph is in stack and hence in the current SCC.
-        state.lowlink = std::min(state.lowlink, iter->second.index);
+        state.lowlink = std::min(state.lowlink, iter->second->index);
       }
     }
     // If index == lowlink, this means it is the root of SCC.
@@ -266,7 +267,7 @@ class SccFinder {
         if (found == visited_.end()) {
           MS_LOG(EXCEPTION) << "Unexpected graph: " << g->ToString();
         }
-        found->second.in_stack = false;
+        found->second->in_stack = false;
         // Add graph to SCC, and create the map from graph to SCC.
         scc->insert(g);
         scc_map_.emplace(g, scc);
@@ -289,7 +290,7 @@ class SccFinder {
   size_t index_ = 1;
 
   // Visited graphs and their states.
-  std::unordered_map<FuncGraphPtr, State> visited_;
+  mindspore::HashMap<FuncGraphPtr, std::unique_ptr<State>> visited_;
 
   // The stack for Tarjan algorithm.
   std::stack<FuncGraphPtr> stack_;
@@ -302,6 +303,15 @@ struct SwitchLayerCall {
   CNodePtr caller;
   EffectInfo effect_info;
   std::vector<FuncGraphPtr> branches;
+};
+
+class NodeStackGuard {
+ public:
+  NodeStackGuard(OrderedSet<AnfNodePtr> *stack, const AnfNodePtr &node) : stack_(stack) { stack_->push_front(node); }
+  ~NodeStackGuard() { (void)stack_->pop(); }
+
+ private:
+  OrderedSet<AnfNodePtr> *stack_;
 };
 
 // -------------------------------------------------------------------------------
@@ -325,6 +335,8 @@ class SideEffectFinder {
     UpdateOrderLists();
     // Find side effects by DFS from the top graph.
     (void)GetEffectInfo(root_);
+    // Check switch calls, add monad arguments if need.
+    HandleSwitchCalls();
     // Check switch layer calls, add monad arguments if need.
     HandleSwitchLayerCalls();
   }
@@ -414,11 +426,11 @@ class SideEffectFinder {
   EffectInfo TraceSwitchEffectInfo(const CNodePtr &cnode) {
     // Find branches from switch cnode.
     auto branches = GetSwitchBranches(cnode);
+    // Save branch caller, so that we can update arguments for the caller.
+    SaveBranchCaller(cnode, branches);
     // For some case, only one branch is set.
     if (branches.size() == 1) {
       auto &branch = branches.front();
-      // Save branch caller, so that we can update arguments for the caller.
-      SaveBranchCaller(cnode, branch);
       return GetEffectInfo(branch);
     }
     // When both branches are set, merge their effect infos.
@@ -446,6 +458,39 @@ class SideEffectFinder {
       call.branches = move(branches);
     }
     return info;
+  }
+
+  void HandleSwitchCalls() {
+    for (auto &call : switch_calls_) {
+      const auto &caller = call.first;
+      const auto &branches = call.second;
+      CheckAndFixSwitchCall(caller, branches);
+    }
+  }
+
+  void CheckAndFixSwitchCall(const CNodePtr &caller, const FuncGraphVector &branches) {
+    const auto caller_input_size = caller->inputs().size();
+    for (auto &branch : branches) {
+      if (caller_input_size != branch->parameters().size() + 1) {
+        // Fix branch if number of parameter mismatch.
+        FixSwitchBranch(caller, branch);
+        // The number of parameter should matched after fix.
+        if (caller_input_size != branch->parameters().size() + 1) {
+          MS_LOG(EXCEPTION) << "Fix switch branch parameters failed! " << caller->DebugString();
+        }
+      }
+    }
+  }
+
+  void FixSwitchBranch(const CNodePtr &caller, const FuncGraphPtr &branch) {
+    for (size_t i = caller->size() - 1; i > 0; --i) {
+      auto &input = caller->input(i);
+      if (HasAbstractUMonad(input)) {
+        AddMonadParameter(branch, "u", input->abstract());
+      } else if (HasAbstractIOMonad(input)) {
+        AddMonadParameter(branch, "io", input->abstract());
+      }
+    }
   }
 
   void HandleSwitchLayerCalls() {
@@ -698,6 +743,9 @@ class SideEffectFinder {
     // For func graph calls, we trace effect info from graph output.
     auto called_graph = GetFuncGraph(cnode);
     if (called_graph) {
+      // Save the caller of the graph, so that we can update
+      // monad parameters for it when requires.
+      graph_callers_[called_graph].emplace(cnode);
       return TraceEffectInfo(called_graph->output());
     }
 
@@ -791,6 +839,8 @@ class SideEffectFinder {
     if (users.empty()) {
       MS_LOG(WARNING) << "Unused graph for parameter " << para->DebugString();
     }
+    // Push the parameter to a stack so that we can check cycle binding.
+    NodeStackGuard param_stack_guard(&formal_param_stack_, para);
     for (auto &user : users) {
       auto use_index = user.first->second;
       if (use_index != 0) {
@@ -801,12 +851,12 @@ class SideEffectFinder {
       auto cnode = dyn_cast<CNode>(user.first->first);
       MS_EXCEPTION_IF_NULL(cnode);
       if (cnode && input_index < cnode->size()) {
-        auto &real_arg = cnode->input(input_index);
-        if (real_arg == para) {
-          // Skip if the real argument is the given parameter.
+        auto &input = cnode->input(input_index);
+        if (formal_param_stack_.contains(input)) {
+          // Skip if the input is a parameter that we are finding its real argument.
           continue;
         }
-        handler(real_arg);
+        handler(input);
       }
     }
   }
@@ -852,6 +902,9 @@ class SideEffectFinder {
     // For func graph, detect effect info by its children cnodes.
     auto func_graph = GetFuncGraph(cnode);
     if (func_graph) {
+      // Save the caller of the graph, so that we can update
+      // monad parameters for it when requires.
+      graph_callers_[func_graph].emplace(cnode);
       return GetEffectInfo(func_graph);
     }
 
@@ -904,7 +957,7 @@ class SideEffectFinder {
   }
 
   // Gets SCC that the given graph belongs to.
-  const SccPtr &GetScc(const FuncGraphPtr &func_graph) const {
+  SccPtr GetScc(const FuncGraphPtr &func_graph) const {
     auto found = scc_map_.find(func_graph);
     if (found == scc_map_.end()) {
       MS_LOG(EXCEPTION) << "SCC not found for " << (func_graph ? func_graph->ToString() : "FG(null)");
@@ -930,7 +983,7 @@ class SideEffectFinder {
       return effect_info;
     }
     // Get SCC that this graph belongs to.
-    auto &scc = GetScc(func_graph);
+    auto scc = GetScc(func_graph);
     MS_EXCEPTION_IF_NULL(scc);
     // To prevent SCC members be visited again, we set effect info
     // to 'kDetecting' state before start to check cnodes.
@@ -963,8 +1016,8 @@ class SideEffectFinder {
     for (auto &cnode : undetected) {
       MS_EXCEPTION_IF_NULL(cnode);
       auto cnode_effect = GetEffectInfo(cnode);
-      // Side effect should be detected now.
-      if (cnode_effect.state != EffectInfo::kDetected) {
+      // Side effect should be detected now, except free variable nodes that not belong to current SCC.
+      if (cnode_effect.state != EffectInfo::kDetected && scc->find(cnode->func_graph()) != scc->end()) {
         MS_LOG(EXCEPTION) << "Side effect is undectable: " << cnode->DebugString();
       }
     }
@@ -977,10 +1030,13 @@ class SideEffectFinder {
     return info;
   }
 
-  void SaveBranchCaller(const CNodePtr &switch_node, const FuncGraphPtr &branch) {
-    MS_EXCEPTION_IF_NULL(branch);
+  // The caller of switch node is also a caller of the branches, we save them
+  // so that we can update monad parameters for the caller when it requires.
+  void SaveBranchCaller(const CNodePtr &switch_node, const FuncGraphVector &branches) {
     MS_EXCEPTION_IF_NULL(switch_node);
-    auto manager = branch->manager();
+    auto fg = switch_node->func_graph();
+    MS_EXCEPTION_IF_NULL(fg);
+    auto manager = fg->manager();
     MS_EXCEPTION_IF_NULL(manager);
     auto &node_users = manager->node_users();
     auto found = node_users.find(switch_node);
@@ -988,26 +1044,34 @@ class SideEffectFinder {
       MS_LOG(WARNING) << "Caller not found for " << switch_node->DebugString();
       return;
     }
-    if (found->second.size() != 1) {
-      MS_LOG(WARNING) << "Wrong callers " << found->second.size() << " for " << switch_node->DebugString();
-      return;
-    }
-    auto &user = *found->second.begin();
-    auto cnode = dyn_cast<CNode>(user.first);
-    if (cnode != nullptr || user.second == 0) {
-      branch_caller_map.emplace(branch, cnode);
+    bool is_multi_branches = (branches.size() > 1);
+    for (auto &user : found->second) {
+      auto cnode = dyn_cast<CNode>(user.first);
+      if (cnode == nullptr || user.second != 0) {
+        continue;
+      }
+      // The cnode is the switch caller.
+      if (is_multi_branches) {
+        // Caller to branches.
+        switch_calls_.emplace(cnode, branches);
+      }
+      for (auto &branch : branches) {
+        // Branch to caller.
+        graph_callers_[branch].emplace(cnode);
+      }
     }
   }
 
   void UpdateBranchCaller(const FuncGraphPtr &branch) {
     MS_EXCEPTION_IF_NULL(branch);
-    auto iter = branch_caller_map.find(branch);
-    if (iter == branch_caller_map.end()) {
+    auto iter = graph_callers_.find(branch);
+    if (iter == graph_callers_.end()) {
       return;
     }
-    const auto &caller = iter->second;
     const auto &info = branch->GetEffectInfo();
-    AddMonadForCaller(caller, info);
+    for (auto &caller : iter->second) {
+      AddMonadForCaller(caller, info);
+    }
   }
 
   void AddMonadForCaller(const CNodePtr &caller, const EffectInfo &info) {
@@ -1052,15 +1116,23 @@ class SideEffectFinder {
   // SCC map.
   SccMap scc_map_;
 
-  // Single branch (in switch) and its caller cnode.
-  std::map<FuncGraphPtr, CNodePtr> branch_caller_map;
+  // Map graph to its caller cnodes, so that we can add monad inputs to the
+  // caller cnode when we late found that the graph added monad parameters.
+  mindspore::HashMap<FuncGraphPtr, mindspore::HashSet<CNodePtr>> graph_callers_;
 
   // Current high order func caller cnode.
   CNodePtr caller_ = nullptr;
 
+  // Save switch caller cnodes and their branches, so that we can check and
+  // update monad parameters for branches according the caller inputs.
+  mindspore::HashMap<CNodePtr, FuncGraphVector> switch_calls_;
+
   // switch_layer_calls save all switch_layer calls, so that
   // we can check whether monad argument should be added for them.
   std::vector<SwitchLayerCall> switch_layer_calls_;
+
+  // Save traced formal parameters so that we can check cycle parameter binding.
+  OrderedSet<AnfNodePtr> formal_param_stack_;
 };  // class SideEffectFinder
 
 // --------------------------------------------------------------------
@@ -1376,7 +1448,7 @@ class AutoMonadConverter {
     auto depend = NewValueNode(prim::kPrimDepend);
     // If isolated nodes dependencies exist.
     if (IsPrimitiveCNode(output, prim::kPrimDepend) &&
-        IsPrimitiveCNode(output->cast<CNodePtr>()->input(2), prim::kPrimStopGradient)) {
+        IsPrimitiveCNode(output->cast<CNodePtr>()->input(kDependAttachNodeIndex), prim::kPrimStopGradient)) {
       // Insert new Depend node before isolated Depend node.
       auto isolated_depend = output->cast<CNodePtr>();
       auto &orig_output = isolated_depend->input(1);

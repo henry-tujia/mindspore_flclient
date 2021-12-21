@@ -13,59 +13,44 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#include "include/api/context.h"
+#include "src/cxx_api/context.h"
 #include <string>
 #include <memory>
-#ifndef SUPPORT_NNIE
-#include <any>
-#else
-#include <experimental/any>
-#endif
 #include "include/api/types.h"
 #include "include/api/data_type.h"
 #include "src/runtime/inner_allocator.h"
 #include "src/common/log_adapter.h"
+#include "src/delegate/tensorrt/distribution/distribution_base.h"
 
 namespace mindspore {
 constexpr auto kModelOptionCpuEnableFP16 = "mindspore.option.cpu.enable_fp16";
 constexpr auto kModelOptionGPUEnableFP16 = "mindspore.option.gpu.enable_fp16";
+#ifdef ENABLE_OPENGL_TEXTURE
+constexpr auto kModelOptionGPUEnableGLTexture = "mindspore.option.gpu.enable_gl_texture_";
+constexpr auto kModelOptionGPUGLContext = "mindspore.option.gpu.gl_context_";
+constexpr auto kModelOptionGPUGLDisplay = "mindspore.option.gpu.gl_display_";
+#endif
 constexpr auto kModelOptionGPUDeviceID = "mindspore.option.gpu.device_id";
+constexpr auto kModelOptionGPURankID = "mindspore.option.gpu.rank_id";
+constexpr auto kModelOptionGPUGroupSize = "mindspore.option.gpu.group_size";
 constexpr auto kModelOptionKirinNpuFrequency = "mindspore.option.kirin_npu.frequency";
 constexpr auto kModelOptionProvider = "mindspore.option.provider";
 constexpr auto kModelOptionProviderDevice = "mindspore.option.provider.device";
 constexpr auto kModelOptionDeviceID = "mindspore.option.device_id";
-constexpr auto kModelOptionAscend310DeviceID = kModelOptionDeviceID;
-constexpr auto kModelOptionAscend310InsertOpCfgPath = "mindspore.option.ascend310.insert_op_config_file_path";
-constexpr auto kModelOptionAscend310InputFormat = "mindspore.option.ascend310.input_format";
-constexpr auto kModelOptionAscend310InputShapeMap = "mindspore.option.ascend310.input_shape_map";
-constexpr auto kModelOptionAscend310InputShape = "mindspore.option.ascend310.input_shape";
-constexpr auto kModelOptionAscend310OutputType = "mindspore.option.ascend310.output_type";
-constexpr auto kModelOptionAscend310PrecisionMode = "mindspore.option.ascend310.precision_mode";
-constexpr auto kModelOptionAscend310OpSelectImplMode = "mindspore.option.ascend310.op_select_impl_mode";
-constexpr auto KModelOptionAscend310FusionSwitchCfgPath = "mindspore.option.ascend310.fusion_switch_config_file_path";
-constexpr auto kModelOptionAscend310DynamicBatchSize = "mindspore.option.ascend310.dynamic_batch_size";
-constexpr auto kModelOptionAscend310BufferOptimize = "mindspore.option.ascend310.buffer_optimize";
+constexpr auto kModelOptionAscendDeviceID = kModelOptionDeviceID;
+constexpr auto kModelOptionAscendInsertOpCfgPath = "mindspore.option.ascend.insert_op_config_file_path";
+constexpr auto kModelOptionAscendInputFormat = "mindspore.option.ascend.input_format";
+constexpr auto kModelOptionAscendInputShapeMap = "mindspore.option.ascend.input_shape_map";
+constexpr auto kModelOptionAscendInputShape = "mindspore.option.ascend.input_shape";
+constexpr auto kModelOptionAscendOutputType = "mindspore.option.ascend.output_type";
+constexpr auto kModelOptionAscendPrecisionMode = "mindspore.option.ascend.precision_mode";
+constexpr auto kModelOptionAscendOpSelectImplMode = "mindspore.option.ascend.op_select_impl_mode";
+constexpr auto KModelOptionAscendFusionSwitchCfgPath = "mindspore.option.ascend.fusion_switch_config_file_path";
+constexpr auto kModelOptionAscendDynamicBatchSize = "mindspore.option.ascend.dynamic_batch_size";
+constexpr auto kModelOptionAscendDynamicImageSize = "mindspore.option.ascend.dynamic_image_size";
+constexpr auto kModelOptionAscendBufferOptimize = "mindspore.option.ascend.buffer_optimize";
 
-struct Context::Data {
-  std::vector<std::shared_ptr<DeviceInfoContext>> device_info_list;
-  int32_t thread_num = 2;
-  bool enable_parallel_ = false;
-  std::vector<int32_t> affinity_core_list_;
-  int affinity_mode_ = 0;
-  std::shared_ptr<Delegate> delegate = nullptr;
-};
-
-struct DeviceInfoContext::Data {
-#ifndef SUPPORT_NNIE
-  std::map<std::string, std::any> params;
-#else
-  std::map<std::string, std::experimental::any> params;
-#endif
-  std::shared_ptr<Allocator> allocator = nullptr;
-};
-
-Context::Context() : data_(std::shared_ptr<Data>(new (std::nothrow) Data())) {}
+Context::Context() : data_(std::make_shared<Data>()) {}
 
 template <class T, typename U = std::remove_cv_t<std::remove_reference_t<T>>>
 static const U &GetValue(const std::shared_ptr<DeviceInfoContext::Data> &data, const std::string &key) {
@@ -171,7 +156,7 @@ std::shared_ptr<Delegate> Context::GetDelegate() const {
 }
 
 std::vector<std::shared_ptr<DeviceInfoContext>> &Context::MutableDeviceInfo() {
-  static std::vector<std::shared_ptr<DeviceInfoContext>> empty;
+  static std::vector<std::shared_ptr<DeviceInfoContext>> empty{};
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return empty;
@@ -181,36 +166,38 @@ std::vector<std::shared_ptr<DeviceInfoContext>> &Context::MutableDeviceInfo() {
 
 DeviceInfoContext::DeviceInfoContext() : data_(std::make_shared<Data>()) {}
 
-std::string DeviceInfoContext::GetProvider() const {
+std::vector<char> DeviceInfoContext::GetProviderChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
-    return "";
+    return std::vector<char>();
   }
-  return GetValue<std::string>(data_, kModelOptionProvider);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionProvider);
+  return StringToChar(ref);
 }
 
-void DeviceInfoContext::SetProvider(const std::string &provider) {
+void DeviceInfoContext::SetProvider(const std::vector<char> &provider) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionProvider] = provider;
+  data_->params[kModelOptionProvider] = CharToString(provider);
 }
 
-std::string DeviceInfoContext::GetProviderDevice() const {
+std::vector<char> DeviceInfoContext::GetProviderDeviceChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
-    return "";
+    return std::vector<char>();
   }
-  return GetValue<std::string>(data_, kModelOptionProviderDevice);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionProviderDevice);
+  return StringToChar(ref);
 }
 
-void DeviceInfoContext::SetProviderDevice(const std::string &device) {
+void DeviceInfoContext::SetProviderDevice(const std::vector<char> &device) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionProviderDevice] = device;
+  data_->params[kModelOptionProviderDevice] = CharToString(device);
 }
 
 void DeviceInfoContext::SetAllocator(const std::shared_ptr<Allocator> &allocator) {
@@ -252,6 +239,7 @@ void GPUDeviceInfo::SetEnableFP16(bool is_fp16) {
   }
   data_->params[kModelOptionGPUEnableFP16] = is_fp16;
 }
+
 bool GPUDeviceInfo::GetEnableFP16() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
@@ -259,6 +247,74 @@ bool GPUDeviceInfo::GetEnableFP16() const {
   }
   return GetValue<bool>(data_, kModelOptionGPUEnableFP16);
 }
+
+#ifdef ENABLE_OPENGL_TEXTURE
+void GPUDeviceInfo::SetEnableGLTexture(bool is_enable_gl_texture) {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return;
+  }
+  data_->params[kModelOptionGPUEnableGLTexture] = is_enable_gl_texture;
+}
+
+bool GPUDeviceInfo::GetEnableGLTexture() const {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return false;
+  }
+  return GetValue<bool>(data_, kModelOptionGPUEnableGLTexture);
+}
+
+void GPUDeviceInfo::SetGLContext(void *gl_context) {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return;
+  }
+  data_->params[kModelOptionGPUGLContext] = gl_context;
+}
+
+void *GPUDeviceInfo::GetGLContext() const {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return nullptr;
+  }
+  return GetValue<void *>(data_, kModelOptionGPUGLContext);
+}
+
+void GPUDeviceInfo::SetGLDisplay(void *gl_display) {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return;
+  }
+  data_->params[kModelOptionGPUGLDisplay] = gl_display;
+}
+
+void *GPUDeviceInfo::GetGLDisplay() const {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return nullptr;
+  }
+  return GetValue<void *>(data_, kModelOptionGPUGLDisplay);
+}
+#else
+void GPUDeviceInfo::SetEnableGLTexture(bool is_enable_gl_texture) { MS_LOG(ERROR) << "Unsupported Feature."; }
+bool GPUDeviceInfo::GetEnableGLTexture() const {
+  MS_LOG(ERROR) << "Unsupported Feature.";
+  return false;
+}
+
+void GPUDeviceInfo::SetGLContext(void *gl_context) { MS_LOG(ERROR) << "Unsupported Feature."; }
+void *GPUDeviceInfo::GetGLContext() const {
+  MS_LOG(ERROR) << "Unsupported Feature.";
+  return nullptr;
+}
+
+void GPUDeviceInfo::SetGLDisplay(void *gl_display) { MS_LOG(ERROR) << "Unsupported Feature."; }
+void *GPUDeviceInfo::GetGLDisplay() const {
+  MS_LOG(ERROR) << "Unsupported Feature.";
+  return nullptr;
+}
+#endif
 
 void KirinNPUDeviceInfo::SetFrequency(int frequency) {
   if (data_ == nullptr) {
@@ -292,6 +348,16 @@ uint32_t GPUDeviceInfo::GetDeviceID() const {
   return GetValue<uint32_t>(data_, kModelOptionGPUDeviceID);
 }
 
+int GPUDeviceInfo::GetRankID() const {
+  data_->params[kModelOptionGPURankID] = lite::GetRankID();
+  return GetValue<int>(data_, kModelOptionGPURankID);
+}
+
+int GPUDeviceInfo::GetGroupSize() const {
+  data_->params[kModelOptionGPUGroupSize] = lite::GetGPUGroupSize();
+  return GetValue<int>(data_, kModelOptionGPUGroupSize);
+}
+
 void GPUDeviceInfo::SetPrecisionMode(const std::vector<char> &precision_mode) {
   MS_LOG(ERROR) << "Unsupported Feature.";
 }
@@ -301,78 +367,72 @@ std::vector<char> GPUDeviceInfo::GetPrecisionModeChar() const {
   return ret;
 }
 
-void Ascend910DeviceInfo::SetDeviceID(uint32_t device_id) { MS_LOG(ERROR) << "Unsupported Feature."; }
-uint32_t Ascend910DeviceInfo::GetDeviceID() const {
-  MS_LOG(ERROR) << "Unsupported Feature.";
-  return 0;
-}
-
-void Ascend310DeviceInfo::SetDeviceID(uint32_t device_id) {
+void AscendDeviceInfo::SetDeviceID(uint32_t device_id) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310DeviceID] = device_id;
+  data_->params[kModelOptionAscendDeviceID] = device_id;
 }
 
-uint32_t Ascend310DeviceInfo::GetDeviceID() const {
+uint32_t AscendDeviceInfo::GetDeviceID() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return 0;
   }
-  return GetValue<uint32_t>(data_, kModelOptionAscend310DeviceID);
+  return GetValue<uint32_t>(data_, kModelOptionAscendDeviceID);
 }
 
-void Ascend310DeviceInfo::SetInsertOpConfigPath(const std::vector<char> &cfg_path) {
+void AscendDeviceInfo::SetInsertOpConfigPath(const std::vector<char> &cfg_path) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310InsertOpCfgPath] = CharToString(cfg_path);
+  data_->params[kModelOptionAscendInsertOpCfgPath] = CharToString(cfg_path);
 }
-std::vector<char> Ascend310DeviceInfo::GetInsertOpConfigPathChar() const {
+std::vector<char> AscendDeviceInfo::GetInsertOpConfigPathChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310InsertOpCfgPath);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendInsertOpCfgPath);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetInputFormat(const std::vector<char> &format) {
+void AscendDeviceInfo::SetInputFormat(const std::vector<char> &format) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310InputFormat] = CharToString(format);
+  data_->params[kModelOptionAscendInputFormat] = CharToString(format);
 }
 
-std::vector<char> Ascend310DeviceInfo::GetInputFormatChar() const {
+std::vector<char> AscendDeviceInfo::GetInputFormatChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310InputFormat);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendInputFormat);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetInputShape(const std::vector<char> &shape) {
+void AscendDeviceInfo::SetInputShape(const std::vector<char> &shape) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310InputShape] = CharToString(shape);
+  data_->params[kModelOptionAscendInputShape] = CharToString(shape);
 }
-std::vector<char> Ascend310DeviceInfo::GetInputShapeChar() const {
+std::vector<char> AscendDeviceInfo::GetInputShapeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310InputShape);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendInputShape);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetDynamicBatchSize(const std::vector<size_t> &dynamic_batch_size) {
+void AscendDeviceInfo::SetDynamicBatchSize(const std::vector<size_t> &dynamic_batch_size) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
@@ -384,114 +444,131 @@ void Ascend310DeviceInfo::SetDynamicBatchSize(const std::vector<size_t> &dynamic
     }
     batchs += std::to_string(dynamic_batch_size[i]);
   }
-  data_->params[kModelOptionAscend310DynamicBatchSize] = batchs;
+  data_->params[kModelOptionAscendDynamicBatchSize] = batchs;
 }
 
-std::vector<char> Ascend310DeviceInfo::GetDynamicBatchSizeChar() const {
+std::vector<char> AscendDeviceInfo::GetDynamicBatchSizeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310DynamicBatchSize);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendDynamicBatchSize);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetPrecisionMode(const std::vector<char> &precision_mode) {
+void AscendDeviceInfo::SetDynamicImageSize(const std::vector<char> &dynamic_image_size) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310PrecisionMode] = CharToString(precision_mode);
+  data_->params[kModelOptionAscendDynamicImageSize] = CharToString(dynamic_image_size);
 }
 
-std::vector<char> Ascend310DeviceInfo::GetPrecisionModeChar() const {
+std::vector<char> AscendDeviceInfo::GetDynamicImageSizeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310PrecisionMode);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendDynamicImageSize);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetOpSelectImplMode(const std::vector<char> &op_select_impl_mode) {
+void AscendDeviceInfo::SetPrecisionMode(const std::vector<char> &precision_mode) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310OpSelectImplMode] = CharToString(op_select_impl_mode);
+  data_->params[kModelOptionAscendPrecisionMode] = CharToString(precision_mode);
 }
 
-std::vector<char> Ascend310DeviceInfo::GetOpSelectImplModeChar() const {
+std::vector<char> AscendDeviceInfo::GetPrecisionModeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310OpSelectImplMode);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendPrecisionMode);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetFusionSwitchConfigPath(const std::vector<char> &cfg_path) {
+void AscendDeviceInfo::SetOpSelectImplMode(const std::vector<char> &op_select_impl_mode) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[KModelOptionAscend310FusionSwitchCfgPath] = CharToString(cfg_path);
+  data_->params[kModelOptionAscendOpSelectImplMode] = CharToString(op_select_impl_mode);
 }
-std::vector<char> Ascend310DeviceInfo::GetFusionSwitchConfigPathChar() const {
+
+std::vector<char> AscendDeviceInfo::GetOpSelectImplModeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, KModelOptionAscend310FusionSwitchCfgPath);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendOpSelectImplMode);
   return StringToChar(ref);
 }
 
-void Ascend310DeviceInfo::SetInputShapeMap(const std::map<int, std::vector<int>> &shape) {
+void AscendDeviceInfo::SetFusionSwitchConfigPath(const std::vector<char> &cfg_path) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310InputShapeMap] = shape;
+  data_->params[KModelOptionAscendFusionSwitchCfgPath] = CharToString(cfg_path);
+}
+std::vector<char> AscendDeviceInfo::GetFusionSwitchConfigPathChar() const {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return std::vector<char>();
+  }
+  const std::string &ref = GetValue<std::string>(data_, KModelOptionAscendFusionSwitchCfgPath);
+  return StringToChar(ref);
 }
 
-std::map<int, std::vector<int>> Ascend310DeviceInfo::GetInputShapeMap() const {
+void AscendDeviceInfo::SetInputShapeMap(const std::map<int, std::vector<int>> &shape) {
+  if (data_ == nullptr) {
+    MS_LOG(ERROR) << "Invalid context.";
+    return;
+  }
+  data_->params[kModelOptionAscendInputShapeMap] = shape;
+}
+
+std::map<int, std::vector<int>> AscendDeviceInfo::GetInputShapeMap() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::map<int, std::vector<int>>();
   }
-  return GetValue<std::map<int, std::vector<int>>>(data_, kModelOptionAscend310InputShapeMap);
+  return GetValue<std::map<int, std::vector<int>>>(data_, kModelOptionAscendInputShapeMap);
 }
 
-void Ascend310DeviceInfo::SetOutputType(enum DataType output_type) {
+void AscendDeviceInfo::SetOutputType(enum DataType output_type) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310OutputType] = output_type;
+  data_->params[kModelOptionAscendOutputType] = output_type;
 }
 
-enum DataType Ascend310DeviceInfo::GetOutputType() const {
+enum DataType AscendDeviceInfo::GetOutputType() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return DataType::kTypeUnknown;
   }
-  return GetValue<enum DataType>(data_, kModelOptionAscend310OutputType);
+  return GetValue<enum DataType>(data_, kModelOptionAscendOutputType);
 }
 
-void Ascend310DeviceInfo::SetBufferOptimizeMode(const std::vector<char> &buffer_optimize_mode) {
+void AscendDeviceInfo::SetBufferOptimizeMode(const std::vector<char> &buffer_optimize_mode) {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return;
   }
-  data_->params[kModelOptionAscend310BufferOptimize] = CharToString(buffer_optimize_mode);
+  data_->params[kModelOptionAscendBufferOptimize] = CharToString(buffer_optimize_mode);
 }
 
-std::vector<char> Ascend310DeviceInfo::GetBufferOptimizeModeChar() const {
+std::vector<char> AscendDeviceInfo::GetBufferOptimizeModeChar() const {
   if (data_ == nullptr) {
     MS_LOG(ERROR) << "Invalid context.";
     return std::vector<char>();
   }
-  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscend310BufferOptimize);
+  const std::string &ref = GetValue<std::string>(data_, kModelOptionAscendBufferOptimize);
   return StringToChar(ref);
 }
 }  // namespace mindspore

@@ -54,8 +54,8 @@ Status BuildVocabNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node
   std::shared_ptr<BuildVocabOp> build_vocab_op;
   build_vocab_op = std::make_shared<BuildVocabOp>(vocab_, columns_, freq_range_, top_k_, special_tokens_,
                                                   special_first_, num_workers_, connector_que_size_);
-  build_vocab_op->set_total_repeats(GetTotalRepeats());
-  build_vocab_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  build_vocab_op->SetTotalRepeats(GetTotalRepeats());
+  build_vocab_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(build_vocab_op);
   return Status::OK();
 }
@@ -64,21 +64,18 @@ Status BuildVocabNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (vocab_ == nullptr) {
     std::string err_msg = "BuildVocabNode: vocab is null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (top_k_ <= 0) {
     std::string err_msg = "BuildVocabNode: top_k should be positive, but got: " + std::to_string(top_k_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (freq_range_.first < 0 || freq_range_.second > kDeMaxFreq || freq_range_.first > freq_range_.second) {
-    std::string err_msg = "BuildVocabNode: frequency_range [a,b] violates 0 <= a <= b (a,b are inclusive)";
-    MS_LOG(ERROR) << "BuildVocabNode: frequency_range [a,b] should be 0 <= a <= b (a,b are inclusive), "
-                  << "but got [" << freq_range_.first << ", " << freq_range_.second << "]";
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "BuildVocabNode: frequency_range [a,b] violates 0 <= a <= b (a,b are inclusive), but got [" +
+                          std::to_string(freq_range_.first) + ", " + std::to_string(freq_range_.second) + "]";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (!columns_.empty()) {

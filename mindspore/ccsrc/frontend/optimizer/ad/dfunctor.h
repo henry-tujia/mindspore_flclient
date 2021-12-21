@@ -21,11 +21,12 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <iostream>
 #include <utility>
+#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "ir/anf.h"
 #include "ir/meta_func_graph.h"
 #include "ir/func_graph_cloner.h"
@@ -111,12 +112,12 @@ class DFunctor : public std::enable_shared_from_this<DFunctor> {
                                           const CNodePtr &cnode_morph);
   void ReplaceEquivdout(const CNodePtr &k_app, const CNodePtr &cnode_morph);
 
-  std::unordered_map<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_;
+  mindspore::HashMap<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_;
   // Cache for indirect fv backpropagation, K o K can only do backprop layer by layer.
-  std::unordered_map<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_indirect_fv_;
+  mindspore::HashMap<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_indirect_fv_;
   // Cache for fv node -> pair<embed<fv_node>, zeros_like<fv_node>>, so EnvGetItemTransform in optimizer
   // can hit its cache if fv_node is same.
-  std::unordered_map<AnfNodePtr, std::pair<CNodePtr, CNodePtr>> anfnode_to_envitem_;
+  mindspore::HashMap<AnfNodePtr, std::pair<CNodePtr, CNodePtr>> anfnode_to_envitem_;
   FuncGraphPtr primal_graph_;
   // K object for primal_graph_;
   FuncGraphPtr k_graph_;
@@ -128,8 +129,8 @@ class DFunctor : public std::enable_shared_from_this<DFunctor> {
   // Cut off stopped objects in category D.
   bool need_cut_;
   bool is_top_;
-  static std::unordered_map<FuncGraphPtr, std::shared_ptr<DFunctor>> func_graph_to_functor_;
-  static std::unordered_map<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_definition_;
+  static mindspore::HashMap<FuncGraphPtr, std::shared_ptr<DFunctor>> func_graph_to_functor_;
+  static mindspore::HashMap<AnfNodePtr, AdjointPtr> anfnode_to_adjoin_definition_;
 };
 
 // D Functor's rules to map primitive object.
@@ -165,7 +166,7 @@ class KPrim {
   // Refer the comment in KUserDefinedCellBprop.
   template <typename T>
   FuncGraphPtr BpropToK(const T &primal, const FuncGraphPtr &bprop_g, const FuncGraphPtr &current_primal_fg,
-                        const CNodePtr &cnode, const std::unordered_map<std::string, ValuePtr> &primal_attrs,
+                        const CNodePtr &cnode, const mindspore::HashMap<std::string, ValuePtr> &primal_attrs,
                         const std::vector<NodeDebugInfoPtr> &primal_debug_infos);
   AnfNodePtr BuildOutput(const FuncGraphPtr &bprop_fg, const FuncGraphPtr &current_primal_fg);
   void TransformArgsForPrimitive(const FuncGraphManagerPtr &mng, const FuncGraphPtr &bprop_fg,
@@ -178,12 +179,12 @@ class KPrim {
   void CheckBprop(const FuncGraphPtr &bprop_fg, const string &prim_to_check);
 
   Registry bprop_registry_;
-  std::unordered_map<PrimitivePtr, MetaFuncGraphPtr> bprop_registry_meta_;
+  mindspore::HashMap<PrimitivePtr, MetaFuncGraphPtr> bprop_registry_meta_;
 };
 
 template <typename T>
 FuncGraphPtr KPrim::BpropToK(const T &primal, const FuncGraphPtr &bprop_fg, const FuncGraphPtr &current_primal_fg,
-                             const CNodePtr &cnode, const std::unordered_map<std::string, ValuePtr> &primal_attrs,
+                             const CNodePtr &cnode, const mindspore::HashMap<std::string, ValuePtr> &primal_attrs,
                              const std::vector<NodeDebugInfoPtr> &primal_debug_infos) {
   MS_EXCEPTION_IF_NULL(primal);
   MS_EXCEPTION_IF_NULL(bprop_fg);
@@ -268,6 +269,16 @@ FuncGraphPtr KPrim::BpropToK(const T &primal, const FuncGraphPtr &bprop_fg, cons
   outer->set_output(outer->NewCNode({NewValueNode(prim::kPrimMakeTuple), out_value, NewValueNode(cloned_bprop_fg)}));
   return BasicClone(outer);
 }
+
+// Handle bprob of op which input dtype is real number and output dtype is complex number.
+// If the dtype of a gradient(din) is complex number and the input of that is real number,
+// only the real part of the gradient make sense in back propagate. So we handle it by
+// insert a Real() ops after the gradient.
+// input: AnfNode with input of op which input dtype is real number and output dtype is complex number.
+// din: CNodePtr with gradient of input.
+// fg: Funcgraph witch input and din belong to.
+// return: New din with inserted real op if necessarily.
+AnfNodePtr HandleRealToComplex(const AnfNodePtr &input, const CNodePtr &din, FuncGraphPtr fg);
 }  // namespace ad
 }  // namespace mindspore
 

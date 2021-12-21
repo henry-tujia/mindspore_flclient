@@ -17,7 +17,7 @@
 #include "backend/optimizer/pass/eliminate_redundant_op.h"
 #include <memory>
 #include <utility>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "utils/utils.h"
 #include "backend/optimizer/common/helper.h"
@@ -26,7 +26,6 @@
 
 namespace mindspore {
 namespace opt {
-using KernelWithIndex = std::pair<CNodePtr, size_t>;
 namespace {
 CNodePtr GetRealPrevCNode(const AnfNodePtr &node, size_t index, std::vector<KernelWithIndex> *pass_vector) {
   MS_EXCEPTION_IF_NULL(pass_vector);
@@ -35,7 +34,7 @@ CNodePtr GetRealPrevCNode(const AnfNodePtr &node, size_t index, std::vector<Kern
   }
   auto cnode = node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(cnode);
-  if (AnfAlgo::IsRealCNodeKernel(cnode)) {
+  if (AnfUtils::IsRealCNodeKernel(cnode)) {
     pass_vector->push_back(make_pair(cnode, IntToSize(1)));
     return cnode;
   }
@@ -78,9 +77,11 @@ bool TransDataOpEliminateCondition(const CNodePtr &node1, const CNodePtr &node2)
          AnfAlgo::GetOutputFormat(node1, 0) == AnfAlgo::GetInputFormat(node2, 0) &&
          kernel::IsSameShape(AnfAlgo::GetInputDeviceShape(node2, 0), AnfAlgo::GetOutputDeviceShape(node1, 0));
 }
+}  // namespace
 
-const AnfNodePtr ProcessMatchedNodes(const FuncGraphPtr &func_graph, const CNodePtr &cnode, const CNodePtr &prev_cnode,
-                                     std::vector<KernelWithIndex> *pass_vector) {
+const AnfNodePtr EliminateRedundantOp::ProcessMatchedNodes(const FuncGraphPtr &func_graph, const CNodePtr &cnode,
+                                                           const CNodePtr &prev_cnode,
+                                                           std::vector<KernelWithIndex> *pass_vector) const {
   MS_EXCEPTION_IF_NULL(func_graph);
   MS_EXCEPTION_IF_NULL(pass_vector);
   FuncGraphManagerPtr manager = func_graph->manager();
@@ -109,8 +110,11 @@ const AnfNodePtr ProcessMatchedNodes(const FuncGraphPtr &func_graph, const CNode
     (void)manager->Replace(prev_cnode, prev_cnode->input(1));
     return cnode->input(1);
   } else {  // rebuild the pass nodes
+    if (pass_size < kOffset) {
+      MS_LOG(ERROR) << "pass_size should >= 2";
+    }
     for (size_t idx = pass_size - kOffset; idx > 0; --idx) {
-      auto new_node = func_graph->NewCNode((*pass_vector)[idx].first->inputs());
+      auto new_node = NewCNode((*pass_vector)[idx].first->inputs(), func_graph);
       if (idx == pass_size - kOffset) {
         new_node->set_input((*pass_vector)[idx].second,
                             (*pass_vector)[idx + 1].first->input((*pass_vector)[idx + 1].second));
@@ -122,7 +126,6 @@ const AnfNodePtr ProcessMatchedNodes(const FuncGraphPtr &func_graph, const CNode
     return (*pass_vector)[1].first;
   }
 }
-}  // namespace
 
 void EliminateRedundantOp::Init() {
   (void)redundant_process_map_.emplace(std::pair<std::string, RedundantOpPair>(

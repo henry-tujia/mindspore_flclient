@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include "backend/optimizer/ascend/mindir/all_to_all_unify_mindir.h"
 #include <vector>
 #include <string>
+#include "utils/trace_base.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "runtime/hccl_adapter/hccl_adapter.h"
 #include "backend/optimizer/common/helper.h"
@@ -36,8 +37,9 @@ void ChangePrimitiveToAllToAllV(const AnfNodePtr &node) {
   auto neighbor_exchange = node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(neighbor_exchange);
 
-  if (neighbor_exchange->size() <= kCNodePrimitiveIdx) {
-    MS_LOG(EXCEPTION) << "Invalid cnode " << node->DebugString() << " input size " << neighbor_exchange->size();
+  if (neighbor_exchange->size() == kCNodePrimitiveIdx) {
+    MS_LOG(EXCEPTION) << "Inputs should not be empty for cnode " << node->DebugString()
+                      << trace::DumpSourceLines(neighbor_exchange);
   }
 
   auto prim = GetValueNode<PrimitivePtr>(neighbor_exchange->input(kCNodePrimitiveIdx));
@@ -53,32 +55,35 @@ uint32_t GetRankSize(const std::string &group) {
   }
   return rank_size;
 }
+}  // namespace
 
-CNodePtr CreateSplitNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all) {
+CNodePtr AllToAllUnifyMindIR::CreateSplitNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(all_to_all);
   int64_t split_count = AnfAlgo::GetNodeAttr<int64_t>(all_to_all, kAttrSplitCount);
   int64_t split_dim = AnfAlgo::GetNodeAttr<int64_t>(all_to_all, kAttrSplitDim);
 
   if (all_to_all->size() <= kAllToAllInputIdx) {
-    MS_LOG(EXCEPTION) << "Invalid cnode " << all_to_all->DebugString() << " input size " << all_to_all->size();
+    MS_LOG(EXCEPTION) << "Inputs should not be empty for cnode " << all_to_all->DebugString()
+                      << trace::DumpSourceLines(all_to_all);
   }
   auto all_to_all_input = all_to_all->input(kAllToAllInputIdx);
   std::vector<AnfNodePtr> split_input = {NewValueNode(std::make_shared<Primitive>(prim::kPrimSplitV->name())),
                                          all_to_all_input};
-  auto split_v = graph->NewCNode(split_input);
+  auto split_v = NewCNode(split_input, graph);
   MS_EXCEPTION_IF_NULL(split_v);
   auto dtype = AnfAlgo::GetOutputInferDataType(all_to_all_input, 0);
   auto shape = AnfAlgo::GetOutputInferShape(all_to_all_input, 0);
   split_dim = NormalizeDim(shape, split_dim);
   if (SizeToLong(shape.size()) <= split_dim) {
-    MS_LOG(EXCEPTION) << "Invalid split dim " << split_dim << " is over the shape size " << shape.size();
+    MS_LOG(EXCEPTION) << "Invalid split dim " << split_dim << " is over the shape size " << shape.size()
+                      << trace::DumpSourceLines(all_to_all);
   }
-  if (split_count == 0 || shape[LongToSize(split_dim)] % split_count != 0) {
+  if (split_count == 0 || shape[LongToSize(split_dim)] % static_cast<size_t>(split_count) != 0) {
     MS_LOG(EXCEPTION) << "Invalid split count " << split_count << " cannot be divisible by shape[" << split_dim
-                      << "] = " << shape[LongToSize(split_dim)];
+                      << "] = " << shape[LongToSize(split_dim)] << trace::DumpSourceLines(all_to_all);
   }
-  shape[LongToSize(split_dim)] /= split_count;
+  shape[LongToSize(split_dim)] /= static_cast<size_t>(split_count);
   std::vector<TypeId> dtypes(split_count, dtype);
   std::vector<std::vector<size_t>> shapes(split_count, shape);
   AnfAlgo::SetOutputInferTypeAndShape(dtypes, shapes, split_v.get());
@@ -90,20 +95,22 @@ CNodePtr CreateSplitNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all) 
   return split_v;
 }
 
-CNodePtr CreateAllToAllvNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all, const CNodePtr &split) {
+CNodePtr AllToAllUnifyMindIR::CreateAllToAllvNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all,
+                                                  const CNodePtr &split) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(all_to_all);
   MS_EXCEPTION_IF_NULL(split);
   int64_t split_count = AnfAlgo::GetNodeAttr<int64_t>(all_to_all, kAttrSplitCount);
   std::string group = AnfAlgo::GetNodeAttr<std::string>(all_to_all, kAttrGroup);
   std::vector<AnfNodePtr> split_outputs;
-  CreateMultipleOutputsOfAnfNode(graph, split, split_count, &split_outputs);
+  CreateMultipleOutputsOfAnfNode(graph, split, static_cast<size_t>(split_count), &split_outputs);
   if (split_outputs.empty()) {
-    MS_LOG(EXCEPTION) << "The node " << split->DebugString() << " should have at least one output, but got 0.";
+    MS_LOG(EXCEPTION) << "The node " << split->DebugString() << " should have at least one output, but got 0."
+                      << trace::DumpSourceLines(split);
   }
   std::vector<AnfNodePtr> all_to_all_v_input = {NewValueNode(std::make_shared<Primitive>(kAllToAllVOpName))};
-  all_to_all_v_input.insert(all_to_all_v_input.end(), split_outputs.begin(), split_outputs.end());
-  auto all_to_all_v = graph->NewCNode(all_to_all_v_input);
+  (void)all_to_all_v_input.insert(all_to_all_v_input.end(), split_outputs.begin(), split_outputs.end());
+  auto all_to_all_v = NewCNode(all_to_all_v_input, graph);
   MS_EXCEPTION_IF_NULL(all_to_all_v);
   auto single_shape = AnfAlgo::GetOutputInferShape(split_outputs[0], 0);
   auto single_type = AnfAlgo::GetOutputInferDataType(split_outputs[0], 0);
@@ -123,27 +130,30 @@ CNodePtr CreateAllToAllvNode(const FuncGraphPtr &graph, const CNodePtr &all_to_a
   return all_to_all_v;
 }
 
-CNodePtr CreateConcatNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all, const CNodePtr &all_to_all_v) {
+CNodePtr AllToAllUnifyMindIR::CreateConcatNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all,
+                                               const CNodePtr &all_to_all_v) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(all_to_all);
   MS_EXCEPTION_IF_NULL(all_to_all_v);
   int64_t split_count = AnfAlgo::GetNodeAttr<int64_t>(all_to_all, kAttrSplitCount);
   int64_t concat_dim = AnfAlgo::GetNodeAttr<int64_t>(all_to_all, kAttrConcatDim);
   std::vector<AnfNodePtr> all_to_all_v_outputs;
-  CreateMultipleOutputsOfAnfNode(graph, all_to_all_v, split_count, &all_to_all_v_outputs);
+  CreateMultipleOutputsOfAnfNode(graph, all_to_all_v, static_cast<size_t>(split_count), &all_to_all_v_outputs);
   if (all_to_all_v_outputs.empty()) {
-    MS_LOG(EXCEPTION) << "The node " << all_to_all_v->DebugString() << " should have at least one output, but got 0.";
+    MS_LOG(EXCEPTION) << "The node " << all_to_all_v->DebugString() << " should have at least one output, but got 0."
+                      << trace::DumpSourceLines(all_to_all_v);
   }
   std::vector<AnfNodePtr> concat_input = {NewValueNode(std::make_shared<Primitive>(kConcatOpName))};
-  concat_input.insert(concat_input.end(), all_to_all_v_outputs.begin(), all_to_all_v_outputs.end());
-  auto concat = graph->NewCNode(concat_input);
+  (void)concat_input.insert(concat_input.end(), all_to_all_v_outputs.begin(), all_to_all_v_outputs.end());
+  auto concat = NewCNode(concat_input, graph);
   MS_EXCEPTION_IF_NULL(concat);
   auto single_shape = AnfAlgo::GetOutputInferShape(all_to_all_v_outputs[0], 0);
   concat_dim = NormalizeDim(single_shape, concat_dim);
   if (LongToSize(concat_dim) >= single_shape.size()) {
-    MS_LOG(EXCEPTION) << "Invalid concat dim " << concat_dim << " is greater than shape size " << single_shape.size();
+    MS_LOG(EXCEPTION) << "Invalid concat dim " << concat_dim << " is greater than shape size " << single_shape.size()
+                      << trace::DumpSourceLines(all_to_all);
   }
-  single_shape[LongToSize(concat_dim)] *= split_count;
+  single_shape[LongToSize(concat_dim)] *= static_cast<size_t>(split_count);
   AnfAlgo::SetOutputInferTypeAndShape({AnfAlgo::GetOutputInferDataType(all_to_all_v_outputs[0], 0)}, {single_shape},
                                       concat.get());
   AnfAlgo::SetNodeAttr(kAttrAxis, MakeValue<int64_t>(concat_dim), concat);
@@ -152,7 +162,6 @@ CNodePtr CreateConcatNode(const FuncGraphPtr &graph, const CNodePtr &all_to_all,
   AnfAlgo::SetNodeAttr(kAttrDynInputSizes, MakeValue(dyn_input_size), concat);
   return concat;
 }
-}  // namespace
 
 const BaseRef NeighborExchangeUnifyMindIR::DefinePattern() const {
   return VectorRef({prim::kPrimNeighborExchange, std::make_shared<SeqVar>()});

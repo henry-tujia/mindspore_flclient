@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include <utility>
 #include "abstract/abstract_function.h"
+#include "utils/ms_utils.h"
 
 namespace mindspore {
 static uint64_t MakeId() {
@@ -35,18 +36,15 @@ Primitive::Primitive(const std::string &name, const bool is_base, const PrimType
       is_const_prim_(false),
       id_(MakeId()) {}
 
-Primitive::Primitive(const std::string &name, const std::unordered_map<std::string, ValuePtr> &attrs)
+Primitive::Primitive(const std::string &name, const mindspore::HashMap<std::string, ValuePtr> &attrs)
     : Named(name),
+      attrs_(attrs),
       is_base_(true),
       has_signature_(false),
       prim_type_(kPrimTypeBuiltIn),
       record_evaluate_add_attr_(false),
       is_const_prim_(false),
-      id_(MakeId()) {
-  for (auto &attr : attrs) {
-    attrs_[attr.first] = attr.second;
-  }
-}
+      id_(MakeId()) {}
 
 Primitive::Primitive(const Primitive &prim)
     : Named(prim),
@@ -76,20 +74,7 @@ bool Primitive::operator==(const Primitive &other) const {
   if (name() != other.name()) {
     return false;
   }
-  if (attrs_.size() != other.attrs_.size()) {
-    return false;
-  }
-  auto all = std::all_of(attrs_.begin(), attrs_.end(), [&other](const std::pair<std::string, ValuePtr> &item) -> bool {
-    if (item.second == nullptr) {
-      return false;
-    }
-    auto iter = other.attrs_.find(item.first);
-    if (iter == other.attrs_.end()) {
-      return false;
-    }
-    return *item.second == *iter->second;
-  });
-  return all;
+  return common::IsAttrsEqual(attrs_, other.attrs_);
 }
 
 std::string Primitive::GetAttrsText() const {

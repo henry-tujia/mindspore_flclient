@@ -51,7 +51,7 @@ bool CheckFormatForConsistency(const CNodePtr &node, const size_t input_index) {
   if (pre_output_format == kOpFormat_DEFAULT || selected_input_format == kOpFormat_DEFAULT) {
     string checking_format = (pre_output_format == kOpFormat_DEFAULT) ? selected_input_format : pre_output_format;
     // when input shape size is 1D, default format and NC1HWC0 are compatible
-    if (input_origin_shape.size() == 1) {
+    if (input_origin_shape.size() == 1 && input_origin_shape[0] % kCubeSize == 0) {
       return true;
     }
     if (kDefaultCompatibleFormat.find(checking_format) != kDefaultCompatibleFormat.end()) {
@@ -86,16 +86,17 @@ const BaseRef CheckConsistency::DefinePattern() const {
 }
 
 const AnfNodePtr CheckConsistency::Process(const FuncGraphPtr &, const AnfNodePtr &node, const EquivPtr &) const {
-  if (node == nullptr || !node->isa<CNode>() || !AnfAlgo::IsRealKernel(node)) {
+  if (node == nullptr || !node->isa<CNode>() || !AnfUtils::IsRealKernel(node)) {
     return nullptr;
   }
 
   CNodePtr cnode = node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(cnode);
   size_t in_num = AnfAlgo::GetInputTensorNum(cnode);
   for (size_t i = 0; i < in_num; ++i) {
     if (!CheckFormatForConsistency(cnode, i) || !CheckDataTypeForConsistency(cnode, i)) {
       MS_LOG(EXCEPTION) << "Found inconsistent format or data type! Op: " << AnfAlgo::GetCNodeName(cnode) << "["
-                        << cnode->DebugString() << "]";
+                        << cnode->DebugString() << "], fullname: " << node->fullname_with_scope();
     }
   }
   return nullptr;

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,7 @@ class PoolingGpuFwdKernel : public GpuKernel {
         c_(0),
         pad_value_(0),
         is_null_input_(false),
+        kernel_name_("Pooling"),
         input_size_(0),
         output_size_(0),
         workspace_size_(0) {}
@@ -64,8 +65,8 @@ class PoolingGpuFwdKernel : public GpuKernel {
     if (is_null_input_) {
       return true;
     }
-    T *input_addr = reinterpret_cast<T *>(inputs[0]->addr);
-    T *output_addr = reinterpret_cast<T *>(outputs[0]->addr);
+    T *input_addr = GetDeviceAddress<T>(inputs, 0);
+    T *output_addr = GetDeviceAddress<T>(outputs, 0);
     const float alpha = 1;
     const float beta = 0;
 
@@ -76,11 +77,10 @@ class PoolingGpuFwdKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
-    if (!CheckParam(kernel_node)) {
-      return false;
-    }
+    (void)CheckParam(kernel_node);
     cudnn_data_type_ = GetCudnnDataType(TypeIdLabel(AnfAlgo::GetInputDeviceDataType(kernel_node, 0)));
     data_format_ = AnfAlgo::GetInputFormat(kernel_node, 0);
     auto format_attr = GetAttr<std::string>(kernel_node, "format");
@@ -89,9 +89,9 @@ class PoolingGpuFwdKernel : public GpuKernel {
     }
     auto input_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
     auto output_shape = AnfAlgo::GetOutputDeviceShape(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    is_null_input_ =
+      CHECK_SHAPE_NULL(input_shape, kernel_name_, "input") || CHECK_SHAPE_NULL(output_shape, kernel_name_, "output");
     if (is_null_input_) {
-      MS_LOG(WARNING) << "PoolingGpuFwdKernel input is null.";
       InitSizeLists();
       return true;
     }
@@ -157,17 +157,14 @@ class PoolingGpuFwdKernel : public GpuKernel {
     }
     input_size_list_.push_back(input_size_);
     output_size_list_.push_back(output_size_);
-    return;
   }
 
  private:
-  bool CheckParam(const CNodePtr &kernel_node) {
+  void CheckParam(const CNodePtr &kernel_node) {
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but pooling needs 1 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 1, but got " << input_num;
     }
-    return true;
   }
 
   void SetPoolingMode(const CNodePtr &kernel_node) {
@@ -181,20 +178,28 @@ class PoolingGpuFwdKernel : public GpuKernel {
     }
   }
   void SetPad(const CNodePtr &kernel_node) {
-    pad_mode_ = GetValue<std::string>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("pad_mode"));
+    auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+    MS_EXCEPTION_IF_NULL(prim);
+    pad_mode_ = GetValue<std::string>(prim->GetAttr("pad_mode"));
     std::vector<int> window;
-    std::vector<int64_t> window_me =
-      GetValue<std::vector<int64_t>>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("kernel_size"));
+    std::vector<int64_t> window_me = GetValue<std::vector<int64_t>>(prim->GetAttr("kernel_size"));
     (void)std::transform(window_me.begin(), window_me.end(), std::back_inserter(window),
                          [](const int64_t &value) { return static_cast<int>(value); });
+    if (window.size() < 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'kernel_size' cannot be less than 4, but got "
+                        << window.size();
+    }
     int window_height = window[2];
     int window_width = window[3];
-    std::vector<int64_t> stride_me =
-      GetValue<std::vector<int64_t>>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("strides"));
+    std::vector<int64_t> stride_me = GetValue<std::vector<int64_t>>(prim->GetAttr("strides"));
     (void)std::transform(stride_me.begin(), stride_me.end(), std::back_inserter(stride_),
                          [](const int64_t &value) { return static_cast<int>(value); });
     int windowDimA[2] = {window_height, window_width};
     int paddingA[2] = {0, 0};
+    if (stride_.size() < 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'strides' cannot be less than 4, but got "
+                        << stride_.size();
+    }
     int strideA[2] = {stride_[2], stride_[3]};
     int stride_h = stride_[2];
     int stride_w = stride_[3];
@@ -216,21 +221,29 @@ class PoolingGpuFwdKernel : public GpuKernel {
   }
 
   void SetPad3D(const CNodePtr &kernel_node) {
-    pad_mode_ = GetValue<std::string>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("pad_mode"));
+    auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+    MS_EXCEPTION_IF_NULL(prim);
+    pad_mode_ = GetValue<std::string>(prim->GetAttr("pad_mode"));
     std::vector<int> window;
-    std::vector<int64_t> window_me =
-      GetValue<std::vector<int64_t>>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("kernel_size"));
+    std::vector<int64_t> window_me = GetValue<std::vector<int64_t>>(prim->GetAttr("kernel_size"));
     (void)std::transform(window_me.begin(), window_me.end(), std::back_inserter(window),
                          [](const int64_t &value) { return static_cast<int>(value); });
+    if (window.size() < 5) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'kernel_size' cannot be less than 5, but got "
+                        << window.size();
+    }
     int window_depth = window[2];
     int window_height = window[3];
     int window_width = window[4];
-    std::vector<int64_t> stride_me =
-      GetValue<std::vector<int64_t>>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("strides"));
+    std::vector<int64_t> stride_me = GetValue<std::vector<int64_t>>(prim->GetAttr("strides"));
     (void)std::transform(stride_me.begin(), stride_me.end(), std::back_inserter(stride_),
                          [](const int64_t &value) { return static_cast<int>(value); });
     int windowDimA[3] = {window_depth, window_height, window_width};
     int paddingA[3] = {0, 0, 0};
+    if (stride_.size() < 5) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'strides' cannot be less than 5, but got "
+                        << stride_.size();
+    }
     int strideA[3] = {stride_[2], stride_[3], stride_[4]};
     int stride_d = stride_[2];
     int stride_h = stride_[3];
@@ -283,6 +296,7 @@ class PoolingGpuFwdKernel : public GpuKernel {
   int c_;
   float pad_value_;
   bool is_null_input_;
+  std::string kernel_name_;
   size_t input_size_;
   size_t output_size_;
   size_t workspace_size_;

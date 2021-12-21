@@ -33,18 +33,19 @@ using mindspore::schema::PrimitiveType_Unsqueeze;
 
 namespace mindspore::kernel {
 int ReshapeBaseCPUKernel::Run() {
-  auto in_tensor = in_tensors().front();
-  auto out_tensor = out_tensors().front();
-
   /*
    * in_tensor : CPU-allocator ;  out_tensor : GPU-allocator
    * out_tensor data_c can not change
    * */
+  auto in_tensor = in_tensors().front();
+  auto out_tensor = out_tensors().front();
   if (in_tensor->allocator() == nullptr || in_tensor->allocator() != out_tensor->allocator() ||
+      in_tensor->allocator() != ms_context_->allocator || /* runtime allocator */
       op_parameter_->is_train_session_) {
     CHECK_NULL_RETURN(out_tensor->data());
     CHECK_NULL_RETURN(in_tensor->data());
-    memcpy(out_tensor->data(), in_tensor->data(), in_tensor->Size());
+    MS_CHECK_FALSE(in_tensor->Size() == 0, RET_ERROR);
+    if (in_tensor->data() != out_tensor->data()) memcpy(out_tensor->data(), in_tensor->data(), in_tensor->Size());
     return RET_OK;
   }
 

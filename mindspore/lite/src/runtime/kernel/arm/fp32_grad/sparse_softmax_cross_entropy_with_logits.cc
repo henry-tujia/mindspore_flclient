@@ -28,7 +28,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_SparseSoftmaxCrossEntropyWithLogits;
 
 namespace mindspore::kernel {
-int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::ReSize() { return RET_OK; }
+int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::ReSize() { return Prepare(); }
 
 int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::ForwardPostExecute(const int *labels, const float *losses,
                                                                      float *output) const {
@@ -94,7 +94,7 @@ int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::Execute(int task_id) {
   int length = sm_params_.input_shape_[sm_params_.axis_];
   int stride = UP_DIV(outter_size_, threads_);
   int count = MSMIN(stride, outter_size_ - stride * task_id);
-  if (count <= 0) return RET_OK;
+  if (count <= 0) return RET_ERROR;
   switch (stage_) {
     case 0:
       SoftMaxP1(ins, losses, sum_data, task_id * stride, count, length, inner_size_);
@@ -104,11 +104,10 @@ int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::Execute(int task_id) {
       break;
     case 2:
       if (sce_param->is_grad_) {
-        GradPostExecute(labels, losses, out);
+        return GradPostExecute(labels, losses, out);
       } else {
-        ForwardPostExecute(labels, losses, out);
+        return ForwardPostExecute(labels, losses, out);
       }
-      break;
   }
   return RET_OK;
 }
@@ -159,7 +158,7 @@ int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::Run() {
   return RET_OK;
 }
 
-int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::Init() {
+int SparseSoftmaxCrossEntropyWithLogitsCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_.at(0));

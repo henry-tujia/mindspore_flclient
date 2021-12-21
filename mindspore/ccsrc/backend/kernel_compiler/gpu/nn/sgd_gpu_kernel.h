@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ namespace kernel {
 template <typename T>
 class SGDGpuKernel : public GpuKernel {
  public:
-  SGDGpuKernel() : size_(1), dampening_(0.0), weight_decay_(0.0), nesterov_(false) {}
+  SGDGpuKernel() : size_(1), dampening_(0.0), weight_decay_(0.0), nesterov_(false), is_null_input_(false) {}
   ~SGDGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -36,6 +36,9 @@ class SGDGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *param = GetDeviceAddress<T>(inputs, 0);
     T *grad = GetDeviceAddress<T>(inputs, 1);
     T *lr = GetDeviceAddress<T>(inputs, 2);
@@ -53,12 +56,18 @@ class SGDGpuKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     dampening_ = GetAttr<float>(kernel_node, "dampening");
     weight_decay_ = GetAttr<float>(kernel_node, "weight_decay");
     nesterov_ = GetAttr<bool>(kernel_node, "nesterov");
 
     auto input_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "parameters");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (auto &dim : input_shape) {
       size_ *= dim;
     }
@@ -83,6 +92,7 @@ class SGDGpuKernel : public GpuKernel {
   float dampening_;
   float weight_decay_;
   bool nesterov_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

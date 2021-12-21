@@ -30,6 +30,7 @@ namespace server {
 namespace kernel {
 using mindspore::kernel::SGDCPUKernel;
 template <typename T>
+
 class SGDKernel : public SGDCPUKernel<T>, public OptimizerKernel {
  public:
   SGDKernel() = default;
@@ -47,12 +48,17 @@ class SGDKernel : public SGDCPUKernel<T>, public OptimizerKernel {
   }
 
   void GenerateReuseKernelNodeInfo() override {
+    constexpr int kWeightIndex = 0;
+    constexpr int kLearningRateIndex = 2;
+    constexpr int kAccumulationIndex = 3;
+    constexpr int kMomentumIndex = 4;
+    constexpr int kStatIndex = 5;
     MS_LOG(INFO) << "SGD reuse 'weight', 'learning rate', 'accumulation', 'momentum' and 'stat' of the kernel node.";
-    reuse_kernel_node_inputs_info_.insert(std::make_pair(kWeight, 0));
-    reuse_kernel_node_inputs_info_.insert(std::make_pair(kLearningRate, 2));
-    reuse_kernel_node_inputs_info_.insert(std::make_pair(kAccumulation, 3));
-    reuse_kernel_node_inputs_info_.insert(std::make_pair(kMomentum, 4));
-    reuse_kernel_node_inputs_info_.insert(std::make_pair(kStat, 5));
+    reuse_kernel_node_inputs_info_.insert(std::make_pair(kWeight, kWeightIndex));
+    reuse_kernel_node_inputs_info_.insert(std::make_pair(kLearningRate, kLearningRateIndex));
+    reuse_kernel_node_inputs_info_.insert(std::make_pair(kAccumulation, kAccumulationIndex));
+    reuse_kernel_node_inputs_info_.insert(std::make_pair(kMomentum, kMomentumIndex));
+    reuse_kernel_node_inputs_info_.insert(std::make_pair(kStat, kStatIndex));
     return;
   }
 };

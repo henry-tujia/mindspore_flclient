@@ -104,7 +104,8 @@ TEST_F(TestComposite, test_TupleSlice_arg_two_numbers) {
     engine_->Run(tupleSliceGraphPtr, args_spec_list);
     FAIL() << "Excepted exception :Args type is wrong";
   } catch (std::runtime_error const &err) {
-    ASSERT_TRUE(std::string(err.what()).find("TupleSlice input args size should be 2, but got 3") != std::string::npos);
+    ASSERT_TRUE(std::string(err.what()).find("For 'TupleSlice', the number of input should be 2, but got 3") !=
+                std::string::npos);
   } catch (...) {
     FAIL() << "Excepted exception :Args type is wrong";
   }
@@ -250,7 +251,7 @@ TEST_F(TestComposite, test_UnpackCall_3args) {
   MetaFuncGraphPtr unPackCallPtr = std::make_shared<prim::UnpackCall>("UnPackCall");
   FuncGraphPtr unPackCallGraphPtr = UTCompositeUtils::MakeFuncGraph(unPackCallPtr, 3);
 
-  auto fn_arg= std::make_shared<abstract::PrimitiveAbstractClosure>(prim::kPrimMakeTuple);
+  auto fn_arg = std::make_shared<abstract::PrimitiveAbstractClosure>(prim::kPrimMakeTuple);
   AbstractTensorPtr tensor = UTCompositeUtils::ArrayInt32Of({2, 3, 4});
   AbstractBasePtrList eles;
   for (size_t i = 0; i < 6; i++) {
@@ -320,5 +321,53 @@ TEST_F(TestComposite, test_ZipOperation) {
   size_t real = ret->size();
   size_t expect = 3;
   ASSERT_EQ(real, expect);
+}
+
+/// Feature: Shard operation.
+/// Description: Test the func_graph generation of Shard op and the inference of the Shard caller.
+/// Expectation: Generate and the infer successfully.
+TEST_F(TestComposite, test_shard) {
+  // Make origin func_graph which includes a relu node.
+  FuncGraphPtr origin_func_graph = std::make_shared<FuncGraph>();
+  std::vector<AnfNodePtr> inputs;
+  inputs.push_back(NewValueNode(prim::kPrimRelu));
+  inputs.push_back(origin_func_graph->add_parameter());
+  CNodePtr relu = origin_func_graph->NewCNode(inputs);
+  inputs.clear();
+  inputs.push_back(NewValueNode(prim::kPrimReturn));
+  inputs.push_back(relu);
+  CNodePtr origin_return = origin_func_graph->NewCNode(inputs);
+  origin_func_graph->set_return(origin_return);
+
+  // Make the func_graph which includes a Shard meta_func_graph.
+  FuncGraphPtr shard_func_graph = std::make_shared<FuncGraph>();
+  MetaFuncGraphPtr shard_op = std::make_shared<prim::Shard>("shard_op");
+  inputs.clear();
+  inputs.push_back(NewValueNode(shard_op));
+  inputs.push_back(NewValueNode(origin_func_graph));
+  for (size_t i = 0; i < 4; ++i) {
+    inputs.push_back(NewValueNode(MakeValue(0)));
+  }
+  CNodePtr shard = shard_func_graph->NewCNode(inputs);
+  inputs.clear();
+  inputs.push_back(shard);
+  inputs.push_back(shard_func_graph->add_parameter());
+  CNodePtr shard_user = shard_func_graph->NewCNode(inputs);
+  inputs.clear();
+  inputs.push_back(NewValueNode(prim::kPrimReturn));
+  inputs.push_back(shard_user);
+  CNodePtr shard_return = shard_func_graph->NewCNode(inputs);
+  shard_func_graph->set_return(shard_return);
+
+  auto tensor = UTCompositeUtils::ArrayInt32Of({2, 3, 4});
+  AbstractBasePtrList args_spec_list = {tensor};
+
+  auto ret = engine_->Run(shard_func_graph, args_spec_list).inferred->abstract();
+  ASSERT_NE(ret, nullptr);
+  ASSERT_TRUE(ret->isa<abstract::AbstractTensor>());
+  auto build_shape = ret->BuildShape();
+  EXPECT_TRUE(build_shape->isa<abstract::Shape>());
+  auto shape = build_shape->cast<abstract::ShapePtr>();
+  ASSERT_EQ(shape->shape(), std::vector<int64_t>({2, 3, 4}));
 }
 }  // namespace mindspore

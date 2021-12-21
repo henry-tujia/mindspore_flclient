@@ -19,14 +19,29 @@
 #include <string>
 #include <utility>
 #include <algorithm>
+#include "schema/ops_types_generated.h"
 #include "securec/include/securec.h"
 #include "include/errorcode.h"
 
 namespace mindspore {
 namespace lite {
-namespace {
-constexpr int kMaxMallocSize = 1024 * 1024 * 300;
-}  // namespace
+#if ENABLE_HIGH_PERFORMANCE
+#define CHECK_INT64_MUL_OVERFLOW(x, y)
+#else
+#define CHECK_INT64_MUL_OVERFLOW(x, y)       \
+  do {                                       \
+    if (INT64_MUL_OVERFLOW(x, y)) {          \
+      MS_LOG(ERROR) << "INT64 MUL OVERFLOW"; \
+      return INT64_MAX;                      \
+    }                                        \
+  } while (0)
+
+#define INT64_MUL_OVERFLOW(x, y)                                                                   \
+  (((x) == 0) ? false                                                                              \
+              : ((x) > 0 ? (((y) >= 0) ? (INT64_MAX / (x)) < (y) : (INT64_MAX / (x)) < (-1 * (y))) \
+                         : (((y) >= 0) ? (INT64_MAX / (x)) > (-1 * (y)) : (INT64_MAX / (x)) > (y))))
+#endif
+
 Tensor::Tensor(const TypeId data_type, std::vector<int> shape, const mindspore::Format &format, Category category)
     : data_type_(data_type), shape_(std::move(shape)), format_(format), category_(category) {}
 
@@ -64,6 +79,7 @@ Tensor *Tensor::CopyTensor(const Tensor &src_tensor, bool copy_data, AllocatorPt
   result->category_ = src_tensor.category_;
   result->format_ = src_tensor.format_;
   result->set_allocator(allocator);
+  result->set_tensor_name(src_tensor.tensor_name() + "_duplicate");
   if (copy_data) {
     auto ret = CopyTensorData(src_tensor, result);
     if (ret != RET_OK) {
@@ -73,6 +89,11 @@ Tensor *Tensor::CopyTensor(const Tensor &src_tensor, bool copy_data, AllocatorPt
     }
     result->own_data_ = src_tensor.own_data_;
   }
+
+  for (LiteQuantParam quant : src_tensor.quant_params()) {
+    result->AddQuantParam(quant);
+  }
+
   return result;
 }
 
@@ -203,34 +224,45 @@ size_t Tensor::Size() const {
   return element_size * element_num;
 }
 
-int Tensor::ElementsNum() const {
+int64_t Tensor::ElementsNum() const {
   if (this->category_ == CONST_SCALAR) {
     return 1;
   }
-  auto num = std::accumulate(shape_.begin(), shape_.end(), 1LL, std::multiplies<int64_t>());
-  if (num > (int64_t)INT32_MAX) {
-    MS_LOG(ERROR) << "Element number of tensor shouder be smaller than int32_max: " << num << " return INT32_MAX";
-    return INT32_MAX;
+  int64_t num = 1;
+  for (size_t i = 0; i < shape_.size(); ++i) {
+    CHECK_INT64_MUL_OVERFLOW(num, shape_[i]);
+    num *= shape_[i];
   }
-  return (int32_t)num;
+  return num;
 }
 
-int32_t Tensor::ElementsC4Num() const {
+int64_t Tensor::ElementsC4Num() const {
   if (this->category_ == CONST_SCALAR) {
     return 1;
   }
-  int32_t result = 1;
+  int64_t result = 1;
+  constexpr int kC4Align = 4;
   if (this->shape_.size() == 4) {
-    result = Batch() * Height() * Width() * ((Channel() + 3) / 4 * 4);
+    CHECK_INT64_MUL_OVERFLOW(result, Batch());
+    result *= Batch();
+    CHECK_INT64_MUL_OVERFLOW(result, Height());
+    result *= Height();
+    CHECK_INT64_MUL_OVERFLOW(result, Width());
+    result *= Width();
+    CHECK_INT64_MUL_OVERFLOW(result, (Channel() + 3LL) / kC4Align * kC4Align);
+    result *= (Channel() + 3LL) / kC4Align * kC4Align;
   } else if (this->shape_.size() == 2) {
-    result = this->shape_[0] * ((this->shape_[1] + 3) / 4 * 4);
+    CHECK_INT64_MUL_OVERFLOW(result, this->shape_[0]);
+    result *= this->shape_[0];
+    CHECK_INT64_MUL_OVERFLOW(result, (this->shape_[1] + 3LL) / kC4Align * kC4Align);
+    result *= (this->shape_[1] + 3LL) / kC4Align * kC4Align;
   }
   return result;
 }
 
 int Tensor::DimensionSize(const size_t index) const {
   int dim_size = -1;
-  if (index < shape_.size() && index >= 0) {
+  if (index < shape_.size()) {
     dim_size = shape_[index];
   } else {
     MS_LOG(ERROR) << "Dimension index is wrong: " << index;
@@ -280,7 +312,7 @@ int Tensor::MallocData(const AllocatorPtr allocator) {
   }
   auto data_size = this->Size();
 
-  if (data_size > kMaxMallocSize) {
+  if (data_size > GetMaxMallocSize()) {
     MS_LOG(ERROR) << "Malloc size is too big while coping data, " << data_size << " bytes";
     return RET_ERROR;
   }
@@ -298,6 +330,9 @@ int Tensor::MallocData(const AllocatorPtr allocator) {
 }
 
 void Tensor::FreeData() {
+  if (IS_RUNTIME_ALLOCATOR(allocator_)) {
+    return;
+  }
   if (this->data_ != nullptr && this->own_data_) {
     if (this->allocator_ != nullptr) {
       this->allocator_->Free(this->data_);

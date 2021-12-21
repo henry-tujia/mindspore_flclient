@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -44,21 +45,18 @@ Status RandomSolarizeOperation::ValidateParams() {
   if (threshold_.size() != size_two) {
     std::string err_msg =
       "RandomSolarize: threshold must be a vector of two values, got: " + std::to_string(threshold_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   for (size_t i = 0; i < threshold_.size(); ++i) {
     if (threshold_[i] < 0 || threshold_[i] > kThresholdMax) {
       std::string err_msg =
         "RandomSolarize: threshold has to be between 0 and 255, got:" + std::to_string(threshold_[i]);
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   if (threshold_[dimension_zero] > threshold_[dimension_one]) {
     std::string err_msg = "RandomSolarize: threshold must be passed in a (min, max) format";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -74,7 +72,7 @@ Status RandomSolarizeOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status RandomSolarizeOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("threshold") != op_params.end(), "Failed to find threshold");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "threshold", kRandomSolarizeOperation));
   std::vector<uint8_t> threshold = op_params["threshold"];
   *operation = std::make_shared<vision::RandomSolarizeOperation>(threshold);
   return Status::OK();

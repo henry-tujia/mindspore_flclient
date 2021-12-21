@@ -19,19 +19,33 @@
 #include <string>
 #include "debug/debugger/debugger.h"
 #include "backend/kernel_compiler/kernel.h"
+#ifdef ENABLE_D
+#include "toolchain/adx_datadump_callback.h"
 
+using Adx::DumpChunk;
+#endif
 using mindspore::kernel::KernelLaunchInfo;
 
 namespace mindspore {
 
-std::vector<int> CheckRealOutput(const std::string &node_name, const size_t &output_size);
+std::vector<size_t> CheckRealOutput(const std::string &node_name, const size_t &output_size);
 
-void LoadInputs(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_, uint32_t exec_order_);
+void LoadInputs(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_, uint32_t exec_order_,
+                uint32_t root_graph_id);
 
-void LoadOutputs(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_, uint32_t exec_order_);
+void LoadOutputs(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_, uint32_t exec_order_,
+                 uint32_t root_graph_id);
 
 bool CheckReadData(const CNodePtr &cnode);
 
 void ReadDataAndDump(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_, uint32_t exec_order_);
 
+std::string CheckDatasetSinkMode(const KernelGraphPtr &graph_ptr);
+
+void LoadDataForDump(const KernelGraphPtr &graph_ptr);
+
+#ifdef ENABLE_D
+// Callback function to dump ascend async mode
+int32_t DumpDataCallBack(const DumpChunk *dump_chunk, int32_t size);
+#endif
 }  // namespace mindspore

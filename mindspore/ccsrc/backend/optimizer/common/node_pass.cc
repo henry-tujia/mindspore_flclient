@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@
  */
 #include "backend/optimizer/common/node_pass.h"
 
-#include <unordered_set>
-#include <unordered_map>
 #include <deque>
 #include "ir/anf.h"
 #include "ir/func_graph.h"
 #include "ir/manager.h"
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
@@ -29,7 +29,7 @@ const size_t kSwitchBranchIndex = 2;
 const size_t kCallArgsIndex = 1;
 const size_t kPartialArgsIndex = 1;
 
-void AddOutputAndCallerToMap(const CNodePtr &cnode, std::unordered_map<AnfNodePtr, AnfNodePtr> *out_caller_map) {
+void AddOutputAndCallerToMap(const CNodePtr &cnode, mindspore::HashMap<AnfNodePtr, AnfNodePtr> *out_caller_map) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(out_caller_map);
   auto inputs = cnode->inputs();
@@ -56,8 +56,8 @@ bool NodePass::Run(const FuncGraphPtr &func_graph) {
   MS_EXCEPTION_IF_NULL(manager);
   manager->AddFuncGraph(func_graph);
 
-  std::unordered_map<AnfNodePtr, AnfNodePtr> subgraph_out_caller_map = {};
-  std::unordered_set<AnfNodePtr> seen_node;
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> subgraph_out_caller_map = {};
+  mindspore::HashSet<AnfNodePtr> seen_node;
   std::deque<std::pair<AnfNodePtr, FuncGraphPtr>> todo{{func_graph->output(), func_graph}};
   bool changes = false;
   while (!todo.empty()) {
@@ -96,18 +96,18 @@ bool NodePass::Run(const FuncGraphPtr &func_graph) {
       auto const_func_graph = GetValueNode<FuncGraphPtr>(new_node);
       MS_EXCEPTION_IF_NULL(const_func_graph);
       if (!const_func_graph->has_attr(FUNC_GRAPH_ATTR_GRAPH_KERNEL)) {
-        todo.push_back({const_func_graph->output(), const_func_graph});
+        (void)todo.emplace_back(const_func_graph->output(), const_func_graph);
       }
     } else if (new_node && new_node->isa<CNode>()) {
       if (AnfAlgo::IsGraphKernel(new_node)) {
-        todo.push_back({new_node, func_graph});
+        (void)todo.emplace_back(new_node, func_graph);
       }
       auto cnode = new_node->cast<CNodePtr>();
       MS_EXCEPTION_IF_NULL(cnode);
       AddOutputAndCallerToMap(cnode, &subgraph_out_caller_map);
       auto inputs = cnode->inputs();
-      std::for_each(inputs.begin(), inputs.end(), [&fg, &todo](AnfNodePtr &node) {
-        todo.emplace_back(std::pair<AnfNodePtr, FuncGraphPtr>(node, fg));
+      (void)std::for_each(inputs.begin(), inputs.end(), [&fg, &todo](AnfNodePtr &node) {
+        (void)todo.emplace_back(std::pair<AnfNodePtr, FuncGraphPtr>(node, fg));
       });
     }
     changes = changes || change;

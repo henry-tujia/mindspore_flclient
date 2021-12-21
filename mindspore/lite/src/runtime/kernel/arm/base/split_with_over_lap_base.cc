@@ -25,6 +25,7 @@ using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_NULL_PTR;
 using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_SplitWithOverlap;
+#define MIN_NUM_SPLIT 2
 
 namespace mindspore::kernel {
 
@@ -59,10 +60,10 @@ int SplitWithOverlapBaseCPUKernel::CalculateSplitedShapes(const std::vector<int>
   return RET_OK;
 }
 
-int SplitWithOverlapBaseCPUKernel::Init() {
+int SplitWithOverlapBaseCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
-  CHECK_LESS_RETURN(param_->num_split_, 2);
+  CHECK_LESS_RETURN(param_->num_split_, MIN_NUM_SPLIT);
   return ReSize();
 }
 

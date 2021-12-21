@@ -15,7 +15,7 @@
  */
 
 #include "src/runtime/kernel/arm/fp32/log_softmax_fp32.h"
-#include <string.h>
+#include <cstring>
 #include <vector>
 #include "nnacl/fp32/log_softmax_fp32.h"
 #include "schema/model_generated.h"
@@ -36,8 +36,8 @@ LogSoftmaxCPUKernel::~LogSoftmaxCPUKernel() {
   }
 }
 
-int LogSoftmaxCPUKernel::Init() {
-  auto ret = SoftmaxBaseCPUKernel::Init();
+int LogSoftmaxCPUKernel::Prepare() {
+  auto ret = SoftmaxBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }
@@ -79,7 +79,7 @@ int LogSoftmaxCPUKernel::ReSize() {
   return RET_OK;
 }
 
-int LogSoftmaxCPUKernel::DoLogSoftmaxLastAxis(int task_id) {
+int LogSoftmaxCPUKernel::DoLogSoftmaxLastAxis(int task_id) const {
   MS_CHECK_FALSE(op_parameter_->thread_num_ == 0, RET_ERROR);
   int unit = UP_DIV(out_plane_size_, op_parameter_->thread_num_);
   int begin = task_id * unit;
@@ -94,8 +94,8 @@ int LogSoftmaxCPUKernel::DoLogSoftmaxLastAxis(int task_id) {
   return RET_OK;
 }
 
-int LogSoftmaxLastAxisRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
-  auto kernel = reinterpret_cast<LogSoftmaxCPUKernel *>(cdata);
+int LogSoftmaxLastAxisRun(const void *cdata, int task_id, float, float) {
+  auto kernel = reinterpret_cast<const LogSoftmaxCPUKernel *>(cdata);
   CHECK_NULL_RETURN(kernel);
   auto ret = kernel->DoLogSoftmaxLastAxis(task_id);
   if (ret != RET_OK) {

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 
 #include <cuda_runtime_api.h>
 #include <vector>
+#include <string>
 #include <limits>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
@@ -32,10 +33,35 @@ class CtcLossGpuKernel : public GpuKernel {
   CtcLossGpuKernel()
       : label_indice_size_(0),
         label_size_(0),
-        squence_lengths_size_(0),
+        sequence_lengths_size_(0),
         preprocess_collapse_repeated_(false),
         ctc_merge_repeated_(true),
-        ignore_longer_outputs_than_inputs_(false) {}
+        ignore_longer_outputs_than_inputs_(false),
+        is_null_input_(false),
+        kernel_name_("CTCLoss"),
+        probs(nullptr),
+        label_indices(nullptr),
+        label_values(nullptr),
+        sequence_length(nullptr),
+        costs(nullptr),
+        grads(nullptr),
+        softmax_probs(nullptr),
+        cum_labels_length(nullptr),
+        label_squence_length(nullptr),
+        label_value_sp(nullptr),
+        label_value_pcr(nullptr),
+        prob_num(nullptr),
+        precum_labels_length(nullptr),
+        max_labels_length(nullptr),
+        numclass(0),
+        batch(0),
+        max_time(0),
+        max_sequence(0),
+        max_labels_length_host(0),
+        batch_label(0),
+        label_value_with_blank(nullptr),
+        log_alpha_b(nullptr),
+        log_beta_b(nullptr) {}
   ~CtcLossGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -44,28 +70,45 @@ class CtcLossGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     LaunchInit(inputs, workspace, outputs);
     LaunchFirstHalf(inputs, workspace, outputs, stream_ptr);
     LaunchSecondHalf(inputs, workspace, outputs, stream_ptr);
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
     auto probs_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto indice_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
+    auto labels_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    auto sequence_length_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
+    is_null_input_ = CHECK_SHAPE_NULL(probs_shape, kernel_name_, "x") ||
+                     CHECK_SHAPE_NULL(indice_dims, kernel_name_, "labels_indices") ||
+                     CHECK_SHAPE_NULL(labels_dims, kernel_name_, "labels_values") ||
+                     CHECK_SHAPE_NULL(sequence_length_dims, kernel_name_, "sequence_length");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     if (probs_shape.size() != 3) {
-      MS_LOG(EXCEPTION) << "probs dims: " << probs_shape.size() << " not support.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of x should be 3, but got "
+                        << probs_shape.size();
     }
     probs_dims_[0] = probs_shape[0];
     probs_dims_[1] = probs_shape[1];
     probs_dims_[2] = probs_shape[2];
-    auto indice_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
-    auto labels_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+
     if (labels_dims.size() != 1) {
-      MS_LOG(EXCEPTION) << "labels dims: " << labels_dims.size() << " not support.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of labels_values should be 1, but got "
+                        << labels_dims.size();
     }
     if (indice_dims.size() != 2) {
-      MS_LOG(EXCEPTION) << "labels indice dims: " << indice_dims.size() << " not support.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of labels_indices should be 2, but got "
+                        << indice_dims.size();
     }
     label_size_ = sizeof(int);
     for (auto i : labels_dims) {
@@ -75,8 +118,8 @@ class CtcLossGpuKernel : public GpuKernel {
     for (auto i : indice_dims) {
       label_indice_size_ *= i;
     }
-    auto squence_length_dims = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
-    squence_lengths_size_ = squence_length_dims[0] * sizeof(int);
+
+    sequence_lengths_size_ = sequence_length_dims[0] * sizeof(int);
     preprocess_collapse_repeated_ = GetAttr<bool>(kernel_node, "preprocess_collapse_repeated");
     ctc_merge_repeated_ = GetAttr<bool>(kernel_node, "ctc_merge_repeated");
     ignore_longer_outputs_than_inputs_ = GetAttr<bool>(kernel_node, "ignore_longer_outputs_than_inputs");
@@ -121,7 +164,8 @@ class CtcLossGpuKernel : public GpuKernel {
       "cudaMemcpyAsync failed.");
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_, cudaStreamSynchronize(stream), "cudaStreamSynchronize failed.");
     if (max_time < max_sequence) {
-      MS_LOG(EXCEPTION) << "max_time should be greater than sequence length.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the x[0] should be equal to or greater than max_sequence, "
+                        << "but got x[0]: " << max_time << ", max_sequence: " << max_sequence;
     }
     InnerSoftMax(probs, softmax_probs, sequence_length, max_time, batch, numclass, stream);
     MemsetForWS(label_value_pcr, cum_labels_length, label_squence_length, costs, grads, stream);
@@ -133,7 +177,8 @@ class CtcLossGpuKernel : public GpuKernel {
       "cudaMemcpyAsync failed.");
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_, cudaStreamSynchronize(stream), "cudaStreamSynchronize failed.");
     if (batch != batch_label + 1) {
-      MS_LOG(EXCEPTION) << "label batch should be equal to input batch.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the batch size of input should be equal to "
+                        << (batch_label + 1) << ", but got " << batch;
     }
     GenLabelValue(label_value_sp, label_indices, label_values, label_squence_length, cum_labels_length,
                   max_labels_length, label_size_ / sizeof(int), numclass - 1, batch, stream);
@@ -185,14 +230,14 @@ class CtcLossGpuKernel : public GpuKernel {
     input_size_list_.push_back(probs_dims_[0] * probs_dims_[1] * probs_dims_[2] * sizeof(T));
     input_size_list_.push_back(label_indice_size_);
     input_size_list_.push_back(label_size_);
-    input_size_list_.push_back(squence_lengths_size_);
+    input_size_list_.push_back(sequence_lengths_size_);
     workspace_size_list_.push_back(probs_dims_[0] * probs_dims_[1] * probs_dims_[2] * sizeof(T));
-    workspace_size_list_.push_back(squence_lengths_size_);
-    workspace_size_list_.push_back(squence_lengths_size_);
+    workspace_size_list_.push_back(sequence_lengths_size_);
+    workspace_size_list_.push_back(sequence_lengths_size_);
     workspace_size_list_.push_back(label_size_);
     workspace_size_list_.push_back(label_size_);
     workspace_size_list_.push_back(probs_dims_[0] * probs_dims_[1] * probs_dims_[2] * sizeof(T));
-    workspace_size_list_.push_back(squence_lengths_size_);
+    workspace_size_list_.push_back(sequence_lengths_size_);
     workspace_size_list_.push_back(sizeof(int));
     output_size_list_.push_back(probs_dims_[1] * sizeof(T));
     output_size_list_.push_back(probs_dims_[0] * probs_dims_[1] * probs_dims_[2] * sizeof(T));
@@ -202,10 +247,10 @@ class CtcLossGpuKernel : public GpuKernel {
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_, cudaMemsetAsync(label_value_pcr, static_cast<int>(0), label_size_, stream),
                                "cudaMemSet failed in CtcLossGpuKernel::Launch.");
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
-                               cudaMemsetAsync(cum_labels_length, static_cast<int>(0), squence_lengths_size_, stream),
+                               cudaMemsetAsync(cum_labels_length, static_cast<int>(0), sequence_lengths_size_, stream),
                                "cudaMemSet failed in CtcLossGpuKernel::Launch.");
     CHECK_CUDA_RET_WITH_EXCEPT(
-      kernel_node_, cudaMemsetAsync(label_squence_length, static_cast<int>(0), squence_lengths_size_, stream),
+      kernel_node_, cudaMemsetAsync(label_squence_length, static_cast<int>(0), sequence_lengths_size_, stream),
       "cudaMemSet failed in CtcLossGpuKernel::Launch.");
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
                                cudaMemsetAsync(costs, static_cast<T>(0), probs_dims_[1] * sizeof(T), stream),
@@ -247,10 +292,12 @@ class CtcLossGpuKernel : public GpuKernel {
   size_t probs_dims_[3] = {0};
   int label_indice_size_;
   int label_size_;
-  int squence_lengths_size_;
+  int sequence_lengths_size_;
   bool preprocess_collapse_repeated_;
   bool ctc_merge_repeated_;
   bool ignore_longer_outputs_than_inputs_;
+  bool is_null_input_;
+  std::string kernel_name_;
   T kLogZero_ = -std::numeric_limits<T>::infinity();
 
   // Heap parameter

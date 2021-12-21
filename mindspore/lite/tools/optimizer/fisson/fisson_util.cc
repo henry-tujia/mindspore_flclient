@@ -48,14 +48,21 @@ std::vector<int64_t> GetSplitPadList(const std::shared_ptr<ops::Conv2DFusion> &o
   int64_t output_w = static_cast<int64_t>(
     std::ceil(static_cast<float>(input_w) / static_cast<float>(ori_conv_prim->get_stride().at(kIndexW))));
 
+  auto kernel_h = ori_conv_prim->get_kernel_size().at(kIndexH);
+  auto dilation_h = ori_conv_prim->get_dilation().at(kIndexH);
+  auto kernel_w = ori_conv_prim->get_kernel_size().at(kIndexW);
+  auto dilation_w = ori_conv_prim->get_dilation().at(kIndexW);
+  if (INT_MUL_OVERFLOW_THRESHOLD((kernel_h - 1), dilation_h, INT64_MAX) ||
+      INT_MUL_OVERFLOW_THRESHOLD((kernel_w - 1), dilation_w, INT64_MAX)) {
+    MS_LOG(ERROR) << "int mul overflow";
+    return {};
+  }
   std::vector<int64_t> new_pad_list;
   int64_t pad_up = 0, pad_down = 0, pad_left = 0, pad_right = 0;
-  int64_t pad_h_all = (output_h - 1) * ori_conv_prim->get_stride().at(kIndexH) +
-                      (ori_conv_prim->get_kernel_size().at(kIndexH) - 1) * ori_conv_prim->get_dilation().at(kIndexH) +
-                      1 - input_h;
-  int64_t pad_w_all = (output_w - 1) * ori_conv_prim->get_stride().at(kIndexW) +
-                      (ori_conv_prim->get_kernel_size().at(kIndexW) - 1) * ori_conv_prim->get_dilation().at(kIndexW) +
-                      1 - input_w;
+  int64_t pad_h_all =
+    (output_h - 1) * ori_conv_prim->get_stride().at(kIndexH) + (kernel_h - 1) * dilation_h + 1 - input_h;
+  int64_t pad_w_all =
+    (output_w - 1) * ori_conv_prim->get_stride().at(kIndexW) + (kernel_w - 1) * dilation_w + 1 - input_w;
   // only check pad_up and pad_down is positive
   // if compute overflowed, we will get abnormal it in infer_shape
   if (pad_h_all >= 0) {
@@ -89,8 +96,8 @@ bool CalSplitOutputShape(int64_t splited_axis_value, const SplitInfo *split_info
   }
   // out-shape after splited
   int64_t tmp_value = 0;
-  MS_CHECK_TRUE_MSG(split_num > 0, false, "out_num of split_info should greater than zero");
-  MS_CHECK_TRUE_MSG(split_len > 0, false, "split_len should greater than zero");
+  MS_CHECK_TRUE_MSG(split_num > 0, false, "out_num of split_info should be greater than zero");
+  MS_CHECK_TRUE_MSG(split_len > 0, false, "split_len should be greater than zero");
   for (int64_t i = 0; i < split_num - 1; i++) {
     if (INT_MUL_OVERFLOW_THRESHOLD(split_info->size_splits[i], splited_axis_value, INT64_MAX)) {
       MS_LOG(ERROR) << "int mul overflow";
@@ -107,12 +114,14 @@ bool CalSplitOutputShape(int64_t splited_axis_value, const SplitInfo *split_info
 }
 
 bool CalSplitInShape(const std::vector<std::vector<ShapeVector>> &node_in_out_shapes, const SplitInfo *split_info,
-                     const std::shared_ptr<ops::Conv2DFusion> &ori_conv_prim, int64_t index_node,
+                     const std::shared_ptr<ops::Conv2DFusion> &ori_conv_prim, size_t index_node,
                      std::vector<std::vector<int64_t>> *split_axis_inputs_shape,
                      std::vector<std::vector<int64_t>> *split_axis_reduce_inputs_shape) {
-  MS_ASSERT(split_info != nullptr && split_axis_inputs_shape != nullptr && split_axis_reduce_inputs_shape != nullptr);
+  MS_ASSERT(split_info != nullptr && ori_conv_prim != nullptr && split_axis_inputs_shape != nullptr &&
+            split_axis_reduce_inputs_shape != nullptr);
   MS_ASSERT(node_in_out_shapes.size() > index_node);
   auto in_out_shape = node_in_out_shapes.at(index_node);
+  MS_ASSERT(!in_out_shape.empty());
   auto in_shape = in_out_shape.front();
   if (in_shape.size() < kAxisW) {
     MS_LOG(DEBUG) << "out of in_shape range";
@@ -129,29 +138,34 @@ bool CalSplitInShape(const std::vector<std::vector<ShapeVector>> &node_in_out_sh
   // iter splited_num
   for (int64_t index = 0; index < split_num; index++) {
     // shape
+    auto stride_h = ori_conv_prim->get_stride()[kIndexH];
+    auto split_axis_dim = (*split_axis_inputs_shape)[index_node][index] - 1;
+    if (INT_MUL_OVERFLOW_THRESHOLD(stride_h, split_axis_dim, INT64_MAX)) {
+      MS_LOG(ERROR) << "int mul overflow";
+      return false;
+    }
     if (split_info->axis == CuttingStragedy::CUT_H) {  // H
       if (index == 0) {
-        tmp = ori_conv_prim->get_stride()[kIndexH] * ((*split_axis_inputs_shape)[index_node][index] - 1) -
-              ori_conv_prim->get_pad_list()[kPadUp] + ori_conv_prim->get_kernel_size()[kIndexH];
+        tmp =
+          stride_h * split_axis_dim - ori_conv_prim->get_pad_list()[kPadUp] + ori_conv_prim->get_kernel_size()[kIndexH];
       } else if (index == split_num - 1) {
-        tmp = ori_conv_prim->get_stride()[kIndexH] * ((*split_axis_inputs_shape)[index_node][index] - 1) -
-              ori_conv_prim->get_pad_list()[kPadDown] + ori_conv_prim->get_kernel_size()[kIndexH];
-      } else {
-        tmp = ori_conv_prim->get_stride()[kIndexH] * ((*split_axis_inputs_shape)[index_node][index] - 1) - 0 +
+        tmp = stride_h * split_axis_dim - ori_conv_prim->get_pad_list()[kPadDown] +
               ori_conv_prim->get_kernel_size()[kIndexH];
+      } else {
+        tmp = stride_h * split_axis_dim + ori_conv_prim->get_kernel_size()[kIndexH];
       }
     }
     split_axis_shape.push_back(tmp);
 
     // reduce shape
+    auto split_axis_reduce_dim = (*split_axis_reduce_inputs_shape)[index_node][index] - 1;
     if (split_info->axis == CuttingStragedy::CUT_H) {  // H
       if (index == split_num - 1) {
-        tmp = ori_conv_prim->get_stride()[kIndexH] * ((*split_axis_reduce_inputs_shape)[index_node][index] - 1) -
-              ori_conv_prim->get_pad_list()[kPadDown] - ori_conv_prim->get_pad_list()[kPadUp] +
-              ori_conv_prim->get_kernel_size()[kIndexH];
-      } else {
-        tmp = ori_conv_prim->get_stride()[kIndexH] * ((*split_axis_reduce_inputs_shape)[index_node][index] - 1) -
+        tmp = stride_h * split_axis_reduce_dim - ori_conv_prim->get_pad_list()[kPadDown] -
               ori_conv_prim->get_pad_list()[kPadUp] + ori_conv_prim->get_kernel_size()[kIndexH];
+      } else {
+        tmp = stride_h * split_axis_reduce_dim - ori_conv_prim->get_pad_list()[kPadUp] +
+              ori_conv_prim->get_kernel_size()[kIndexH];
       }
     }
     split_axis_reduce_shape.push_back(tmp);
@@ -186,8 +200,9 @@ std::shared_ptr<ops::Conv2DFusion> CopyConvPrim(const std::shared_ptr<ops::Conv2
   new_prim->set_stride(ori_conv_prim->get_stride());
   new_prim->set_activation_type(ori_conv_prim->get_activation_type());
   new_prim->set_pad_list(ori_conv_prim->get_pad_list());
-  if (ori_conv_prim->GetAttr(ops::kIsDepthWise) != nullptr) {
-    bool is_depth_wise = GetValue<bool>(ori_conv_prim->GetAttr(ops::kIsDepthWise));
+  auto is_depth_value = ori_conv_prim->GetAttr(ops::kIsDepthWise);
+  if (is_depth_value != nullptr) {
+    bool is_depth_wise = GetValue<bool>(is_depth_value);
     new_prim->AddAttr(ops::kIsDepthWise, MakeValue<bool>(is_depth_wise));
   }
   return new_prim;
@@ -216,7 +231,9 @@ bool UpdateSplitInfo(const FuncGraphPtr &func_graph, const std::vector<AnfNodePt
     auto input_shapes = Spliter::GetInstance()->graph_node_input_shapes()[out_node_name];
     // 0-> in-shape 1->out-shape
     // only one in and one output
-    node_in_out_shapes.push_back({input_shapes.front(), output_shapes.front()});
+    MS_ASSERT(!input_shapes.empty() && !output_shapes.empty());
+    std::vector<ShapeVector> shape_vec = {input_shapes.front(), output_shapes.front()};
+    node_in_out_shapes.emplace_back(shape_vec);
     index_node++;
   }
   if (node_in_out_shapes.empty() || node_in_out_shapes.size() < (node_size - 1) || node_in_out_shapes[0].size() <= 1 ||
@@ -242,7 +259,9 @@ bool UpdateSplitInfo(const FuncGraphPtr &func_graph, const std::vector<AnfNodePt
   // iter node
   while (index_node < node_size) {
     auto conv_cnode = conv_nodes[index_node]->cast<CNodePtr>();
+    MS_ASSERT(conv_cnode != nullptr);
     auto ori_conv_prim = GetValueNode<std::shared_ptr<ops::Conv2DFusion>>(conv_cnode->input(kAnfPrimitiveIndex));
+    MS_CHECK_TRUE_RET(ori_conv_prim != nullptr, false);
     if (!CalSplitInShape(node_in_out_shapes, split_info, ori_conv_prim, index_node, &split_axis_inputs_shape,
                          &split_axis_reduce_inputs_shape)) {
       MS_LOG(ERROR) << "CalSplitInShape failed";
@@ -256,7 +275,7 @@ bool UpdateSplitInfo(const FuncGraphPtr &func_graph, const std::vector<AnfNodePt
   split_info->extend_top.clear();
   split_info->extend_bottom.clear();
 
-  int32_t top = 0;
+  int64_t top = 0;
   int32_t bottom = 0;
   split_info->size_splits.push_back(split_axis_inputs_shape[node_size][0]);
   split_info->extend_top.push_back(top);
@@ -283,7 +302,7 @@ bool GetMultipleOutputsOfAnfNode(const FuncGraphPtr &func_graph, const AnfNodePt
   for (size_t i = 0; i < output_num; i++) {
     auto index = NewValueNode(SizeToInt(i));
     MS_CHECK_TRUE_MSG(index != nullptr, false, "create ValueNode return nullptr");
-    size_t temp = SizeToInt(i);
+    auto temp = SizeToInt(i);
     auto imm = std::make_shared<Int32Imm>(temp);
     MS_CHECK_TRUE_MSG(imm != nullptr, false, "create Int32Imm return nullptr");
     auto abstract_scalar = std::make_shared<abstract::AbstractScalar>(imm);
@@ -306,8 +325,8 @@ AnfNodePtr CreateOutputsOfConcat(const FuncGraphPtr &func_graph, const AnfNodePt
   MS_CHECK_TRUE_MSG(conv_cnode != nullptr, nullptr, "input AnfNodePtr is nullptr");
   MS_CHECK_TRUE_MSG(split_info != nullptr, nullptr, "input SplitInfo is nullptr");
 
-  int32_t nodes_num = conv_outputs.size();
-  if (nodes_num != static_cast<int32_t>(split_info->out_num)) {
+  auto nodes_num = static_cast<int64_t>(conv_outputs.size());
+  if (nodes_num != split_info->out_num) {
     MS_LOG(ERROR) << "Conv outputs has wrong input size";
     return nullptr;
   }
@@ -320,7 +339,7 @@ AnfNodePtr CreateOutputsOfConcat(const FuncGraphPtr &func_graph, const AnfNodePt
   auto concate_primitive = NewValueNode(concat_prim);
   MS_CHECK_TRUE_MSG(concate_primitive != nullptr, nullptr, "create concate_primitive return nullptr");
   std::vector<AnfNodePtr> concate_inputs = {concate_primitive};
-  for (int32_t i = 0; i < nodes_num; i++) {
+  for (size_t i = 0; i < static_cast<size_t>(nodes_num); i++) {
     concate_inputs.push_back(conv_outputs[i]);
   }
 
@@ -366,6 +385,10 @@ bool CreateOutputsOfSplitWithOverlap(const FuncGraphPtr &func_graph, const AnfNo
   MS_CHECK_TRUE_MSG(split_cnode != nullptr, false, "create split_cnode return nullptr");
 
   split_cnode->set_fullname_with_scope(node_name + "_Split");
+  if (split_info->out_num < 0) {
+    MS_LOG(ERROR) << "out_num should greater then zero";
+    return false;
+  }
   // create outputs op split
   if (!GetMultipleOutputsOfAnfNode(func_graph, split_cnode, split_info->out_num, split_outputs)) {
     MS_LOG(ERROR) << "GetMultipleOutputsOfAnfNode failed";
@@ -374,7 +397,6 @@ bool CreateOutputsOfSplitWithOverlap(const FuncGraphPtr &func_graph, const AnfNo
 
   AbstractBasePtrList ptr_list;
   for (int64_t i = 0; i < split_info->out_num; i++) {
-    auto node = (*split_outputs)[i];
     // set date_type same with weight
     auto type_id = static_cast<TypeId>(kNumberTypeFloat32);
     auto type_ptr = TypeIdToType(type_id);
@@ -387,10 +409,9 @@ bool CreateOutputsOfSplitWithOverlap(const FuncGraphPtr &func_graph, const AnfNo
   return true;
 }
 
-bool UpdateRatioWithPadStride(int64_t *ratio, size_t ratio_len, size_t split_size, int split_dim_size, int pad,
-                              int stride) {
+bool UpdateRatioWithPadStride(int64_t *ratio, size_t ratio_len, size_t split_size, int split_dim_size) {
   MS_CHECK_TRUE_MSG(ratio != nullptr, false, "input ratio is nullptr");
-  int total_block_count = 0;
+  int64_t total_block_count = 0;
   for (size_t i = 0; i < split_size; i++) {
     total_block_count += ratio[i];
   }
@@ -398,12 +419,20 @@ bool UpdateRatioWithPadStride(int64_t *ratio, size_t ratio_len, size_t split_siz
     MS_LOG(ERROR) << "out of ratio range";
     return false;
   }
+  if (total_block_count < 0) {
+    MS_LOG(ERROR) << "divide by zero";
+    return false;
+  }
 
   std::vector<int64_t> new_ratio(split_size);
-  int visited_block = 0;
+  int64_t visited_block = 0;
   for (size_t i = 0; i < split_size - 1; i++) {
     visited_block += ratio[i];
-    int cur_border = UP_DIV(split_dim_size * visited_block, total_block_count);
+    if (INT_MUL_OVERFLOW_THRESHOLD(split_dim_size, visited_block, INT64_MAX)) {
+      MS_LOG(ERROR) << "int mul overflow";
+      return false;
+    }
+    int64_t cur_border = UP_DIV(split_dim_size * visited_block, total_block_count);
     new_ratio[i + 1] = cur_border;
   }
 

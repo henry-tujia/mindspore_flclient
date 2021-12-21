@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,9 +22,9 @@
 #include <string>
 #include <memory>
 #include <set>
-#include <unordered_map>
-#include <unordered_set>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "pybind11/pybind11.h"
 #include "ir/anf.h"
 #include "pybind_api/ir/primitive_py.h"
@@ -50,6 +50,7 @@ enum PynativeStatusCode {
 enum RunOpArgsEnum { PY_PRIM = 0, PY_NAME, PY_INPUTS, PY_ARGS_NUM };
 
 struct OpExecInfo {
+  bool is_nop_prim = false;
   bool is_dynamic_shape = false;
   bool is_mixed_precision_cast = false;
   size_t next_input_index = 0;
@@ -69,8 +70,7 @@ using OpExecInfoPtr = std::shared_ptr<OpExecInfo>;
 
 const std::set<std::string> ignore_infer_prim = {"mixed_precision_cast"};
 const std::set<std::string> force_infer_prim = {"TopK", "DropoutGenMask"};
-const std::set<std::string> dynamic_shape_const_input_to_attr = {"Cast", "ExpandDims", "Reshape", "EmbeddingLookup",
-                                                                 "Transpose"};
+const std::set<std::string> dynamic_shape_const_input_to_attr = {"Cast", "ExpandDims", "EmbeddingLookup", "Transpose"};
 }  // namespace pynative
 }  // namespace mindspore
 

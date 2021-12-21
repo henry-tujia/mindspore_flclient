@@ -32,10 +32,12 @@ REG_ADPT_DESC(Constant, kNameConst, ADPT_DESC(Constant, Const))
 // ScalarSummary
 INPUT_MAP(Summary) = {{2, INPUT_DESC(x)}};
 ATTR_MAP(Summary) = EMPTY_ATTR_MAP;
+#ifndef ENABLE_SECURITY
 REG_ADPT_DESC(ScalarSummary, prim::kPrimScalarSummary->name(), ADPT_DESC(Summary))
 REG_ADPT_DESC(ImageSummary, prim::kPrimImageSummary->name(), ADPT_DESC(Summary))
 REG_ADPT_DESC(TensorSummary, prim::kPrimTensorSummary->name(), ADPT_DESC(Summary))
 REG_ADPT_DESC(HistogramSummary, prim::kPrimHistogramSummary->name(), ADPT_DESC(Summary))
+#endif
 REG_ADPT_DESC(Debug, prim::kPrimDebug->name(), ADPT_DESC(Summary))
 
 // Data
@@ -101,6 +103,12 @@ INPUT_MAP(EditDistance) = {{1, INPUT_DESC(hypothesis_indices)}, {2, INPUT_DESC(h
 ATTR_MAP(EditDistance) = {{"normalize", ATTR_DESC(normalize, AnyTraits<bool>())}};
 OUTPUT_MAP(EditDistance) = {{0, OUTPUT_DESC(output)}};
 REG_ADPT_DESC(EditDistance, kNameEditDistance, ADPT_DESC(EditDistance))
+
+// NonZero
+INPUT_MAP(NonZero) = {{1, INPUT_DESC(x)}};
+ATTR_MAP(NonZero) = {{"transpose", ATTR_DESC(transpose, AnyTraits<bool>())}};
+OUTPUT_MAP(NonZero) = {{0, OUTPUT_DESC(y)}};
+REG_ADPT_DESC(NonZero, kNameNonZero, ADPT_DESC(NonZero))
 
 // Unsqueeze
 INPUT_MAP(Unsqueeze) = {{1, INPUT_DESC(x)}};

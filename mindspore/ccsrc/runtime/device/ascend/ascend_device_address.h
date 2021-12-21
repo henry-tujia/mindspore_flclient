@@ -36,26 +36,34 @@ namespace ascend {
 class AscendDeviceAddress : public DeviceAddress {
  public:
   explicit AscendDeviceAddress(void *ptr, size_t size) : DeviceAddress(ptr, size) {}
-  explicit AscendDeviceAddress(void *ptr, size_t size, const std::string &format, TypeId type_id)
-      : DeviceAddress(ptr, size, format, type_id) {}
+  explicit AscendDeviceAddress(void *ptr, size_t size, const std::string &device_name, uint32_t device_id)
+      : DeviceAddress(ptr, size, device_name, device_id) {}
   explicit AscendDeviceAddress(void *ptr, size_t size, const std::string &format, TypeId type_id,
-                               const KernelWithIndex &node_index)
-      : DeviceAddress(ptr, size, format, type_id, node_index) {}
+                               const std::string &device_name, uint32_t device_id)
+      : DeviceAddress(ptr, size, format, type_id, device_name, device_id) {}
+  explicit AscendDeviceAddress(void *ptr, size_t size, const std::string &format, TypeId type_id,
+                               const KernelWithIndex &node_index, const std::string &device_name, uint32_t device_id)
+      : DeviceAddress(ptr, size, format, type_id, node_index, device_name, device_id) {}
   ~AscendDeviceAddress() override;
   bool SyncDeviceToHost(size_t size, void *const host_ptr) const override;
   bool SyncHostToDevice(size_t size, const void *host_ptr) const override;
   bool SyncDeviceToHost(const ShapeVector &shape, size_t size, TypeId type, void *host_ptr) const override;
   bool SyncHostToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *host_ptr,
                         const std::string &format = "DefaultFormat") const override;
+  bool AsyncDeviceToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *src_ptr,
+                           const std::string &format) const override;
   bool SyncDeviceToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *src_ptr,
                           const std::string &format) const override;
   void ClearDeviceMemory() override;
   DeviceAddressType DeviceType() const override { return DeviceAddressType::kAscend; }
+#ifndef ENABLE_SECURITY
   bool DumpMemToFile(const std::string &filepath, const std::string &host_fmt, const ShapeVector &host_shape,
                      TypeId host_type, bool trans_flag) const override;
+#endif
 #ifdef ENABLE_DEBUGGER
   bool LoadMemToHost(const std::string &tensor_name, int execution_order, const std::string &host_fmt,
-                     const ShapeVector &host_shape, TypeId host_type, size_t slot, bool keep_prev) const override;
+                     const ShapeVector &host_shape, TypeId host_type, size_t slot, bool keep_prev,
+                     uint32_t root_graph_id = 0) const override;
 #endif
 
  private:
@@ -69,6 +77,7 @@ class AscendDeviceAddress : public DeviceAddress {
                                                       const std::string &ori_format,
                                                       const std::string &dst_format) const;
   mutable std::shared_ptr<LaunchKernel> launch_transdata_{nullptr};
+  void BindDevice() const;
 };
 using AscendDeviceAddressPtr = std::shared_ptr<AscendDeviceAddress>;
 }  // namespace ascend

@@ -18,6 +18,7 @@
 #define MINDSPORE_LITE_SRC_LITE_MODEL_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 #include "include/errorcode.h"
 #include "include/model.h"
@@ -26,6 +27,9 @@
 #include "src/common/common.h"
 #include "src/common/log_adapter.h"
 #include "src/common/version_manager.h"
+#include "src/schema_tensor_wrapper.h"
+#include "nnacl/op_base.h"
+#include "src/common/prim_util.h"
 #ifdef ENABLE_V0
 #include "schema/model_v0_generated.h"
 #endif
@@ -37,7 +41,9 @@ namespace mindspore {
 namespace lite {
 class LiteModel : public Model {
  public:
-  int ConstructModel();
+  explicit LiteModel(std::string model_path = "") : model_path_(std::move(model_path)) {}
+
+  int ConstructModel(const char *model_buf, size_t size, bool take_buf);
 
   bool ModelVerify() const;
 
@@ -53,6 +59,10 @@ class LiteModel : public Model {
 
   int GetSchemaVersion() const { return schema_version_; }
 
+  SchemaTensorWrapper *GetSchemaTensor(const size_t &tensor_index) const;
+
+  static int VersionVerify(flatbuffers::Verifier *verify);
+
  private:
 #ifdef ENABLE_V0
   int ConvertAttrs(Model::Node *node, std::vector<schema::Tensor *> *dst_tensor);
@@ -60,23 +70,17 @@ class LiteModel : public Model {
   int ConvertAttrToTensors();
 #endif
 
+  bool PrepareInnerTensors();
+
   template <typename T = schema::MetaGraph, typename U = schema::CNode>
   bool ConvertNodes(const T &meta_graph) {
-    if (meta_graph.nodes() == nullptr) {
-      MS_LOG(ERROR) << "meta_graph is invalid, please check your model file.";
-      return false;
-    }
+    MS_CHECK_TRUE_MSG(meta_graph.nodes() != nullptr, false, "meta_graph is invalid, please check your model file.");
     for (size_t i = 0; i < meta_graph.nodes()->size(); ++i) {
       auto *node = new (std::nothrow) Model::Node();
-      if (node == nullptr) {
-        MS_LOG(ERROR) << "new node fail!";
-        return false;
-      }
+      MS_CHECK_TRUE_MSG(node != nullptr, false, "new node fail!");
       auto c_node = meta_graph.nodes()->template GetAs<U>(i);
-      if (c_node == nullptr) {
-        MS_LOG(ERROR) << "get as cnode fail!";
-        return false;
-      }
+      MS_CHECK_TRUE_MSG(c_node != nullptr, false, "get as cnode fail!");
+      node->node_type_ = GetPrimitiveType(c_node->primitive(), schema_version_);
 #ifdef ENABLE_MODEL_OBF
       auto src_prim = reinterpret_cast<const schema::Primitive *>(c_node->primitive());
       auto src_prim_type = src_prim->value_type();
@@ -102,6 +106,11 @@ class LiteModel : public Model {
       node->primitive_ = c_node->primitive();
 #endif
       node->quant_type_ = c_node->quantType();
+      if (node->quant_type_ < schema::QuantType_MIN || node->quant_type_ > schema::QuantType_MAX) {
+        MS_LOG(ERROR) << "node->quant_type_:" << node->quant_type_ << " is invalid.";
+        delete node;
+        return false;
+      }
       if (schema_version_ == SCHEMA_VERSION::SCHEMA_CUR) {
         SetNodeDeviceType(node, *c_node);
       }
@@ -257,11 +266,7 @@ class LiteModel : public Model {
   void SetNodeDeviceType(Node *node, const schema::v0::CNode &c_node) { node->device_type_ = -1; }
 #endif
 
-  int VersionVerify(flatbuffers::Verifier *verify) const;
-
-  const void *GetMetaGraphByVerison();
-
-  int GenerateModelByVersion(const void *meta_graph);
+  int GenerateModelByVersion();
 
   int ConvertSubGraph(const schema::SubGraph &sub_graph);
 
@@ -277,9 +282,14 @@ class LiteModel : public Model {
   std::vector<char *> attr_tensor_bufs_;
   bool keep_model_buf_ = false;
   int schema_version_ = SCHEMA_VERSION::SCHEMA_CUR;
+  // tensor_index --- external_data
+  std::vector<SchemaTensorWrapper *> inner_all_tensors_;
+  const std::string model_path_;
 };
 
 Model *ImportFromBuffer(const char *model_buf, size_t size, bool take_buf);
+LiteModel *LiteImportFromPath(const char *model_path);
+Model *ImportFromPath(const char *model_path);
 }  // namespace lite
 }  // namespace mindspore
 

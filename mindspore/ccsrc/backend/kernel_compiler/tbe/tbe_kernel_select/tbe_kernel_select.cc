@@ -25,7 +25,7 @@
 #include "backend/kernel_compiler/tbe/tbe_convert_utils.h"
 #include "backend/kernel_compiler/tbe/tbe_dynaminc_shape_util.h"
 #include "backend/kernel_compiler/tbe/tbe_kernel_build.h"
-#include "backend/kernel_compiler/tbe/ascend_kernel_compile.h"
+#include "backend/kernel_compiler/tbe/tbe_kernel_compile.h"
 #include "backend/kernel_compiler/tbe/tbe_kernel_select/common_utils.h"
 #include "backend/kernel_compiler/tbe/tbe_kernel_select/tbe_kernel_broadcast_selecter.h"
 #include "backend/kernel_compiler/tbe/tbe_kernel_select/tbe_kernel_reduce_selecter.h"
@@ -58,13 +58,14 @@ void TbeKernelSelect::TbeMetadataInfoEx() {
   MS_EXCEPTION_IF_NULL(cnode_ptr_);
   MS_EXCEPTION_IF_NULL(kernel_info_list_);
   node_name_ = AnfAlgo::GetCNodeName(cnode_ptr_);
+  full_name_ = cnode_ptr_->fullname_with_scope();
 
   auto op_info_ptr = tbe::TbeDynamicShapeUtil::FindOp(node_name_, cnode_ptr_);
   if (!op_info_ptr) {
     return;
   }
   if (!TbePropertyChecker::CheckTbeProperties(cnode_ptr_)) {
-    MS_LOG(INFO) << "Warning: node(" << cnode_ptr_->fullname_with_scope() << ") not support tbe aicore.";
+    MS_LOG(INFO) << "Warning: node(" << full_name_ << ") is not supported by tbe ai_core.";
     return;
   }
 
@@ -189,21 +190,25 @@ void TbeKernelSelect::GetReducePatternKernelInfo(const OpInfo &op_info) {
 
 void TbeKernelSelect::FilterInVaildKernelInfo(const OpInfo &op_info) {
   if (kernel_info_list_->empty()) {
-    MS_LOG(INFO) << "Warning: get kernel build info failed.";
+    MS_LOG(INFO) << "Warning: get kernel build info failed. Skip check supported. Op name: " << full_name_;
     return;
   }
   std::vector<std::shared_ptr<KernelBuildInfo>> kernel_info_list;
   auto dynamic_inputs = GetNodeDynamicInputs();
+  auto need_check_supported = op_info.need_check_supported();
   for (auto iter = kernel_info_list_->begin(); iter != kernel_info_list_->end(); ++iter) {
     if (!FilterInVaildShape(iter, !dynamic_inputs.empty())) {
       continue;
     }
-    if (op_info.need_check_supported()) {
-      if (!TbeCheckSupported(iter)) {
-        continue;
-      }
+    if (need_check_supported && !TbeCheckSupported(iter)) {
+      continue;
     }
     kernel_info_list.emplace_back(*iter);
+  }
+  if (kernel_info_list.empty()) {
+    MS_LOG(WARNING) << "After tbe check supported, all valid AI CORE kernel infos were filtered out."
+                       "It will try to find in AI CPU kernel infos. Node:"
+                    << full_name_;
   }
   (*kernel_info_list_) = kernel_info_list;
 }
@@ -263,23 +268,8 @@ bool TbeKernelSelect::TbeCheckSupported(const KernelBuildInfoIter &kernel_build_
   // replace kernel_info with current kernel info
   auto kernel_build_info_tmp = AnfAlgo::GetSelectKernelBuildInfo(cnode_ptr_);
   AnfAlgo::SetSelectKernelBuildInfo(*kernel_build_info_iter, cnode_ptr_.get());
-  std::string old_build = common::GetEnv("MS_OLD_BUILD_PROCESS");
-  bool ret = true;
-  if (!old_build.empty()) {
-    nlohmann::json kernel_json;
-    TbeKernelJsonCreator creator(CHECK_SUPPORTED);
-    ret = creator.GenTbeSingleKernelJson(cnode_ptr_, &kernel_json);
-    if (!ret) {
-      MS_LOG(EXCEPTION) << "Gen tbe single kernel json for check support failed.";
-    }
-    ret = AscendKernelBuildClient::Instance().CheckSupported(kernel_json.dump());
-  } else {
-    auto &build_manager = kernel::ascend::AscendKernelCompileManager::GetInstance();
-    if (!build_manager.AscendOpCheckSupported(cnode_ptr_)) {
-      MS_LOG(WARNING) << "Tbe check supported failed";
-      ret = false;
-    }
-  }
+  auto &build_manager = kernel::ascend::TbeKernelCompileManager::GetInstance();
+  auto ret = HostCheck::CheckValidDeviceShape(cnode_ptr_) && build_manager.TbeOpCheckSupported(cnode_ptr_);
   AnfAlgo::SetSelectKernelBuildInfo(kernel_build_info_tmp, cnode_ptr_.get());
   return ret;
 }
@@ -346,7 +336,7 @@ bool TbeKernelSelect::GenBuilderItem(bool is_input, size_t kernel_build_info_ind
           value_depends->emplace_back(value_depend);
         }
         dynamic_input_index++;
-        real_io_tensor_index += LongToSize(dynamic_input_size);
+        real_io_tensor_index = SizetAddWithOverflowCheck(real_io_tensor_index, LongToSize(dynamic_input_size));
       } else {
         if (ios_info.size() != 1) {
           MS_LOG(EXCEPTION) << "if output is dynamic, so output must has one output.";
@@ -357,7 +347,7 @@ bool TbeKernelSelect::GenBuilderItem(bool is_input, size_t kernel_build_info_ind
           reshape_types->emplace_back(reshape_type);
           value_depends->emplace_back(value_depend);
         }
-        real_io_tensor_index += real_io_tensor_num;
+        real_io_tensor_index = SizetAddWithOverflowCheck(real_io_tensor_index, real_io_tensor_num);
       }
     } else if (io_param_type == kParamTypeRequre || io_param_type == kParamTypeOptional) {
       // require or optional io
@@ -439,33 +429,20 @@ std::vector<std::string> TbeKernelSelect::SplitStrToVec(const std::string &op_se
 
 std::string TbeKernelSelect::OpSelectFormat() {
   std::string res_json_str;
-  std::string old_build = common::GetEnv("MS_OLD_BUILD_PROCESS");
-  if (!old_build.empty()) {
-    nlohmann::json kernel_json;
-    TbeKernelJsonCreator creator(OP_SELECT_FORMAT);
-    bool ret = creator.GenTbeSingleKernelJson(cnode_ptr_, &kernel_json);
-    if (!ret) {
-      MS_LOG(EXCEPTION) << "GenTbeSingleKernelJson failed.";
-    }
-    res_json_str = AscendKernelBuildClient::Instance().SelectFormat(kernel_json.dump());
-    if (res_json_str.empty()) {
-      MS_LOG(EXCEPTION) << "Op select format error, input args: " << kernel_json.dump();
-    }
-    if (res_json_str.find("TBEException") != std::string::npos) {
-      MS_LOG(EXCEPTION) << "Dynamic op select failed: " << res_json_str << ", input args: " << kernel_json.dump();
-    }
-  } else {
-    MS_LOG(INFO) << "Format select for node:[" << AnfAlgo::GetCNodeName(cnode_ptr_) << ", "
-                 << cnode_ptr_->fullname_with_scope() << "].";
-    auto &build_manager = kernel::ascend::AscendKernelCompileManager::GetInstance();
-    res_json_str = build_manager.AscendOpSelectFormat(cnode_ptr_);
-  }
+  MS_LOG(INFO) << "Format select for node:[" << cnode_ptr_->fullname_with_scope() << "].";
+  auto &build_manager = kernel::ascend::TbeKernelCompileManager::GetInstance();
+  res_json_str = build_manager.TbeOpSelectFormat(cnode_ptr_);
   return res_json_str;
 }
 
 void TbeKernelSelect::CreateNewOpInfo(const mindspore::kernel::OpInfo &op_info, const SupportFormat &support_format,
                                       mindspore::kernel::OpInfo *op_info_new) {
   MS_EXCEPTION_IF_NULL(op_info_new);
+  if (support_format.input_format.empty() || support_format.output_format.empty()) {
+    MS_LOG(EXCEPTION) << "Support input format and output format size can not be empty, but the input format size is: "
+                      << support_format.input_format.size()
+                      << ", output format size is: " << support_format.output_format.size();
+  }
   if (op_info.inputs_ptr().size() != support_format.input_format[0].size() ||
       op_info.outputs_ptr().size() != support_format.output_format[0].size()) {
     MS_LOG(EXCEPTION) << "BroadCast input/output size not match, op info input size:" << op_info.inputs_ptr().size()

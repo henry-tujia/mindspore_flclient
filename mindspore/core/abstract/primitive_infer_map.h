@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@
  */
 #ifndef MINDSPORE_CORE_ABSTRACT_PRIMITIVE_INFER_MAP_H_
 #define MINDSPORE_CORE_ABSTRACT_PRIMITIVE_INFER_MAP_H_
-#include <unordered_map>
+
 #include <vector>
+#include <set>
 #include <memory>
+#include "utils/hash_map.h"
 #include "ir/primitive.h"
 #include "ops/primitive_c.h"
 #include "base/core_ops.h"
@@ -41,7 +43,7 @@ struct StandardPrimitiveImplReg {
 };
 
 using PrimitiveEvalImplMap =
-  std::unordered_map<PrimitivePtr, StandardPrimitiveImplReg, PrimitiveHasher, PrimitiveEqual>;
+  mindspore::HashMap<PrimitivePtr, StandardPrimitiveImplReg, PrimitiveHasher, PrimitiveEqual>;
 
 PrimitiveEvalImplMap &GetPrimitiveToEvalImplMap();
 
@@ -49,23 +51,23 @@ PrimitiveEvalImplMap &GetPrimitiveToBackendEvalImplMap();
 
 StandardPrimitiveImplReg GetPrimitiveInferImpl(const PrimitivePtr &primitive);
 
-std::vector<int64_t> GetDependsFormMap(const CNodePtr &cnode);
+std::set<int64_t> GetDependsFormMap(const CNodePtr &cnode);
 
 void RegisterStandardPrimitiveImpl(const PrimitivePtr &primitive, const StandardPrimitiveImplReg &impl_reg);
 
 class RegisterStandardPrimitiveEvalHelper {
  public:
   RegisterStandardPrimitiveEvalHelper(const PrimitivePtr &primitive, const InferShapeImpl &infer_impl,
-                                      const InferValueImpl &infer_value_impl, const bool is_wight_list = true) {
-    const StandardPrimitiveImplReg impl_reg{infer_impl, infer_value_impl, is_wight_list};
+                                      const InferValueImpl &infer_value_impl, const bool is_white_list = true) {
+    const StandardPrimitiveImplReg impl_reg{infer_impl, infer_value_impl, is_white_list};
     RegisterStandardPrimitiveImpl(primitive, impl_reg);
   }
   ~RegisterStandardPrimitiveEvalHelper() = default;
 };
 
-#define REGISTER_PRIMITIVE_EVAL_IMPL(name, primitive, infer_impl, infer_value_impl, is_wight_list)         \
+#define REGISTER_PRIMITIVE_EVAL_IMPL(name, primitive, infer_impl, infer_value_impl, is_white_list)         \
   static auto helper_##name =                                                                              \
-    abstract::RegisterStandardPrimitiveEvalHelper(primitive, infer_impl, infer_value_impl, is_wight_list); \
+    abstract::RegisterStandardPrimitiveEvalHelper(primitive, infer_impl, infer_value_impl, is_white_list); \
   std::shared_ptr<ops::PrimitiveC> GetDefaultPrimC##name() {                                               \
     auto out = std::make_shared<name>();                                                                   \
     return out;                                                                                            \

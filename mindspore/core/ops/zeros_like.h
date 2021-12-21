@@ -25,16 +25,19 @@
 
 namespace mindspore {
 namespace ops {
+/// \brief Creates a new tensor. Refer to Python API @ref mindspore.ops.ZerosLike for more details.
 class MS_CORE_API ZerosLike : public PrimitiveC {
  public:
+  /// \brief Constructor.
   ZerosLike() : PrimitiveC(prim::kPrimZerosLike->name()) { InitIOName({"x"}, {"y"}); }
+  /// \brief Destructor.
   ~ZerosLike() = default;
   MS_DECLARE_PARENT(ZerosLike, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr ZerosLikeInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                const std::vector<AbstractBasePtr> &input_args);
-using PrimZerosLikePtr = std::shared_ptr<ZerosLike>;
 }  // namespace ops
 }  // namespace mindspore
 

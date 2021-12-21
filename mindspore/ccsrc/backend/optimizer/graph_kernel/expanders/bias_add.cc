@@ -21,10 +21,8 @@
 #include "backend/optimizer/graph_kernel/expanders/expander_factory.h"
 #include "backend/optimizer/graph_kernel/expanders/utils.h"
 
-namespace mindspore {
-namespace opt {
-namespace expanders {
-class BiasAdd : public OpExpander {
+namespace mindspore::graphkernel::expanders {
+class BiasAdd : public OpDesc {
  public:
   BiasAdd() {
     auto support_format = std::make_unique<SupportFormat>();
@@ -36,6 +34,8 @@ class BiasAdd : public OpExpander {
     (void)validators_.emplace_back(std::make_unique<CheckAttr>(attrs));
   }
   ~BiasAdd() = default;
+
+ protected:
   NodePtrList Expand() override {
     const auto &inputs = gb.Get()->inputs();
     auto input_x = inputs[0];
@@ -54,6 +54,4 @@ class BiasAdd : public OpExpander {
   }
 };
 OP_EXPANDER_REGISTER("BiasAdd", BiasAdd);
-}  // namespace expanders
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::expanders

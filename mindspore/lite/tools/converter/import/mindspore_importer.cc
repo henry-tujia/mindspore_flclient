@@ -20,7 +20,9 @@
 #include <set>
 #include <vector>
 #include <regex>
+#include <queue>
 #include "tools/converter/parser/parser_utils.h"
+#include "tools/converter/import/cast_op_adjust.h"
 #include "tools/converter/import/primitive_adjust.h"
 #include "tools/converter/import/mindir_adjust.h"
 #include "tools/converter/import/mindir_control_flow_adjust.h"
@@ -52,6 +54,15 @@ STATUS MindsporeImporter::Mindir2AnfAdjust(const FuncGraphPtr &func_graph, const
     MS_LOG(ERROR) << "MindIr adjust failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(RET_ERROR);
     return RET_ERROR;
+  }
+  if (!flag.trainModel) {
+    auto cast_op_adjust = std::make_shared<CastOpAdjust>();
+    MS_CHECK_TRUE_MSG(cast_op_adjust != nullptr, RET_NULL_PTR, "cast_op_adjust is nullptr.");
+    if (!cast_op_adjust->Run(func_graph)) {
+      MS_LOG(ERROR) << "MindIr adjust cast operator failed.";
+      ReturnCode::GetSingleReturnCode()->UpdateReturnCode(RET_ERROR);
+      return RET_ERROR;
+    }
   }
   auto mindir_control_flow_adjust = std::make_shared<MindIRControlFlowAdjust>();
   MS_CHECK_TRUE_MSG(mindir_control_flow_adjust != nullptr, RET_NULL_PTR, "mindir_control_flow_adjust is nullptr.");
@@ -108,6 +119,7 @@ STATUS MindsporeImporter::ProcessDependCnode(const CNodePtr &cnode) {
     return RET_NO_CHANGE;
   }
   auto depend_input = cnode->input(1);
+  MS_CHECK_TRUE_MSG(depend_input != nullptr, RET_ERROR, "depend_input is nullptr");
   if (utils::isa<CNodePtr>(depend_input)) {
     auto depend_input_cnode = utils::cast<CNodePtr>(depend_input);
     auto status = ProcessDependCnode(depend_input_cnode);
@@ -136,6 +148,7 @@ STATUS MindsporeImporter::GetFuncGraphOutputName(const CNodePtr &return_node) {
       if (opt::CheckPrimitiveType(output_node, prim::kPrimMakeTuple)) {
         for (size_t j = 0; j < output_cnode->inputs().size(); j++) {
           auto tuple_input = output_cnode->input(j);
+          MS_CHECK_TRUE_MSG(tuple_input != nullptr, RET_ERROR, "tuple_input is nullptr");
           if (!utils::isa<CNodePtr>(tuple_input)) {
             continue;
           }
@@ -162,7 +175,41 @@ STATUS MindsporeImporter::GetFuncGraphOutputName(const CNodePtr &return_node) {
   return RET_OK;
 }
 
-STATUS MindsporeImporter::RemoveUnusedGraphInput(const FuncGraphPtr &func_graph) {
+namespace {
+bool IsEmptyOp(const AnfNodePtr &node) {
+  MS_ASSERT(node != nullptr);
+  return (opt::CheckPrimitiveType(node, prim::kPrimMakeTuple) || opt::CheckPrimitiveType(node, prim::kPrimReturn) ||
+          opt::CheckPrimitiveType(node, prim::kPrimTupleGetItem) || opt::CheckPrimitiveType(node, prim::kPrimDepend) ||
+          opt::CheckPrimitiveType(node, prim::kPrimUpdateState));
+}
+
+void RemovePostEdgeOfParameter(const AnfNodePtr &parameter) {
+  MS_ASSERT(parameter != nullptr);
+  auto func_graph = parameter->func_graph();
+  MS_ASSERT(func_graph != nullptr);
+  auto manager = Manage(func_graph);
+  MS_ASSERT(maneger != nullptr);
+  auto nodes_users = manager->node_users();
+  auto node_users_iter = nodes_users.find(parameter);
+  MS_ASSERT(node_users_iter != nodes_users.end());
+  for (const auto &node_user_iter : node_users_iter->second) {
+    MS_ASSERT(utils::isa<CNodePtr>(node_user_iter.first));
+    auto node_user_cnode = utils::cast<CNodePtr>(node_user_iter.first);
+    auto &node_user_cnode_inputs = node_user_cnode->inputs();
+    std::vector<AnfNodePtr> new_node_user_cnode_inputs;
+    for (size_t i = 0; i < node_user_cnode_inputs.size(); i++) {
+      if (static_cast<int>(i) == node_user_iter.second) {
+        continue;
+      }
+      new_node_user_cnode_inputs.emplace_back(node_user_cnode_inputs.at(i));
+    }
+    node_user_cnode->set_inputs(new_node_user_cnode_inputs);
+  }
+}
+}  // namespace
+
+void MindsporeImporter::RemoveUnusedGraphInput(const FuncGraphPtr &func_graph) {
+  MS_ASSERT(func_graph != nullptr);
   std::map<AnfNodePtr, bool> graph_input_map;
   for (auto &input : func_graph->get_inputs()) {
     graph_input_map[input] = false;
@@ -181,30 +228,63 @@ STATUS MindsporeImporter::RemoveUnusedGraphInput(const FuncGraphPtr &func_graph)
       }
     }
   }
+  // drop unused input_parameter and disconnect edge
+  std::queue<AnfNodePtr> q;
+  q.push(func_graph->get_return());
+  while (!q.empty()) {
+    auto cur_node = q.front();
+    q.pop();
+    if (IsEmptyOp(cur_node)) {
+      auto cur_cnode = utils::cast<CNodePtr>(cur_node);
+      for (size_t i = 1; i < cur_cnode->inputs().size(); i++) {
+        const auto &input = cur_cnode->input(i);
+        q.push(input);
+      }
+    }
+    if (utils::isa<ParameterPtr>(cur_node)) {
+      auto iter = graph_input_map.find(cur_node);
+      if (iter != graph_input_map.end()) {
+        RemovePostEdgeOfParameter(cur_node);
+        iter->second = false;
+      }
+    }
+  }
   for (auto &item : graph_input_map) {
-    if (item.second == false) {
+    if (!item.second) {
       func_graph->DropNode(item.first);
     }
   }
-  return RET_OK;
+}
+
+FuncGraphPtr MindsporeImporter::ImportMindIR(const converter::Flags &flag, const void *buff, const size_t &size) {
+  MindIRLoader mindir_loader;
+  auto func_graph = mindir_loader.LoadMindIR(buff, size);
+  return CheckAndUpdateFuncGraph(flag, func_graph);
 }
 
 FuncGraphPtr MindsporeImporter::ImportMindIR(const converter::Flags &flag) {
   FuncGraphPtr func_graph;
-  if (flag.dec_key.size() != 0) {
+  if (!flag.dec_key.empty()) {
     unsigned char key[32];
     const size_t key_len = Hex2ByteArray(flag.dec_key, key, 32);
     if (key_len == 0) {
       return nullptr;
     }
-    func_graph = LoadMindIR(flag.modelFile, false, key, key_len, flag.dec_mode);
+    MindIRLoader mindir_loader(false, key, key_len, flag.dec_mode, false);
+    func_graph = mindir_loader.LoadMindIR(flag.modelFile);
     auto ret = memset_s(key, sizeof(key), 0, key_len);
     if (ret != 0) {
       MS_LOG(EXCEPTION) << "memset_s error";
     }
   } else {
-    func_graph = LoadMindIR(flag.modelFile);
+    MindIRLoader mindir_loader;
+    func_graph = mindir_loader.LoadMindIR(flag.modelFile);
   }
+
+  return CheckAndUpdateFuncGraph(flag, func_graph);
+}
+
+FuncGraphPtr MindsporeImporter::CheckAndUpdateFuncGraph(const converter::Flags &flag, FuncGraphPtr func_graph) {
   if (func_graph == nullptr) {
     MS_LOG(ERROR) << "get funcGraph failed for fmk:MINDIR";
     MS_LOG(ERROR)
@@ -212,17 +292,29 @@ FuncGraphPtr MindsporeImporter::ImportMindIR(const converter::Flags &flag) {
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(RET_ERROR);
     return nullptr;
   }
+
+  if (ConverterInnerContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0) {
+    for (const auto &input : func_graph->get_inputs()) {
+      MS_ASSERT(input->isa<Parameter>());
+      auto name = input->cast<ParameterPtr>()->name();
+      std::vector<int64_t> shape = ConverterInnerContext::GetInstance()->GetGraphInputTensorShape(name);
+      if (shape.empty()) {
+        MS_LOG(WARNING) << "Can not find name in map. name is " << name;
+      } else {
+        input->abstract()->set_shape(std::make_shared<mindspore::abstract::Shape>(shape));
+      }
+    }
+  }
+
   func_graph->set_attr("graph_name", MakeValue("main_graph"));
   func_graph->set_attr("fmk", MakeValue(static_cast<int>(converter::kFmkTypeMs)));
-  auto status = RemoveUnusedGraphInput(func_graph);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "RemoveUnusedGraphInput failed.";
+  RemoveUnusedGraphInput(func_graph);
+  if (CommonAnfAdjust(func_graph) != RET_OK) {
+    MS_LOG(ERROR) << "AdjustForAnf failed.";
     return nullptr;
   }
-  for (auto input : func_graph->get_inputs()) {
-    ConverterContext::GetInstance()->AddGraphInputTensorNames(input->fullname_with_scope());
-  }
-  status = GetFuncGraphOutputName(func_graph->get_return());
+
+  auto status = GetFuncGraphOutputName(func_graph->get_return());
   if (status != RET_OK) {
     MS_LOG(ERROR) << "GetFuncGraphOutputName failed.";
     return nullptr;
@@ -231,11 +323,11 @@ FuncGraphPtr MindsporeImporter::ImportMindIR(const converter::Flags &flag) {
     MS_LOG(ERROR) << "Can not find output name.";
     return nullptr;
   }
-  ConverterContext::GetInstance()->SetGraphOutputTensorNames(output_tensor_name_);
-#ifdef ENABLE_LITE_ACL
-  MS_LOG(INFO) << "There is no need to adjust and pass graph when in Ascend310.";
-  return func_graph;
-#endif
+  ConverterInnerContext::GetInstance()->SetGraphOutputTensorNames(output_tensor_name_);
+  if (flag.device == "Ascend310") {
+    MS_LOG(INFO) << "There is no need to adjust and pass graph when in Ascend310.";
+    return func_graph;
+  }
   if ((status = Mindir2AnfAdjust(func_graph, flag)) != RET_OK) {
     MS_LOG(ERROR) << "Mindir2AnfAdjust failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
@@ -248,12 +340,6 @@ FuncGraphPtr MindsporeImporter::ImportMindIR(const converter::Flags &flag) {
     return nullptr;
   }
 
-  auto lstm_adjust_pass = std::make_shared<opt::LstmAdjustPass>();
-  MS_CHECK_TRUE_MSG(lstm_adjust_pass != nullptr, nullptr, "lstm_adjust_pass is nullptr.");
-  if (!lstm_adjust_pass->Run(func_graph)) {
-    MS_LOG(ERROR) << "Run mindir lstm adjust failed.";
-    return nullptr;
-  }
   return func_graph;
 }
 }  // namespace mindspore::lite

@@ -23,7 +23,13 @@ file(GLOB_RECURSE CORE_SRC_LIST RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
   "ir/*.cc"
   "utils/*.cc"
   "load_mindir/*.cc"
+  "mindapi/src/*.cc"
   )
+
+if(ENABLE_SECURITY)
+    file(GLOB_RECURSE _INFER_SUMMARY_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "ops/*_summary.cc")
+    list(REMOVE_ITEM CORE_SRC_LIST ${_INFER_SUMMARY_FILES})
+endif()
 
 file(GLOB_RECURSE PROTO_FILE RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "proto/*.proto")
 if(NOT(BUILD_LITE))
@@ -37,10 +43,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Windows" AND NOT MSVC)
   add_compile_definitions(BUILDING_DLL)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-    -Wuser-defined-warnings -Winconsistent-missing-override -Wno-delete-non-abstract-non-virtual-dtor")
+    -Wno-overloaded-virtual -Wno-user-defined-warnings -Winconsistent-missing-override -Wno-delete-non-virtual-dtor \
+    -Wno-unused-private-field")
 endif()
 
 set_property(SOURCE ${CORE_SRC_LIST} PROPERTY COMPILE_DEFINITIONS SUBMODULE_ID=mindspore::SubModuleId::SM_CORE)
+set_property(SOURCE ${PROTO_SRCS} PROPERTY COMPILE_OPTIONS -Wno-array-bounds)
 add_library(mindspore_core STATIC ${CORE_SRC_LIST} ${PROTO_SRCS})
 target_link_libraries(mindspore_core PRIVATE mindspore_gvar)
 if(NOT(BUILD_LITE))

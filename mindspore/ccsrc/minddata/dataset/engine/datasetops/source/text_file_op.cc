@@ -66,8 +66,6 @@ Status TextFileOp::Init() {
   int32_t safe_queue_size = static_cast<int32_t>(std::ceil(text_files_list_.size() / num_workers_) + 1);
   io_block_queues_.Init(num_workers_, safe_queue_size);
 
-  RETURN_IF_NOT_OK(ParallelOp::CreateWorkerConnector(worker_connector_size_));
-
   jagged_rows_connector_ = std::make_unique<JaggedConnector>(num_workers_, 1, worker_connector_size_);
   return Status::OK();
 }
@@ -82,13 +80,14 @@ Status TextFileOp::LoadTensor(const std::string &line, TensorRow *out_row) {
 Status TextFileOp::LoadFile(const std::string &file, int64_t start_offset, int64_t end_offset, int32_t worker_id) {
   auto realpath = FileUtils::GetRealPath(file.data());
   if (!realpath.has_value()) {
-    MS_LOG(ERROR) << "Invalid file, " + DatasetName() + " get real path failed, path=" << file;
-    RETURN_STATUS_UNEXPECTED("Invalid file, " + DatasetName() + " get real path failed, path=" + file);
+    MS_LOG(ERROR) << "Invalid file path, " << file << " does not exist.";
+    RETURN_STATUS_UNEXPECTED("Invalid file path, " + file + " does not exist.");
   }
 
   std::ifstream handle(realpath.value());
   if (!handle.is_open()) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to open " + DatasetName() + ": " + file);
+    RETURN_STATUS_UNEXPECTED("Invalid file, failed to open text:" + file +
+                             ", the file is damaged or permission denied.");
   }
 
   int64_t rows_total = 0;
@@ -168,17 +167,16 @@ Status TextFileOp::FillIOBlockQueue(const std::vector<int64_t> &i_keys) {
   return Status::OK();
 }
 
-// Internal helper function to calculate rows
-int64_t CountTotalRows(const std::string &file) {
+int64_t TextFileOp::CountTotalRows(const std::string &file) {
   auto realpath = FileUtils::GetRealPath(file.data());
   if (!realpath.has_value()) {
-    MS_LOG(ERROR) << "Invalid file, get real path failed, path=" << file;
+    MS_LOG(ERROR) << "Invalid file, " << file << " does not exist.";
     return 0;
   }
 
   std::ifstream handle(realpath.value());
   if (!handle.is_open()) {
-    MS_LOG(ERROR) << "Invalid file, failed to open file: " << file;
+    MS_LOG(ERROR) << "Invalid file, failed to open text file:" << file << ", the file is damaged or permission denied.";
     return 0;
   }
 
@@ -216,9 +214,25 @@ Status TextFileOp::CalculateNumRowsPerShard() {
 }
 
 Status TextFileOp::CountAllFileRows(const std::vector<std::string> &files, int64_t *count) {
+  RETURN_UNEXPECTED_IF_NULL(count);
+  int32_t num_workers = GlobalContext::config_manager()->num_parallel_workers();
+  int32_t connector_que_size = GlobalContext::config_manager()->op_connector_size();
+  int32_t worker_connector_size = GlobalContext::config_manager()->worker_connector_size();
+  const int32_t shard_id = 0;
+  const int32_t num_shards = 1;
+  const int64_t num_samples = 0;
+  bool shuffle_files = false;
+  // Do internal Schema generation.
+  auto schema = std::make_unique<DataSchema>();
+
+  // Create and initialize
+  std::shared_ptr<TextFileOp> op =
+    std::make_shared<TextFileOp>(num_workers, num_samples, worker_connector_size, std::move(schema), files,
+                                 connector_que_size, shuffle_files, num_shards, shard_id);
+  RETURN_IF_NOT_OK(op->Init());
   *count = 0;
   for (auto file : files) {
-    *count += CountTotalRows(file);
+    *count += op->CountTotalRows(file);
   }
   return Status::OK();
 }

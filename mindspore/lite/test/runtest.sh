@@ -13,11 +13,14 @@ mkdir -pv ${CUR_DIR}/do_test
 cd ${CUR_DIR}/do_test
 cp ${BUILD_DIR}/test/lite-test ./
 cp ${BUILD_DIR}/googletest/googlemock/gtest/libgtest.so ./
+cp ${BUILD_DIR}/googletest/googlemock/gtest/libgmock.so ./
 ls -l *.so*
 export LD_LIBRARY_PATH=./:${TENSORRT_PATH}/lib:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
+cp -r ${CUR_DIR}/ut/test_data/* ./
 cp -r ${CUR_DIR}/ut/src/runtime/kernel/arm/test_data/* ./
 cp -r ${CUR_DIR}/ut/tools/converter/parser/tflite/test_data/* ./
+cp -r ${CUR_DIR}/ut/tools/converter/registry/test_data/* ./
 # prepare data for dataset
 TEST_DATA_DIR=${CUR_DIR}/../../../tests/ut/data/dataset/
 cp -fr $TEST_DATA_DIR/testPK ./data
@@ -29,6 +32,8 @@ echo 'run common ut tests'
 
 # test cases of Converter
 ## ./lite-test --gtest_filter="TestTfliteParser*"
+./lite-test --gtest_filter="ConvActFusionInoutTest*"
+./lite-test --gtest_filter="ConvBiasFusionInoutTest*"
 
 # test cases of framework
 
@@ -36,31 +41,14 @@ echo 'run common ut tests'
 ./lite-test --gtest_filter=TestFcFp32*
 ./lite-test --gtest_filter=TestConv1x1Fp32*
 ./lite-test --gtest_filter=TestDeConvolutionFp32*
+./lite-test --gtest_filter=TestLogicalOrFp32*
 
 # test cases of INT8 OP
 ## ./lite-test --gtest_filter=TestPadInt8.*
 ./lite-test --gtest_filter=TestDeconvInt8.*
 
-# test cases of GPU OpenCL
-./lite-test --gtest_filter="TestConvolutionOpenCL.simple_test*"
-./lite-test --gtest_filter="TestArithmeticSelfOpenCLCI.ArithmeticSelfRound*"
-./lite-test --gtest_filter="TestConcatOpenCLCI.ConcatFp32_2inputforCI*"
-./lite-test --gtest_filter="TestSliceOpenCLfp32.Slicefp32CI*"
-./lite-test --gtest_filter="TestBatchnormOpenCLCI.Batchnormfp32CI*"
-./lite-test --gtest_filter="TestAvgPoolingOpenCL*"
-./lite-test --gtest_filter="TestConv2dTransposeOpenCL*"
-./lite-test --gtest_filter="TestMatMulOpenCL*"
-./lite-test --gtest_filter="TestMaxPoolingOpenCL*"
-./lite-test --gtest_filter="TestReduceOpenCL*"
-./lite-test --gtest_filter="TestReshapeOpenCL*"
-./lite-test --gtest_filter="TestSoftmaxOpenCL*"
-./lite-test --gtest_filter="TestTransposeOpenCL*"
-./lite-test --gtest_filter="TestArithmeticOpenCL*"
-./lite-test --gtest_filter="TestScaleOpenCL*"
-./lite-test --gtest_filter="TestFullConnectionOpenCL*"
-./lite-test --gtest_filter="TestResizeOpenCL*"
-./lite-test --gtest_filter="TestSwishOpenCLCI.Fp32CI"
 ./lite-test --gtest_filter="ModelParserRegistryTest.TestRegistry"
+./lite-test --gtest_filter="NodeParserRegistryTest.TestRegistry"
 ./lite-test --gtest_filter="PassRegistryTest.TestRegistry"
 ./lite-test --gtest_filter="TestRegistry.TestAdd"
 ./lite-test --gtest_filter="TestRegistryCustomOp.TestCustomAdd"
@@ -95,5 +83,16 @@ echo 'run custom delegate st test'
 echo 'runtime pass'
 ./lite-test --gtest_filter="RuntimePass.*"
 
+echo 'runtime convert'
+./lite-test --gtest_filter="RuntimeConvert.*"
+./lite-test --gtest_filter="BenchmarkTest.runtimeConvert1"
+
+echo 'Optimize Allocator'
+./lite-test --gtest_filter="OptAllocator.*"
+
 echo 'Runtime config file test'
 ./lite-test --gtest_filter="MixDataTypeTest.Config1"
+
+echo 'run c api ut test'
+./lite-test --gtest_filter="TensorCTest.*"
+./lite-test --gtest_filter="ContextCTest.*"

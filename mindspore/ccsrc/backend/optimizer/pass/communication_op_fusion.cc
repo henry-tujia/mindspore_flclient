@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,14 @@
 #include <vector>
 #include <set>
 #include <memory>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "ir/graph_utils.h"
 #include "base/core_ops.h"
 #include "runtime/device/kernel_info.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/kernel_build_info.h"
+#include "backend/optimizer/common/helper.h"
 #include "frontend/parallel/context.h"
 
 namespace mindspore {
@@ -52,6 +53,9 @@ kernel::KernelBuildInfoPtr GenerateKernelBuildInfo(const CommunicationOpInfo &co
       rank_size = AnfAlgo::GetNodeAttr<int64_t>(cnode, kAttrRankSize);
     }
     size_t rank_size_t = LongToSize(rank_size);
+    if (rank_size_t == 0) {
+      MS_LOG(EXCEPTION) << "Rank size should not be zero.";
+    }
     MS_EXCEPTION_IF_NULL(cnode);
     size_t input_num = AnfAlgo::GetInputTensorNum(cnode);
     for (size_t input_index = 0; input_index < input_num; ++input_index) {
@@ -145,7 +149,7 @@ bool CommunicationOpFusion::GetSplitSegments(const CommunicationOpInfo &communic
     if (communication_op_node_size == 0) {
       return false;
     }
-    segment_index->emplace_back(communication_op_node_size - 1);
+    (void)segment_index->emplace_back(communication_op_node_size - 1);
     return true;
   }
 
@@ -313,18 +317,20 @@ AnfNodePtr CommunicationOpFusion::CreateFusedCommunicationOp(const FuncGraphPtr 
   std::vector<AnfNodePtr> fusion_inputs = {NewValueNode(prim)};
   // get all inputs of current segment
   if (end_index >= communication_op_info.communication_op_nodes.size()) {
-    MS_LOG(EXCEPTION) << "end index out of communication_op_nodes size";
+    MS_LOG(EXCEPTION) << "End index is out of communication_op_nodes size";
   }
+  std::vector<AnfNodePtr> orig_nodes;
   for (size_t idx = start_index; idx <= end_index; ++idx) {
     auto cnode = communication_op_info.communication_op_nodes[idx];
     MS_EXCEPTION_IF_NULL(cnode);
     if (idx != start_index) {
       AdjustAllReduceInputWithLoad(cnode);
     }
-    fusion_inputs.insert(fusion_inputs.end(), cnode->inputs().begin() + 1, cnode->inputs().end());
+    (void)fusion_inputs.insert(fusion_inputs.end(), cnode->inputs().begin() + 1, cnode->inputs().end());
+    (void)orig_nodes.emplace_back(cnode);
   }
   CheckInputs(fusion_inputs);
-  AnfNodePtr fused_node = func_graph->NewCNode(fusion_inputs);
+  AnfNodePtr fused_node = NewCNode(fusion_inputs, func_graph, orig_nodes);
   MS_EXCEPTION_IF_NULL(fused_node);
   auto kernel_info = std::make_shared<device::KernelInfo>();
   MS_EXCEPTION_IF_NULL(kernel_info);
@@ -336,6 +342,9 @@ AnfNodePtr CommunicationOpFusion::CreateFusedCommunicationOp(const FuncGraphPtr 
     rank_size = AnfAlgo::GetNodeAttr<int64_t>(final_node, kAttrRankSize);
   }
   size_t rank_size_t = LongToSize(rank_size);
+  if (rank_size_t == 0) {
+    MS_LOG(EXCEPTION) << "Rank size should not be zero.";
+  }
   size_t output_num = node_num * rank_size_t;
   std::vector<TypeId> dtypes(output_num, AnfAlgo::GetOutputInferDataType(final_node, 0));
   std::vector<std::vector<size_t>> shapes;
@@ -352,6 +361,9 @@ AnfNodePtr CommunicationOpFusion::CreateFusedCommunicationOp(const FuncGraphPtr 
       size_t tensor_size = AnfAlgo::GetOutputTensorMemSize(input_node, 0);
       TypeId output_type = AnfAlgo::GetOutputDeviceDataType(input_node, 0);
       size_t type_size = GetTypeByte(TypeIdToType(output_type));
+      if (type_size == 0) {
+        MS_LOG(EXCEPTION) << "Divisor 'type_size' should not be 0.";
+      }
       tensor_size = (tensor_size / kAlignSize + 1) * kAlignSize / type_size;
       fusion_total_size += static_cast<int64_t>(tensor_size);
     }
@@ -379,6 +391,9 @@ AnfNodePtr CommunicationOpFusion::CreateFusedCommunicationOp(const FuncGraphPtr 
     auto fused_prim = GetCNodePrimitive(fused_cnode);
     auto final_node_prim = GetCNodePrimitive(final_node);
     fused_prim->set_instance_name(final_node_prim->instance_name());
+  }
+  if (AnfAlgo::HasNodeAttr(kAttrNotDelayFusion, final_node)) {
+    AnfAlgo::CopyNodeAttr(kAttrNotDelayFusion, final_node, fused_node);
   }
   return fused_node;
 }
@@ -425,7 +440,7 @@ bool CommunicationOpFusion::DoFusion(const FuncGraphPtr &func_graph, const Commu
         kernel_graph->ReplaceInternalOutput(communication_op_node_item, new_communication_op, 0, LongToSize(offset));
       }
       if (!manager->Replace(communication_op_node_item, tuple_getitem)) {
-        MS_LOG(EXCEPTION) << "manager replace node failed";
+        MS_LOG(EXCEPTION) << "Manager replace node failed";
       }
     }
     start_index = end_index + 1;
@@ -438,8 +453,8 @@ bool CommunicationOpFusion::Run(const FuncGraphPtr &func_graph) {
   MS_EXCEPTION_IF_NULL(func_graph);
   const float input_grad_size_num = 0.0;
   const float input_grad_time_num = 0.0;
-  // divide candidate fusion groups with same (group,op,fusion) attrs, fusion==0 means not fusion
-  std::unordered_map<std::string, CommunicationOpInfo> candidate_groups;
+  // divide candidate fusion groups with same (group,op,fusion,dtype) attrs, fusion==0 means not fusion
+  mindspore::HashMap<std::string, CommunicationOpInfo> candidate_groups;
   std::vector<AnfNodePtr> node_list = TopoSort(func_graph->get_return());
   for (auto &node : node_list) {
     if (node != nullptr && node->isa<CNode>() && AnfAlgo::GetCNodeName(node) == op_name_) {

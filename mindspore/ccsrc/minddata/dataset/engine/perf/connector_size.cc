@@ -13,11 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "minddata/dataset/engine/perf/connector_size.h"
+
 #include <algorithm>
 #include <fstream>
 #include <memory>
-#include <string>
+
 #include "minddata/dataset/core/config_manager.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #include "minddata/dataset/util/path.h"
@@ -29,25 +31,31 @@ using Qrow = std::vector<int>;
 
 // Sample action
 Status ConnectorSize::Sample() {
+  if (active_ == false) return Status::OK();
   Qrow cur_row;
-  std::transform(tree_->begin(), tree_->end(), std::back_inserter(cur_row),
-                 [](DatasetOp &op) { return op.ConnectorSize(); });
+  (void)std::transform(tree_->begin(), tree_->end(), std::back_inserter(cur_row),
+                       [](DatasetOp &op) { return op.ConnectorSize(); });
+  // Tree Iterator is in PostOrder (leaf first, e.g., 3,2,1)
+  // reverse the order of the vector to get the root first.
+  std::reverse(cur_row.begin(), cur_row.end());
+  std::lock_guard<std::mutex> guard(lock_);
   // Push new row of sample
   sample_table_.push_back(cur_row);
+  (void)ts_.emplace_back(ProfilingTime::GetCurMilliSecond());
   return Status::OK();
 }
 
 // JSON serializer helper function
-json ConnectorSize::ParseOpInfo(const DatasetOp &node, const std::vector<int32_t> &size) {
+json ConnectorSize::ParseOpInfo(const DatasetOp &node) {
   json json_node;
   json_node["op_id"] = node.id();
   json_node["op_type"] = node.Name();
-  json_node["num_workers"] = node.num_workers();
+  json_node["num_workers"] = node.NumWorkers();
   json metrics;
   // DeviceQueueOp is a special op,it is not inlined but its output queue is invalid.
   // So we should not output its queue size.
   if (!node.inlined() && node.Name() != "DeviceQueueOp") {
-    metrics["output_queue"] = {{"size", size}, {"length", node.ConnectorCapacity()}};
+    metrics["output_queue"] = {{"length", node.ConnectorCapacity()}};
   }
   json_node["metrics"] = metrics;
 
@@ -63,47 +71,88 @@ json ConnectorSize::ParseOpInfo(const DatasetOp &node, const std::vector<int32_t
 }
 
 // Save profiling data to file
-// If the file is already exist (created by other sampling node), simply add the data to metrics field.
-Status ConnectorSize::SaveToFile() {
-  json output;
-  RETURN_IF_NOT_OK(ReadJson(&output));
+Status ConnectorSize::SaveToFile(const std::string &dir_path, const std::string &rank_id) {
+  Path path = GetFileName(dir_path, rank_id);
+  // Remove the file if it exists (from prior profiling usage)
+  RETURN_IF_NOT_OK(path.Remove());
+  std::string file_path = path.ToString();
 
-  Path path = Path(file_path_);
-  uint32_t idx = 0;
-  // Traverse the ExecutionTree for JSON node generation
-  for (auto &node : *tree_) {
+  json output = initial_nodes_data;
+  output["sampling_interval"] = GlobalContext::config_manager()->monitor_sampling_interval();
+
+  // Traverse the JSON initialized in Init() to access each op's information
+  CHECK_FAIL_RETURN_UNEXPECTED(output.contains("op_info"), "JSON data does not include op_info!");
+  for (uint32_t idx = 0; idx < output["op_info"].size(); idx++) {
     std::vector<int32_t> cur_queue_size;
-    std::transform(sample_table_.begin(), sample_table_.end(), std::back_inserter(cur_queue_size),
-                   [&](const ConnectorSizeSample &sample) { return sample[idx]; });
-    if (!path.Exists()) {
-      json json_node = ParseOpInfo(node, cur_queue_size);
-      output["op_info"].push_back(json_node);
-    } else {
-      if (!node.inlined() && node.Name() != "DeviceQueueOp") {
-        auto &ops_data = output["op_info"];
-        ops_data[idx]["metrics"]["output_queue"]["size"] = cur_queue_size;
-        ops_data[idx]["metrics"]["output_queue"]["length"] = node.ConnectorCapacity();
-      }
-    }
+    (void)std::transform(sample_table_.begin(), sample_table_.end(), std::back_inserter(cur_queue_size),
+                         [&](const ConnectorSizeSample &sample) { return sample[idx]; });
 
-    idx++;
+    auto &ops_data = output["op_info"];
+    if (ops_data[idx]["metrics"].contains("output_queue") && ops_data[idx]["op_type"] != "DeviceQueueOp") {
+      ops_data[idx]["metrics"]["output_queue"]["size"] = cur_queue_size;
+    }
   }
 
   // Discard the content of the file when opening.
-  std::ofstream os(file_path_, std::ios::trunc);
+  std::ofstream os(file_path, std::ios::trunc);
   os << output;
   os.close();
   return Status::OK();
 }
 
-Status ConnectorSize::Init(const std::string &dir_path, const std::string &device_id) {
-  file_path_ = (Path(dir_path) / Path("pipeline_profiling_" + device_id + ".json")).ToString();
-  Path path = Path(file_path_);
-  // Remove the file if it exists (from prior profiling usage)
-  RETURN_IF_NOT_OK(path.Remove());
+Status ConnectorSize::Init() {
+  // Traverse the ExecutionTree for JSON node generation
+  for (auto &node : *tree_) {
+    json json_node = ParseOpInfo(node);
+    initial_nodes_data["op_info"].push_back(json_node);
+  }
+  // Tree Iterator is in PostOrder (leaf first, e.g., 3,2,1)
+  // reverse the order of the vector to get the root first.
+  std::reverse(initial_nodes_data["op_info"].begin(), initial_nodes_data["op_info"].end());
+
   return Status::OK();
 }
 
-Status ConnectorSize::Analyze() { return Status::OK(); }
+void ConnectorSize::Clear() {
+  ts_.clear();
+  sample_table_.clear();
+  initial_nodes_data.clear();
+}
+
+Status ConnectorSize::GetOpConnectorSize(int32_t op_id, uint64_t start_time, uint64_t end_time,
+                                         std::vector<int32_t> *result) {
+  MS_LOG(DEBUG) << "Op_id: " << op_id << " start_ts: " << start_time << " end_ts: " << end_time;
+  CHECK_FAIL_RETURN_UNEXPECTED(start_time < end_time,
+                               "Expected start_time < end_time. Got start_ts: " + std::to_string(start_time) +
+                                 " end_ts: " + std::to_string(end_time));
+  std::lock_guard<std::mutex> guard(lock_);
+  CHECK_FAIL_RETURN_UNEXPECTED(
+    ts_.size() == sample_table_.size(),
+    "Expected ts_.size() == sample_table_.size(). Got ts_.size: " + std::to_string(ts_.size()) +
+      " sample_table_.size: " + std::to_string(sample_table_.size()));
+  // find first ts that is not less than start_ts
+  auto lower = std::lower_bound(ts_.begin(), ts_.end(), start_time);
+  // find first ts that is greater than end_ts
+  auto upper = std::upper_bound(ts_.begin(), ts_.end(), end_time);
+  // get ts_ indices
+  auto start_index = std::distance(ts_.begin(), lower);
+  auto end_index = std::distance(ts_.begin(), upper);
+  MS_LOG(INFO) << "start_index: " << start_index << " end_index: " << end_index;
+  CHECK_FAIL_RETURN_UNEXPECTED(start_index <= end_index,
+                               "Expected start_index <= end_index. Got start_index: " + std::to_string(start_index) +
+                                 " end_index: " + std::to_string(end_index));
+  // convert indices to sample_table_ iterator
+  auto first_iter = sample_table_.begin() + start_index;
+  auto last_iter = sample_table_.begin() + end_index;
+  // op_id corresponds to the index in sample vector
+  (void)std::transform(first_iter, last_iter, std::back_inserter(*result),
+                       [&](const ConnectorSizeSample &sample) { return sample[op_id]; });
+
+  return Status::OK();
+}
+
+Path ConnectorSize::GetFileName(const std::string &dir_path, const std::string &rank_id) {
+  return Path(dir_path) / Path("pipeline_profiling_" + rank_id + ".json");
+}
 }  // namespace dataset
 }  // namespace mindspore

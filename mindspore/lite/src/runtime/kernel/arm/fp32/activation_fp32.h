@@ -34,10 +34,14 @@ class ActivationCPUKernel : public InnerKernel {
   }
   ~ActivationCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int DoActivation(int task_id);
+
+ private:
+  int DoActivationFp32(int task_id);
+  int DoActivationInt32(int task_id);
 
  private:
   int thread_count_;

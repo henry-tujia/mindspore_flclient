@@ -26,17 +26,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameReLU6 = prim::kReLU6;
+/// \brief Computes ReLU (Rectified Linear Unit) upper bounded by 6 of input tensors element-wise.
+/// Refer to Python API @ref mindspore.ops.ReLU6 for more details.
 class MS_CORE_API ReLU6 : public PrimitiveC {
  public:
+  /// \brief Constructor.
   ReLU6() : PrimitiveC(kNameReLU6) { InitIOName({"x"}, {"output"}); }
+  /// \brief Destructor.
   ~ReLU6() = default;
   MS_DECLARE_PARENT(ReLU6, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 
 AbstractBasePtr ReLU6Infer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimReLU6Ptr = std::shared_ptr<ReLU6>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_RELU6_H_

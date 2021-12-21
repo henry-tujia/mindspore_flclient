@@ -28,13 +28,14 @@ class MatmulCPUKernel : public MatmulFp32BaseCPUKernel {
                            const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
       : MatmulFp32BaseCPUKernel(parameter, inputs, outputs, ctx) {}
   ~MatmulCPUKernel() = default;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 
  private:
   void InitShapeA();
   void InitShapeB();
+  int InitBroadcastParams();
 };
 }  // namespace mindspore::kernel
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ARM_FP32_MATMUL_H_

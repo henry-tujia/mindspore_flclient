@@ -15,10 +15,6 @@
  */
 #include "minddata/dataset/engine/datasetops/cache_merge_op.h"
 
-#include <chrono>
-#include <functional>
-#include <iomanip>
-#include <utility>
 #include "minddata/dataset/core/config_manager.h"
 #include "minddata/dataset/include/dataset/constants.h"
 #include "minddata/dataset/core/global_context.h"
@@ -57,17 +53,29 @@ Status CacheMergeOp::operator()() {
   static const int32_t queue_sz = 512;
   io_que_ = std::make_unique<Queue<row_id_type>>(queue_sz);
   RETURN_IF_NOT_OK(io_que_->Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(tree_->LaunchWorkers(
-    num_workers_, std::bind(&CacheMergeOp::WorkerEntry, this, std::placeholders::_1), Name() + "::WorkerEntry", id()));
+
+  RETURN_IF_NOT_OK(RegisterAndLaunchThreads());
+
+  RETURN_IF_NOT_OK(
+    tree_->LaunchWorkers(1, std::bind(&CacheMergeOp::CacheMissMaster, this), Name() + "::CacheMissMaster", id()));
   RETURN_IF_NOT_OK(tree_->LaunchWorkers(num_workers_,
                                         std::bind(&CacheMergeOp::CacheMissWorkerEntry, this, std::placeholders::_1),
                                         Name() + "::CacheMissWorkerEntry", id()));
+
   // One dedicated thread to move TensorRow from the pool to the cache server
   for (auto i = 0; i < num_cleaners_; ++i) {
     RETURN_IF_NOT_OK(
       tree_->AllTasks()->CreateAsyncTask("Cleaner", std::bind(&CacheMergeOp::Cleaner, this), nullptr, id()));
   }
   TaskManager::FindMe()->Post();
+  TensorRow new_row;
+  auto child_iterator = std::make_unique<ChildIterator>(this, 0, kCacheHitChildIdx);
+  int64_t ctr = 0;
+  do {
+    RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+    RETURN_IF_NOT_OK(worker_in_queues_[ctr++ % num_workers_]->EmplaceBack(std::move(new_row)));
+  } while (!new_row.eof());
+
   return Status::OK();
 }
 
@@ -76,23 +84,38 @@ Status CacheMergeOp::operator()() {
 Status CacheMergeOp::WorkerEntry(int32_t worker_id) {
   TaskManager::FindMe()->Post();
   TensorRow new_row;
-  auto child_iterator = std::make_unique<ChildIterator>(this, worker_id, kCacheHitChildIdx);
-  RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+  RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&new_row));
   while (!new_row.eof()) {
     if (new_row.eoe()) {
       RETURN_IF_NOT_OK(EoeReceived(worker_id));
-      RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+      RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&new_row));
     } else {
       if (new_row.empty()) {
         auto row_id = new_row.getId();
         // Block until the row shows up in the pool.
         RETURN_IF_NOT_OK(cache_miss_.PopFront(row_id, &new_row));
       }
-      RETURN_IF_NOT_OK(out_connector_->Add(std::move(new_row), worker_id));
-      RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(std::move(new_row)));
+
+      RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&new_row));
     }
   }
   RETURN_IF_NOT_OK(EofReceived(worker_id));
+  return Status::OK();
+}
+
+Status CacheMergeOp::CacheMissMaster() {
+  missWorkers_in_queues_.Init(num_workers_, oc_queue_size_);
+  RETURN_IF_NOT_OK(missWorkers_in_queues_.Register(tree_->AllTasks()));
+  TaskManager::FindMe()->Post();
+  RETURN_IF_NOT_OK(cache_client_->CacheSchema(column_name_id_map()));
+  TensorRow new_row;
+  auto child_iterator = std::make_unique<ChildIterator>(this, 0, kCacheMissChildIdx);
+  int64_t ctr = 0;
+  do {
+    RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+    RETURN_IF_NOT_OK(missWorkers_in_queues_[ctr++ % num_workers_]->EmplaceBack(std::move(new_row)));
+  } while (!new_row.eof());
   return Status::OK();
 }
 
@@ -103,12 +126,9 @@ Status CacheMergeOp::CacheMissWorkerEntry(int32_t workerId) {
   // If we see an eoe, ignore it. For eof, we exit.
   // Before we start, cache the schema at the server. Pick one of the workers
   // do it. The schema should have been done at prepare time.
-  if (workerId == 0) {
-    RETURN_IF_NOT_OK(cache_client_->CacheSchema(column_name_id_map()));
-  }
+
   TensorRow new_row;
-  auto child_iterator = std::make_unique<ChildIterator>(this, workerId, kCacheMissChildIdx);
-  RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+  RETURN_IF_NOT_OK(missWorkers_in_queues_[workerId]->PopFront(&new_row));
   while (!new_row.eof()) {
     if (new_row.eoe()) {
       // Ignore it.
@@ -127,7 +147,8 @@ Status CacheMergeOp::CacheMissWorkerEntry(int32_t workerId) {
     } else {
       row_id_type row_id = new_row.getId();
       if (row_id < 0) {
-        std::string errMsg = "Expect positive row id, but got: " + std::to_string(row_id);
+        std::string errMsg =
+          "[Internal ERROR] row id should be greater than or equal to 0, but got: " + std::to_string(row_id);
         RETURN_STATUS_UNEXPECTED(errMsg);
       }
       if (cache_missing_rows_) {
@@ -149,7 +170,7 @@ Status CacheMergeOp::CacheMissWorkerEntry(int32_t workerId) {
       }
       RETURN_IF_NOT_OK(cache_miss_.Add(row_id, std::move(new_row)));
     }
-    RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+    RETURN_IF_NOT_OK(missWorkers_in_queues_[workerId]->PopFront(&new_row));
   }
   return Status::OK();
 }
@@ -193,7 +214,8 @@ Status CacheMergeOp::PrepareOperator() {  // Run any common code from super clas
                                           // specific logic
   CHECK_FAIL_RETURN_UNEXPECTED(
     child_.size() == kNumChildren,
-    "Incorrect number of children of CacheMergeOp, required num is 2, but got:" + std::to_string(child_.size()));
+    "[Internal ERROR] Incorrect number of children of CacheMergeOp, required num is 2, but got:" +
+      std::to_string(child_.size()));
   RETURN_IF_NOT_OK(DatasetOp::PrepareOperator());
   // Get the computed check sum from all ops in the cache miss class
   uint32_t cache_crc = DatasetOp::GenerateCRC(child_[kCacheMissChildIdx]);
@@ -211,7 +233,7 @@ Status CacheMergeOp::PrepareOperator() {  // Run any common code from super clas
 }
 
 Status CacheMergeOp::ComputeColMap() {
-  CHECK_FAIL_RETURN_UNEXPECTED(child_[kCacheMissChildIdx] != nullptr, "Invalid data, cache miss stream is empty.");
+  CHECK_FAIL_RETURN_UNEXPECTED(child_[kCacheMissChildIdx] != nullptr, "[Internal ERROR] cache miss stream is empty.");
   if (column_name_id_map().empty()) {
     column_name_id_map_ = child_[kCacheMissChildIdx]->column_name_id_map();
   }
@@ -223,14 +245,16 @@ Status CacheMergeOp::ComputeColMap() {
 Status CacheMergeOp::EoeReceived(int32_t worker_id) {
   // Send the eoe up.
   MS_LOG(DEBUG) << "Cache merge sending eoe";
-  return out_connector_->SendEOE(worker_id);
+  RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOE)));
+  return Status::OK();
 }
 
 // Base-class override for handling cases when an eof is received.
 Status CacheMergeOp::EofReceived(int32_t worker_id) {
   // Send the eof up.
   MS_LOG(DEBUG) << "Cache merge sending eof";
-  return out_connector_->SendEOF(worker_id);
+  RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOF)));
+  return Status::OK();
 }
 
 Status CacheMergeOp::GetRq(row_id_type row_id, CacheMergeOp::TensorRowCacheRequest **out) {
@@ -248,7 +272,7 @@ Status CacheMergeOp::GetRq(row_id_type row_id, CacheMergeOp::TensorRowCacheReque
       RETURN_IF_NOT_OK(mem.allocate(1));
       *out = mem.GetMutablePointer();
     } else {
-      RETURN_STATUS_UNEXPECTED("Invalid data, map insert fail.");
+      RETURN_STATUS_UNEXPECTED("[Internal ERROR] map insert fail.");
     }
   }
   return Status::OK();

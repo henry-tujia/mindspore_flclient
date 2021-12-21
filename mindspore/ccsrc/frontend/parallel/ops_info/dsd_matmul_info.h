@@ -19,9 +19,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "ir/value.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "frontend/parallel/strategy.h"
@@ -37,8 +37,6 @@ class DSDMatmulInfo : public OperatorInfo {
                 const PrimitiveAttrs &attrs)
       : OperatorInfo(name, inputs_shape, outputs_shape, attrs, std::make_shared<DSDMatmulCost>()) {}
   ~DSDMatmulInfo() override = default;
-  Status Init(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
 
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
   Status SetCostUnderStrategy(const StrategyPtr &strategy) override;

@@ -41,10 +41,7 @@ class Buffer::Impl {
   void *MutableData() { return data_.data(); }
   size_t DataSize() const { return data_.size(); }
 
-  bool ResizeData(size_t data_len) {
-    data_.resize(data_len);
-    return true;
-  }
+  void ResizeData(size_t data_len) { data_.resize(data_len); }
 
   bool SetData(const void *data, size_t data_len) {
     ResizeData(data_len);
@@ -62,8 +59,7 @@ class Buffer::Impl {
       return false;
     }
 
-    memcpy(MutableData(), data, data_len);
-
+    (void)memcpy(MutableData(), data, data_len);
     return true;
   }
 
@@ -89,35 +85,46 @@ bool MSTensor::operator==(const MSTensor &tensor) const {
 
 MSTensor *MSTensor::CreateTensor(const std::vector<char> &name, enum DataType type, const std::vector<int64_t> &shape,
                                  const void *data, size_t data_len) noexcept {
-  if (data_len < 0 || data_len > MAX_MALLOC_SIZE) {
+  if (data_len > MAX_MALLOC_SIZE) {
     MS_LOG(ERROR) << "data_len is error.";
     return nullptr;
   }
   if (data_len > 0 && data == nullptr) {
-    MS_LOG(ERROR) << "Mull data ptr of tensor.";
+    MS_LOG(ERROR) << "Null data ptr of tensor.";
     return nullptr;
   }
-  auto impl = Impl::CreateTensorImpl(CharToString(name), type, shape, nullptr, data_len);
+  if (data_len == 0 && data != nullptr) {
+    MS_LOG(ERROR) << "Data len doesn't match the data buffer size.";
+    return nullptr;
+  }
+
+  void *new_data = nullptr;
+  if (data != nullptr) {
+    new_data = malloc(data_len);
+    if (new_data == nullptr) {
+      MS_LOG(ERROR) << "Allocate data failed.";
+      return nullptr;
+    }
+    (void)memcpy(new_data, data, data_len);
+  }
+  auto impl = Impl::CreateTensorImpl(CharToString(name), type, shape, new_data, data_len);
   if (impl == nullptr) {
     MS_LOG(ERROR) << "Allocate tensor impl failed.";
+    if (new_data != nullptr) {
+      free(new_data);
+    }
     return nullptr;
   }
-  impl->set_own_data(true);
 
   auto ms_tensor = new (std::nothrow) MSTensor(impl);
   if (ms_tensor == nullptr) {
-    MS_LOG(ERROR) << "Allocate tensor impl failed.";
+    MS_LOG(ERROR) << "Allocate MSTensor failed.";
+    if (new_data != nullptr) {
+      free(new_data);
+    }
     return nullptr;
   }
-
-  if (data != nullptr) {
-    if (ms_tensor->MutableData() == nullptr) {
-      MS_LOG(ERROR) << "Allocate data failed.";
-      delete ms_tensor;
-      return nullptr;
-    }
-    ::memcpy(ms_tensor->MutableData(), data, data_len);
-  }
+  impl->set_own_data(true);
   return ms_tensor;
 }
 
@@ -138,6 +145,12 @@ MSTensor *MSTensor::CreateRefTensor(const std::vector<char> &name, enum DataType
 
 MSTensor *MSTensor::CreateDevTensor(const std::vector<char> &name, enum DataType type,
                                     const std::vector<int64_t> &shape, const void *data, size_t data_len) noexcept {
+  MS_LOG(ERROR) << "Unsupported Feature.";
+  return nullptr;
+}
+
+MSTensor *MSTensor::CreateTensorFromFile(const std::vector<char> &file, enum DataType type,
+                                         const std::vector<int64_t> &shape) noexcept {
   MS_LOG(ERROR) << "Unsupported Feature.";
   return nullptr;
 }
@@ -182,31 +195,47 @@ MSTensor *MSTensor::Clone() const {
     return nullptr;
   }
   auto data_len = this->DataSize();
-  if (data_len <= 0 || data_len > MAX_MALLOC_SIZE) {
+  if (data_len > MAX_MALLOC_SIZE) {
     MS_LOG(ERROR) << "Illegal data size of tensor.";
     return nullptr;
   }
-  auto impl = Impl::CreateTensorImpl(this->Name(), this->DataType(), this->Shape(), nullptr, data_len);
-  if (impl == nullptr) {
-    MS_LOG(ERROR) << "Allocate tensor impl failed.";
+  if (data_len > 0 && impl_->Data() == nullptr) {
+    MS_LOG(ERROR) << "Null data ptr of tensor.";
     return nullptr;
   }
-  impl->set_own_data(true);
+  if (data_len == 0 && impl_->Data() != nullptr) {
+    MS_LOG(ERROR) << "Data len doesn't match the data buffer size.";
+    return nullptr;
+  }
+
+  void *new_data = nullptr;
+  if (impl_->Data() != nullptr) {
+    new_data = malloc(data_len);
+    if (new_data == nullptr) {
+      MS_LOG(ERROR) << "Allocate data failed.";
+      return nullptr;
+    }
+    (void)memcpy(new_data, impl_->MutableData(), data_len);
+  }
+
+  auto impl = Impl::CreateTensorImpl(this->Name(), this->DataType(), this->Shape(), new_data, data_len);
+  if (impl == nullptr) {
+    MS_LOG(ERROR) << "Allocate tensor impl failed.";
+    if (new_data != nullptr) {
+      free(new_data);
+    }
+    return nullptr;
+  }
 
   auto ms_tensor = new (std::nothrow) MSTensor(impl);
   if (ms_tensor == nullptr) {
-    MS_LOG(ERROR) << "Allocate tensor impl failed.";
+    MS_LOG(ERROR) << "Allocate MSTensor failed.";
+    if (new_data != nullptr) {
+      free(new_data);
+    }
     return nullptr;
   }
-
-  if (impl_->Data() != nullptr) {
-    if (ms_tensor->MutableData() == nullptr) {
-      MS_LOG(ERROR) << "Allocate data failed.";
-      delete ms_tensor;
-      return nullptr;
-    }
-    ::memcpy(ms_tensor->MutableData(), impl_->MutableData(), data_len);
-  }
+  impl->set_own_data(true);
   return ms_tensor;
 }
 
@@ -235,7 +264,7 @@ enum DataType MSTensor::DataType() const {
 }
 
 const std::vector<int64_t> &MSTensor::Shape() const {
-  static std::vector<int64_t> empty;
+  static const std::vector<int64_t> empty{};
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Invalid tensor implement.";
     return empty;
@@ -302,12 +331,12 @@ void MSTensor::SetDataType(enum DataType data_type) {
   impl_->SetDataType(data_type);
 }
 
-void MSTensor::SetTensorName(const std::string &name) {
+void MSTensor::SetTensorName(const std::vector<char> &name) {
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Invalid tensor implement.";
     return;
   }
-  impl_->SetName(name);
+  impl_->SetName(CharToString(name));
 }
 
 void MSTensor::SetAllocator(std::shared_ptr<Allocator> allocator) {
@@ -409,7 +438,8 @@ bool Buffer::ResizeData(size_t data_len) {
     MS_LOG(ERROR) << "impl is nullptr.";
     return false;
   }
-  return impl_->ResizeData(data_len);
+  impl_->ResizeData(data_len);
+  return true;
 }
 
 bool Buffer::SetData(const void *data, size_t data_len) {

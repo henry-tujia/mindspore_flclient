@@ -18,6 +18,7 @@
 #include <string>
 #include <fstream>
 #include "utils/file_utils.h"
+#include "debug/common.h"
 #include "ps/constants.h"
 
 namespace mindspore {
@@ -55,24 +56,20 @@ bool IterationMetrics::Initialize() {
 
     // Parse storage file path.
     metrics_file_path_ = JsonGetKeyWithException<std::string>(value_json, ps::kStoreFilePath);
-    auto realpath = FileUtils::GetRealPath(metrics_file_path_.c_str());
+    auto realpath = Common::CreatePrefixPath(metrics_file_path_.c_str());
     if (!realpath.has_value()) {
-      MS_LOG(WARNING) << metrics_file_path_ << " path doesn't exist.";
-      realpath = FileUtils::CreateNotExistDirs(metrics_file_path_);
-      if (!realpath.has_value()) {
-        MS_LOG(EXCEPTION) << "Creating directory " << metrics_file_path_ << " failed.";
-        return false;
-      }
+      MS_LOG(EXCEPTION) << "Creating path for " << metrics_file_path_ << " failed.";
+      return false;
     }
 
-    metrics_file_.open(metrics_file_path_, std::ios::ate | std::ios::out);
+    metrics_file_.open(realpath.value(), std::ios::app | std::ios::out);
     metrics_file_.close();
   }
   return true;
 }
 
 bool IterationMetrics::Summarize() {
-  metrics_file_.open(metrics_file_path_, std::ios::ate | std::ios::out);
+  metrics_file_.open(metrics_file_path_, std::ios::out | std::ios::app);
   if (!metrics_file_.is_open()) {
     MS_LOG(ERROR) << "The metrics file is not opened.";
     return false;

@@ -81,7 +81,7 @@ int CoderGraph::ConvertTensors() {
     int origin_data_type = static_cast<int>(origin_tensor->dataType());
     Tensor *dstTensor = new (std::nothrow)
       lite::Tensor(TypeId(origin_data_type), shape, static_cast<mindspore::Format>(origin_tensor->format()),
-                   TensorCategory(origin_tensor));
+                   TensorCategory(*origin_tensor));
     MS_CHECK_PTR(dstTensor);
     if (origin_tensor->nodeType() == NodeType_ValueNode && origin_tensor->data() != nullptr &&
         origin_tensor->data()->size() > 0) {
@@ -100,16 +100,21 @@ int CoderGraph::ConvertTensors() {
     auto quant_params = origin_tensor->quantParams();
     if (quant_params != nullptr) {
       for (int j = 0; j < static_cast<int>(quant_params->size()); j++) {
+        auto quant_param = quant_params->Get(j);
         LiteQuantParam quant_arg{};
-        quant_arg.bitNum = quant_params->Get(j)->numBits();
-        quant_arg.scale = quant_params->Get(j)->scale();
-        quant_arg.zeroPoint = quant_params->Get(j)->zeroPoint();
-        quant_arg.var_corr = quant_params->Get(j)->varCorr();
-        quant_arg.mean_corr = quant_params->Get(j)->meanCorr();
-        quant_arg.inited = quant_params->Get(j)->inited();
-        quant_arg.roundType = quant_params->Get(j)->roundType();
-        quant_arg.multiplier = quant_params->Get(j)->multiplier();
-        quant_arg.dstDtype = quant_params->Get(j)->dstDtype();
+        if (quant_param == nullptr) {
+          quant_arg.inited = false;
+        } else {
+          quant_arg.inited = true;
+          quant_arg.bitNum = quant_param->numBits();
+          quant_arg.scale = quant_param->scale();
+          quant_arg.zeroPoint = quant_param->zeroPoint();
+          quant_arg.var_corr = quant_param->varCorr();
+          quant_arg.mean_corr = quant_param->meanCorr();
+          quant_arg.roundType = quant_param->roundType();
+          quant_arg.multiplier = quant_param->multiplier();
+          quant_arg.dstDtype = quant_param->dstDtype();
+        }
         dstTensor->AddQuantParam(quant_arg);
       }
     }

@@ -45,18 +45,14 @@ void CalculateTableList(int8_t *table, const float input_scale, const int32_t in
   }
 }
 
-int SigmoidInt8CPUKernel::Init() {
+int SigmoidInt8CPUKernel::Prepare() {
   lite::Tensor *input = in_tensors_.at(0);
   lite::Tensor *output = out_tensors_.at(0);
+  MS_CHECK_TRUE_RET(!input->quant_params().empty() && !output->quant_params().empty(), RET_ERROR);
   const float input_scale = input->quant_params().front().scale;
   const int32_t input_zp = input->quant_params().front().zeroPoint;
   const float output_scale = output->quant_params().front().scale;
   const int32_t output_zp = output->quant_params().front().zeroPoint;
-  if (output_scale != (1.0f / 256) || output_zp != -128) {
-    MS_LOG(ERROR) << "Output scale is : " << output_scale << ", should be 1/256. Output zp is : " << output_zp
-                  << ", should be -128.";
-    return RET_ERROR;
-  }
   CalculateTableList(table_list_, input_scale, input_zp, output_scale, output_zp);
   return RET_OK;
 }

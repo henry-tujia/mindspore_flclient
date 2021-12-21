@@ -42,7 +42,7 @@ processor, and software hardware co-optimization. At the meantime MindSpore as
 a global AI open source community, aims to further advance the development and
 enrichment of the AI software/hardware application ecosystem.
 
-<img src="https://gitee.com/mindspore/mindspore/raw/master/docs/MindSpore-architecture.png" alt="MindSpore Architecture" width="600"/>
+<img src="https://gitee.com/mindspore/mindspore/raw/master/docs/MindSpore-architecture.png" alt="MindSpore Architecture"/>
 
 For more details please check out our [Architecture Guide](https://www.mindspore.cn/docs/programming_guide/en/master/architecture.html).
 
@@ -236,7 +236,7 @@ currently the containerized build options are supported as follows:
     ```
 
 If you want to learn more about the building process of MindSpore docker images,
-please check out [docker](https://gitee.com/mindspore/mindspore/blob/master/docker/README.md) repo for the details.
+please check out [docker](https://gitee.com/mindspore/mindspore/blob/master/scripts/docker/README.md) repo for the details.
 
 ## Quickstart
 
@@ -282,10 +282,12 @@ Project stable branches will be in one of the following states:
 
 | **Branch** | **Status**   | **Initial Release Date** | **Next Phase**                         | **EOL Date**|
 |------------|--------------|--------------------------|----------------------------------------|-------------|
+| **r1.5**   | Maintained   | 2021-10-15               | Unmaintained <br> 2022-10-15 estimated |             |
+| **r1.4**   | Maintained   | 2021-08-15               | Unmaintained <br> 2022-08-15 estimated |             |
 | **r1.3**   | Maintained   | 2021-07-15               | Unmaintained <br> 2022-07-15 estimated |             |
-| **r1.2**   | Maintained   | 2021-04-15               | Unmaintained <br> 2022-04-15 estimated |             |
-| **r1.1**   | Unmaintained | 2020-12-31               | End Of Life  <br> 2021-09-30 estimated |             |
-| **r1.0**   | Unmaintained | 2020-09-24               | End Of Life  <br> 2021-07-30 estimated |             |
+| **r1.2**   | Unmaintained | 2021-04-15               | End Of Life  <br> 2022-04-15 estimated |             |
+| **r1.1**   | End Of Life  | 2020-12-31               |                                        | 2021-09-30  |
+| **r1.0**   | End Of Life  | 2020-09-24               |                                        | 2021-07-30  |
 | **r0.7**   | End Of Life  | 2020-08-31               |                                        | 2021-02-28  |
 | **r0.6**   | End Of Life  | 2020-07-31               |                                        | 2020-12-30  |
 | **r0.5**   | End Of Life  | 2020-06-30               |                                        | 2021-06-30  |

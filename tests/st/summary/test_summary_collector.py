@@ -17,19 +17,32 @@ import os
 import re
 import shutil
 import tempfile
+import json
 from collections import Counter
+import numpy as np
 
 import pytest
-
+from mindspore.common import set_seed
 from mindspore import nn, Tensor, context
 from mindspore.common.initializer import Normal
 from mindspore.nn.metrics import Loss
 from mindspore.nn.optim import Momentum
 from mindspore.ops import operations as P
 from mindspore.train import Model
-from mindspore.train.callback import SummaryCollector
+from mindspore.train.callback import SummaryCollector, SummaryLandscape
 from tests.st.summary.dataset import create_mnist_dataset
 from tests.summary_utils import SummaryReader
+from tests.security_utils import security_off_wrap
+
+
+def callback_fn():
+    """A python function job"""
+    network = LeNet5()
+    loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction="mean")
+    metrics = {"Loss": Loss()}
+    model = Model(network, loss, metrics=metrics)
+    ds_train = create_mnist_dataset("train", num_samples=6)
+    return model, network, ds_train, metrics
 
 
 class LeNet5(nn.Cell):
@@ -126,6 +139,7 @@ class TestSummary:
     @pytest.mark.platform_arm_ascend_training
     @pytest.mark.platform_x86_gpu_training
     @pytest.mark.env_onecard
+    @security_off_wrap
     def test_summary_with_sink_mode_false(self):
         """Test summary with sink mode false, and num samples is 64."""
         summary_dir = self._run_network(num_samples=10)
@@ -148,6 +162,7 @@ class TestSummary:
     @pytest.mark.platform_arm_ascend_training
     @pytest.mark.platform_x86_gpu_training
     @pytest.mark.env_onecard
+    @security_off_wrap
     def test_summary_with_sink_mode_true(self):
         """Test summary with sink mode true, and num samples is 64."""
         summary_dir = self._run_network(dataset_sink_mode=True, num_samples=10)
@@ -167,6 +182,7 @@ class TestSummary:
     @pytest.mark.platform_x86_ascend_training
     @pytest.mark.platform_arm_ascend_training
     @pytest.mark.env_onecard
+    @security_off_wrap
     def test_summarycollector_user_defind(self):
         """Test SummaryCollector with user-defined."""
         summary_dir = self._run_network(dataset_sink_mode=True, num_samples=2,
@@ -220,3 +236,105 @@ class TestSummary:
             tensors.append(file)
 
         return tensors
+
+    def _train_network(self, epoch=3, dataset_sink_mode=False, num_samples=2, **kwargs):
+        """run network."""
+        lenet = LeNet5()
+        loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction="mean")
+        optim = Momentum(lenet.trainable_params(), learning_rate=0.01, momentum=0.9)
+        model = Model(lenet, loss_fn=loss, optimizer=optim)
+        summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
+        summary_collector = SummaryCollector(summary_dir=summary_dir, collect_freq=2, **kwargs)
+
+        ds_train = create_mnist_dataset("train", num_samples=num_samples)
+        model.train(epoch, ds_train, callbacks=[summary_collector], dataset_sink_mode=dataset_sink_mode)
+        return summary_dir
+
+    @staticmethod
+    def _list_summary_collect_landscape_tags(summary_dir):
+        """list summary landscape tags."""
+        summary_dir_path = ''
+        for file in os.listdir(summary_dir):
+            if re.search("ckpt_dir", file):
+                summary_dir_path = os.path.join(summary_dir, file)
+                break
+        assert summary_dir_path
+
+        summary_file_path = ''
+        for file in os.listdir(summary_dir_path):
+            if re.search(".json", file):
+                summary_file_path = os.path.join(summary_dir_path, file)
+                break
+        assert summary_file_path
+
+        tags = list()
+        with open(summary_file_path, 'r') as file:
+            data = json.load(file)
+        for key, value in data.items():
+            tags.append(key)
+
+            assert value
+        return tags
+
+    @staticmethod
+    def _list_landscape_tags(summary_dir):
+        """list landscape tags."""
+        expected_tags = {'landscape_[1, 3]', 'landscape_[3]'}
+        summary_list = []
+        for file in os.listdir(summary_dir):
+            if re.search("_MS", file):
+                summary_file_path = os.path.join(summary_dir, file)
+                summary_list = summary_list + [summary_file_path]
+            else:
+                continue
+
+        assert summary_list
+
+        tags = []
+        for summary_path in summary_list:
+            with SummaryReader(summary_path) as summary_reader:
+
+                while True:
+                    summary_event = summary_reader.read_event()
+                    if not summary_event:
+                        break
+                    for value in summary_event.summary.value:
+                        if value.tag in expected_tags:
+                            tags.append(value.loss_landscape.landscape.z.float_data)
+                            break
+        return tags
+
+    @pytest.mark.level0
+    @pytest.mark.platform_x86_gpu_training
+    @pytest.mark.env_onecard
+    @security_off_wrap
+    def test_summary_collector_landscape(self):
+        """Test summary collector with landscape."""
+        set_seed(1)
+        interval_1 = [1, 2, 3]
+        num_samples = 6
+        summary_dir = self._train_network(epoch=3, num_samples=num_samples,
+                                          collect_specified_data={'collect_landscape':
+                                                                      {'landscape_size': 4,
+                                                                       'unit': 'epoch',
+                                                                       'create_landscape': {'train': True,
+                                                                                            'result': True},
+                                                                       'num_samples': num_samples,
+                                                                       'intervals': [interval_1]}})
+
+        tag_list = self._list_summary_collect_landscape_tags(summary_dir)
+        expected_tags = {'epoch_group', 'model_params_file_map', 'step_per_epoch', 'unit', 'num_samples',
+                         'landscape_size', 'create_landscape'}
+        assert set(expected_tags) == set(tag_list)
+        device_id = int(os.getenv('DEVICE_ID')) if os.getenv('DEVICE_ID') else 0
+        summary_landscape = SummaryLandscape(summary_dir)
+        summary_landscape.gen_landscapes_with_multi_process(callback_fn, device_ids=[device_id])
+        expected_pca_value = np.array([2.2795506, 2.2795567, 2.2795629, 2.2795689, 2.2795507, 2.2795567, 2.2795629,
+                                       2.2795688, 2.2795505, 2.2795566, 2.2795628, 2.2795689, 2.2795505, 2.2795566,
+                                       2.2795627, 2.2795687])
+        expected_random_value = np.array([2.2732414, 2.2778292, 2.2829423, 2.2885174, 2.2725525, 2.2772029, 2.2822288,
+                                          2.2875323, 2.2726187, 2.2771581, 2.2819989, 2.2875887, 2.2732263, 2.2774866,
+                                          2.2823269, 2.2883627])
+        tag_list_landscape = self._list_landscape_tags(summary_dir)
+        assert np.all(abs(expected_pca_value - tag_list_landscape[0]) < 1.e-6)
+        assert np.all(abs(expected_random_value - tag_list_landscape[1]) < 1.e-6)

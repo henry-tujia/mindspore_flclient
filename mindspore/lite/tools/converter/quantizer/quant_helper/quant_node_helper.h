@@ -33,7 +33,7 @@ class QuantNodeBase {
 
 class QuantParamPropogator : public QuantNodeBase {
  public:
-  virtual STATUS PropogateQuantParams(schema::MetaGraphT *graph, const schema::CNodeT &node) { return RET_OK; }
+  virtual int PropogateQuantParams(schema::MetaGraphT *graph, const schema::CNodeT &node) { return RET_OK; }
 };
 
 class QuantTypeDeterminer : public QuantNodeBase {
@@ -44,7 +44,7 @@ class QuantTypeDeterminer : public QuantNodeBase {
 
 class QuantNodeHelper {
  public:
-  void NodeQuantPreprocess(schema::MetaGraphT *graph, schema::CNodeT *node);
+  int NodeQuantPreprocess(schema::MetaGraphT *graph, schema::CNodeT *node);
   QuantNodeHelper(std::shared_ptr<QuantParamPropogator> quant_param_propogator,
                   std::shared_ptr<QuantTypeDeterminer> quant_type_determiner) {
     quant_param_propogator_ = quant_param_propogator;

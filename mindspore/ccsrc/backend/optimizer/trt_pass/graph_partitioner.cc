@@ -20,11 +20,12 @@
 #include <vector>
 #include <set>
 #include <map>
-#include <unordered_map>
 #include <algorithm>
 #include <utility>
 #include <string>
+#include "utils/hash_map.h"
 #include "utils/ms_context.h"
+#include "utils/trace_base.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/optimizer/trt_pass/trt_op_factory.h"
 #include "vm/segment_runner.h"
@@ -47,7 +48,7 @@ bool WeightCheck(const AnfNodePtr &node) {
     for (auto index : iter->second) {
       if (index >= real_inputs.size()) {
         MS_LOG(EXCEPTION) << "index out of range. node: " << node->DebugString() << ", index: " << index
-                          << real_inputs.size();
+                          << real_inputs.size() << trace::DumpSourceLines(node);
       }
 
       if (real_inputs[index].first->isa<Parameter>() &&
@@ -61,8 +62,8 @@ bool WeightCheck(const AnfNodePtr &node) {
   return true;
 }
 
-std::unordered_map<AnfNodePtr, NodeInfo> CollectNodeInfo(const FuncGraphPtr &func_graph) {
-  std::unordered_map<AnfNodePtr, NodeInfo> res;
+mindspore::HashMap<AnfNodePtr, NodeInfo> CollectNodeInfo(const FuncGraphPtr &func_graph) {
+  mindspore::HashMap<AnfNodePtr, NodeInfo> res;
 
   const std::vector<AnfNodePtr> &node_list = TopoSort(func_graph->get_return());
   for (size_t i = 0; i < node_list.size(); i++) {
@@ -71,7 +72,7 @@ std::unordered_map<AnfNodePtr, NodeInfo> CollectNodeInfo(const FuncGraphPtr &fun
       continue;
     }
 
-    if (!AnfAlgo::IsRealKernel(node)) {
+    if (!AnfUtils::IsRealKernel(node)) {
       res[node] = NodeInfo(NodeType::kSupport, i);
       continue;
     }

@@ -20,33 +20,29 @@
 
 int RangeInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC **outputs, size_t outputs_size,
                     OpParameter *parameter) {
-  int check_ret = CheckAugmentWithMinSize(inputs, inputs_size, outputs, outputs_size, parameter, 1, 1);
+  int check_ret = CheckAugmentNullSizeInputTwo(inputs, inputs_size, outputs, outputs_size, parameter, 1, C3NUM, 1);
   if (check_ret != NNACL_OK) {
     return check_ret;
   }
 
   const TensorC *input = inputs[0];
   TensorC *output = outputs[0];
-  if (input == NULL || output == NULL) {
-    return NNACL_NULL_PTR;
-  }
-
-  if (inputs_size == 3) {
-    output->data_type_ = input->data_type_;
-  } else {
-    output->data_type_ = kNumberTypeInt32;
-  }
+  output->data_type_ = inputs_size == C3NUM ? input->data_type_ : kNumberTypeInt32;
   output->format_ = input->format_;
   if (!InferFlag(inputs, inputs_size)) {
     return NNACL_INFER_INVALID;
   }
-  if (GetElementNum(inputs[0]) < 1 || GetElementNum(inputs[1]) < 1 || GetElementNum(inputs[2]) < 1) {
+  if (GetElementNum(inputs[FIRST_INPUT]) < 1) {
     return NNACL_ERR;
   }
   int shape_size = 0;
-  if (inputs_size == 3) {
-    if ((inputs[0]->data_ == NULL) || (inputs[1]->data_ == NULL) || (inputs[2]->data_ == NULL)) {
+  if (inputs_size == C3NUM) {
+    if ((inputs[FIRST_INPUT]->data_ == NULL) || (inputs[SECOND_INPUT]->data_ == NULL) ||
+        (inputs[THIRD_INPUT]->data_ == NULL)) {
       return NNACL_INFER_INVALID;
+    }
+    if (GetElementNum(inputs[SECOND_INPUT]) < 1 || GetElementNum(inputs[THIRD_INPUT]) < 1) {
+      return NNACL_ERR;
     }
     switch (inputs[0]->data_type_) {
       case kNumberTypeInt:

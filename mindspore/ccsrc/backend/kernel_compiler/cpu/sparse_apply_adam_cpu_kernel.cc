@@ -21,7 +21,9 @@
 namespace mindspore {
 namespace kernel {
 namespace {
-constexpr size_t kSparseApplyAdamInputSize = 11;
+constexpr size_t kSparseApplyAdamInputsNum = 11;
+constexpr size_t kSparseApplyAdamWorkspaceSize = 5;
+constexpr char kKernelName[] = "SparseApplyAdam";
 
 template <typename T>
 void ComputeAdam(MultiThreadComputeParams<T> *input_params, size_t start, size_t end) {
@@ -38,7 +40,8 @@ void ComputeAdam(MultiThreadComputeParams<T> *input_params, size_t start, size_t
   for (size_t i = start; i < end; ++i) {
     T index = unique_sparse_grad.indices_[i];
     if (index < 0 || LongToSize(index) >= var_first_dim_size) {
-      MS_LOG(EXCEPTION) << "Index " << index << " in indices is out of range after unique process";
+      MS_LOG(EXCEPTION) << "For '" << kKernelName << "', each element in 'indices' should be in range [0, "
+                        << SizeToLong(var_first_dim_size) << "), but got " << index;
     }
     size_t start_index = var_outer_dim_size * static_cast<size_t>(index);
     size_t end_index = start_index + var_outer_dim_size;
@@ -100,36 +103,51 @@ void SparseApplyAdamCPUKernel::InitInputOutputSize(const CNodePtr &kernel_node) 
 
 void SparseApplyAdamCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   std::vector<size_t> var_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   std::vector<size_t> m_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
   std::vector<size_t> v_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
   std::vector<size_t> grad_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 9);
   std::vector<size_t> indices_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 10);
   if (var_shape.empty()) {
-    MS_LOG(EXCEPTION) << "var must be at least 1D";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dimension of 'var' should be at least 1-D, but got empty tensor.";
   }
   if (!IsSameShape(var_shape, m_shape)) {
-    MS_LOG(EXCEPTION) << "var and m should have the same shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape of 'm' should be same with the shape of 'var', but got the shape of 'm': "
+                      << Vector2Str(m_shape) << " and the shape of 'var': " << Vector2Str(var_shape);
   }
   if (!IsSameShape(var_shape, v_shape)) {
-    MS_LOG(EXCEPTION) << "var and v should have the same shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape of 'v' should be same with the shape of 'var', but got the shape of 'v': "
+                      << Vector2Str(v_shape) << " and the shape of 'var': " << Vector2Str(var_shape);
   }
   if (var_shape.size() != grad_shape.size()) {
-    MS_LOG(EXCEPTION) << "var and grad should have the same shape size";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dimension of 'grad' should be same with the dimension of "
+                         "'var', but got the dimension of 'grad': "
+                      << grad_shape.size() << " and the dimension of 'var': " << var_shape.size();
   }
   var_first_dim_size_ = var_shape[0];
   for (size_t i = 1; i < var_shape.size(); ++i) {
     if (var_shape[i] != grad_shape[i]) {
-      MS_LOG(EXCEPTION) << "The shape of var and grad must equal in dimension " << i;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the shape of 'var' and 'grad' should equal in dimension i=" << i
+                        << ", but got 'var_shape[i]': " << var_shape[i] << " and 'grad_shape[i]': " << grad_shape[i];
     }
     var_outer_dim_size_ *= var_shape[i];
   }
   if (indices_shape.size() != 1) {
-    MS_LOG(EXCEPTION) << "Indices must be 1D!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of 'indices' should be 1-D, but got "
+                      << indices_shape.size() << "-D.";
   }
   indices_size_ = indices_shape[0];
   if (grad_shape[0] != indices_size_) {
-    MS_LOG(EXCEPTION) << "The first dimension of grad shape must be equal to indices";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the first dimension value of 'grad' should be equal to "
+                         "the first dimension value of 'indices', but got the first dimension value of 'grad': "
+                      << grad_shape[0] << ", and the first dimension value of 'indices': " << indices_size_;
   }
   if (AnfAlgo::HasNodeAttr(USE_NESTEROV, kernel_node)) {
     use_nesterov_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, "use_nesterov");
@@ -140,25 +158,25 @@ void SparseApplyAdamCPUKernel::InitKernel(const CNodePtr &kernel_node) {
 template <typename T>
 void SparseApplyAdamCPUKernel::LaunchKernel(const std::vector<kernel::AddressPtr> &inputs,
                                             const std::vector<kernel::AddressPtr> &workspace) const {
-  auto var = reinterpret_cast<float *>(inputs[0]->addr);
-  auto m = reinterpret_cast<float *>(inputs[1]->addr);
-  auto v = reinterpret_cast<float *>(inputs[2]->addr);
+  auto *var = reinterpret_cast<float *>(inputs[0]->addr);
+  auto *m = reinterpret_cast<float *>(inputs[1]->addr);
+  auto *v = reinterpret_cast<float *>(inputs[2]->addr);
   auto beta1_power = reinterpret_cast<float *>(inputs[3]->addr)[0];
   if (beta1_power == 1) {
-    MS_LOG(EXCEPTION) << "The beta1_power should not be 1";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'beta1_power' should not be 1.";
   }
   auto beta2_power = reinterpret_cast<float *>(inputs[4]->addr)[0];
   auto lr = reinterpret_cast<float *>(inputs[5]->addr)[0];
   auto beta1 = reinterpret_cast<float *>(inputs[6]->addr)[0];
   auto beta2 = reinterpret_cast<float *>(inputs[7]->addr)[0];
   auto epsilon = reinterpret_cast<float *>(inputs[8]->addr)[0];
-  auto grad = reinterpret_cast<float *>(inputs[9]->addr);
-  auto indices = reinterpret_cast<T *>(inputs[10]->addr);
-  auto new_grad = reinterpret_cast<float *>(workspace[0]->addr);
-  auto new_indices = reinterpret_cast<T *>(workspace[1]->addr);
-  auto workspace_grad = reinterpret_cast<float *>(workspace[2]->addr);
-  auto workspace_indices = reinterpret_cast<T *>(workspace[3]->addr);
-  auto m_t = reinterpret_cast<float *>(workspace[4]->addr);
+  auto *grad = reinterpret_cast<float *>(inputs[9]->addr);
+  auto *indices = reinterpret_cast<T *>(inputs[10]->addr);
+  auto *new_grad = reinterpret_cast<float *>(workspace[0]->addr);
+  auto *new_indices = reinterpret_cast<T *>(workspace[1]->addr);
+  auto *workspace_grad = reinterpret_cast<float *>(workspace[2]->addr);
+  auto *workspace_indices = reinterpret_cast<T *>(workspace[3]->addr);
+  auto *m_t = reinterpret_cast<float *>(workspace[4]->addr);
 
   SparseGradient<T> unique_sparse_grad({new_grad, new_indices, indices_size_});
   SparseGradient<T> workspace_sparse_grad({workspace_grad, workspace_indices, indices_size_});
@@ -180,7 +198,6 @@ void SparseApplyAdamCPUKernel::LaunchKernel(const std::vector<kernel::AddressPtr
   input_params.beta1_ = beta1;
   input_params.beta2_ = beta2;
   MultiThreadCompute<T>(ComputeMomentum<T>, &input_params, total_dim_size);
-
   input_params.m_t_ = m_t;
   input_params.use_nesterov_ = use_nesterov_;
   input_params.sparse_grad_ = unique_sparse_grad;
@@ -200,15 +217,15 @@ void SparseApplyAdamCPUKernel::LaunchKernel(const std::vector<kernel::AddressPtr
 bool SparseApplyAdamCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                       const std::vector<kernel::AddressPtr> &workspace,
                                       const std::vector<kernel::AddressPtr> &) {
-  if (inputs.size() < kSparseApplyAdamInputSize) {
-    MS_LOG(EXCEPTION) << "Error input size!";
-  }
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kSparseApplyAdamInputsNum, kernel_name_);
+  CHECK_KERNEL_WORKSPACE_SIZE(workspace.size(), kSparseApplyAdamWorkspaceSize, kernel_name_);
   if (indices_data_type_ == kNumberTypeInt32) {
     LaunchKernel<int>(inputs, workspace);
   } else if (indices_data_type_ == kNumberTypeInt64) {
     LaunchKernel<int64_t>(inputs, workspace);
   } else {
-    MS_LOG(EXCEPTION) << "Unsupported indices data type: " << indices_data_type_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dtype of 'indices' should be int32 or int64, but got "
+                      << TypeIdToType(indices_data_type_)->ToString();
   }
   return true;
 }

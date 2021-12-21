@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@
 #include <ir/value.h>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "frontend/parallel/strategy.h"
@@ -35,9 +35,6 @@ class ActivationBase : public OperatorInfo {
                  const PrimitiveAttrs &attrs, OperatorCostPtr cost)
       : OperatorInfo(operator_name, inputs_shape, outputs_shape, attrs, cost) {}
   ~ActivationBase() override = default;
-
-  Status Init(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
 
  protected:
   Status InferMirrorOps() override;
@@ -120,6 +117,23 @@ class Softmax : public ActivationBase {
 
  private:
   std::vector<int64_t> axis_;
+};
+
+class CumSumInfo : public ActivationBase {
+ public:
+  explicit CumSumInfo(const std::string &name, const Shapes &inputs_shape, const Shapes &outputs_shape,
+                      const PrimitiveAttrs &attrs)
+      : ActivationBase(name, inputs_shape, outputs_shape, attrs, std::make_shared<SoftmaxCost>()) {}
+  ~CumSumInfo() override = default;
+  std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
+  Status SetCostUnderStrategy(const StrategyPtr &strategy) override;
+
+ protected:
+  Status CheckStrategy(const StrategyPtr &strategy) override;
+  Status GetAttrs() override;
+
+ private:
+  int64_t axis_ = -1;
 };
 
 class SoftmaxInfo : public Softmax {
@@ -222,7 +236,6 @@ class ExpandDimsInfo : public ActivationOther {
   Status GetAttrs() override;
   Status InferTensorMap() override;
   Status InferMirrorOps() override;
-  Status InferTensorStrategy();
 
  private:
   int64_t positive_axis_ = -1;
@@ -240,9 +253,8 @@ class SqueezeInfo : public ActivationOther {
  protected:
   Status InferAxis(const ValueTuplePtr &value_tuple);
   Status GetAttrs() override;
-  Status InferReplaceOps();
+  void InferReplaceOps() override;
   Status InferTensorMap() override;
-  Status Init(const StrategyPtr &strategy) override;
 
  private:
   ValueTuplePtr axis_;
@@ -271,12 +283,11 @@ class DropoutInfo : public ActivationOther {
       : ActivationOther(name, inputs_shape, outputs_shape, attrs, std::make_shared<DropOutCost>()) {}
   ~DropoutInfo() override = default;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
-  Status Init(const StrategyPtr &strategy) override;
 
  protected:
   Status GetAttrs() override;
   Status InferTensorMap() override;
-  Status InferReplaceOps();
+  void InferReplaceOps() override;
   Status InferAsLossDivisor() override;
 
  private:

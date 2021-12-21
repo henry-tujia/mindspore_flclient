@@ -24,7 +24,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_ReverseSequence;
 
 namespace mindspore::kernel {
-int ReverseSequenceCPUKernel::Init() {
+int ReverseSequenceCPUKernel::Prepare() {
   MS_CHECK_TRUE_RET(in_tensors_.size() == kInputSize1, RET_ERROR);
   MS_CHECK_TRUE_RET(out_tensors_.size() == 1, RET_ERROR);
   CHECK_NULL_RETURN(in_tensors_[0]);
@@ -66,12 +66,14 @@ int ReverseSequenceCPUKernel::ReSize() {
 
   ConvertAxisToPositive(input0->shape(), &(para->batch_axis_));
   ConvertAxisToPositive(input0->shape(), &(para->seq_axis_));
+  MS_CHECK_TRUE_RET(para->batch_axis_ >= 0 && para->seq_axis_ >= 0, RET_ERROR);
 
   para->ndim_ = input0->shape().size();
   for (int i = 0; i < para->ndim_; i++) {
     para->input_shape0_[i] = input0->DimensionSize(i);
     para->output_shape_[i] = output->DimensionSize(i);
   }
+  MS_CHECK_TRUE_RET(para->batch_axis_ < para->ndim_ && para->seq_axis_ < para->ndim_, RET_ERROR);
 
   int less_axis = MSMIN(para->batch_axis_, para->seq_axis_);
   int greater_axis = MSMAX(para->batch_axis_, para->seq_axis_);
@@ -92,6 +94,7 @@ int ReverseSequenceCPUKernel::ReSize() {
 }
 
 int ReverseSequenceCPUKernel::Run() {
+  MS_CHECK_TRUE_RET(in_tensors_.at(0)->shape() == out_tensors_.at(0)->shape(), RET_ERROR);
   float *input0 = reinterpret_cast<float *>(in_tensors_.at(0)->MutableData());
   void *input1 = in_tensors_.at(1)->MutableData();
   float *output = reinterpret_cast<float *>(out_tensors_.at(0)->MutableData());
@@ -101,6 +104,10 @@ int ReverseSequenceCPUKernel::Run() {
   CHECK_NULL_RETURN(input0);
   CHECK_NULL_RETURN(input1);
   CHECK_NULL_RETURN(output);
+  if (param->seq_axis_ == param->batch_axis_) {
+    MS_LOG(ERROR) << "seq_axis and batch_axis can't be the same.";
+    return RET_ERROR;
+  }
   ReverseSequence(input0, input1, output, param);
   return RET_OK;
 }

@@ -15,36 +15,22 @@
  */
 
 #include "backend/optimizer/graph_kernel/uss_atomic_add.h"
-#include <algorithm>
-#include <functional>
-#include <list>
-#include <map>
 #include <memory>
-#include <utility>
-#include <set>
-#include <stack>
-#include <string>
-#include <tuple>
-#include <vector>
 #include "base/core_ops.h"
 #include "ir/tensor.h"
 #include "utils/utils.h"
-#include "utils/log_adapter.h"
 #include "backend/kernel_compiler/kernel.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
-#include "backend/session/anf_runtime_algorithm.h"
 #include "backend/session/kernel_graph.h"
-#include "debug/anf_ir_dump.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 class UssChecker : public AtomicAddChecker {
  public:
   explicit UssChecker(const PrimitivePtr &target) { target_type_ = target; }
   virtual ~UssChecker() = default;
 
- private:
+ protected:
   bool CanActivateAtomicAdd(const AnfNodePtr &anf_node) override { return FindCandidate(anf_node); }
 };
 
@@ -69,11 +55,9 @@ bool UssAtomicAdd::Run(const FuncGraphPtr &func_graph) {
     if (!atomic_add_checker->Check(node)) {
       continue;
     }
-    auto atomic_add_info = atomic_add_checker->GetAtomicAddInfo();
-    atomic_add_node_ = atomic_add_info.atomic_add_node;
-    reduce_real_output_index_ = atomic_add_info.reduce_real_output_index;
-    real_output_num_ = atomic_add_info.real_output_num;
-    InsertAtomicClean(kernel_graph, node, mng);
+
+    auto atomic_add_infos = atomic_add_checker->GetAtomicAddInfo();
+    InsertAtomicClean(kernel_graph, node, atomic_add_infos, mng);
     changed = true;
   }
 
@@ -84,5 +68,4 @@ bool UssAtomicAdd::Run(const FuncGraphPtr &func_graph) {
 
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

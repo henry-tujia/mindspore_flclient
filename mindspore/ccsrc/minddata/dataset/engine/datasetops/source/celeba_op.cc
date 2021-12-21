@@ -44,26 +44,13 @@ CelebAOp::CelebAOp(int32_t num_workers, const std::string &dir, int32_t queue_si
       attr_file_(""),
       usage_(usage) {
   attr_info_queue_ = std::make_unique<Queue<std::vector<std::string>>>(queue_size);
-  io_block_queues_.Init(num_workers_, queue_size);
 }
 
-Status CelebAOp::LaunchThreadsAndInitOp() {
-  if (tree_ == nullptr) {
-    return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "Pipeline init failed, Execution tree not set.");
-  }
-
-  RETURN_IF_NOT_OK(io_block_queues_.Register(tree_->AllTasks()));
+Status CelebAOp::RegisterAndLaunchThreads() {
+  ParallelOp::RegisterAndLaunchThreads();
   RETURN_IF_NOT_OK(attr_info_queue_->Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-
   RETURN_IF_NOT_OK(
     tree_->AllTasks()->CreateAsyncTask("Walking attr file", std::bind(&CelebAOp::ParseAttrFile, this), nullptr, id()));
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&CelebAOp::WorkerEntry, this, std::placeholders::_1), Name(), id()));
-  TaskManager::FindMe()->Post();
-  RETURN_IF_NOT_OK(ParseImageAttrInfo());
-  RETURN_IF_NOT_OK(sampler_->HandshakeRandomAccessOp(this));
-
   return Status::OK();
 }
 
@@ -73,16 +60,16 @@ Status CelebAOp::ParseAttrFile() {
 
   auto realpath = FileUtils::GetRealPath((folder_path / "list_attr_celeba.txt").ToString().data());
   if (!realpath.has_value()) {
-    MS_LOG(ERROR) << "Invalid file, get real path failed, path=" << (folder_path / "list_attr_celeba.txt").ToString();
-    RETURN_STATUS_UNEXPECTED("Invalid file, get real path failed, path=" +
-                             (folder_path / "list_attr_celeba.txt").ToString());
+    MS_LOG(ERROR) << "Invalid file path, " << (folder_path / "list_attr_celeba.txt").ToString() << " does not exist.";
+    RETURN_STATUS_UNEXPECTED("Invalid file path, " + (folder_path / "list_attr_celeba.txt").ToString() +
+                             " does not exist.");
   }
 
   std::ifstream attr_file(realpath.value());
   if (!attr_file.is_open()) {
     std::string attr_file_name = (folder_path / "list_attr_celeba.txt").ToString();
     return Status(StatusCode::kMDFileNotExist, __LINE__, __FILE__,
-                  "Invalid file, failed to open Celeba attr file: " + attr_file_name);
+                  "Invalid attr file, failed to open: " + attr_file_name + ", permission denied.");
   }
 
   attr_file_ = (folder_path / "list_attr_celeba.txt").ToString();
@@ -102,12 +89,11 @@ Status CelebAOp::ParseAttrFile() {
   try {
     num_rows_in_attr_file_ = static_cast<int64_t>(std::stoul(rows_num));  // First line is rows number in attr file
   } catch (std::invalid_argument &e) {
-    RETURN_STATUS_UNEXPECTED(
-      "Invalid data, failed to convert rows_num from attr_file to unsigned long, invalid value: " + rows_num + ".");
+    RETURN_STATUS_UNEXPECTED("Invalid rows_num, failed to convert rows_num: " + rows_num + " to unsigned long in " +
+                             attr_file_ + ".");
   } catch (std::out_of_range &e) {
-    RETURN_STATUS_UNEXPECTED(
-      "Invalid data, failed to convert rows_num from attr_file to unsigned long, value out of range: " + rows_num +
-      ".");
+    RETURN_STATUS_UNEXPECTED("Invalid rows_num, rows_num in " + attr_file_ + " is out of range, rows_num is " +
+                             rows_num + ".");
   }
 
   (void)getline(attr_file, attr_name);  // Second line is attribute name,ignore it
@@ -138,8 +124,8 @@ bool CelebAOp::CheckDatasetTypeValid() {
     Path folder_path(folder_path_);
     partition_file_.open((folder_path / "list_eval_partition.txt").ToString());
     if (!partition_file_.is_open()) {
-      MS_LOG(ERROR) << "Invalid file, fail to open celeba partition file, path="
-                    << (folder_path / "list_eval_partition.txt").ToString();
+      MS_LOG(ERROR) << "Invalid eval partition file, failed to open eval partition file: "
+                    << (folder_path / "list_eval_partition.txt").ToString() << " does not exist or permission denied.";
       return false;
     }
   }
@@ -153,10 +139,12 @@ bool CelebAOp::CheckDatasetTypeValid() {
   try {
     type = std::stoi(vec[1]);
   } catch (std::invalid_argument &e) {
-    MS_LOG(WARNING) << "Invalid data, failed to convert to int, invalid value: " << vec[1] << ".";
+    MS_LOG(WARNING) << "Invalid number, the second word in list_eval_partition.txt should be numeric, but got: "
+                    << vec[1] << ".";
     return false;
   } catch (std::out_of_range &e) {
-    MS_LOG(WARNING) << "Invalid data, failed to convert to int, value out of range: " << vec[1] << ".";
+    MS_LOG(WARNING) << "Invalid number, the second word in list_eval_partition.txt is out of range, word is: " << vec[1]
+                    << ".";
     return false;
   }
   // train:0, valid=1, test=2
@@ -175,11 +163,11 @@ bool CelebAOp::CheckDatasetTypeValid() {
   return false;
 }
 
-Status CelebAOp::ParseImageAttrInfo() {
+Status CelebAOp::PrepareData() {
   std::vector<std::string> image_infos;
-  bool needMoreData = true;
+  bool need_more_data = true;
   RETURN_IF_NOT_OK(attr_info_queue_->PopFront(&image_infos));
-  while (!image_infos.empty() && needMoreData) {
+  while (!image_infos.empty() && need_more_data) {
     for (uint32_t index = 0; index < image_infos.size(); index++) {
       std::string image_info = image_infos[index];
       std::vector<std::string> split = Split(image_info);
@@ -198,12 +186,11 @@ Status CelebAOp::ParseImageAttrInfo() {
         try {
           value = std::stoi(split[label_index]);
         } catch (std::invalid_argument &e) {
-          RETURN_STATUS_UNEXPECTED("Invalid data, failed to convert item from attr_file to int, corresponding value: " +
-                                   split[label_index] + ".");
+          RETURN_STATUS_UNEXPECTED("Invalid label index, the label index in " + file_path.ToString() +
+                                   " should be numeric, but got: " + split[label_index] + ".");
         } catch (std::out_of_range &e) {
-          RETURN_STATUS_UNEXPECTED(
-            "Invalid data, failed to convert item from attr_file to int as out of range, corresponding value: " +
-            split[label_index] + ".");
+          RETURN_STATUS_UNEXPECTED("Invalid label index, the label index in " + file_path.ToString() +
+                                   " is out of range, index is " + split[label_index] + ".");
         }
         image_labels.second.push_back(value);
       }
@@ -255,7 +242,8 @@ Status CelebAOp::LoadTensorRow(row_id_type row_id, TensorRow *row) {
     Status rc = Decode(image, &image);
     if (rc.IsError()) {
       image = nullptr;
-      std::string err_msg = "Invalid data, failed to decode image: " + image_path.ToString();
+      std::string err_msg =
+        "Invalid image, " + image_path.ToString() + " decode failed, the image is broken or permission denied.";
       return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, err_msg);
     }
   }

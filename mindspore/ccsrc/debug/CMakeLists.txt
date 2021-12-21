@@ -1,5 +1,7 @@
 include_directories(${CMAKE_SOURCE_DIR}/mindspore/ccsrc/debug/)
 include_directories(${CMAKE_BINARY_DIR})
+file(STRINGS "${CMAKE_SOURCE_DIR}/version.txt" MSVERSION)
+add_definitions(-DMSVERSION=\"${MSVERSION}\")
 
 set(_DEBUG_SRC_LIST
     "${CMAKE_CURRENT_SOURCE_DIR}/anf_ir_dump.cc"
@@ -14,8 +16,8 @@ set(_DEBUG_SRC_LIST
 set(_OFFLINE_SRC_LIST
     "${CMAKE_CURRENT_SOURCE_DIR}/debug_services.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/debugger/tensor_summary.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/debugger/offline_debug/offline_logger.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/debugger/offline_debug/dbg_services.cc"
+    "${CMAKE_SOURCE_DIR}/mindspore/core/utils/log_adapter.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/debugger/offline_debug/mi_pybind_register.cc"
 )
 
@@ -39,6 +41,7 @@ if(ENABLE_DEBUGGER)
         "${CMAKE_CURRENT_SOURCE_DIR}/debugger/tensor_summary.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/debug_services.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/debugger/debugger_utils.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/data_dump/tensor_stat_dump.cc"
         )
 endif()
 
@@ -66,6 +69,11 @@ if(ENABLE_DEBUGGER)
         set_property(SOURCE ${_OFFLINE_SRC_LIST} PROPERTY COMPILE_DEFINITIONS
             SUBMODULE_ID=mindspore::SubModuleId::SM_OFFLINE_DEBUG)
         add_library(_mindspore_offline_debug SHARED ${_OFFLINE_SRC_LIST})
+        target_link_libraries(_mindspore_offline_debug PRIVATE
+            mindspore::pybind11_module
+            mindspore::glog
+            mindspore_gvar
+            )
         set_target_properties(_mindspore_offline_debug PROPERTIES
             PREFIX "${PYTHON_MODULE_PREFIX}"
             SUFFIX "${PYTHON_MODULE_EXTENSION}"

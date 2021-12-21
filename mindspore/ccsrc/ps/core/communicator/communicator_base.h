@@ -56,7 +56,10 @@ enum class TcpUserCommand {
   kNewInstance,
   kQueryInstance,
   kEnableFLS,
-  kDisableFLS
+  kDisableFLS,
+  kSyncAfterRecover,
+  kExchangeKeys,
+  kGetKeys
 };
 
 // CommunicatorBase is used to receive request and send response for server.
@@ -82,7 +85,7 @@ class CommunicatorBase {
 
   bool SendResponse(const void *rsp_data, size_t rsp_len, const std::shared_ptr<MessageHandler> &msg_handler);
 
-  bool running() const;
+  bool running();
 
  protected:
   std::unordered_map<std::string, MessageCallback> msg_callbacks_;

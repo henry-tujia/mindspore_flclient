@@ -31,17 +31,17 @@
 namespace mindspore {
 namespace dataset {
 
-class Vocab;
 class SentencePieceVocab;
 class TensorOperation;
+class Vectors;
+class Vocab;
 
 // Transform operations for text
 namespace text {
-
 #ifndef _WIN32
 /// \brief Tokenize a scalar tensor of UTF-8 string by specific rules.
 /// \note BasicTokenizer is not supported on the Windows platform yet.
-class BasicTokenizer final : public TensorTransform {
+class MS_API BasicTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] lower_case If true, apply CaseFold, NormalizeUTF8 (NFD mode) and RegexReplace operations to
@@ -53,6 +53,15 @@ class BasicTokenizer final : public TensorTransform {
   /// \param[in] preserve_unused_token If true, do not split special tokens like '[CLS]', '[SEP]', '[UNK]', '[PAD]' and
   ///    '[MASK]' (default=true).
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::BasicTokenizer();
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit BasicTokenizer(bool lower_case = false, bool keep_whitespace = false,
                           const NormalizeForm normalize_form = NormalizeForm::kNone, bool preserve_unused_token = true,
                           bool with_offsets = false);
@@ -72,7 +81,7 @@ class BasicTokenizer final : public TensorTransform {
 
 /// \brief A tokenizer used for Bert text process.
 /// \note BertTokenizer is not supported on the Windows platform yet.
-class BertTokenizer final : public TensorTransform {
+class MS_API BertTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] vocab A Vocab object.
@@ -90,6 +99,18 @@ class BertTokenizer final : public TensorTransform {
   /// \param[in] preserve_unused_token If true, do not split special tokens like '[CLS]', '[SEP]', '[UNK]', '[PAD]' and
   ///   '[MASK]' (default=true).
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     std::vector<std::string> list = {"a", "b", "c", "d"};
+  ///     std::shared_ptr<Vocab> vocab = std::make_shared<Vocab>();
+  ///     Status s = Vocab::BuildFromVector(list, {}, true, &vocab);
+  ///     auto tokenizer_op = text::BertTokenizer(vocab);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit BertTokenizer(const std::shared_ptr<Vocab> &vocab, const std::string &suffix_indicator = "##",
                          int32_t max_bytes_per_token = 100, const std::string &unknown_token = "[UNK]",
                          bool lower_case = false, bool keep_whitespace = false,
@@ -113,10 +134,10 @@ class BertTokenizer final : public TensorTransform {
   /// \param[in] preserve_unused_token If true, do not split special tokens like '[CLS]', '[SEP]', '[UNK]', '[PAD]' and
   ///   '[MASK]' (default=true).
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
-  explicit BertTokenizer(const std::shared_ptr<Vocab> &vocab, const std::vector<char> &suffix_indicator,
-                         int32_t max_bytes_per_token, const std::vector<char> &unknown_token, bool lower_case,
-                         bool keep_whitespace, const NormalizeForm normalize_form, bool preserve_unused_token,
-                         bool with_offsets);
+  BertTokenizer(const std::shared_ptr<Vocab> &vocab, const std::vector<char> &suffix_indicator,
+                int32_t max_bytes_per_token, const std::vector<char> &unknown_token, bool lower_case,
+                bool keep_whitespace, const NormalizeForm normalize_form, bool preserve_unused_token,
+                bool with_offsets);
 
   /// \brief Destructor
   ~BertTokenizer() = default;
@@ -132,9 +153,18 @@ class BertTokenizer final : public TensorTransform {
 };
 
 /// \brief Apply case fold operation on UTF-8 string tensors.
-class CaseFold final : public TensorTransform {
+class MS_API CaseFold final : public TensorTransform {
  public:
   /// \brief Constructor.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto casefold_op = text::CaseFold();
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({casefold_op},   // operations
+  ///                            {"text"});       // input columns
+  /// \endcode
   CaseFold();
 
   /// \brief Destructor
@@ -149,7 +179,7 @@ class CaseFold final : public TensorTransform {
 
 /// \brief Tokenize a Chinese string into words based on the dictionary.
 /// \note The integrity of the HMMSegment algorithm and MPSegment algorithm files must be confirmed.
-class JiebaTokenizer final : public TensorTransform {
+class MS_API JiebaTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] hmm_path Dictionary file is used by the HMMSegment algorithm. The dictionary can be obtained on the
@@ -162,8 +192,17 @@ class JiebaTokenizer final : public TensorTransform {
   ///   - JiebaMode.kHMM, tokenizes with Hidden Markov Model Segment algorithm.
   ///   - JiebaMode.kMIX, tokenizes with a mix of MPSegment and HMMSegment algorithms.
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
-  explicit JiebaTokenizer(const std::string &hmm_path, const std::string &mp_path,
-                          const JiebaMode &mode = JiebaMode::kMix, bool with_offsets = false)
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::JiebaTokenizer("/path/to/hmm/file", "/path/to/mp/file");
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
+  JiebaTokenizer(const std::string &hmm_path, const std::string &mp_path, const JiebaMode &mode = JiebaMode::kMix,
+                 bool with_offsets = false)
       : JiebaTokenizer(StringToChar(hmm_path), StringToChar(mp_path), mode, with_offsets) {}
 
   /// \brief Constructor.
@@ -177,8 +216,8 @@ class JiebaTokenizer final : public TensorTransform {
   ///   - JiebaMode.kHMM, tokenizes with Hidden Markov Model Segment algorithm.
   ///   - JiebaMode.kMIX, tokenizes with a mix of MPSegment and HMMSegment algorithms.
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
-  explicit JiebaTokenizer(const std::vector<char> &hmm_path, const std::vector<char> &mp_path, const JiebaMode &mode,
-                          bool with_offsets);
+  JiebaTokenizer(const std::vector<char> &hmm_path, const std::vector<char> &mp_path, const JiebaMode &mode,
+                 bool with_offsets);
 
   /// \brief Destructor
   ~JiebaTokenizer() = default;
@@ -189,11 +228,26 @@ class JiebaTokenizer final : public TensorTransform {
   /// \param[in] freq The frequency of the word to be added. The higher the frequency,
   ///   the better chance the word will be tokenized (default=None, use default frequency).
   /// \return Status error code, returns OK if no error is encountered.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::JiebaTokenizer("/path/to/hmm/file", "/path/to/mp/file");
+  ///
+  ///     Status s = tokenizer_op.AddWord("hello", 2);
+  /// \endcode
   Status AddWord(const std::string &word, int64_t freq = 0) { return AddWordChar(StringToChar(word), freq); }
 
   /// \brief Add a user defined dictionary of word-freq pairs to the JiebaTokenizer's dictionary.
   /// \param[in] user_dict Vector of word-freq pairs to be added to the JiebaTokenizer's dictionary.
   /// \return Status error code, returns OK if no error is encountered.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::JiebaTokenizer("/path/to/hmm/file", "/path/to/mp/file");
+  ///
+  ///     std::vector<std::pair<std::string, int64_t>> user_dict = {{"a", 1}, {"b", 2}, {"c", 3}};
+  ///     Status s = tokenizer_op.AddDict(user_dict);
+  /// \endcode
   Status AddDict(const std::vector<std::pair<std::string, int64_t>> &user_dict) {
     return AddDictChar(PairStringInt64ToPairCharInt64(user_dict));
   }
@@ -203,6 +257,13 @@ class JiebaTokenizer final : public TensorTransform {
   ///   Rows containing invalid inputs will be ignored, no error nor warning status is returned.
   /// \param[in] file_path Path to the dictionary which includes user defined word-freq pairs.
   /// \return Status error code, returns OK if no error is encountered.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::JiebaTokenizer("/path/to/hmm/file", "/path/to/mp/file");
+  ///
+  ///     Status s = tokenizer_op.AddDict("/path/to/dict/file");
+  /// \endcode
   Status AddDict(const std::string &file_path) { return AddDictChar(StringToChar(file_path)); }
 
  protected:
@@ -230,7 +291,7 @@ class JiebaTokenizer final : public TensorTransform {
 };
 
 /// \brief Look up a word into an id according to the input vocabulary table.
-class Lookup final : public TensorTransform {
+class MS_API Lookup final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] vocab a Vocab object.
@@ -239,6 +300,18 @@ class Lookup final : public TensorTransform {
   ///    runtime error will be thrown (default={}, means no unknown_token is specified).
   /// \param[in] data_type mindspore::DataType of the tensor after lookup; must be numeric, including bool.
   ///   (default=mindspore::DataType::kNumberTypeInt32).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///    std::vector<std::string> list = {"a", "b", "c", "d"};
+  ///     std::shared_ptr<Vocab> vocab = std::make_shared<Vocab>();
+  ///     Status s = Vocab::BuildFromVector(list, {}, true, &vocab);
+  ///     auto lookup_op = text::Lookup(vocab, "[unk]");
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({lookup_op},   // operations
+  ///                            {"text"});     // input columns
+  /// \endcode
   explicit Lookup(const std::shared_ptr<Vocab> &vocab, const std::optional<std::string> &unknown_token = {},
                   mindspore::DataType data_type = mindspore::DataType::kNumberTypeInt32) {
     std::optional<std::vector<char>> unknown_token_c = std::nullopt;
@@ -255,8 +328,8 @@ class Lookup final : public TensorTransform {
   ///    runtime error will be thrown (default={}, means no unknown_token is specified).
   /// \param[in] data_type mindspore::DataType of the tensor after lookup; must be numeric, including bool.
   ///   (default=mindspore::DataType::kNumberTypeInt32).
-  explicit Lookup(const std::shared_ptr<Vocab> &vocab, const std::optional<std::vector<char>> &unknown_token,
-                  mindspore::DataType data_type = mindspore::DataType::kNumberTypeInt32);
+  Lookup(const std::shared_ptr<Vocab> &vocab, const std::optional<std::vector<char>> &unknown_token,
+         mindspore::DataType data_type = mindspore::DataType::kNumberTypeInt32);
 
   /// \brief Destructor
   ~Lookup() = default;
@@ -272,7 +345,7 @@ class Lookup final : public TensorTransform {
 };
 
 /// \brief Generate n-gram from a 1-D string Tensor.
-class Ngram final : public TensorTransform {
+class MS_API Ngram final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] ngrams ngrams is a vector of positive integers. For example, if ngrams={4, 3}, then the result
@@ -283,6 +356,15 @@ class Ngram final : public TensorTransform {
   /// \param[in] right_pad {"pad_token", pad_width}. Padding performed on right side of the sequence.pad_width will
   ///    be capped at n-1. right_pad=("-",2) would pad the right side of the sequence with "--" (default={"", 0}}).
   /// \param[in] separator Symbol used to join strings together (default=" ").
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto ngram_op = text::Ngram({2, 3}, {"&", 2}, {"&", 2}, "-");
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({ngram_op},   // operations
+  ///                            {"text"});    // input columns
+  /// \endcode
   explicit Ngram(const std::vector<int32_t> &ngrams, const std::pair<std::string, int32_t> &left_pad = {"", 0},
                  const std::pair<std::string, int32_t> &right_pad = {"", 0}, const std::string &separator = " ")
       : Ngram(ngrams, PairStringToChar(left_pad), PairStringToChar(right_pad), StringToChar(separator)) {}
@@ -296,8 +378,8 @@ class Ngram final : public TensorTransform {
   /// \param[in] right_pad {"pad_token", pad_width}. Padding performed on right side of the sequence.pad_width will
   ///    be capped at n-1. right_pad=("-",2) would pad the right side of the sequence with "--" (default={"", 0}}).
   /// \param[in] separator Symbol used to join strings together (default=" ").
-  explicit Ngram(const std::vector<int32_t> &ngrams, const std::pair<std::vector<char>, int32_t> &left_pad,
-                 const std::pair<std::vector<char>, int32_t> &right_pad, const std::vector<char> &separator);
+  Ngram(const std::vector<int32_t> &ngrams, const std::pair<std::vector<char>, int32_t> &left_pad,
+        const std::pair<std::vector<char>, int32_t> &right_pad, const std::vector<char> &separator);
 
   /// \brief Destructor
   ~Ngram() = default;
@@ -314,7 +396,7 @@ class Ngram final : public TensorTransform {
 
 #ifndef _WIN32
 /// \brief Apply normalize operation to UTF-8 string tensors.
-class NormalizeUTF8 final : public TensorTransform {
+class MS_API NormalizeUTF8 final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] normalize_form Valid values can be any of [NormalizeForm::kNone,NormalizeForm::kNfc,
@@ -325,6 +407,15 @@ class NormalizeUTF8 final : public TensorTransform {
   ///   - NormalizeForm.kNfkc, normalizes with Normalization Form KC.
   ///   - NormalizeForm.kNfd, normalizes with Normalization Form D.
   ///   - NormalizeForm.kNfkd, normalizes with Normalization Form KD.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto normalizeutf8_op = text::NormalizeUTF8();
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({normalizeutf8_op},   // operations
+  ///                            {"text"});            // input columns
+  /// \endcode
   explicit NormalizeUTF8(NormalizeForm normalize_form = NormalizeForm::kNfkc);
 
   /// \brief Destructor
@@ -341,14 +432,23 @@ class NormalizeUTF8 final : public TensorTransform {
 };
 
 /// \brief Replace a UTF-8 string tensor with 'replace' according to regular expression 'pattern'.
-class RegexReplace final : public TensorTransform {
+class MS_API RegexReplace final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] pattern The regex expression patterns.
   /// \param[in] replace The string to replace the matched element.
   /// \param[in] replace_all Confirm whether to replace all. If false, only replace the first matched element;
   ///   if true, replace all matched elements (default=true).
-  explicit RegexReplace(std::string pattern, std::string replace, bool replace_all = true)
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto regex_op = text::RegexReplace("\\s+", "_", true);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({regex_op},   // operations
+  ///                            {"text"});    // input columns
+  /// \endcode
+  RegexReplace(std::string pattern, std::string replace, bool replace_all = true)
       : RegexReplace(StringToChar(pattern), StringToChar(replace), replace_all) {}
 
   /// \brief Constructor.
@@ -356,7 +456,7 @@ class RegexReplace final : public TensorTransform {
   /// \param[in] replace The string to replace the matched element.
   /// \param[in] replace_all Confirm whether to replace all. If false, only replace the first matched element;
   ///   if true, replace all matched elements (default=true).
-  explicit RegexReplace(const std::vector<char> &pattern, const std::vector<char> &replace, bool replace_all);
+  RegexReplace(const std::vector<char> &pattern, const std::vector<char> &replace, bool replace_all);
 
   /// \brief Destructor
   ~RegexReplace() = default;
@@ -372,7 +472,7 @@ class RegexReplace final : public TensorTransform {
 };
 
 /// \brief Tokenize a scalar tensor of UTF-8 string by the regex expression pattern.
-class RegexTokenizer final : public TensorTransform {
+class MS_API RegexTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] delim_pattern The pattern of regex delimiters.
@@ -380,6 +480,15 @@ class RegexTokenizer final : public TensorTransform {
   ///   matched by 'keep_delim_pattern'. The default value is an empty string ("").
   ///   which means that delimiters will not be kept as an output token (default="").
   /// \param[in] with_offsets Whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto regex_op = text::RegexTokenizer("\\s+", "\\s+", false);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({regex_op},   // operations
+  ///                            {"text"});    // input columns
+  /// \endcode
   explicit RegexTokenizer(std::string delim_pattern, std::string keep_delim_pattern = "", bool with_offsets = false)
       : RegexTokenizer(StringToChar(delim_pattern), StringToChar(keep_delim_pattern), with_offsets) {}
 
@@ -401,17 +510,39 @@ class RegexTokenizer final : public TensorTransform {
 #endif
 
 /// \brief Tokenize a scalar token or a 1-D token to tokens by sentencepiece.
-class SentencePieceTokenizer final : public TensorTransform {
+class MS_API SentencePieceTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] vocab a SentencePieceVocab object.
   /// \param[in] out_type The type of the output.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     std::shared_ptr<Dataset> ds_vocab = TextFile({"/path/to/vocab/file"}, 0, ShuffleMode::kFalse);
+  ///     std::shared_ptr<SentencePieceVocab> vocab =
+  ///         ds_vocab->BuildSentencePieceVocab({}, 0, 0.9995, SentencePieceModel::kUnigram, {});
+  ///     auto tokenizer_op = text::SentencePieceTokenizer(vocab, mindspore::dataset::SPieceTokenizerOutType::kString);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   SentencePieceTokenizer(const std::shared_ptr<SentencePieceVocab> &vocab,
                          mindspore::dataset::SPieceTokenizerOutType out_type);
 
   /// \brief Constructor.
   /// \param[in] vocab_path vocab model file path.
   /// \param[in] out_type The type of the output.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::SentencePieceTokenizer("/path/to/model",
+  ///                                                      mindspore::dataset::SPieceTokenizerOutType::kInt);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   SentencePieceTokenizer(const std::string &vocab_path, mindspore::dataset::SPieceTokenizerOutType out_type)
       : SentencePieceTokenizer(StringToChar(vocab_path), out_type) {}
 
@@ -435,12 +566,21 @@ class SentencePieceTokenizer final : public TensorTransform {
 
 /// \brief Construct a tensor from data (only 1-D for now), where each element in the dimension
 ///   axis is a slice of data starting at the corresponding position, with a specified width.
-class SlidingWindow final : public TensorTransform {
+class MS_API SlidingWindow final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] width The width of the window. It must be an integer and greater than zero.
   /// \param[in] axis The axis where the sliding window is computed (default=0), axis only
   ///    supports 0 or -1 for now.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto slidingwindow_op = text::SlidingWindow(5, 0);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({slidingwindow_op},   // operations
+  ///                            {"text"});            // input columns
+  /// \endcode
   explicit SlidingWindow(const int32_t width, const int32_t axis = 0);
 
   /// \brief Destructor
@@ -461,10 +601,19 @@ class SlidingWindow final : public TensorTransform {
 ///   https://en.cppreference.com/w/cpp/string/basic_string/stof,
 ///   https://en.cppreference.com/w/cpp/string/basic_string/stoul,
 ///   except that any strings which represent negative numbers cannot be cast to an unsigned integer type.
-class ToNumber final : public TensorTransform {
+class MS_API ToNumber final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] data_type mindspore::DataType of the tensor to be cast to. Must be a numeric type, excluding bool.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto to_number_op = text::ToNumber(mindspore::DataType::kNumberTypeInt8);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({to_number_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit ToNumber(mindspore::DataType data_type);
 
   /// \brief Destructor
@@ -480,11 +629,44 @@ class ToNumber final : public TensorTransform {
   std::shared_ptr<Data> data_;
 };
 
+/// \brief Look up a token into an vector according to the input Vectors table.
+class MS_API ToVectors final : public TensorTransform {
+ public:
+  /// \brief Constructor.
+  /// \param[in] vectors A Vectors object.
+  /// \param[in] unk_init In case of the token is out-of-vectors (OOV), the result will be initialized with `unk_init`.
+  ///     (default={}, means to initialize with zero vectors).
+  /// \param[in] lower_case_backup Whether to look up the token in the lower case (default=false).
+  explicit ToVectors(const std::shared_ptr<Vectors> &vectors, std::vector<float> unk_init = {},
+                     bool lower_case_backup = false);
+
+  /// \brief Destructor
+  ~ToVectors() = default;
+
+ protected:
+  /// \brief The function to convert a TensorTransform object into a TensorOperation object.
+  /// \return Shared pointer to the TensorOperation object.
+  std::shared_ptr<TensorOperation> Parse() override;
+
+ private:
+  struct Data;
+  std::shared_ptr<Data> data_;
+};
+
 /// \brief Truncate a pair of rank-1 tensors such that the total length is less than max_length.
-class TruncateSequencePair final : public TensorTransform {
+class MS_API TruncateSequencePair final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] max_length Maximum length required.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto truncate_op = text::TruncateSequencePair(5);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({truncate_op},   // operations
+  ///                            {"text"});       // input columns
+  /// \endcode
   explicit TruncateSequencePair(int32_t max_length);
 
   /// \brief Destructor
@@ -501,10 +683,19 @@ class TruncateSequencePair final : public TensorTransform {
 };
 
 /// \brief Tokenize a scalar tensor of UTF-8 string to Unicode characters.
-class UnicodeCharTokenizer final : public TensorTransform {
+class MS_API UnicodeCharTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] with_offsets whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::UnicodeCharTokenizer();
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit UnicodeCharTokenizer(bool with_offsets = false);
 
   /// \brief Destructor
@@ -521,7 +712,7 @@ class UnicodeCharTokenizer final : public TensorTransform {
 };
 
 /// \brief Tokenize scalar token or 1-D tokens to 1-D sub-word tokens.
-class WordpieceTokenizer final : public TensorTransform {
+class MS_API WordpieceTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] vocab A Vocab object.
@@ -531,6 +722,18 @@ class WordpieceTokenizer final : public TensorTransform {
   /// \param[in] unknown_token When a token cannot be found, return the token directly if 'unknown_token' is an empty
   ///    string, else return the specified string (default='[UNK]').
   /// \param[in] with_offsets whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     std::vector<std::string> word_list = {"book", "apple", "rabbit"};
+  ///     std::shared_ptr<Vocab> vocab = std::make_shared<Vocab>();
+  ///     Status s = Vocab::BuildFromVector(word_list, {}, true, &vocab);
+  ///     auto tokenizer_op = text::WordpieceTokenizer(vocab);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit WordpieceTokenizer(const std::shared_ptr<Vocab> &vocab, const std::string &suffix_indicator = "##",
                               int32_t max_bytes_per_token = 100, const std::string &unknown_token = "[UNK]",
                               bool with_offsets = false)
@@ -555,11 +758,20 @@ class WordpieceTokenizer final : public TensorTransform {
 
 #ifndef _WIN32
 /// \brief Tokenize a scalar tensor of UTF-8 string on Unicode script boundaries.
-class UnicodeScriptTokenizer final : public TensorTransform {
+class MS_API UnicodeScriptTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] keep_whitespace whether to emit whitespace tokens (default=false).
   /// \param[in] with_offsets whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::UnicodeScriptTokenizer(false, true);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit UnicodeScriptTokenizer(bool keep_whitespace = false, bool with_offsets = false);
 
   /// \brief Destructor
@@ -576,10 +788,19 @@ class UnicodeScriptTokenizer final : public TensorTransform {
 };
 
 /// \brief Tokenize a scalar tensor of UTF-8 string on ICU4C defined whitespaces.
-class WhitespaceTokenizer final : public TensorTransform {
+class MS_API WhitespaceTokenizer final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] with_offsets whether to output offsets of tokens (default=false).
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto tokenizer_op = text::WhitespaceTokenizer(false);
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({tokenizer_op},   // operations
+  ///                            {"text"});        // input columns
+  /// \endcode
   explicit WhitespaceTokenizer(bool with_offsets = false);
 
   /// \brief Destructor

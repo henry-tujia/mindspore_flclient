@@ -29,6 +29,8 @@
 
 namespace mindspore::kernel {
 class MatmulBaseInt8CPUKernel : public InnerKernel {
+  typedef void (*PackFunc)(const int8_t *src, int8_t *dst, int row, int col);
+
  public:
   MatmulBaseInt8CPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
                           const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
@@ -36,12 +38,17 @@ class MatmulBaseInt8CPUKernel : public InnerKernel {
     param_ = reinterpret_cast<MatMulParameter *>(op_parameter_);
   }
   ~MatmulBaseInt8CPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 
  public:
   int RunImpl(int task_id);
+#if defined(ENABLE_ARM64) && !defined(SUPPORT_NNIE) && (!defined(MACHINE_LINUX_ARM64))
+  int RunArm64Sdot();
+  int Arm64SdotImpl(int task_id);
+  int Arm64SdotPre(int task_id);
+#endif
 
  protected:
   void InitParameter();
@@ -58,8 +65,8 @@ class MatmulBaseInt8CPUKernel : public InnerKernel {
 
  private:
   int MallocQuantParam();
+  int InitQuantParam();
   void FreeQuantParam();
-  void InitQuantParam();
 
  protected:
   MatMulParameter *param_ = nullptr;
@@ -72,11 +79,18 @@ class MatmulBaseInt8CPUKernel : public InnerKernel {
   int *weight_bias_sums_ = nullptr;
   int *bias_ptr_ = nullptr;
   bool filter_per_channel_ = true;
+  int8_t *batch_input_ptr_ = nullptr;
+  int8_t *batch_weight_ptr_ = nullptr;
   int8_t *batch_b_ptr_ = nullptr;
   int8_t *batch_c_ptr_ = nullptr;
   int *batch_sums_ = nullptr;
   int row_tile_ = C4NUM;
   int col_tile_ = C4NUM;
+  int deep_tile_ = C16NUM;
+  int channel_num_ = 0;
+  bool support_sdot_ = false;
+  PackFunc a_pack_func_{nullptr};
+  PackFunc b_pack_func_{nullptr};
 };
 }  // namespace mindspore::kernel
 

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ AnfNodePtr LambNextRightRule::CreateLambNextRightNode(const FuncGraphPtr &func_g
   auto add2_y = utils::cast<AnfNodePtr>((*equiv)[add2_y_]);
   MS_EXCEPTION_IF_NULL(add2_y);
   new_node_inputs.push_back(add2_y);
-  auto new_node = func_graph->NewCNode(new_node_inputs);
+  auto new_node = NewCNode(new_node_inputs, func_graph);
   return new_node;
 }
 
@@ -70,7 +70,7 @@ const AnfNodePtr LambNextRightRule::Process(const FuncGraphPtr &func_graph, cons
   auto iter_add1 = (*equiv).find(add1_var_);
   if (iter_add1 == (*equiv).end()) {
     MS_LOG(EXCEPTION) << "The equiv map is expected to contains the add1 var after matched."
-                      << " trace: " << trace::DumpSourceLines(node);
+                      << trace::DumpSourceLines(node);
   }
   auto add1 = utils::cast<AnfNodePtr>(iter_add1->second);
   MS_EXCEPTION_IF_NULL(add1);

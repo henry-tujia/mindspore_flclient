@@ -45,8 +45,8 @@ void ShuffleNode::Print(std::ostream &out) const {
 // Function to build the ShuffleOp
 Status ShuffleNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<ShuffleOp>(shuffle_size_, shuffle_seed_, connector_que_size_, reset_every_epoch_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -54,12 +54,7 @@ Status ShuffleNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_op
 // Function to validate the parameters for ShuffleNode
 Status ShuffleNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  if (shuffle_size_ <= 1) {
-    std::string err_msg = "ShuffleNode: Invalid input, shuffle_size: " + std::to_string(shuffle_size_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
-  }
-
+  RETURN_IF_NOT_OK(ValidateScalar("Shuffle", "shuffle_size", shuffle_size_, {1}, true));
   return Status::OK();
 }
 

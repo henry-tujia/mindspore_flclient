@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "frontend/parallel/strategy.h"
@@ -35,9 +35,7 @@ class UniqueInfo : public OperatorInfo {
       : OperatorInfo(operator_name, inputs_shape, outputs_shape, attrs, std::make_shared<UniqueCost>()) {}
   ~UniqueInfo() override = default;
 
-  Status Init(const StrategyPtr &strategy) override;
   Status SetCostUnderStrategy(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
   ReplaceGraphPtr replace_graph(const CNodePtr &cnode) override;
 
@@ -49,7 +47,7 @@ class UniqueInfo : public OperatorInfo {
   Status InferDevMatrixShape() override;
   Status InferForwardCommunication() override { return SUCCESS; }
   Status InferAsLossDivisor() override { return SUCCESS; }
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && (!defined(__APPLE__)))
   Status ComputeReplaceGraph(const CNodePtr &cnode);
 #endif
 

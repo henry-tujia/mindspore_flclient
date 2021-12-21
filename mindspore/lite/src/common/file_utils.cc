@@ -15,22 +15,23 @@
  */
 
 #include "src/common/file_utils.h"
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
 #include <dirent.h>
 #endif
 
 #include <cstdlib>
 #include "securec/include/securec.h"
 
-#if defined(_WIN32) && defined(SUPPORT_MSVC)
+#ifdef _MSC_VER
 #define PATH_MAX 1024
 #define F_OK 0
+#define R_OK 4
 #endif
 
 namespace mindspore {
@@ -62,6 +63,96 @@ inline int Mkdir(const std::string &file_path) {
 }
 }  // namespace
 
+bool IsCharEndWith(const char *src, const char *end) {
+  if (strlen(src) > strlen(end)) {
+    const char *src_end = src + (strlen(src) - strlen(end));
+    if (strcmp(src_end, end) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// do not call RealPath function in OpenFile, because OpenFile may open a non-exist file
+std::fstream *OpenFile(const std::string &file_path, std::ios_base::openmode open_mode) {
+#ifndef _MSC_VER
+  if (access(file_path.c_str(), F_OK) == 0) {
+    chmod(file_path.c_str(), S_IWUSR | S_IRUSR);
+  }
+#endif
+  auto fs = new (std::nothrow) std::fstream();
+  if (fs == nullptr) {
+    MS_LOG(DEBUG) << "Create file stream failed";
+    return nullptr;
+  }
+  fs->open(file_path, open_mode);
+  if (!fs->good()) {
+    MS_LOG(DEBUG) << "File is not exist: " << file_path;
+    delete fs;
+    return nullptr;
+  }
+  if (!fs->is_open()) {
+    MS_LOG(DEBUG) << "Can not open file: " << file_path;
+    delete fs;
+    return nullptr;
+  }
+  return fs;
+}
+
+// read file in [offset, offset + len)
+char *ReadFileSegment(const std::string &file, int64_t offset, int64_t len) {
+  if (len == 0) {
+    return nullptr;
+  }
+  if (offset < 0) {
+    MS_LOG(DEBUG) << "offset is invalid, offset: " << offset;
+    return nullptr;
+  }
+  auto offset_pos = static_cast<size_t>(offset);
+  std::string real_path = lite::RealPath(file.c_str());
+  if (lite::AccessFile(real_path, R_OK) != 0) {
+    MS_LOG(DEBUG) << "cannot access file:" << real_path << ".please check file if exists and file mod";
+    return nullptr;
+  }
+  std::ifstream ifs(real_path, std::ifstream::in | std::ifstream::binary);
+  if (!ifs.good()) {
+    MS_LOG(DEBUG) << "file: " << real_path << " is not exist";
+    return nullptr;
+  }
+
+  if (!ifs.is_open()) {
+    MS_LOG(DEBUG) << "file: " << real_path << " open failed";
+    return nullptr;
+  }
+
+  ifs.seekg(0, std::ios::end);
+  size_t total_size = ifs.tellg();
+  size_t len_pos;
+  if (len < 0) {
+    len_pos = total_size - offset_pos;
+  } else {
+    len_pos = static_cast<size_t>(len);
+  }
+  if (offset_pos + len_pos > total_size) {
+    MS_LOG(ERROR) << "file segment out of range";
+    ifs.close();
+    return nullptr;
+  }
+
+  auto buf = reinterpret_cast<char *>(malloc(len));
+  if (buf == nullptr) {
+    MS_LOG(ERROR) << "malloc buf failed, file: " << real_path;
+    ifs.close();
+    return nullptr;
+  }
+
+  ifs.seekg(offset, std::ios::beg);
+  ifs.read(buf, len);
+  ifs.close();
+
+  return buf;
+}
+
 char *ReadFile(const char *file, size_t *size) {
   if (file == nullptr) {
     MS_LOG(ERROR) << "file is nullptr";
@@ -69,34 +160,29 @@ char *ReadFile(const char *file, size_t *size) {
   }
   MS_ASSERT(size != nullptr);
   std::string real_path = RealPath(file);
-  if (AccessFile(real_path, R_OK) != 0) {
-    MS_LOG(ERROR) << "cannot access file:" << real_path << ".please check file if exists and file mod";
+  if (real_path.empty()) {
+    MS_LOG(DEBUG) << "File path not regular: " << file;
     return nullptr;
   }
-  std::ifstream ifs(real_path, std::ifstream::in | std::ifstream::binary);
-  if (!ifs.good()) {
-    MS_LOG(ERROR) << "file: " << real_path << " is not exist";
-    return nullptr;
-  }
-
-  if (!ifs.is_open()) {
-    MS_LOG(ERROR) << "file: " << real_path << " open failed";
+  auto ifs = OpenFile(real_path, std::ifstream::in | std::ifstream::binary);
+  if (ifs == nullptr) {
     return nullptr;
   }
 
-  ifs.seekg(0, std::ios::end);
-  *size = ifs.tellg();
+  ifs->seekg(0, std::ios::end);
+  *size = ifs->tellg();
   auto buf = std::make_unique<char[]>(*size);
   if (buf == nullptr) {
-    MS_LOG(ERROR) << "malloc buf failed, file: " << real_path;
-    ifs.close();
+    MS_LOG(ERROR) << "malloc buf failed, file: " << file;
+    ifs->close();
+    delete ifs;
     return nullptr;
   }
 
-  ifs.seekg(0, std::ios::beg);
-  ifs.read(buf.get(), *size);
-  ifs.close();
-
+  ifs->seekg(0, std::ios::beg);
+  ifs->read(buf.get(), *size);
+  ifs->close();
+  delete ifs;
   return buf.release();
 }
 
@@ -178,6 +264,18 @@ int CreateOutputDir(std::string *file_path) {
     return RET_ERROR;
   }
   return RET_OK;
+}
+
+std::string GetDirectory(const std::string &path) {
+  auto pos = path.find_last_of('/');
+  if (pos == std::string::npos) {
+    pos = path.find_last_of('\\');
+  }
+  std::string dir;
+  if (pos != std::string::npos) {
+    dir = path.substr(0, pos + 1);
+  }
+  return dir;
 }
 }  // namespace lite
 }  // namespace mindspore

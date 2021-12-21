@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,9 +51,9 @@ Status SomasSolverPre::AddContiguousInfoInMap(const vector<vector<size_t>> &cont
   auto &tensors = *pTensors;
   // creating S Lists
   for (auto &aux : continuous_v) {
-    for (uint32_t i = 0; i < aux.size() - 1; i++) {
-      uint32_t index1 = aux[i];
-      uint32_t index2 = aux[i + 1];
+    for (size_t i = 0; i < aux.size() - 1; i++) {
+      auto index1 = aux[i];
+      auto index2 = aux[i + 1];
       if (CheckTensors(pTensors, index1, index2) == FAILED) {
         return FAILED;
       }
@@ -68,9 +68,9 @@ Status SomasSolverPre::AddContiguousInfoInMultiMaps(const vector<vector<size_t>>
                                                     const TensorsDescMap *pTensors) {
   // creating S Lists
   for (auto &aux : continuous_v) {
-    for (uint32_t i = 0; i < aux.size() - 1; i++) {
-      uint32_t index1 = aux[i];
-      uint32_t index2 = aux[i + 1];
+    for (size_t i = 0; i < aux.size() - 1; i++) {
+      auto index1 = aux[i];
+      auto index2 = aux[i + 1];
       if (CheckTensors(pTensors, index1, index2) == FAILED) {
         return FAILED;
       }
@@ -90,7 +90,7 @@ vector<TensorsDescMap> SomasSolverPre::CreateTensorsMaps(const TensorsDescMap &t
     for (size_t sol = 1; sol < total_sol; sol++) {
       SomasSolverTensorDesc newDesc = *(pairT.second.get());
       SomasSolverTensorDescPtr newDescPtr = std::make_shared<SomasSolverTensorDesc>(newDesc);
-      vecTensorsMap[sol].insert(std::make_pair(pairT.first, newDescPtr));
+      (void)vecTensorsMap[sol].emplace(pairT.first, newDescPtr);
     }
   }
   return vecTensorsMap;
@@ -201,7 +201,7 @@ void SomasSolverPre::Log(const session::KernelGraph *graph, const TensorsDescMap
   if (!save_graphs) {
     return;
   }
-  SolverInputLog(graph, tensors, pConstraints, continuous_v);
+  SolverInputLog(graph, tensors, continuous_v);
   SolverOutputLog(graph, tensors);
   TensorRelationLog(pConstraints, graph);
 }
@@ -227,7 +227,6 @@ void SomasSolverPre::TensorRelationLog(const std::vector<DynamicBitSet> *pConstr
 }
 
 void SomasSolverPre::SolverInputLog(const session::KernelGraph *graph, const TensorsDescMap &tensors,
-                                    const std::vector<DynamicBitSet> *pConstraints,
                                     const vector<vector<size_t>> &continuous_v) {
   MS_LOG(INFO) << "SomasSolver::Log Writing somas_solver_input..";
   auto context_ptr = MsContext::GetInstance();

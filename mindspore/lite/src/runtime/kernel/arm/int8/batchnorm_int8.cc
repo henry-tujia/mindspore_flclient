@@ -57,12 +57,14 @@ int BatchnormInt8CPUKernel::InitConstTensor() {
   CHECK_NULL_RETURN(mean_ptr);
   auto var_ptr = reinterpret_cast<int8_t *>(variance->MutableData());
   CHECK_NULL_RETURN(var_ptr);
+  MS_CHECK_GT(mean->ElementsNum(), 0, RET_ERROR);
   CHECK_LESS_RETURN(MAX_MALLOC_SIZE, static_cast<size_t>(mean->ElementsNum()) * sizeof(float));
   alpha_addr_ = reinterpret_cast<float *>(malloc(static_cast<size_t>(mean->ElementsNum()) * sizeof(float)));
   if (alpha_addr_ == nullptr) {
     MS_LOG(ERROR) << "Malloc buffer failed.";
     return RET_ERROR;
   }
+  MS_CHECK_GT(variance->ElementsNum(), 0, RET_ERROR);
   CHECK_LESS_RETURN(MAX_MALLOC_SIZE, static_cast<size_t>(variance->ElementsNum()) * sizeof(float));
   beta_addr_ = reinterpret_cast<float *>(malloc(static_cast<size_t>(variance->ElementsNum()) * sizeof(float)));
   if (beta_addr_ == nullptr) {
@@ -71,6 +73,10 @@ int BatchnormInt8CPUKernel::InitConstTensor() {
   }
   // compute alpha, beta;
   auto eps = batchnorm_param_->epsilon_;
+  CHECK_LESS_RETURN(input->quant_params().size(), 1);
+  CHECK_LESS_RETURN(mean->quant_params().size(), 1);
+  CHECK_LESS_RETURN(variance->quant_params().size(), 1);
+  CHECK_LESS_RETURN(output->quant_params().size(), 1);
   auto zp_in = input->quant_params().front().zeroPoint;
   auto zp_mean = mean->quant_params().front().zeroPoint;
   auto zp_var = variance->quant_params().front().zeroPoint;
@@ -110,12 +116,14 @@ int BatchnormInt8CPUKernel::InitFusedConstTensor() {
   auto var_ptr = reinterpret_cast<int8_t *>(variance->MutableData());
   CHECK_NULL_RETURN(var_ptr);
 
+  MS_CHECK_GT(mean->ElementsNum(), 0, RET_ERROR);
   CHECK_LESS_RETURN(MAX_MALLOC_SIZE, static_cast<size_t>(mean->ElementsNum()) * sizeof(float));
   alpha_addr_ = reinterpret_cast<float *>(malloc(static_cast<size_t>(mean->ElementsNum()) * sizeof(float)));
   if (alpha_addr_ == nullptr) {
     MS_LOG(ERROR) << "Malloc buffer failed.";
     return RET_ERROR;
   }
+  MS_CHECK_GT(variance->ElementsNum(), 0, RET_ERROR);
   CHECK_LESS_RETURN(MAX_MALLOC_SIZE, static_cast<size_t>(variance->ElementsNum()) * sizeof(float));
   beta_addr_ = reinterpret_cast<float *>(malloc(static_cast<size_t>(variance->ElementsNum()) * sizeof(float)));
   if (beta_addr_ == nullptr) {
@@ -124,6 +132,12 @@ int BatchnormInt8CPUKernel::InitFusedConstTensor() {
   }
   // compute alpha, beta;
   auto eps = batchnorm_param_->epsilon_;
+  CHECK_LESS_RETURN(input->quant_params().size(), 1);
+  CHECK_LESS_RETURN(scale->quant_params().size(), 1);
+  CHECK_LESS_RETURN(offset->quant_params().size(), 1);
+  CHECK_LESS_RETURN(mean->quant_params().size(), 1);
+  CHECK_LESS_RETURN(variance->quant_params().size(), 1);
+  CHECK_LESS_RETURN(output->quant_params().size(), 1);
   auto zp_in = input->quant_params().front().zeroPoint;
   auto zp_scale = scale->quant_params().front().zeroPoint;
   auto zp_offset = offset->quant_params().front().zeroPoint;
@@ -151,7 +165,7 @@ int BatchnormInt8CPUKernel::InitFusedConstTensor() {
   return RET_OK;
 }
 
-int BatchnormInt8CPUKernel::Init() {
+int BatchnormInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), DIMENSION_3D);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_[kNumInput0]);

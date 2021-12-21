@@ -51,18 +51,18 @@ static std::string GetProcName() {
 static std::string GetLogLevel(MsLogLevel level) {
 #define _TO_STRING(x) #x
   static const char *const level_names[] = {
-    _TO_STRING(DEBUG), _TO_STRING(INFO), _TO_STRING(WARNING), _TO_STRING(ERROR), _TO_STRING(EXCEPTION),
+    "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
   };
 #undef _TO_STRING
-  if (level > EXCEPTION) {
-    level = EXCEPTION;
+  if (level > this_thread_max_log_level) {
+    level = this_thread_max_log_level;
   }
   return std::string(level_names[level]);
 }
 
 // convert MsLogLevel to corresponding glog level
 static int GetGlogLevel(MsLogLevel level) {
-  switch (level) {
+  switch (level >= this_thread_max_log_level ? this_thread_max_log_level : level) {
     case DEBUG:
     case INFO:
       return google::GLOG_INFO;
@@ -79,11 +79,11 @@ static int GetGlogLevel(MsLogLevel level) {
 static int GetThresholdLevel(const std::string &threshold) {
   if (threshold.empty()) {
     return google::GLOG_WARNING;
-  } else if (threshold == std::to_string(DEBUG) || threshold == std::to_string(INFO)) {
+  } else if (threshold == "DEBUG" || threshold == "INFO") {
     return google::GLOG_INFO;
-  } else if (threshold == std::to_string(WARNING)) {
+  } else if (threshold == "WARNING") {
     return google::GLOG_WARNING;
-  } else if (threshold == std::to_string(ERROR) || threshold == std::to_string(EXCEPTION)) {
+  } else if (threshold == "ERROR" || threshold == "CRITICAL") {
     return google::GLOG_ERROR;
   } else {
     return google::GLOG_WARNING;
@@ -153,7 +153,9 @@ void LogWriter::operator^(const LogStream &stream) const {
   thread_local bool running = false;
   if (!running) {
     running = true;
-    OutputLog(msg);
+    if (this_thread_max_log_level >= EXCEPTION) {
+      OutputLog(msg);
+    }
     if (trace_provider_ != nullptr) {
       trace_provider_(oss);
     }
@@ -297,7 +299,7 @@ class LogConfigParser {
   }
 
   // The text of config MS_SUBMODULE_LOG_v is in the form {submodule1:log_level1,submodule2:log_level2,...}.
-  // Valid values of log levels are: 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - exception
+  // Valid values of log levels are: 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - critical
   // e.g. MS_SUBMODULE_LOG_v={PARSER:0, ANALYZER:2, PIPELINE:1}
   std::map<std::string, std::string> Parse() {
     std::map<std::string, std::string> log_levels;
@@ -420,7 +422,7 @@ void InitSubModulesLogLevel() {
 }  // namespace mindspore
 
 extern "C" {
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) || defined(_WIN64) || defined(__APPLE__)
 #ifdef _MSC_VER
 void common_log_init(void) {
 #else
@@ -481,7 +483,7 @@ MS_CORE_API void common_log_init(void) {
 }
 
 // shared lib init hook
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) || defined(_WIN64) || defined(__APPLE__)
 #ifdef _MSC_VER
 void mindspore_log_init(void) {
 #else
@@ -494,7 +496,7 @@ void mindspore_log_init(void) {
 #define google mindspore_private
   static bool is_glog_initialzed = false;
   if (!is_glog_initialzed) {
-#if !defined(_WIN32) && !defined(_WIN64)
+#if !defined(_WIN32) && !defined(_WIN64) && !defined(__APPLE__)
     google::InitGoogleLogging("mindspore");
 #endif
     is_glog_initialzed = true;

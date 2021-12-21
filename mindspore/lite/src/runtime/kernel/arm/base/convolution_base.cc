@@ -27,12 +27,13 @@ using mindspore::schema::ActivationType;
 
 namespace mindspore::kernel {
 void *ConvolutionBaseCPUKernel::MallocAlignedData(size_t alignment, size_t size) {
+  MS_CHECK_TRUE_RET(size + alignment < MAX_MALLOC_SIZE, nullptr);
   auto ptr = malloc(size + alignment);
   if (ptr == nullptr) {
     MS_LOG(ERROR) << "MallocAlignedData failed!";
     return nullptr;
   }
-  auto aligned_ptr = (reinterpret_cast<uintptr_t>(ptr) + alignment - 1) & (~(alignment - 1));
+  uintptr_t aligned_ptr = (reinterpret_cast<uintptr_t>(ptr) + alignment - 1) & (~(alignment - 1));
   addr_map[aligned_ptr] = ptr;
   return reinterpret_cast<void *>(aligned_ptr);
 }
@@ -104,7 +105,7 @@ void ConvolutionBaseCPUKernel::FreeQuantParam() {
   }
 }
 
-int ConvolutionBaseCPUKernel::Init() {
+int ConvolutionBaseCPUKernel::Prepare() {
   auto input = this->in_tensors_.front();
   auto output = this->out_tensors_.front();
   CHECK_NULL_RETURN(input);
@@ -131,14 +132,19 @@ int ConvolutionBaseCPUKernel::InitConvWeightBias() {
   auto shape = weight_tensor->shape();
   if (std::find(shape.begin(), shape.end(), -1) != shape.end()) {
     MS_LOG(WARNING) << "The shape of weight tensor is not ready, the weight and bias would be inited in runtime.";
-    return lite::RET_OK;
+    return RET_OK;
   }
   if (MallocWeightBiasData() != RET_OK) {
     MS_LOG(ERROR) << "Malloc data for bias and weight failed.";
-    return lite::RET_ERROR;
+    return RET_ERROR;
   }
 
   if (in_tensors_.size() == kInputSize2) {
+    MS_CHECK_FALSE(in_tensors_.at(kBiasIndex)->Size() == 0, RET_ERROR);
+    if (origin_bias_ == nullptr) {
+      MS_LOG(ERROR) << "Convolution op " << this->name() << " bias data is nullptr.";
+      return RET_ERROR;
+    }
     memcpy(bias_data_, origin_bias_, in_tensors_.at(kBiasIndex)->Size());
   } else {
     MS_ASSERT(in_tensors_.size() == kInputSize1);
@@ -151,14 +157,18 @@ int ConvolutionBaseCPUKernel::InitConvWeightBias() {
       MS_LOG(WARNING) << "The weight is nullptr, will pack in runtime.";
     }
   }
-  return lite::RET_OK;
+  return RET_OK;
 }
 
 int ConvolutionBaseCPUKernel::RepackWeight() {
-  origin_weight_ = origin_weight_ != nullptr ? origin_weight_ : in_tensors_.at(kWeightIndex)->MutableData();
+  if (origin_weight_ == nullptr && in_tensors_.at(kWeightIndex)->data() == nullptr) {
+    MS_LOG(ERROR) << "Convolution op " << this->name() << " weight data is nullptr.";
+    return RET_ERROR;
+  }
+  origin_weight_ = origin_weight_ != nullptr ? origin_weight_ : in_tensors_.at(kWeightIndex)->data();
   if (packed_weight_ == nullptr && InitConvWeightBias() != RET_OK) {
     MS_LOG(ERROR) << "Malloc data for bias and weight failed.";
-    return lite::RET_ERROR;
+    return RET_ERROR;
   }
   if (IsRepack() || (op_parameter_->is_train_session_)) {
     if (op_parameter_->is_train_session_) {
@@ -220,8 +230,7 @@ int ConvolutionBaseCPUKernel::SetIfPerChannel() {
 }
 
 int ConvolutionBaseCPUKernel::MallocQuantParam() {
-  conv_quant_arg_ = &conv_param_->conv_quant_arg_;
-  CHECK_NULL_RETURN(conv_quant_arg_);
+  conv_quant_arg_ = &(conv_param_->conv_quant_arg_);
   auto input_tensor = in_tensors_.at(kInputIndex);
   auto weight_tensor = in_tensors_.at(kWeightIndex);
   auto output_tensor = out_tensors_.at(kOutputIndex);
@@ -423,5 +432,15 @@ void ConvolutionBaseCPUKernel::UpdateOriginWeightAndBias() {
   if (in_tensors_.size() == kInputSize2 && in_tensors_.at(kBiasIndex)->data() != nullptr) {
     origin_bias_ = in_tensors_.at(kBiasIndex)->data();
   }
+}
+
+bool ConvolutionBaseCPUKernel::CheckInputsValid() const {
+  // the data type of input and weight must be the same, while the bias data type of int8 convolution is int32.
+  MS_CHECK_TRUE_RET(in_tensors_.size() >= kInputSize1, false);
+  auto input_tensor = in_tensors_.at(kInputIndex);
+  auto weight_tensor = in_tensors_.at(kWeightIndex);
+  MS_CHECK_TRUE_RET(input_tensor != nullptr && weight_tensor != nullptr, false);
+  MS_CHECK_TRUE_RET(input_tensor->data() != nullptr, false);
+  return input_tensor->data_type() == weight_tensor->data_type();
 }
 }  // namespace mindspore::kernel

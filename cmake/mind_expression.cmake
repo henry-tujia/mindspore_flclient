@@ -21,6 +21,7 @@ if(MS_BUILD_GRPC)
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/absl.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/c-ares.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/zlib.cmake)
+    include(${CMAKE_SOURCE_DIR}/cmake/external_libs/re2.cmake)
     # build gRPC
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/grpc.cmake)
     # build event
@@ -43,12 +44,6 @@ endif()
 
 if(ENABLE_CPU)
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/mkl_dnn.cmake)
-endif()
-
-if(ENABLE_CPU AND ${CMAKE_SYSTEM_NAME} MATCHES "Linux"
-    AND ${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "x86_64")
-    message("Include projectq")
-    include(${CMAKE_SOURCE_DIR}/cmake/external_libs/projectq.cmake)
 endif()
 
 if(ENABLE_GPU)
@@ -99,5 +94,4 @@ if(ENABLE_TESTCASES OR ENABLE_CPP_ST)
     include(${CMAKE_SOURCE_DIR}/cmake/external_libs/gtest.cmake)
 endif()
 
-include(${CMAKE_SOURCE_DIR}/cmake/external_libs/onnx.cmake)
 set(CMAKE_CXX_FLAGS ${_ms_tmp_CMAKE_CXX_FLAGS_F})

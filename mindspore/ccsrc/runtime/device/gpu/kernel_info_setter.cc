@@ -25,6 +25,7 @@
 #include "backend/kernel_compiler/oplib/opinfo.h"
 #include "backend/kernel_compiler/oplib/oplib.h"
 #include "backend/session/anf_runtime_algorithm.h"
+#include "backend/kernel_compiler/gpu/custom/custom_aot_gpu_kernel.h"
 #include "runtime/device/gpu/cuda_common.h"
 #include "utils/ms_context.h"
 #include "utils/ms_utils.h"
@@ -36,8 +37,14 @@ namespace gpu {
 using AnfAlgo = mindspore::session::AnfRuntimeAlgorithm;
 using mindspore::kernel::KernelBuildInfo;
 namespace {
+kernel::OpImplyType GetImplyType(KernelType kernel_type) {
+  kernel::OpImplyType imply_type =
+    kernel_type == KernelType::GPU_KERNEL ? kernel::OpImplyType::kGPU : kernel::OpImplyType::kAKG;
+  return imply_type;
+}
+
 bool CheckKernelInfo(const std::shared_ptr<KernelBuildInfo> &alternative_kernel_info,
-                     const std::shared_ptr<KernelBuildInfo> &selected_kernel_info) {
+                     const std::shared_ptr<KernelBuildInfo> &selected_kernel_info, bool match_none = false) {
   MS_EXCEPTION_IF_NULL(selected_kernel_info);
   MS_EXCEPTION_IF_NULL(alternative_kernel_info);
   size_t selected_input_num = selected_kernel_info->GetInputNum();
@@ -46,10 +53,12 @@ bool CheckKernelInfo(const std::shared_ptr<KernelBuildInfo> &alternative_kernel_
     return false;
   }
   for (size_t i = 0; i < selected_input_num; i++) {
-    if (selected_kernel_info->GetInputFormat(i) != alternative_kernel_info->GetInputFormat(i)) {
+    auto format = alternative_kernel_info->GetInputFormat(i);
+    if (selected_kernel_info->GetInputFormat(i) != format && (!match_none || !format.empty())) {
       return false;
     }
-    if (selected_kernel_info->GetInputDeviceType(i) != alternative_kernel_info->GetInputDeviceType(i)) {
+    auto type = alternative_kernel_info->GetInputDeviceType(i);
+    if (selected_kernel_info->GetInputDeviceType(i) != type && (!match_none || type != TypeId::kMetaTypeNone)) {
       return false;
     }
   }
@@ -60,40 +69,49 @@ bool CheckKernelInfo(const std::shared_ptr<KernelBuildInfo> &alternative_kernel_
     return false;
   }
   for (size_t i = 0; i < selected_output_num; i++) {
-    if (selected_kernel_info->GetOutputFormat(i) != alternative_kernel_info->GetOutputFormat(i)) {
+    auto format = alternative_kernel_info->GetOutputFormat(i);
+    if (selected_kernel_info->GetOutputFormat(i) != format && (!match_none || !format.empty())) {
       return false;
     }
-    if (selected_kernel_info->GetOutputDeviceType(i) != alternative_kernel_info->GetOutputDeviceType(i)) {
+    auto type = alternative_kernel_info->GetOutputDeviceType(i);
+    if (selected_kernel_info->GetOutputDeviceType(i) != type && (!match_none || type != TypeId::kMetaTypeNone)) {
       return false;
     }
   }
   return true;
 }
 
-std::string SupportedTypeList(const CNodePtr &kernel_node) {
-  std::string supported_type_lists =
-    kernel::GpuKernelFactory::GetInstance().SupportedTypeList(AnfAlgo::GetCNodeName(kernel_node));
-  if (!supported_type_lists.empty()) {
-    return supported_type_lists;
+std::string SupportedTypeList(const CNodePtr &kernel_node, KernelType kernel_type) {
+  std::string supported_type_lists;
+  // Custom op gets reg info from OpLib instead of GpuKernelFactory.
+  if (!IsPrimitiveCNode(kernel_node, prim::kPrimCustom)) {
+    supported_type_lists =
+      kernel::GpuKernelFactory::GetInstance().SupportedTypeList(AnfAlgo::GetCNodeName(kernel_node));
+    if (!supported_type_lists.empty()) {
+      return supported_type_lists;
+    }
   }
   std::vector<std::shared_ptr<KernelBuildInfo>> kernel_info_list;
   std::string op_name = AnfAlgo::GetCNodeName(kernel_node);
-  auto op_info_ptr = mindspore::kernel::OpLib::FindOp(op_name, kernel::OpImplyType::kAKG);
+  kernel::OpImplyType imply_type = GetImplyType(kernel_type);
+  auto op_info_ptr = mindspore::kernel::OpLib::FindOp(op_name, imply_type);
   if (op_info_ptr == nullptr) {
-    MS_LOG(EXCEPTION) << "Unsupported op [" << op_name << "] on GPU";
+    MS_LOG(EXCEPTION) << "Unsupported op [" << op_name
+                      << "] on GPU, Please confirm whether the device target setting is correct, or refer to the "
+                         "official website https://mindspore.cn/ to query the operator support list.";
   }
   (void)ParseMetadata(kernel_node, op_info_ptr, kernel::Processor::CUDA, &kernel_info_list);
   for (size_t i = 0; i < kernel_info_list.size(); i++) {
     auto supported_akg_type = kernel_info_list[i]->GetAllInputDeviceTypes();
     auto supported_akg_type_out = kernel_info_list[i]->GetAllOutputDeviceTypes();
-    std::string supported_akg_type_list = "in[";
+    std::string supported_akg_type_list = "input[";
     for (auto type : supported_akg_type) {
-      supported_akg_type_list = supported_akg_type_list + mindspore::kernel::TypeId2String(type);
+      supported_akg_type_list = supported_akg_type_list + TypeIdToString(type) + " ";
     }
-    supported_type_lists = supported_type_lists + supported_akg_type_list + "], out[";
+    supported_type_lists = supported_type_lists + supported_akg_type_list + "], output[";
     supported_akg_type_list.clear();
     for (auto type : supported_akg_type_out) {
-      supported_akg_type_list = supported_akg_type_list + mindspore::kernel::TypeId2String(type);
+      supported_akg_type_list = supported_akg_type_list + TypeIdToString(type) + " ";
     }
     supported_type_lists = supported_type_lists + supported_akg_type_list + "]; ";
   }
@@ -104,12 +122,6 @@ bool SelectAkgKernel(const CNodePtr &kernel_node, const std::shared_ptr<KernelBu
   MS_EXCEPTION_IF_NULL(kernel_node);
   MS_EXCEPTION_IF_NULL(selected_kernel_info);
   std::vector<std::shared_ptr<KernelBuildInfo>> kernel_info_list;
-  auto func_call = kernel_node->input(0);
-  if (auto pre = GetCNodePrimitive(kernel_node)) {
-    if (pre->GetAttr("akg")) {
-      return true;
-    }
-  }
   if (AnfAlgo::IsNodeInGraphKernel(kernel_node)) {
     // The op_info in OpLib is only used for basic ops,
     // we don't care it in GraphKernel.
@@ -136,6 +148,51 @@ bool SelectAkgKernel(const CNodePtr &kernel_node, const std::shared_ptr<KernelBu
                            });
   if (!match) {
     MS_LOG(ERROR) << "Not find op[" << op_name << "] which both match data type and format in akg";
+    return false;
+  }
+  return true;
+}
+
+bool SelectCustomKernel(const CNodePtr &kernel_node, const std::shared_ptr<KernelBuildInfo> &selected_kernel_info,
+                        KernelType *kernel_type) {
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  MS_EXCEPTION_IF_NULL(selected_kernel_info);
+  MS_EXCEPTION_IF_NULL(kernel_type);
+  std::string op_name = AnfAlgo::GetCNodeName(kernel_node);
+  // Custom op's kernel type can be one of [GPU_KERNEL, AKG_KERNEL] on GPU
+  auto func_type = AnfAlgo::GetNodeAttr<std::string>(kernel_node, kAttrFuncType);
+  if (func_type == kCustomTypeAOT) {
+    *kernel_type = KernelType::GPU_KERNEL;
+    if (!kernel::GpuKernelFactory::GetInstance().SearchRegistered(op_name, selected_kernel_info)) {
+      kernel::GpuKernelRegister(op_name, KernelAttr(), []() { return new kernel::CustomAOTGpuKernel(); });
+    }
+  } else if (kCustomTypeAkg.find(func_type) != kCustomTypeAkg.end()) {
+    *kernel_type = KernelType::AKG_KERNEL;
+  } else {
+    MS_LOG(EXCEPTION) << "Unsupported func type [" << func_type << "] for Custom op [" << op_name << "] on GPU";
+  }
+  kernel::OpImplyType imply_type = GetImplyType(*kernel_type);
+  auto op_info_ptr = mindspore::kernel::OpLib::FindOp(op_name, imply_type);
+  // If Custom op has not set reg info, then infer info from inputs
+  if (op_info_ptr == nullptr) {
+    MS_LOG(WARNING) << "Not find operator information for op[" << op_name
+                    << "]. Infer operator information from inputs.";
+    return true;
+  }
+  std::vector<std::shared_ptr<KernelBuildInfo>> kernel_info_list;
+  if (!ParseMetadata(kernel_node, op_info_ptr, kernel::Processor::CUDA, &kernel_info_list)) {
+    MS_LOG(EXCEPTION) << "Parsed metadata of op[" << op_name << "] failed.";
+  }
+  if (kernel_info_list.empty()) {
+    MS_LOG(EXCEPTION) << "Not find valid metadata of op[" << op_name << "].";
+  }
+
+  bool match = std::any_of(kernel_info_list.begin(), kernel_info_list.end(),
+                           [&](const std::shared_ptr<KernelBuildInfo> &alternative_kernel_info) {
+                             return CheckKernelInfo(alternative_kernel_info, selected_kernel_info, true);
+                           });
+  if (!match) {
+    MS_LOG(ERROR) << "Not find op[" << op_name << "] which both match data type and format.";
     return false;
   }
   return true;
@@ -171,7 +228,6 @@ void SetTensorDeviceInfo(const kernel::KernelBuildInfo &selected_kernel_info, co
       std::vector<std::string> output_format = {selected_kernel_info.GetInputFormat(input_index)};
       builder->SetOutputsFormat(output_format);
       auto reduce_flag = kernel::GpuKernelFactory::GetInstance().reduce_flag_;
-      kernel::GpuKernelFactory::GetInstance().reduce_flag_.first.clear();
       std::vector<TypeId> output_type;
       if (std::find(reduce_flag.first.begin(), reduce_flag.first.end(), input_index) != reduce_flag.first.end()) {
         output_type = {reduce_flag.second};
@@ -182,6 +238,7 @@ void SetTensorDeviceInfo(const kernel::KernelBuildInfo &selected_kernel_info, co
       AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), real_input_node.get());
     }
   }
+  kernel::GpuKernelFactory::GetInstance().reduce_flag_.first.clear();
 }
 
 void TransformFormatPosition(std::vector<size_t> *format_position, size_t position_num) {
@@ -208,7 +265,7 @@ bool IsNeedProcessFormatInfo(const CNodePtr &kernel_node, const std::vector<Type
   if (!FormatTransformChecker::GetInstance().format_transform()) {
     return false;
   }
-  if (!AnfAlgo::IsRealCNodeKernel(kernel_node)) {
+  if (!AnfUtils::IsRealCNodeKernel(kernel_node)) {
     return false;
   }
   auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
@@ -342,16 +399,16 @@ void SetGraphKernelInfo(const CNodePtr &kernel_node, const FuncGraphPtr &func_gr
 }
 
 void PrintUnsupportedTypeException(const CNodePtr &kernel_node, const std::vector<TypeId> &inputs_type,
-                                   const std::vector<TypeId> &outputs_type) {
+                                   const std::vector<TypeId> &outputs_type, KernelType kernel_type) {
   auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
-  std::string build_type = "in [";
+  std::string build_type = "input[";
   std::for_each(std::begin(inputs_type), std::end(inputs_type),
-                [&build_type](auto i) { build_type += mindspore::kernel::TypeId2String(i) + " "; });
-  build_type += "] out [";
+                [&build_type](auto i) { build_type += TypeIdToString(i) + " "; });
+  build_type += "] output[";
   std::for_each(std::begin(outputs_type), std::end(outputs_type),
-                [&build_type](auto i) { build_type += mindspore::kernel::TypeId2String(i) + " "; });
+                [&build_type](auto i) { build_type += TypeIdToString(i) + " "; });
   build_type += "]";
-  auto supported_type_lists = SupportedTypeList(kernel_node);
+  auto supported_type_lists = SupportedTypeList(kernel_node, kernel_type);
   MS_EXCEPTION(TypeError) << "Select GPU kernel op[" << kernel_name
                           << "] fail! Incompatible data type!\nThe supported data types are " << supported_type_lists
                           << ", but get " << build_type;
@@ -428,7 +485,10 @@ void SetKernelInfo(const CNodePtr &kernel_node, KernelType kernel_type) {
   builder->SetOutputsFormat(outputs_format);
   builder->SetOutputsDeviceType(outputs_type);
   bool result = false;
-  if (kernel_type == UNKNOWN_KERNEL_TYPE) {
+  if (IsPrimitiveCNode(kernel_node, prim::kPrimCustom)) {
+    // Custom op select kernel from OpLib
+    result = SelectCustomKernel(kernel_node, builder->Build(), &kernel_type);
+  } else if (kernel_type == UNKNOWN_KERNEL_TYPE) {
     result =
       kernel::GpuKernelFactory::GetInstance().SearchRegistered(AnfAlgo::GetCNodeName(kernel_node), builder->Build());
     if (!result) {
@@ -442,7 +502,7 @@ void SetKernelInfo(const CNodePtr &kernel_node, KernelType kernel_type) {
     result = SelectAkgKernel(kernel_node, builder->Build());
   }
   if (!result && (!AnfAlgo::IsControlOpExecInBackend(kernel_node))) {
-    PrintUnsupportedTypeException(kernel_node, inputs_type, outputs_type);
+    PrintUnsupportedTypeException(kernel_node, inputs_type, outputs_type, kernel_type);
     return;
   }
   builder->SetKernelType(kernel_type);

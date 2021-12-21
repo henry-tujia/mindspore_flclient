@@ -17,14 +17,11 @@
 #include "minddata/dataset/engine/ir/datasetops/source/text_file_node.h"
 
 #include <algorithm>
-#include <memory>
-#include <string>
 #include <utility>
-#include <vector>
 
 #include "minddata/dataset/engine/datasetops/source/text_file_op.h"
-
 #include "minddata/dataset/util/status.h"
+
 namespace mindspore {
 namespace dataset {
 
@@ -56,15 +53,11 @@ void TextFileNode::Print(std::ostream &out) const {
 
 Status TextFileNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("TextFileNode", dataset_files_));
-
-  if (num_samples_ < 0) {
-    std::string err_msg = "TextFileNode: Invalid number of samples: " + std::to_string(num_samples_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
-  }
-
-  RETURN_IF_NOT_OK(ValidateDatasetShardParams("TextFileNode", num_shards_, shard_id_));
+  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("TextFileDataset", dataset_files_));
+  RETURN_IF_NOT_OK(ValidateEnum("TextFileDataset", "ShuffleMode", shuffle_,
+                                {ShuffleMode::kFalse, ShuffleMode::kFiles, ShuffleMode::kGlobal}));
+  RETURN_IF_NOT_OK(ValidateScalar("TextFileDataset", "num_samples", num_samples_, {0}, false));
+  RETURN_IF_NOT_OK(ValidateDatasetShardParams("TextFileDataset", num_shards_, shard_id_));
 
   return Status::OK();
 }
@@ -102,12 +95,12 @@ Status TextFileNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_o
     // Add the shuffle op after this op
     RETURN_IF_NOT_OK(
       AddShuffleOp(sorted_dataset_files.size(), num_shards_, num_rows, 0, connector_que_size_, &shuffle_op));
-    shuffle_op->set_total_repeats(GetTotalRepeats());
-    shuffle_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+    shuffle_op->SetTotalRepeats(GetTotalRepeats());
+    shuffle_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
     node_ops->push_back(shuffle_op);
   }
-  text_file_op->set_total_repeats(GetTotalRepeats());
-  text_file_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  text_file_op->SetTotalRepeats(GetTotalRepeats());
+  text_file_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   // Add TextFileOp
   node_ops->push_back(text_file_op);
 
@@ -154,13 +147,12 @@ Status TextFileNode::to_json(nlohmann::json *out_json) {
 }
 
 Status TextFileNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> *ds) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_parallel_workers") != json_obj.end(),
-                               "Failed to find num_parallel_workers");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("dataset_files") != json_obj.end(), "Failed to find dataset_files");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_samples") != json_obj.end(), "Failed to find num_samples");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("shuffle") != json_obj.end(), "Failed to find shuffle");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_shards") != json_obj.end(), "Failed to find num_shards");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("shard_id") != json_obj.end(), "Failed to find shard_id");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_parallel_workers", kTextFileNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "dataset_files", kTextFileNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_samples", kTextFileNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "shuffle", kTextFileNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_shards", kTextFileNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "shard_id", kTextFileNode));
   std::vector<std::string> dataset_files = json_obj["dataset_files"];
   int64_t num_samples = json_obj["num_samples"];
   ShuffleMode shuffle = static_cast<ShuffleMode>(json_obj["shuffle"]);
@@ -169,7 +161,7 @@ Status TextFileNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetN
   std::shared_ptr<DatasetCache> cache = nullptr;
   RETURN_IF_NOT_OK(DatasetCache::from_json(json_obj, &cache));
   *ds = std::make_shared<TextFileNode>(dataset_files, num_samples, shuffle, num_shards, shard_id, cache);
-  (*ds)->SetNumWorkers(json_obj["num_parallel_workers"]);
+  (void)((*ds)->SetNumWorkers(json_obj["num_parallel_workers"]));
   return Status::OK();
 }
 

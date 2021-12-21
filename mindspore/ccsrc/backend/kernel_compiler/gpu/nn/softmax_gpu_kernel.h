@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_NN_SOFTMAX_GPU_KERNEL_H_
 
 #include <vector>
+#include <string>
 #include <algorithm>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
@@ -37,6 +38,7 @@ class SoftmaxGpuKernel : public GpuKernel {
         mode_(CUDNN_SOFTMAX_MODE_INSTANCE),
         cudnn_data_type_(CUDNN_DATA_FLOAT),
         is_null_input_(false),
+        kernel_name_("Softmax"),
         input_size_(0),
         output_size_(0),
         workspace_size_(0),
@@ -100,23 +102,21 @@ class SoftmaxGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
     cudnn_data_type_ = GetCudnnDataType(TypeIdLabel(AnfAlgo::GetInputDeviceDataType(kernel_node, 0)));
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but softmax needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 1, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but softmax needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name_, "input");
     if (is_null_input_) {
-      MS_LOG(WARNING) << "SoftmaxGpuKernel input is null";
       InitSizeLists();
       return true;
     }
@@ -124,14 +124,18 @@ class SoftmaxGpuKernel : public GpuKernel {
     auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     if (kernel_name == "LogSoftmax") {
       algo_ = CUDNN_SOFTMAX_LOG;
-      auto axis = static_cast<int>(GetAttr<int64_t>(kernel_node, "axis"));
+      auto axis = LongToInt(GetAttr<int64_t>(kernel_node, "axis"));
       InitSizeByAxis(input_shape, axis);
     } else {
       algo_ = CUDNN_SOFTMAX_ACCURATE;
       std::vector<int> axis;
       std::vector<int64_t> axis_me = GetAttr<std::vector<int64_t>>(kernel_node, "axis");
       (void)std::transform(axis_me.begin(), axis_me.end(), std::back_inserter(axis),
-                           [](const int64_t &value) { return static_cast<int>(value); });
+                           [](const int64_t &value) { return LongToInt(value); });
+      if (axis.size() < 1) {
+        MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'axis' cannot be equal to 0, but got "
+                          << axis.size();
+      }
       InitSizeByAxis(input_shape, axis[0]);
     }
     CHECK_CUDNN_RET_WITH_EXCEPT(
@@ -213,7 +217,8 @@ class SoftmaxGpuKernel : public GpuKernel {
       transpose_axis_.push_back(0);
       need_transpose_ = true;
     } else {
-      MS_LOG(EXCEPTION) << "Input is " << shape_size_ << "-D, but axis(" << axis << ") is invalid.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'axis' should be in range [-" << shape_size_
+                        << ", " << shape_size_ << "), but got " << axis;
     }
 
     height_ = 1;
@@ -230,7 +235,8 @@ class SoftmaxGpuKernel : public GpuKernel {
     }
     // axis should be -1 with ND
     if (axis_pos != SizeToInt(input_shape.size() - 1)) {
-      MS_LOG(EXCEPTION) << "Input is " << shape_size_ << "-D, but axis(" << axis << ") is invalid.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'axis' should be equal to -1 or "
+                        << (input_shape.size() - 1) << ", but got " << axis;
     }
     // squeeze to 2d, then invoke cudnn
     size_t n = 1;
@@ -255,6 +261,10 @@ class SoftmaxGpuKernel : public GpuKernel {
       axis_pos += input_shape.size();
     }
 
+    if (axis_pos >= input_shape.size()) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'axis' should be in range [-"
+                        << input_shape.size() << ", " << input_shape.size() << "), but got " << axis;
+    }
     // n keep tracks of squeezed size
     size_t n = 1;
     for (size_t i = 0; i < input_shape.size(); i++) {
@@ -291,6 +301,7 @@ class SoftmaxGpuKernel : public GpuKernel {
   cudnnSoftmaxMode_t mode_;
   cudnnDataType_t cudnn_data_type_;
   bool is_null_input_;
+  std::string kernel_name_;
   size_t input_size_;
   size_t output_size_;
   size_t workspace_size_;

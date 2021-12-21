@@ -18,11 +18,7 @@
 #define MINDSPORE_LITE_TOOLS_CONVERTER_CONFIG_PARSER_CONFIG_FILE_PARSER_H
 #include <string>
 #include <map>
-
-#define COMMON_QUANT_PARAM "common_quant_param"
-#define FULL_QUANT_PARAM "full_quant_param"
-#define MIXED_BIT_WEIGHT_QUANT_PARAM "mixed_bit_weight_quant_param"
-#define DATA_PREPROCESS_PARAM "data_preprocess_param"
+#include <vector>
 
 namespace mindspore {
 namespace lite {
@@ -45,31 +41,59 @@ struct CommonQuantString {
   std::string bit_num;
   std::string min_quant_weight_size;
   std::string min_quant_weight_channel;
+  std::string skip_quant_node;
+  std::string debug_info_save_path;
 };
 
 struct MixedBitWeightQuantString {
   std::string init_scale;
+  std::string auto_tune;
 };
 
 struct FullQuantString {
   std::string activation_quant_method;
   std::string bias_correction;
+  std::string target_device;
+};
+
+struct RegistryInfoString {
+  std::string plugin_path;
+  std::string disable_fusion;
+};
+
+struct AclOptionCfgString {
+  std::string device_id;
+  std::string input_format;
+  std::string input_shape_vector;
+  std::string input_shape;
+  std::string output_type;
+  std::string precision_mode;
+  std::string op_select_impl_mode;
+  std::string fusion_switch_config_file_path;
+  std::string dynamic_batch_size;
+  std::string buffer_optimize;
+  std::string insert_op_config_file_path;
+  std::string dynamic_image_size;
 };
 
 class ConfigFileParser {
  public:
   int ParseConfigFile(const std::string &config_file_path);
 
-  DataPreProcessString GetDataPreProcessString() { return this->data_pre_process_string_; }
-  CommonQuantString GetCommonQuantString() { return this->common_quant_string_; }
-  MixedBitWeightQuantString GetMixedBitWeightQuantString() { return this->mixed_bit_quant_string_; }
-  FullQuantString GetFullQuantString() { return this->full_quant_string_; }
+  DataPreProcessString GetDataPreProcessString() const { return this->data_pre_process_string_; }
+  CommonQuantString GetCommonQuantString() const { return this->common_quant_string_; }
+  MixedBitWeightQuantString GetMixedBitWeightQuantString() const { return this->mixed_bit_quant_string_; }
+  FullQuantString GetFullQuantString() const { return this->full_quant_string_; }
+  RegistryInfoString GetRegistryInfoString() const { return this->registry_info_string_; }
+  AclOptionCfgString GetAclOptionCfgString() { return this->acl_option_cfg_string_; }
 
  private:
   int ParseDataPreProcessString(const std::map<std::string, std::map<std::string, std::string>> &maps);
   int ParseCommonQuantString(const std::map<std::string, std::map<std::string, std::string>> &maps);
   int ParseMixedBitQuantString(const std::map<std::string, std::map<std::string, std::string>> &maps);
   int ParseFullQuantString(const std::map<std::string, std::map<std::string, std::string>> &maps);
+  int ParseRegistryInfoString(const std::map<std::string, std::map<std::string, std::string>> &maps);
+  int ParseAclOptionCfgString(const std::map<std::string, std::map<std::string, std::string>> &maps);
   int SetMapData(const std::map<std::string, std::string> &input_map,
                  const std::map<std::string, std::string &> &parse_map, const std::string &section);
 
@@ -78,6 +102,8 @@ class ConfigFileParser {
   CommonQuantString common_quant_string_;
   MixedBitWeightQuantString mixed_bit_quant_string_;
   FullQuantString full_quant_string_;
+  RegistryInfoString registry_info_string_;
+  AclOptionCfgString acl_option_cfg_string_;
 };
 
 }  // namespace lite

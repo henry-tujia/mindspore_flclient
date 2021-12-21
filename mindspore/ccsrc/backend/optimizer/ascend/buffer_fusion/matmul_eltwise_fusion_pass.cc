@@ -14,28 +14,23 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/matmul_eltwise_fusion_pass.h"
-#include <vector>
-#include <unordered_set>
-#include <memory>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/context/graph_kernel_flags.h"
-#include "utils/ms_context.h"
 #include "backend/optimizer/common/fusion_id_allocator.h"
 
 namespace mindspore {
 namespace opt {
 void MatmulEltwiseFusionPass::MatchMatmulEltwise(const CNodePtr &cnode, const AnfNodePtr &relu_input,
-                                                 const session::KernelGraph & /*kernel_graph*/,
+                                                 const session::KernelGraph & /* kernel_graph */,
                                                  FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   if (fusion_id_allocator->HasFusionIdAttr(relu_input)) {
     return;
   }
-  std::unordered_set<AnfNodePtr> record{cnode, relu_input};
+  mindspore::HashSet<AnfNodePtr> record{cnode, relu_input};
   candidate_fusion->push_back(record);
   SetRecordFusionId(record);
 }
@@ -44,18 +39,14 @@ void MatmulEltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGrap
                                                        FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(candidate_fusion);
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::MatmulEltwiseFusionPass)) {
-    return;
-  }
-
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
-    if (context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+    if (graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
       if (AnfAlgo::GetKernelType(cnode) == KernelType::TBE_KERNEL &&
           AnfAlgo::GetFusionType(cnode) == kernel::FusionType::ELEMWISE &&
           AnfAlgo::CheckPrimitiveType(cnode, prim::kPrimAddN)) {

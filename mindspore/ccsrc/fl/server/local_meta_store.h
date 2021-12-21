@@ -80,7 +80,7 @@ class LocalMetaStore {
   std::unordered_map<std::string, std::any> key_to_meta_;
   // This mutex makes sure that the operations on key_to_meta_ is threadsafe.
   std::mutex mtx_;
-  size_t curr_iter_num_;
+  size_t curr_iter_num_{0};
 };
 }  // namespace server
 }  // namespace fl

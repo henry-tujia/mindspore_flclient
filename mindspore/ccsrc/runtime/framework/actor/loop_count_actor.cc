@@ -20,20 +20,17 @@
 #include "runtime/framework/actor/memory_manager_actor.h"
 #include "runtime/framework/actor/recorder_actor.h"
 #include "runtime/framework/actor/debug_actor.h"
+#include "runtime/framework/actor/control_flow/entrance_actor.h"
 #include "mindrt/include/async/async.h"
 #include "utils/log_adapter.h"
 
 namespace mindspore {
 namespace runtime {
-void LoopCountActor::RunOpControl(AID *const input_control, OpContext<DeviceTensor> *const context) {
+void LoopCountActor::Run(OpContext<DeviceTensor> *const context) {
   MS_EXCEPTION_IF_NULL(context);
-  auto sequential_num = context->sequential_num_;
-  (void)input_op_controls_[sequential_num].emplace_back(input_control);
-  if (CheckRunningCondition(context)) {
-    // Need wait MemoryManagerActor running finished to avoid the illegal memory timing problem before
-    // LoopCountActor exits, because other processors which are not in actor also will process device tensor.
-    Async(memory_manager_aid_, &MemoryManagerActor::Wait, context, GetAID());
-  }
+  // Need wait MemoryManagerActor running finished to avoid the illegal memory timing problem before
+  // LoopCountActor exits, because other processors which are not in actor also will process device tensor.
+  ActorDispatcher::Send(memory_manager_aid_, &MemoryManagerActor::Wait, context, GetAID());
 }
 
 void LoopCountActor::OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) {
@@ -43,7 +40,6 @@ void LoopCountActor::OnMemoryAllocFinish(OpContext<DeviceTensor> *const context)
 
 void LoopCountActor::IncreaseLoopCount(OpContext<DeviceTensor> *const context) {
   MS_EXCEPTION_IF_NULL(context);
-  EraseInput(context);
 
   total_running_count_++;
   current_count_++;
@@ -56,26 +52,29 @@ void LoopCountActor::IncreaseLoopCount(OpContext<DeviceTensor> *const context) {
     return;
   }
 
-  SendOutput(context);
+  PostRun(context);
 }
 
 void LoopCountActor::SendDebugReq(OpContext<DeviceTensor> *const context) {
-  Async(*debug_aid_, &DebugActor::DebugOnStepEnd, context, &GetAID());
-}
-
-void LoopCountActor::OnDebugFinish(OpContext<DeviceTensor> *const context) {
-  MS_EXCEPTION_IF_NULL(context);
-  SendOutput(context);
+  ActorDispatcher::Send(*debug_aid_, &DebugActor::DebugOnStepEnd, context, &GetAID());
 }
 
 void LoopCountActor::SendOutput(OpContext<DeviceTensor> *const context) {
   // Send recorder info.
   if (recorder_aid_ != nullptr) {
-    Async(*recorder_aid_, &RecorderActor::RecordOnStepEnd, context);
+    ActorDispatcher::Send(*recorder_aid_, &RecorderActor::RecordOnStepEnd, context);
   }
 
-  // Send loop count to output actor.
-  Async(output_aid_, &OutputActor::CollectLoopCount, current_count_, context);
+  // Send output control.
+  auto from_aid = const_cast<AID *>(&GetAID());
+  for (auto &output_control : output_control_arrows_) {
+    ActorDispatcher::Send(output_control, &OpActor::RunOpControl, from_aid, context);
+  }
+
+  // Send to EntranceActor to clear the data which are generated in the loop body execution.
+  for (auto &entrance_aid : entrance_aids_) {
+    ActorDispatcher::Send(entrance_aid, &EntranceActor::ClearDataOnStepEnd, from_aid, context);
+  }
 
   // The LoopCountActor exits.
   if (current_count_ == loop_count_) {
@@ -85,7 +84,7 @@ void LoopCountActor::SendOutput(OpContext<DeviceTensor> *const context) {
 
   // Send to DataPrepareActor to trigger next step running.
   std::vector<std::vector<TensorPtr>> input_tensors;
-  Async(data_prepare_aid_, &DataPrepareActor::PrepareData, input_tensors, context);
+  ActorDispatcher::Send(data_prepare_aid_, &DataPrepareActor::PrepareData, input_tensors, context);
 }
 }  // namespace runtime
 }  // namespace mindspore

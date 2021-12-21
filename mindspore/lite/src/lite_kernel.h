@@ -69,10 +69,14 @@ enum SubGraphType {
   kNotSubGraph = 0,
   kCpuFP32SubGraph,
   kCpuFP16SubGraph,
-  kGpuSubGraph,
+  kGpuFp32SubGraph,
+  kGpuFp16SubGraph,
   kNpuSubGraph,
   kApuSubGraph,
-  kCustomSubGraph
+  kCustomSubGraph,
+  kEntranceSubGraph,
+  kExitSubGraph,
+  kStackSubGraph
 };
 
 class LiteKernel {
@@ -89,7 +93,7 @@ class LiteKernel {
 
   virtual ~LiteKernel() = default;
 
-  virtual int Execute() { return Execute(nullptr, nullptr); }
+  virtual int Execute() { return DoExecute(); }
 
   virtual int Execute(const KernelCallBack &before, const KernelCallBack &after) {
     if (before != nullptr) {
@@ -99,17 +103,7 @@ class LiteKernel {
       }
     }
 
-    auto ret = kernel_->Execute();
-    if ((ret == lite::RET_OK) && (desc_.provider != kBuiltin)) {
-      for (auto *output : this->out_tensors()) {
-        MS_ASSERT(output != nullptr);
-        output->ResetRefCount();
-      }
-      for (auto &in_tensor : this->in_tensors()) {
-        MS_ASSERT(in_tensor != nullptr);
-        in_tensor->DecRefCount();
-      }
-    }
+    auto ret = DoExecute();
 
     if (after != nullptr) {
       if (!after(TensorVectorCast(this->in_tensors()), TensorVectorCast(this->out_tensors()),
@@ -126,20 +120,12 @@ class LiteKernel {
     return kernel_->Prepare();
   }
 
-  virtual int Init() {
-    MS_ASSERT(kernel_ != nullptr);
-    if (desc_.provider == kBuiltin) {
-      return std::static_pointer_cast<InnerKernel>(kernel_)->Init();
-    }
-    return mindspore::lite::RET_OK;
-  }
   bool IsBuiltin() { return desc_.provider == kBuiltin; }
+
   virtual int ReSize() {
     MS_ASSERT(kernel_ != nullptr);
     return kernel_->ReSize();
   }
-
-  virtual void FindInoutKernels(const std::vector<kernel::LiteKernel *> &scope_kernels);
 
   OpParameter *op_parameter() const {
     MS_ASSERT(kernel_ != nullptr);
@@ -205,6 +191,8 @@ class LiteKernel {
     }
     return false;
   }
+
+  int DoExecute();
 
   void set_is_model_output(bool is_model_output) { this->is_model_output_ = is_model_output; }
 
@@ -344,6 +332,12 @@ class LiteKernel {
 
   Kernel *kernel() { return kernel_.get(); }
 
+#ifdef ENABLE_OPENGL_TEXTURE
+  void SetOpenGLTextureEnable(bool enable) { enable_gl_texture_ = enable; }
+
+  bool GetOpenGLTextureEnable() { return enable_gl_texture_; }
+#endif
+
  protected:
   std::shared_ptr<Kernel> kernel_ = nullptr;
   KernelKey desc_;
@@ -355,6 +349,9 @@ class LiteKernel {
   bool is_model_output_ = false;
   SubGraphType subgraph_type_ = kNotSubGraph;
   const lite::InnerContext *context_ = nullptr;
+#ifdef ENABLE_OPENGL_TEXTURE
+  bool enable_gl_texture_ = false;
+#endif
 };
 
 typedef InnerKernel *(*KernelCreator)(const std::vector<lite::Tensor *> &inputs,

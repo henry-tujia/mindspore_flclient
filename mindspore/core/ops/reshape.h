@@ -27,17 +27,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameReshape = "Reshape";
+/// \brief Reshapes the input tensor with the same values based on a given shape tuple.
+/// Refer to Python API @ref mindspore.ops.Reshape for more details.
 class MS_CORE_API Reshape : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Reshape() : PrimitiveC(kNameReshape) { InitIOName({"tensor", "shape"}, {"output"}); }
+  /// \brief Destructor.
   ~Reshape() = default;
   MS_DECLARE_PARENT(Reshape, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 
 AbstractBasePtr ReshapeInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                              const std::vector<AbstractBasePtr> &input_args);
-using PrimReshapePtr = std::shared_ptr<Reshape>;
 }  // namespace ops
 }  // namespace mindspore
 

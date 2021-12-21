@@ -34,9 +34,11 @@
 #include "src/common/graph_util.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
+#include "nnacl/op_base.h"
 
 namespace mindspore {
 namespace lite {
+#define MAX_GRAPH_SIZE 1024
 using STATUS = int;
 enum InsertPlace { kBefore, kAfter };
 
@@ -47,34 +49,6 @@ using OpDefCopyer = std::function<std::unique_ptr<schema::CNodeT>(schema::CNodeT
 OpDefCopyer GetSimpleOpCopyer();
 
 int SetFuncGraphOutput(const FuncGraphPtr &graph, const std::vector<AnfNodePtr> &outputs);
-
-std::vector<size_t> GetInputNodeIdx(const schema::MetaGraphT &graphT, const size_t &nodeIdx, int inputIndexIdx = -1);
-
-std::vector<size_t> GetInputNodeIdx(const schema::MetaGraphT &graphT, const schema::CNodeT &node,
-                                    int inputIndexIdx = -1);
-
-std::vector<size_t> GetOutputNodeIdx(const schema::MetaGraphT &graphT, const size_t &nodeIdx, int outputIndexIdx = -1);
-
-std::vector<size_t> GetOutputNodeIdx(const schema::MetaGraphT &graphT, const schema::CNodeT &node,
-                                     int outputIndexIdx = -1);
-
-std::vector<size_t> GetLinkedPreIdx(const schema::MetaGraphT &graphT, const size_t &tensorIdx);
-
-std::vector<size_t> GetLinkedPostIdx(const schema::MetaGraphT &graphT, const size_t &tensorIdx);
-
-void ReplaceOutput(const uint32_t &old_index, const uint32_t &new_index, schema::MetaGraphT *graphT);
-
-STATUS IsolateNode(schema::MetaGraphT *subGraph, schema::CNodeT *node);
-
-STATUS IsolateOneWayNode(schema::MetaGraphT *graphT, size_t nodeIdx, bool removeTensor = true);
-
-STATUS IsolateOneWayNode(schema::MetaGraphT *graphT, size_t subGraphIdx, size_t nodeIdx, bool removeTensor = true);
-
-STATUS IsolateOneWayNode(schema::MetaGraphT *graphT, schema::CNodeT *node, bool removeTensor = true);
-
-STATUS UpdateNodeIndex(schema::CNodeT *node, uint32_t deleteIdx);
-
-STATUS RemoveTensor(schema::MetaGraphT *graphT, std::vector<uint32_t> toDeleteTensorIdxes, bool forceDelete = false);
 
 STATUS AddTensor2Node(schema::MetaGraphT *graphT, uint32_t nodeIdx, std::unique_ptr<schema::TensorT> tensor,
                       InsertPlace place = kBefore);
@@ -102,7 +76,7 @@ NodeIter InsertNodeAfter(schema::MetaGraphT *graphT, NodeIter existNodeIter, siz
 
 STATUS ValidateFileStr(const std::string &modelFile, const std::string &fileType);
 
-STATUS SetSubgraphTensorIndices(schema::MetaGraphT *meta_graphT);
+void SetSubgraphTensorIndices(schema::MetaGraphT *meta_graphT);
 
 std::string GetModelName(const std::string &modelFile);
 
@@ -115,6 +89,10 @@ TypeId GetAbstractTensorDtype(const abstract::AbstractTensorPtr &tensor);
 TypeId GetParameterDtype(const ParameterPtr &param_node);
 
 STATUS UpdateFuncGraphInputsAndOutputsDtype(const FuncGraphPtr &func_graph);
+
+STATUS UpdateGraphOutputName(schema::MetaGraphT *meta_graph);
+
+int TransferMetaGraph(const schema::MetaGraphT &graph, void **model_buf, size_t *size);
 
 template <typename T>
 bool IndexingCompress(const std::set<T> &quant_data_set, const std::map<T, size_t> &unique_value_index_map,
@@ -142,7 +120,8 @@ bool IndexingCompress(const std::set<T> &quant_data_set, const std::map<T, size_
     }
   }
   if (index > pack_repetition_size_in_byte * 8) {
-    MS_LOG(ERROR) << "unexpected index: " << index << " should not greater than " << pack_repetition_size_in_byte * 8;
+    MS_LOG(ERROR) << "unexpected index: " << index << " should not be greater than "
+                  << pack_repetition_size_in_byte * 8;
     return false;
   }
   // update tensor data
@@ -168,6 +147,7 @@ bool SparsityCompress(const std::set<T> &quant_data_set, const std::map<T, size_
   auto &quant_params = tensor->quantParams;
   auto elem_cnt = quant_data.size();
   auto channel_cnt = quant_params.size();
+  MS_CHECK_TRUE_MSG(channel_cnt != 0, false, "div zero.");
   auto elem_perchannel = elem_cnt / channel_cnt;
 
   std::vector<bool> bits(pack_sparsity_size_in_byte * 8);
@@ -192,13 +172,13 @@ bool SparsityCompress(const std::set<T> &quant_data_set, const std::map<T, size_
   }
   // nz values indexing && get coor
   std::vector<size_t> coors(nz_cnt);
-  int coors_index = 0;
-  int prev_index = -1;
-  for (int di = 0; (unsigned int)di < elem_cnt; di++) {
+  size_t coors_index = 0;
+  size_t prev_index = -1;
+  for (size_t di = 0; di < elem_cnt; di++) {
     auto cur_channel = di / elem_perchannel;
     auto zp = quant_params[cur_channel]->zeroPoint;
     auto nz_value = quant_data[di];
-    if (nz_value != zp || (di - prev_index) >= (1 << coor_best_bit)) {
+    if (nz_value != zp || (di - prev_index) >= (size_t)(1 << coor_best_bit)) {
       MS_ASSERT(coors_index < nz_cnt);
       coors[coors_index++] = di - prev_index - 1;
       prev_index = di;
@@ -214,7 +194,7 @@ bool SparsityCompress(const std::set<T> &quant_data_set, const std::map<T, size_
     }
   }
   if ((unsigned int)index > pack_sparsity_size_in_byte * 8) {
-    MS_LOG(ERROR) << "unexpected index: " << index << " should not greater than " << pack_sparsity_size_in_byte * 8;
+    MS_LOG(ERROR) << "unexpected index: " << index << " should not be greater than " << pack_sparsity_size_in_byte * 8;
     return false;
   }
   auto new_data_str = BoolVectorToString(bits);
@@ -239,13 +219,13 @@ size_t CalCoorBestBit(const std::vector<T> &quant_data, size_t elem_cnt,
   for (int bit = 2; bit <= 10; bit++) {
     // search
     size_t nn_cnt = 0;
-    int prev_index = -1;
+    size_t prev_index = -1;
     auto channel_cnt = quant_params.size();
     auto elem_perchannel = elem_cnt / channel_cnt;
-    for (int i = 0; (unsigned int)i < elem_cnt; i++) {
+    for (size_t i = 0; i < elem_cnt; i++) {
       auto cur_channel = i / elem_perchannel;
       auto zp = quant_params[cur_channel]->zeroPoint;
-      if (quant_data[i] != zp || (i - prev_index) >= (1 << bit)) {
+      if (quant_data[i] != zp || (i - prev_index) >= (size_t)(1 << bit)) {
         nn_cnt++;
         prev_index = i;
       }
@@ -269,7 +249,7 @@ bool PackRepetition(size_t bit_num, schema::TensorT *tensor) {
   auto dims = tensor->dims;
   size_t elem_cnt_by_dims = std::accumulate(dims.begin(), dims.end(), 1, std::multiplies<>());
   if (elem_cnt != elem_cnt_by_dims) {
-    MS_LOG(ERROR) << "elem_cnt: " << elem_cnt << " not equal: " << elem_cnt_by_dims;
+    MS_LOG(ERROR) << "elem_cnt: " << elem_cnt << " not equal elem_cnt_by_dims: " << elem_cnt_by_dims;
     return false;
   }
 

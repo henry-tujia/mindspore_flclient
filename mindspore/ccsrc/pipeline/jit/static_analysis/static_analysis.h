@@ -22,18 +22,19 @@
 #include <list>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <utility>
 #include <map>
 #include <set>
-#include <unordered_set>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef DEBUG
 #include <stack>
 #endif
 
+#include "utils/hash_map.h"
 #include "utils/log_adapter.h"
 #include "ir/anf.h"
 #include "pybind_api/ir/primitive_py.h"
@@ -56,7 +57,7 @@ size_t StackFrameDepth();
 size_t StackFrameMaxDepth();
 
 // define attribute value map
-using AttrValueMap = std::unordered_map<std::string, ValuePtr>;
+using AttrValueMap = mindspore::HashMap<std::string, ValuePtr>;
 using AttrValueMapPtr = std::shared_ptr<AttrValueMap>;
 
 // the class to save evaluated result: abstract value and modified attribute
@@ -124,23 +125,33 @@ class AnfNodeConfig : public Config {
 
   EvalResultPtr ObtainEvalResult() override;
 
-  AnalysisContextPtr context() const { return context_; }
+  const AnalysisContextPtr &context() const { return context_; }
 
-  AnfNodePtr node() const { return node_; }
+  const AnfNodePtr &node() const { return node_; }
 
-  FuncGraphPtr func_graph() const { return func_graph_; }
+  const FuncGraphPtr &func_graph() const { return func_graph_; }
 
   AnalysisEnginePtr engine() const { return engine_.lock(); }
 
-  // used by unordered_map;
+  size_t hash() const override {
+    std::size_t node_hash = PointerHash<AnfNodePtr>{}(node_);
+    if (context_->IsDummyContext()) {
+      return node_hash;
+    }
+    return hash_combine(node_hash, PointerHash<AnalysisContextPtr>{}(context_));
+  }
+
   bool operator==(const AnfNodeConfig &other) const {
     // compare node with pointer, context with pointer except DummyContext as it's created by make_shared;
     // context should not be nullptr;
+    if (node_ != other.node_) {
+      return false;
+    }
     if (context_->IsDummyContext() && other.context_->IsDummyContext()) {
-      return true;
+      return node_ == other.node_;
     }
     // Don't check `func_graph_` equality.
-    return (node_ == other.node_) && (context_ == other.context_);
+    return context_ == other.context_;
   }
 
   std::string ToString() const override {
@@ -165,11 +176,22 @@ class AnfNodeConfig : public Config {
 using AnfNodeConfigPtr = std::shared_ptr<AnfNodeConfig>;
 
 struct AnfNodeConfigHasher {
-  std::size_t operator()(const AnfNodeConfigPtr conf) const;
+  std::size_t operator()(const AnfNodeConfigPtr &conf) const {
+    MS_EXCEPTION_IF_NULL(conf);
+    return conf->hash();
+  }
 };
 
 struct AnfNodeConfigEqual {
-  bool operator()(const AnfNodeConfigPtr lhs, const AnfNodeConfigPtr rhs) const;
+  bool operator()(const AnfNodeConfigPtr &lhs, const AnfNodeConfigPtr &rhs) const {
+    if (lhs == nullptr || rhs == nullptr) {
+      return false;
+    }
+    if (lhs == rhs) {
+      return true;
+    }
+    return (*lhs == *rhs);
+  }
 };
 
 class VirtualConfig : public Config {
@@ -186,7 +208,7 @@ class VirtualConfig : public Config {
   AbstractBasePtr abstract_;
 };
 
-using PrimEvaluatorMap = std::unordered_map<PrimitivePtr, EvaluatorPtr, PrimitiveHasher, PrimitiveEqual>;
+using PrimEvaluatorMap = mindspore::HashMap<PrimitivePtr, EvaluatorPtr, PrimitiveHasher, PrimitiveEqual>;
 using AnfNodeConfigMap =
   std::unordered_map<AnfNodeConfigPtr, AnfNodeConfigPtr, AnfNodeConfigHasher, AnfNodeConfigEqual>;
 
@@ -235,7 +257,7 @@ class AnalysisEngine : public std::enable_shared_from_this<AnalysisEngine> {
   AnalysisEngine(const PrimEvaluatorMap &prim_evaluator_map, const FuncGraphManagerPtr &func_graph_manager)
       : prim_constructors_(prim_evaluator_map), func_graph_manager_(func_graph_manager) {
     forward_count_ = 0;
-    enable_recursive_eval_ = (common::GetEnv("ENV_RECURSIVE_EVAL") == "1");
+    enable_recursive_eval_ = (common::GetEnv("MS_DEV_RECURSIVE_EVAL") == "1");
   }
   ~AnalysisEngine() = default;
 
@@ -267,6 +289,7 @@ class AnalysisEngine : public std::enable_shared_from_this<AnalysisEngine> {
   EvaluatorPtr _GetEvaluatorFor(const std::shared_ptr<VirtualAbstractClosure> &fn);
   EvaluatorPtr _GetEvaluatorFor(const std::shared_ptr<TypedPrimitiveAbstractClosure> &);
   EvaluatorPtr _GetEvaluatorFor(const std::shared_ptr<JTransformedAbstractClosure> &fn);
+  EvaluatorPtr _GetEvaluatorFor(const std::shared_ptr<ShardTransformedAbstractClosure> &fn);
 
   FuncGraphManagerPtr func_graph_manager() { return func_graph_manager_; }
   const AnfNodeConfigMap &anfnode_config_map() const { return anfnode_config_map_; }
@@ -280,7 +303,7 @@ class AnalysisEngine : public std::enable_shared_from_this<AnalysisEngine> {
   AnalysisContextPtr root_context() const { return root_context_; }
   void set_root_context(const AnalysisContextPtr &context) { root_context_ = context; }
 
-  std::unordered_map<PrimitivePyPtr, EvaluatorPtr> prim_py_evaluators_;
+  mindspore::HashMap<PrimitivePyPtr, EvaluatorPtr> prim_py_evaluators_;
 
   bool enable_recursive_eval() const { return enable_recursive_eval_; }
   static EvalResultPtr ProcessEvalResults(const AbstractBasePtrList &out_specs, const AnfNodePtr &node);

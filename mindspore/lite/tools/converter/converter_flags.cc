@@ -30,12 +30,14 @@
 #include "tools/converter/config_parser/config_file_parser.h"
 #include "tools/converter/config_parser/preprocess_parser.h"
 #include "tools/converter/config_parser/quant_param_parser.h"
+#include "tools/converter/config_parser/acl_option_param_parser.h"
 
 namespace mindspore {
 namespace converter {
 using mindspore::lite::RET_INPUT_PARAM_INVALID;
 using mindspore::lite::RET_OK;
 namespace {
+constexpr size_t kPluginPathMaxNum = 10;
 constexpr int kQuantBitNumInt16 = 16;
 constexpr int kPathLengthUpperLimit = 1024;
 constexpr int kMinShapeSizeInStr = 2;
@@ -80,6 +82,7 @@ Flags::Flags() {
           "");
   AddFlag(&Flags::graphInputFormatStr, "inputDataFormat",
           "Assign the input format of exported model. Only Valid for 4-dimensional input. NHWC | NCHW", "NHWC");
+  AddFlag(&Flags::device, "device", "Set the target device. Only valid when device is Ascend310 or Ascend710.", "");
 }
 
 int Flags::InitInputOutputDataType() {
@@ -92,8 +95,9 @@ int Flags::InitInputOutputDataType() {
   } else if (this->inputDataTypeStr == "DEFAULT") {
     this->inputDataType = TypeId::kTypeUnknown;
   } else {
-    std::cerr << "INPUT INVALID: inputDataType is invalid: %s, supported inputDataType: FLOAT | INT8 | UINT8 | DEFAULT",
-      this->inputDataTypeStr.c_str();
+    std::cerr
+      << "INPUT INVALID: inputDataType is invalid: %s, supported inputDataType: FLOAT | INT8 | UINT8 | DEFAULT, got: "
+      << this->inputDataTypeStr << std::endl;
     return RET_INPUT_PARAM_INVALID;
   }
 
@@ -107,8 +111,8 @@ int Flags::InitInputOutputDataType() {
     this->outputDataType = TypeId::kTypeUnknown;
   } else {
     std::cerr
-      << "INPUT INVALID: outputDataType is invalid: %s, supported outputDataType: FLOAT | INT8 | UINT8 | DEFAULT",
-      this->outputDataTypeStr.c_str();
+      << "INPUT INVALID: outputDataType is invalid: %s, supported outputDataType: FLOAT | INT8 | UINT8 | DEFAULT, got: "
+      << this->outputDataTypeStr << std::endl;
     return RET_INPUT_PARAM_INVALID;
   }
   return RET_OK;
@@ -172,30 +176,46 @@ int Flags::InitInTensorShape() {
   std::vector<int64_t> shape;
   auto shape_strs = lite::StrSplit(content, std::string(";"));
   for (const auto &shape_str : shape_strs) {
+    if (shape_str.empty()) {
+      continue;
+    }
     shape.clear();
     auto string_split = lite::StrSplit(shape_str, std::string(":"));
     CHECK_LESS_RETURN(string_split.size(), kMinShapeSizeInStr);
     auto name = string_split[0];
+    for (size_t i = 1; i < string_split.size() - 1; ++i) {
+      name += ":" + string_split[i];
+    }
     if (name.empty()) {
       MS_LOG(ERROR) << "input tensor name is empty";
+      return lite::RET_ERROR;
     }
-    auto dim_strs = string_split[1];
+    auto dim_strs = string_split[string_split.size() - 1];
     if (dim_strs.empty()) {
       MS_LOG(ERROR) << "input tensor dim string is empty";
+      return lite::RET_ERROR;
     }
     auto dims = lite::StrSplit(dim_strs, std::string(","));
     if (dims.empty()) {
       MS_LOG(ERROR) << "input tensor dim is empty";
+      return lite::RET_ERROR;
     }
     for (const auto &dim : dims) {
-      if (std::stoi(dim) < 0) {
+      auto dim_value = -1;
+      try {
+        dim_value = std::stoi(dim);
+      } catch (const std::exception &e) {
+        MS_LOG(ERROR) << "Get dim failed: " << e.what();
+        return lite::RET_ERROR;
+      }
+      if (dim_value < 0) {
         MS_LOG(ERROR) << "Unsupported dim < 0.";
         return lite::RET_ERROR;
       } else {
-        shape.push_back(std::stoi(dim));
+        shape.push_back(dim_value);
       }
     }
-    lite::ConverterContext::GetInstance()->UpdateGraphInputTensorShape(name, shape);
+    lite::ConverterInnerContext::GetInstance()->UpdateGraphInputTensorShape(name, shape);
   }
   return RET_OK;
 }
@@ -212,6 +232,33 @@ int Flags::InitGraphInputFormat() {
   return RET_OK;
 }
 
+int Flags::InitExtendedIntegrationInfo(const lite::ConfigFileParser &config_file_parser) {
+  auto extended_info = config_file_parser.GetRegistryInfoString();
+  if (!extended_info.plugin_path.empty()) {
+    const char *delimiter = ";";
+    auto relative_path = lite::SplitStringToVector(extended_info.plugin_path, *delimiter);
+    if (relative_path.size() > kPluginPathMaxNum) {
+      MS_LOG(ERROR) << "extended plugin library's num is too big, which shouldn't be larger than " << kPluginPathMaxNum;
+      return RET_INPUT_PARAM_INVALID;
+    }
+    for (auto &i : relative_path) {
+      this->pluginsPath.push_back(lite::RealPath(i.c_str()));
+    }
+  }
+
+  if (!extended_info.disable_fusion.empty()) {
+    if (extended_info.disable_fusion == "on") {
+      this->disableFusion = true;
+    } else if (extended_info.disable_fusion == "off") {
+      this->disableFusion = false;
+    } else {
+      std::cerr << "CONFIG SETTING ILLEGAL: disable_fusion should be on/off" << std::endl;
+      return RET_INPUT_PARAM_INVALID;
+    }
+  }
+  return RET_OK;
+}
+
 int Flags::InitConfigFile() {
   lite::ConfigFileParser config_file_parser;
   auto ret = config_file_parser.ParseConfigFile(this->configFile);
@@ -219,50 +266,39 @@ int Flags::InitConfigFile() {
     MS_LOG(ERROR) << "Parse config file failed.";
     return ret;
   }
-  lite::PreprocessParser preprocess_parser;
-  ret = preprocess_parser.ParsePreprocess(config_file_parser.GetDataPreProcessString(), &this->dataPreProcessParam);
+  ret =
+    lite::PreprocessParser::ParsePreprocess(config_file_parser.GetDataPreProcessString(), &this->dataPreProcessParam);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Parse preprocess failed.";
     return ret;
   }
-  lite::QuantParamParser quant_param_parser;
-  ret = quant_param_parser.ParseCommonQuant(config_file_parser.GetCommonQuantString(), &this->commonQuantParam);
+  ret = lite::QuantParamParser::ParseCommonQuant(config_file_parser.GetCommonQuantString(), &this->commonQuantParam);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Parse common quant param failed.";
     return ret;
   }
-  ret = quant_param_parser.ParseFullQuant(config_file_parser.GetFullQuantString(), &this->fullQuantParam);
+  ret = lite::QuantParamParser::ParseFullQuant(config_file_parser.GetFullQuantString(), &this->fullQuantParam);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Parse full quant param failed.";
     return ret;
   }
-  ret = quant_param_parser.ParseMixedBitWeightQuant(config_file_parser.GetMixedBitWeightQuantString(),
-                                                    &this->mixedBitWeightQuantParam);
+  ret = lite::QuantParamParser::ParseMixedBitWeightQuant(config_file_parser.GetMixedBitWeightQuantString(),
+                                                         &this->mixedBitWeightQuantParam);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Parse mixed bit weight quant param failed.";
     return ret;
   }
-  auto plugins_path_str = GetStrFromConfigFile(this->configFile, "plugin_path");
-  if (!plugins_path_str.empty()) {
-    const char *delimiter = ";";
-    auto relative_path = lite::SplitStringToVector(plugins_path_str, *delimiter);
-    for (size_t i = 0; i < relative_path.size(); i++) {
-      this->pluginsPath.push_back(lite::RealPath(relative_path[i].c_str()));
-    }
+  ret = InitExtendedIntegrationInfo(config_file_parser);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Parse extended integration info failed.";
+    return ret;
   }
-
-  auto disable_fusion_flag = GetStrFromConfigFile(this->configFile, "disable_fusion");
-  if (!disable_fusion_flag.empty()) {
-    if (disable_fusion_flag == "on") {
-      this->disableFusion = true;
-    } else if (disable_fusion_flag == "off") {
-      this->disableFusion = false;
-    } else {
-      std::cerr << "CONFIG SETTING ILLEGAL: disable_fusion should be on/off" << std::endl;
-      return RET_INPUT_PARAM_INVALID;
-    }
+  lite::AclOptionParamParser acl_param_parser;
+  ret = acl_param_parser.ParseAclOptionCfg(config_file_parser.GetAclOptionCfgString(), &this->aclModelOptionCfgParam);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Parse acl option param failed.";
+    return ret;
   }
-
   (void)CheckOfflineParallelConfig(this->configFile, &parallel_split_config_);
   return RET_OK;
 }
@@ -393,7 +429,14 @@ bool CheckOfflineParallelConfig(const std::string &file, ParallelSplitConfig *pa
   const char *colon = ":";
   for (const auto &device : device_rates) {
     std::vector<std::string> rate = lite::SplitStringToVector(device, *colon);
-    parallel_split_config->parallel_compute_rates_.push_back(std::stoi(rate.back()));
+    int64_t compute_rate = 0;
+    try {
+      compute_rate = std::stoi(rate.back());
+    } catch (const std::exception &e) {
+      MS_LOG(ERROR) << "Get compute rate failed: " << e.what();
+      return false;
+    }
+    parallel_split_config->parallel_compute_rates_.push_back(compute_rate);
   }
   if (parallel_split_config->parallel_compute_rates_.size() != 2) {
     return false;
@@ -411,7 +454,6 @@ bool CheckOfflineParallelConfig(const std::string &file, ParallelSplitConfig *pa
   parallel_split_config->parallel_devices_.push_back(device1_result);
   // parall_split_type will extend by other user's attr
   parallel_split_config->parallel_split_type_ = SplitByUserRatio;
-  // unsuitable rate
   return bigger_rate / smaller_rate <= kMaxSplitRatio;
 }
 

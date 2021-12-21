@@ -28,7 +28,7 @@
 #include "frontend/parallel/strategy.h"
 #include "frontend/parallel/context.h"
 #include "frontend/parallel/tensor_layout/tensor_redistribution.h"
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && (!defined(__APPLE__)))
 #include "ps/ps_cache/ps_cache_manager.h"
 #endif
 
@@ -55,15 +55,6 @@ Status UniqueInfo::InferTensorMap() {
 
 Status UniqueInfo::InferDevMatrixShape() {
   dev_matrix_shape_.push_back(stage_device_size_);
-  return SUCCESS;
-}
-
-Status UniqueInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init failed";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << " : Init success";
   return SUCCESS;
 }
 
@@ -96,15 +87,6 @@ Status UniqueInfo::GetAttrs() {
   return SUCCESS;
 }
 
-Status UniqueInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init for cost model failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << " : Init for cost model success.";
-  return SUCCESS;
-}
-
 Status UniqueInfo::SetCostUnderStrategy(const StrategyPtr &strategy) { return SetCostUnderStrategyBase(strategy); }
 
 std::vector<StrategyPtr> UniqueInfo::GenerateOpStrategies(int64_t stage_id) {
@@ -119,7 +101,7 @@ std::vector<StrategyPtr> UniqueInfo::GenerateOpStrategies(int64_t stage_id) {
   return sp_vector;
 }
 
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && (!defined(__APPLE__)))
 Status UniqueInfo::ComputeReplaceGraph(const CNodePtr &cnode) {
   GenerateGraph gen_g = GenerateGraph(attrs_);
   if (gen_g.Init(cnode) != SUCCESS) {
@@ -156,7 +138,7 @@ Status UniqueInfo::ComputeReplaceGraph(const CNodePtr &cnode) {
 #endif
 
 ReplaceGraphPtr UniqueInfo::replace_graph(const CNodePtr &cnode) {
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   if (ps::PsDataPrefetch::GetInstance().cache_enable()) {
     auto inputs = cnode->inputs();
     if (inputs.empty()) {

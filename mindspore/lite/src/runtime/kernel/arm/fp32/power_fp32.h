@@ -33,10 +33,10 @@ class PowerCPUKernel : public InnerKernel {
         shift_(reinterpret_cast<PowerParameter *>(op_parameter_)->shift_) {}
   ~PowerCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-  int RunImpl(int task_id);
+  int RunImpl(int task_id) const;
 
  private:
   int thread_count_;

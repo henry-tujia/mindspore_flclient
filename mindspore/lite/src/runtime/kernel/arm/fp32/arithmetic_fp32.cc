@@ -24,7 +24,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Eltwise;
 
 namespace mindspore::kernel {
-int ArithmeticCPUKernel::Init() {
+int ArithmeticCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto primitive_type = param_->op_parameter_.type_;
@@ -55,7 +55,7 @@ int ArithmeticCPUKernel::ReSize() {
   CalcMultiplesAndStrides(param_);
   if (param_->broadcasting_) {
     outside_ = 1;
-    for (int i = static_cast<int>(param_->ndim_) - 1; i >= 0; --i) {
+    for (int i = static_cast<int>(param_->ndim_) - 1; i >= 0 && i < ARITHMETIC_SUPPORT_DIMS_NUM; --i) {
       if (param_->in_shape0_[i] != param_->in_shape1_[i]) {
         break_pos_ = i;
         break;
@@ -133,22 +133,22 @@ int ArithmeticCPUKernel::ConstTensorBroadCast() {
   }
 
   /* [1, 1, 2] + [1, 2, 1] -> [1, 2, 2], need broadcast both input */
-  if (param_->in_elements_num0_ != param_->out_elements_num_ &&
-      param_->in_elements_num1_ != param_->out_elements_num_) {
-    return RET_OK;
-  }
-
   FreeConstTileBuff();
   if (in_tensors_[0]->IsConst() && param_->in_elements_num0_ != param_->out_elements_num_) {
     input0_ptr_ = malloc(param_->out_elements_num_ * data_type_len_);
     if (input0_ptr_ == nullptr) {
       return RET_ERROR;
     }
+    CHECK_NULL_RETURN(in_tensors_[0]->data());
     TileConstTensor(in_tensors_[0]->data(), input0_ptr_, param_->ndim_, param_->in_shape0_, param_->in_strides0_,
                     param_->out_strides_, param_->multiples0_);
     input0_broadcast_ = true;
     param_->in_elements_num0_ = param_->out_elements_num_;
-    param_->broadcasting_ = false;
+    // shape must be equal to out
+    for (size_t i = 0; i < param_->ndim_; ++i) {
+      param_->in_shape0_[i] = param_->out_shape_[i];
+      param_->in_strides0_[i] = param_->out_strides_[i];
+    }
   }
   if (in_tensors_[1]->IsConst() && param_->in_elements_num1_ != param_->out_elements_num_) {
     input1_ptr_ = malloc(param_->out_elements_num_ * data_type_len_);
@@ -156,10 +156,28 @@ int ArithmeticCPUKernel::ConstTensorBroadCast() {
       FreeConstTileBuff();
       return RET_ERROR;
     }
+    CHECK_NULL_RETURN(in_tensors_[1]->data());
     TileConstTensor(in_tensors_[1]->data(), input1_ptr_, param_->ndim_, param_->in_shape1_, param_->in_strides1_,
                     param_->out_strides_, param_->multiples1_);
     input1_broadcast_ = true;
     param_->in_elements_num1_ = param_->out_elements_num_;
+    // shape must be equal to out
+    for (size_t i = 0; i < param_->ndim_; ++i) {
+      param_->in_shape1_[i] = param_->out_shape_[i];
+      param_->in_strides1_[i] = param_->out_strides_[i];
+    }
+  }
+  // broadcast input and get new break_pos_
+  outside_ = 1;
+  for (int i = static_cast<int>(param_->ndim_) - 1; i >= 0; --i) {
+    if (param_->in_shape0_[i] != param_->in_shape1_[i]) {
+      break_pos_ = i;
+      break;
+    }
+    outside_ *= param_->out_shape_[i];
+  }
+  if (param_->in_elements_num0_ == param_->out_elements_num_ &&
+      param_->in_elements_num1_ == param_->out_elements_num_) {
     param_->broadcasting_ = false;
   }
   return RET_OK;
@@ -180,9 +198,8 @@ void ArithmeticCPUKernel::FreeConstTileBuff() {
   if (input1_broadcast_ == true && input1_ptr_ != nullptr) {
     free(input1_ptr_);
     input1_ptr_ = nullptr;
-    input0_broadcast_ = false;
+    input1_broadcast_ = false;
   }
-  return;
 }
 
 void ArithmeticCPUKernel::InitRunFunction(int primitive_type) {
@@ -302,7 +319,7 @@ int ArithmeticCPUKernel::BatchScalarCalc(int task_id) {
   if (break_pos_ < 1) {
     return RET_ERROR;
   }
-  if (break_pos_ > MAX_ARITHMETIC_DIMS_SIZE || param_->out_strides_[break_pos_ - 1] == 0) {
+  if (break_pos_ > ARITHMETIC_SUPPORT_DIMS_NUM || param_->out_strides_[break_pos_ - 1] == 0) {
     MS_LOG(ERROR) << "param_->out_strides_[break_pos_ - 1] is 0 or break_pos_ is > 10";
     return RET_ERROR;
   }
@@ -333,7 +350,7 @@ int ArithmeticCPUKernel::BatchScalarCalc(int task_id) {
 }
 
 int ArithmeticCPUKernel::BiasCalc(int task_id) {
-  if (param_->ndim_ > MAX_ARITHMETIC_DIMS_SIZE || param_->out_shape_[param_->ndim_ - 1] == 0) {
+  if (param_->ndim_ > ARITHMETIC_SUPPORT_DIMS_NUM || param_->out_shape_[param_->ndim_ - 1] == 0) {
     MS_LOG(ERROR) << "BiasCalc param is error!";
     return RET_ERROR;
   }
@@ -377,6 +394,7 @@ int ArithmeticCPUKernel::DoArithmetic(int task_id) {
   if (count <= 0) {
     return RET_OK;
   }
+  CHECK_LESS_RETURN(ARITHMETIC_SUPPORT_DIMS_NUM, param_->ndim_);
   int offset = stride * task_id * data_type_len_;
   /* run opt function, one of input is scalar */
   if (IsScalarClac()) {  // 2 32 240 240, 1 1 1 1
@@ -426,11 +444,14 @@ int ArithmeticCPUKernel::Run() {
   }
   if (!input0_broadcast_) {
     input0_ptr_ = in_tensors_[0]->data();
+    CHECK_NULL_RETURN(input0_ptr_);
   }
   if (!input1_broadcast_) {
     input1_ptr_ = in_tensors_[1]->data();
+    CHECK_NULL_RETURN(input1_ptr_);
   }
   output_ptr_ = out_tensors_[0]->data();
+  CHECK_NULL_RETURN(output_ptr_);
   return ParallelLaunch(this->ms_context_, ArithmeticsRun, this, op_parameter_->thread_num_);
 }
 

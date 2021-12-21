@@ -35,7 +35,8 @@ class IndexAddGpuKernel : public GpuKernel {
         src_axis_size_(0),
         dst_axis_size_(0),
         inner_size_(0),
-        use_lock_(true) {}
+        use_lock_(true),
+        is_null_input_(false) {}
   ~IndexAddGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -44,6 +45,9 @@ class IndexAddGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *dst = GetDeviceAddress<T>(inputs, 0);
     int *index = GetDeviceAddress<int>(inputs, 1);
     T *src = GetDeviceAddress<T>(inputs, 2);
@@ -67,6 +71,12 @@ class IndexAddGpuKernel : public GpuKernel {
     std::vector<size_t> dst_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     std::vector<size_t> index_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     std::vector<size_t> src_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    is_null_input_ = CHECK_NULL_INPUT(dst_shape) || CHECK_NULL_INPUT(index_shape) || CHECK_NULL_INPUT(src_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'IndexAddGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     int64_t src_rank = src_shape.size();
     int64_t axis = GetAttr<int64_t>(kernel_node, "axis");
     if (axis < 0) {
@@ -80,13 +90,12 @@ class IndexAddGpuKernel : public GpuKernel {
     for (int64_t i = axis + 1; i >= 0 && i < src_rank; i++) {
       inner_size_ *= src_shape[i];
     }
-    if (axis >= 0 && axis < SizeToInt(src_shape.size()) && axis < SizeToInt(dst_shape.size())) {
-      src_axis_size_ = src_shape[axis];
-      dst_axis_size_ = dst_shape[axis];
-    } else {
+    if (axis < 0 || axis >= SizeToInt(src_shape.size()) || axis >= SizeToInt(dst_shape.size())) {
       MS_LOG(EXCEPTION) << "Init axis size failed, actual src axis size is " << src_axis_size_
                         << ", actual dst axis size is " << dst_axis_size_;
     }
+    src_axis_size_ = src_shape[axis];
+    dst_axis_size_ = dst_shape[axis];
 
     dst_size_ = sizeof(T);
     for (auto x : dst_shape) {
@@ -123,6 +132,7 @@ class IndexAddGpuKernel : public GpuKernel {
   size_t dst_axis_size_;
   size_t inner_size_;
   bool use_lock_;
+  bool is_null_input_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

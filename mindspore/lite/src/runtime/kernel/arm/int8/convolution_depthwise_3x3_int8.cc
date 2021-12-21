@@ -79,8 +79,8 @@ int ConvolutionDepthwise3x3Int8CPUKernel::InitWeightBias() {
     }
   } else {
     int weight_zp = conv_param_->conv_quant_arg_.filter_quant_args_[0].zp_;
-    if (weight_tensor->ElementsNum() > pack_weight_size) {
-      MS_LOG(ERROR) << "weight_tensor->ElementsNum() is larger than pack_weight_size.";
+    if (weight_tensor->ElementsNum() == 0 || weight_tensor->ElementsNum() > pack_weight_size) {
+      MS_LOG(ERROR) << "weight_tensor->ElementsNum() is 0 or larger than pack_weight_size.";
       free(tmp_weight);
       return RET_ERROR;
     }
@@ -101,12 +101,13 @@ int ConvolutionDepthwise3x3Int8CPUKernel::InitWeightBias() {
     CHECK_NULL_RETURN(bias_tensor);
     auto ori_bias = reinterpret_cast<int32_t *>(bias_tensor->MutableData());
     CHECK_NULL_RETURN(ori_bias);
+    MS_CHECK_GT(bias_tensor->ElementsNum(), 0, RET_ERROR);
     memcpy(bias_data_, ori_bias, static_cast<size_t>(bias_tensor->ElementsNum()) * sizeof(int32_t));
   }
   return RET_OK;
 }
 
-int ConvolutionDepthwise3x3Int8CPUKernel::Init() {
+int ConvolutionDepthwise3x3Int8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   sliding_ = new (std::nothrow) SlidingWindowParam;
@@ -131,7 +132,7 @@ int ConvolutionDepthwise3x3Int8CPUKernel::Init() {
 }
 
 int ConvolutionDepthwise3x3Int8CPUKernel::ReSize() {
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "ConvolutionBaseCPUKernel Init failed.";
     return ret;

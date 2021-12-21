@@ -20,6 +20,7 @@
 #include "nnacl/fp32/matmul_fp32.h"
 #include "src/kernel_registry.h"
 #include "src/lite_kernel.h"
+#include "src/tensor_category.h"
 
 namespace mindspore {
 class TestMatMulFp32 : public mindspore::CommonTest {
@@ -70,17 +71,17 @@ TEST_F(TestMatMulFp32, Row2Col8Test2) {
 
 int MMTestInit(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *> *outputs_, float *a_ptr, float *b_ptr,
                const std::vector<int> &a_shape, const std::vector<int> &b_shape, const std::vector<int> &c_shape) {
-  auto in_t = new lite::Tensor(kNumberTypeFloat, a_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto in_t = new lite::Tensor(kNumberTypeFloat, a_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   in_t->MallocData();
   memcpy(in_t->MutableData(), a_ptr, sizeof(float) * in_t->ElementsNum());
   inputs_->push_back(in_t);
 
-  auto weight_t = new lite::Tensor(kNumberTypeFloat, b_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto weight_t = new lite::Tensor(kNumberTypeFloat, b_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   weight_t->MallocData();
   memcpy(weight_t->MutableData(), b_ptr, sizeof(float) * weight_t->ElementsNum());
   inputs_->push_back(weight_t);
 
-  auto out_t = new lite::Tensor(kNumberTypeFloat, c_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto out_t = new lite::Tensor(kNumberTypeFloat, c_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   out_t->MallocData();
   outputs_->push_back(out_t);
 
@@ -90,22 +91,22 @@ int MMTestInit(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *>
 int MMTestInit2(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *> *outputs_, float *a_ptr, float *b_ptr,
                 float *bias_ptr, const std::vector<int> &a_shape, const std::vector<int> &b_shape,
                 const std::vector<int> &bias_shape, const std::vector<int> &c_shape) {
-  auto in_t = new lite::Tensor(kNumberTypeFloat, a_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto in_t = new lite::Tensor(kNumberTypeFloat, a_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   in_t->MallocData();
   memcpy(in_t->MutableData(), a_ptr, sizeof(float) * in_t->ElementsNum());
   inputs_->push_back(in_t);
 
-  auto weight_t = new lite::Tensor(kNumberTypeFloat, b_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto weight_t = new lite::Tensor(kNumberTypeFloat, b_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   weight_t->MallocData();
   memcpy(weight_t->MutableData(), b_ptr, sizeof(float) * weight_t->ElementsNum());
   inputs_->push_back(weight_t);
 
-  auto bias_t = new lite::Tensor(kNumberTypeFloat, bias_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto bias_t = new lite::Tensor(kNumberTypeFloat, bias_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   bias_t->MallocData();
   memcpy(bias_t->MutableData(), bias_ptr, sizeof(float) * bias_t->ElementsNum());
   inputs_->push_back(bias_t);
 
-  auto out_t = new lite::Tensor(kNumberTypeFloat, c_shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto out_t = new lite::Tensor(kNumberTypeFloat, c_shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   out_t->MallocData();
   outputs_->push_back(out_t);
 
@@ -133,7 +134,7 @@ TEST_F(TestMatMulFp32, simple) {
   ctx->thread_num_ = 1;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto mm = new kernel::MatmulCPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs_, outputs_, ctx);
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float correct[] = {-0.1256939023733139, -0.07744802534580231,  0.07410638779401779,
                      -0.3049793541431427, -0.027687929570674896, -0.18109679222106934};
@@ -167,7 +168,7 @@ TEST_F(TestMatMulFp32, simple_bias) {
   ctx->thread_num_ = 1;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto mm = new kernel::MatmulCPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs_, outputs_, ctx);
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float correct[] = {-0.1256939023733139 + 1, -0.07744802534580231 + 2,  0.07410638779401779 + 3,
                      -0.3049793541431427 + 1, -0.027687929570674896 + 2, -0.18109679222106934 + 3};
@@ -220,7 +221,7 @@ TEST_F(TestMatMulFp32, simple2) {
   ctx->thread_num_ = 2;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto mm = new kernel::MatmulCPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs_, outputs_, ctx);
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float correct[] = {
     263, 386, 184, 309, 338, 244, 359, 294, 252, 254, 273, 353, 320, 183, 412, 273, 271, 307, 329, 314, 391, 261, 400,
@@ -291,7 +292,7 @@ TEST_F(TestMatMulFp32, simple_transb) {
   ctx->thread_num_ = 2;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto mm = new kernel::MatmulCPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs_, outputs_, ctx);
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float correct[] = {0.00533547, 0.002545945, 0.062974121, -0.445441471, -0.246223617, -0.142070031};
   ASSERT_EQ(0, CompareOutputData(reinterpret_cast<float *>(outputs_[0]->MutableData()), correct, total_size, 0.0001));
@@ -342,7 +343,7 @@ TEST_F(TestMatMulFp32, batch) {
   ctx->thread_num_ = 1;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto mm = new kernel::MatmulCPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs_, outputs_, ctx);
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float correct[] = {21.38518524169922,  -14.514888763427734, -11.040614128112793, 16.91403579711914,
                      27.07421112060547,  23.35394287109375,   -39.006141662597656, -2.021998405456543,

@@ -38,7 +38,7 @@ string(REPLACE " -Werror" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 if(ENABLE_GITEE)
     set(REQ_URL "https://gitee.com/mirrors/protobuf_source/repository/archive/v3.13.0.tar.gz")
-    set(MD5 "140dc2486b9358e3015aec7a8ece525c")
+    set(MD5 "53ab10736257b3c61749de9800b8ce97")
 else()
     set(REQ_URL "https://github.com/protocolbuffers/protobuf/archive/v3.13.0.tar.gz")
     set(MD5 "1a6274bc4a65b55a6fa70e264d796490")
@@ -128,7 +128,7 @@ function(ms_protobuf_generate_py c_var h_var py_var)
                     COMMAND perl -pi.bak -e "s/import (.+_pb2.*)/from . import \\1/"
                             "${CMAKE_BINARY_DIR}/proto/${file_name}_pb2.py"
                     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/proto/${file_name}_pb2.py"
-                            "${PROJECT_SOURCE_DIR}/mindspore/train/"
+                            "${PROJECT_SOURCE_DIR}/mindspore/python/mindspore/train/"
                     DEPENDS protobuf::protoc ${abs_file}
                     COMMENT "Running C++ protocol buffer compiler on ${file}" VERBATIM)
         else()
@@ -143,7 +143,8 @@ function(ms_protobuf_generate_py c_var h_var py_var)
                     COMMAND protobuf::protoc -I${file_dir} --python_out=${CMAKE_BINARY_DIR}/proto ${abs_file}
                     COMMAND perl -pi -e "s/import (.+_pb2.*)/from . import \\1/"
                             "${CMAKE_BINARY_DIR}/proto/${file_name}_pb2.py"
-                    COMMAND cp "${CMAKE_BINARY_DIR}/proto/${file_name}_pb2.py" "${PROJECT_SOURCE_DIR}/mindspore/train/"
+                    COMMAND cp "${CMAKE_BINARY_DIR}/proto/${file_name}_pb2.py"
+                            "${PROJECT_SOURCE_DIR}/mindspore/python/mindspore/train/"
                     DEPENDS protobuf::protoc ${abs_file}
                     COMMENT "Running C++ protocol buffer compiler on ${file}" VERBATIM)
         endif()

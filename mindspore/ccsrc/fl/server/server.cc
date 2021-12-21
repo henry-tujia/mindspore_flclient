@@ -32,7 +32,7 @@
 namespace mindspore {
 namespace fl {
 namespace server {
-// The handler to capture the signal of SIGTERM. Normally this signal is triggered by cloud cluster managers like K8S.
+// The handler to capture the signal of SIGTERM. Normally this signal is triggered by cloud cluster manager like K8S.
 std::shared_ptr<ps::core::CommunicatorBase> g_communicator_with_server = nullptr;
 std::vector<std::shared_ptr<ps::core::CommunicatorBase>> g_communicators_with_worker = {};
 void SignalHandler(int signal) {
@@ -45,7 +45,6 @@ void SignalHandler(int signal) {
 
   MS_ERROR_IF_NULL_WO_RET_VAL(g_communicator_with_server);
   (void)g_communicator_with_server->Stop();
-  return;
 }
 
 void Server::Initialize(bool use_tcp, bool use_http, uint16_t http_port, const std::vector<RoundConfig> &rounds_config,
@@ -64,28 +63,14 @@ void Server::Initialize(bool use_tcp, bool use_http, uint16_t http_port, const s
   use_http_ = use_http;
   http_port_ = http_port;
   executor_threshold_ = executor_threshold;
-  signal(SIGTERM, SignalHandler);
+  (void)signal(SIGTERM, SignalHandler);
   return;
 }
 
-// Each step of the server pipeline may have dependency on other steps, which includes:
-
-// InitServerContext must be the first step to set contexts for later steps.
-
-// Server Running relies on URL or Message Type Register:
-// StartCommunicator---->InitIteration
-
-// Metadata Register relies on Hash Ring of Servers which relies on Network Building Completion:
-// RegisterRoundKernel---->StartCommunicator
-
-// Kernel Initialization relies on Executor Initialization:
-// RegisterRoundKernel---->InitExecutor
-
-// Getting Model Size relies on ModelStorage Initialization which relies on Executor Initialization:
-// InitCipher---->InitExecutor
 void Server::Run() {
   std::unique_lock<std::mutex> lock(scaling_mtx_);
   InitServerContext();
+  InitPkiCertificate();
   InitCluster();
   InitIteration();
   RegisterCommCallbacks();
@@ -98,6 +83,7 @@ void Server::Run() {
   }
   RegisterRoundKernel();
   InitMetrics();
+  Recover();
   MS_LOG(INFO) << "Server started successfully.";
   safemode_ = false;
   lock.unlock();
@@ -111,7 +97,25 @@ void Server::Run() {
   MS_EXCEPTION_IF_NULL(communicator_with_server_);
   communicator_with_server_->Join();
   MsException::Instance().CheckException();
+  func_graph_ = nullptr;
   return;
+}
+
+void Server::InitPkiCertificate() {
+  if (ps::PSContext::instance()->pki_verify()) {
+    root_first_ca_path_ = ps::PSContext::instance()->root_first_ca_path();
+    root_second_ca_path_ = ps::PSContext::instance()->root_second_ca_path();
+    equip_crl_path_ = ps::PSContext::instance()->equip_crl_path();
+    replay_attack_time_diff_ = ps::PSContext::instance()->replay_attack_time_diff();
+
+    bool ret = mindspore::ps::server::CertVerify::initRootCertAndCRL(root_first_ca_path_, root_second_ca_path_,
+                                                                     equip_crl_path_, replay_attack_time_diff_);
+    if (!ret) {
+      MS_LOG(EXCEPTION) << "init root cert and crl failed.";
+      return;
+    }
+    return;
+  }
 }
 
 void Server::SwitchToSafeMode() {
@@ -138,11 +142,6 @@ void Server::InitServerContext() {
   scheduler_port_ = ps::PSContext::instance()->scheduler_port();
   worker_num_ = ps::PSContext::instance()->initial_worker_num();
   server_num_ = ps::PSContext::instance()->initial_server_num();
-  std::string encrypt_type = ps::PSContext::instance()->encrypt_type();
-  if (encrypt_type == ps::kPWEncryptType && server_num_ > 1) {
-    MS_LOG(EXCEPTION) << "Only single server is supported for PW_ENCRYPT now, but got server_num is:." << server_num_;
-    return;
-  }
   return;
 }
 
@@ -165,8 +164,8 @@ void Server::InitCluster() {
 bool Server::InitCommunicatorWithServer() {
   MS_EXCEPTION_IF_NULL(task_executor_);
   MS_EXCEPTION_IF_NULL(server_node_);
-  communicator_with_server_ =
-    server_node_->GetOrCreateTcpComm(scheduler_ip_, scheduler_port_, worker_num_, server_num_, task_executor_);
+  communicator_with_server_ = server_node_->GetOrCreateTcpComm(scheduler_ip_, static_cast<int16_t>(scheduler_port_),
+                                                               worker_num_, server_num_, task_executor_);
   MS_EXCEPTION_IF_NULL(communicator_with_server_);
   g_communicator_with_server = communicator_with_server_;
   return true;
@@ -218,6 +217,8 @@ void Server::InitIteration() {
     cipher_share_secrets_cnt_ = cipher_config_.share_secrets_threshold;
     cipher_get_secrets_cnt_ = cipher_config_.get_secrets_threshold;
     cipher_get_clientlist_cnt_ = cipher_config_.client_list_threshold;
+    cipher_push_list_sign_cnt_ = cipher_config_.push_list_sign_threshold;
+    cipher_get_list_sign_cnt_ = cipher_config_.get_list_sign_threshold;
     cipher_reconstruct_secrets_up_cnt_ = cipher_config_.reconstruct_secrets_threshold;
     cipher_reconstruct_secrets_down_cnt_ = cipher_config_.reconstruct_secrets_threshold - 1;
     cipher_time_window_ = cipher_config_.cipher_time_window;
@@ -228,6 +229,8 @@ void Server::InitIteration() {
                  << " cipher_share_secrets_cnt_: " << cipher_share_secrets_cnt_;
     MS_LOG(INFO) << " cipher_get_secrets_cnt_: " << cipher_get_secrets_cnt_
                  << " cipher_get_clientlist_cnt_: " << cipher_get_clientlist_cnt_
+                 << " cipher_push_list_sign_cnt_: " << cipher_push_list_sign_cnt_
+                 << " cipher_get_list_sign_cnt_: " << cipher_get_list_sign_cnt_
                  << " cipher_reconstruct_secrets_up_cnt_: " << cipher_reconstruct_secrets_up_cnt_
                  << " cipher_reconstruct_secrets_down_cnt_: " << cipher_reconstruct_secrets_down_cnt_
                  << " cipher_time_window_: " << cipher_time_window_;
@@ -245,6 +248,7 @@ void Server::InitIteration() {
 void Server::InitCipher() {
 #ifdef ENABLE_ARMOUR
   cipher_init_ = &armour::CipherInit::GetInstance();
+
   int cipher_t = SizeToInt(cipher_reconstruct_secrets_down_cnt_);
   unsigned char cipher_p[SECRET_MAX_LEN] = {0};
   const int cipher_g = 1;
@@ -258,8 +262,7 @@ void Server::InitCipher() {
   param.t = cipher_t;
   int ret = memcpy_s(param.p, SECRET_MAX_LEN, cipher_p, sizeof(cipher_p));
   if (ret != 0) {
-    MS_LOG(EXCEPTION) << "memcpy_s error, errorno(" << ret << ")";
-    return;
+    MS_LOG(EXCEPTION) << "Memcpy_s error, errorno" << ret;
   }
   param.dp_delta = dp_delta;
   param.dp_eps = dp_eps;
@@ -281,10 +284,9 @@ void Server::InitCipher() {
   if (prim != NULL) {
     BN_clear_free(prim);
   }
-
   cipher_init_->Init(param, 0, cipher_exchange_keys_cnt_, cipher_get_keys_cnt_, cipher_share_secrets_cnt_,
-                     cipher_get_secrets_cnt_, cipher_get_clientlist_cnt_, cipher_reconstruct_secrets_down_cnt_,
-                     cipher_reconstruct_secrets_up_cnt_);
+                     cipher_get_secrets_cnt_, cipher_get_clientlist_cnt_, cipher_push_list_sign_cnt_,
+                     cipher_get_list_sign_cnt_, cipher_reconstruct_secrets_up_cnt_);
 #endif
 }
 
@@ -366,6 +368,8 @@ void Server::RegisterMessageCallback(const std::shared_ptr<ps::core::TcpCommunic
                                     std::bind(&Server::HandleNewInstanceRequest, this, std::placeholders::_1));
   communicator->RegisterMsgCallBack("queryInstance",
                                     std::bind(&Server::HandleQueryInstanceRequest, this, std::placeholders::_1));
+  communicator->RegisterMsgCallBack("syncAfterRecover",
+                                    std::bind(&Server::HandleSyncAfterRecoveryRequest, this, std::placeholders::_1));
 }
 
 void Server::InitExecutor() {
@@ -430,7 +434,6 @@ void Server::StartCommunicator() {
   MS_LOG(INFO) << "Start communicator with server.";
   if (!communicator_with_server_->Start()) {
     MS_LOG(EXCEPTION) << "Starting communicator with server failed.";
-    return;
   }
   DistributedMetadataStore::GetInstance().Initialize(server_node_);
   CollectiveOpsImpl::GetInstance().Initialize(server_node_);
@@ -445,6 +448,36 @@ void Server::StartCommunicator() {
                           MS_LOG(EXCEPTION) << "Starting communicator with worker failed.";
                         }
                       });
+}
+
+void Server::Recover() {
+  server_recovery_ = std::make_shared<ServerRecovery>();
+  MS_EXCEPTION_IF_NULL(server_recovery_);
+
+  // Try to recovery from persistent storage.
+  if (!server_recovery_->Initialize(ps::PSContext::instance()->config_file_path())) {
+    MS_LOG(WARNING) << "Initializing server recovery failed. Do not recover for this server.";
+    return;
+  }
+
+  if (server_recovery_->Recover()) {
+    // If this server recovers, need to notify cluster to reach consistency.
+    auto tcp_comm = std::dynamic_pointer_cast<ps::core::TcpCommunicator>(communicator_with_server_);
+    MS_ERROR_IF_NULL_WO_RET_VAL(tcp_comm);
+    MS_LOG(INFO) << "Synchronize with leader server after recovery.";
+    if (!server_recovery_->SyncAfterRecovery(tcp_comm, server_node_->rank_id())) {
+      MS_LOG(EXCEPTION) << "Failed to reach consistency of the cluster after recovery.";
+      return;
+    }
+    if (server_node_->rank_id() == kLeaderServerRank) {
+      MS_EXCEPTION_IF_NULL(iteration_);
+      iteration_->NotifyNext(false, "Move to next iteration after server 0 recovery.");
+    }
+  }
+
+  // Set the recovery handler to Iteration.
+  MS_EXCEPTION_IF_NULL(iteration_);
+  iteration_->set_recovery_handler(server_recovery_);
 }
 
 void Server::ProcessBeforeScalingOut() {
@@ -510,7 +543,6 @@ void Server::ProcessAfterScalingIn() {
 }
 
 void Server::HandleEnableServerRequest(const std::shared_ptr<ps::core::MessageHandler> &message) {
-  MS_ERROR_IF_NULL_WO_RET_VAL(message);
   MS_ERROR_IF_NULL_WO_RET_VAL(iteration_);
   MS_ERROR_IF_NULL_WO_RET_VAL(communicator_with_server_);
   auto tcp_comm = std::dynamic_pointer_cast<ps::core::TcpCommunicator>(communicator_with_server_);
@@ -528,7 +560,6 @@ void Server::HandleEnableServerRequest(const std::shared_ptr<ps::core::MessageHa
 }
 
 void Server::HandleDisableServerRequest(const std::shared_ptr<ps::core::MessageHandler> &message) {
-  MS_ERROR_IF_NULL_WO_RET_VAL(message);
   MS_ERROR_IF_NULL_WO_RET_VAL(iteration_);
   MS_ERROR_IF_NULL_WO_RET_VAL(communicator_with_server_);
   auto tcp_comm = std::dynamic_pointer_cast<ps::core::TcpCommunicator>(communicator_with_server_);
@@ -592,6 +623,31 @@ void Server::HandleQueryInstanceRequest(const std::shared_ptr<ps::core::MessageH
   if (!tcp_comm->SendResponse(response.dump().c_str(), response.dump().size(), message)) {
     MS_LOG(ERROR) << "Sending response failed.";
     return;
+  }
+}
+
+void Server::HandleSyncAfterRecoveryRequest(const std::shared_ptr<ps::core::MessageHandler> &message) {
+  MS_ERROR_IF_NULL_WO_RET_VAL(message);
+  MS_ERROR_IF_NULL_WO_RET_VAL(iteration_);
+  MS_ERROR_IF_NULL_WO_RET_VAL(communicator_with_server_);
+  auto tcp_comm = std::dynamic_pointer_cast<ps::core::TcpCommunicator>(communicator_with_server_);
+  MS_ERROR_IF_NULL_WO_RET_VAL(tcp_comm);
+
+  MS_LOG(INFO) << "Receive SyncAfterRecover request from other server.";
+  std::string response = "success";
+  if (!tcp_comm->SendResponse(response.c_str(), response.size(), message)) {
+    MS_LOG(ERROR) << "Sending response of SyncAfterRecoverRequest failed.";
+    return;
+  }
+
+  if (!safemode_.load()) {
+    MS_LOG(INFO) << "Need to synchronize for other server's recovery";
+    SyncAfterRecover sync_after_recovery_req;
+    (void)sync_after_recovery_req.ParseFromArray(message->data(), SizeToInt(message->len()));
+    if (!iteration_->SyncAfterRecovery(sync_after_recovery_req.current_iter_num())) {
+      MS_LOG(ERROR) << "Sync after recovery failed.";
+      return;
+    }
   }
 }
 }  // namespace server

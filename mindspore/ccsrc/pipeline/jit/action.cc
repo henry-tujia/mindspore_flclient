@@ -52,6 +52,7 @@
 #include "ps/worker.h"
 #include "fl/worker/fl_worker.h"
 #include "fl/server/server.h"
+#include "distributed/cluster/cluster_context.h"
 #endif
 
 namespace mindspore {
@@ -71,11 +72,20 @@ void UpdateFuncGraphParameter(const FuncGraphPtr &func_graph) {
     MS_EXCEPTION_IF_NULL(par_abs);
     if (par_abs->isa<abstract::AbstractUndetermined>() ||
         (MsContext::GetInstance()->get_param<bool>(MS_CTX_GRAD_FOR_SCALAR) && par_abs->BuildType() != nullptr &&
-         par_abs->BuildType()->isa<Number>())) {
+         par_abs->BuildType()->isa<Number>()) ||
+        (par_abs->isa<abstract::AbstractTuple>() &&
+         par_abs->cast<abstract::AbstractTuplePtr>()->ContainsAllBroadenTensors())) {
       new_paras.push_back(param_node);
     }
   }
   func_graph->set_parameters(new_paras);
+}
+
+bool IsDynamicShapeGraph(FuncGraphPtr func_graph) {
+  MS_EXCEPTION_IF_NULL(func_graph);
+  std::vector<AnfNodePtr> node_list = TopoSort(func_graph->get_return());
+  return std::any_of(node_list.begin(), node_list.end(),
+                     [](const AnfNodePtr &node) { return AnfAlgo::IsNodeDynamicShape(node); });
 }
 
 // Disable mindRT in the control flow scenario.
@@ -92,8 +102,35 @@ void ResetMindRTEnable(const ResourcePtr &res) {
   if (func_graph != nullptr && func_graph->manager() != nullptr) {
     auto manager = func_graph->manager();
     size_t graph_nums = manager->func_graphs().size();
-    if (graph_nums == 1) {
+    // Heterogeneous scenario
+    if (graph_nums == 1 && (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) != kAscendDevice ||
+                            context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode)) {
       return;
+    }
+    if (common::GetEnv("ENABLE_ASCEND_MINDRT") == "1" || common::kEnableAscendMindRT) {
+      MS_LOG(INFO) << "Enable Ascend MindRT";
+      // No control flow && control flow without while need multigraph-sink, so enable mindrt.
+      // Temporary changes: After MindRT supports control flow, the sinking mode is judged in MindRT.
+      if (!common::kEnableAscendSubGraphMindRT) {
+        auto task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
+        std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+        std::string backend = context_ptr->backend_policy();
+        if (!func_graph->ContainMultiTarget() && task_sink &&
+            context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
+          auto graphs = manager->func_graphs();
+          bool exist_while =
+            std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
+          if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
+            return;
+          }
+        }
+      } else {
+        // Exception scenarios: dynamic shape and heterogeneous
+        std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+        if (!IsDynamicShapeGraph(func_graph) || !func_graph->ContainMultiTarget() || (device_target != kAscendDevice)) {
+          return;
+        }
+      }
     }
 
     MS_LOG(INFO) << "Disable mindRT in the multi graphs scenario.";
@@ -166,7 +203,7 @@ void ModifyOutputNode(const FuncGraphPtr &func_graph) {
     added_output_node = NewValueNode(MakeValue<int32_t>(1));
     added_output_abs = std::make_shared<abstract::AbstractScalar>(std::make_shared<Int32Imm>(1));
   } else {
-    added_output_node = func_graph->NewCNode(added_node_list);
+    added_output_node = func_graph->NewCNode(std::move(added_node_list));
     added_output_abs = std::make_shared<abstract::AbstractTuple>(added_abs_list);
   }
   added_output_node->set_abstract(added_output_abs);
@@ -174,10 +211,10 @@ void ModifyOutputNode(const FuncGraphPtr &func_graph) {
 
   // Merge original output node and used forward nodes to return node.
   std::vector<AnfNodePtr> new_output_nodes{NewValueNode(prim::kPrimMakeTuple), original_output_node, added_output_node};
-  auto merge_node = func_graph->NewCNode(new_output_nodes);
+  auto merge_node = func_graph->NewCNode(std::move(new_output_nodes));
   abstract::AbstractBasePtrList new_output_abs{original_output_abs, added_output_abs};
   merge_node->set_abstract(std::make_shared<abstract::AbstractTuple>(new_output_abs));
-  MS_LOG(DEBUG) << "Merge node info: " << merge_node->DebugString(2);
+  MS_LOG(DEBUG) << "Merge node info: " << merge_node->DebugString();
   func_graph->set_output(merge_node);
 
   // Clear
@@ -284,7 +321,7 @@ const FuncGraphPtr GetLoadedGraph(const ResourcePtr &res) {
   if (loaded_graph_num == 1) {
     return loaded_graph;
   }
-  MS_LOG(EXCEPTION) << "The loaded sub graph currently should less than 2, but got " << loaded_graph_num;
+  MS_LOG(EXCEPTION) << "The loaded sub graph currently should be less than 2, but got " << loaded_graph_num;
 }
 
 void CheckRootInputShapeAndType(const ResourcePtr &res, const FuncGraphPtr &loaded_graph) {
@@ -302,6 +339,7 @@ void CheckRootInputShapeAndType(const ResourcePtr &res, const FuncGraphPtr &load
     MS_LOG(EXCEPTION) << "The inputs number " << root_inputs_num << " not equal to the inputs number of loaded graph "
                       << loaded_inputs_num;
   }
+
   for (size_t index = 0; index < root_inputs_num; index++) {
     auto root_input = root_inputs[index];
     auto loaded_input = loaded_inputs[index];
@@ -340,6 +378,7 @@ void CheckRootInputShapeAndType(const ResourcePtr &res, const FuncGraphPtr &load
 
 bool ParseAction(const ResourcePtr &res) {
   MS_EXCEPTION_IF_NULL(res);
+  TraceManager::OpenRecordDebugInfoFlag();
   if (!res->source_input()) {
     MS_LOG(EXCEPTION) << "Parse error";
   }
@@ -390,16 +429,20 @@ bool CombineLikeGraphs(const ResourcePtr &res) {
     MS_LOG(DEBUG) << "Start combine like graph:" << it.first << ", size:" << graphs.size();
     auto fg = graphs[0];
     FuncGraphVector func_graphs = {fg};
-    ClonerPtr cloner = std::make_shared<Cloner>(func_graphs, false, false, true, std::make_shared<TraceCopy>(),
-                                                std::make_shared<TraceCombileLikeGraphs>());
-    cloner->Run();
-    auto base_graph = cloner->cloned_func_graph()[fg];
+    Cloner cloner(func_graphs, false, false, true, std::make_shared<TraceCopy>(),
+                  std::make_shared<TraceCombileLikeGraphs>());
+    cloner.Run();
+    auto cloned_fg_iter = cloner.cloned_func_graphs().find(fg);
+    if (cloned_fg_iter == cloner.cloned_func_graphs().end()) {
+      MS_LOG(EXCEPTION) << "Clone func graph failed! " << fg->ToString();
+    }
+    auto base_graph = cloned_fg_iter->second;
     MS_LOG(DEBUG) << "Basegraph:" << base_graph->ToString();
 
     if (fg->paramter_obj_nodes().empty() || graphs.size() <= 1 || fg->has_flag(FUNC_GRAPH_OUTPUT_NO_RECOMPUTE)) {
       continue;
     }
-    auto &cloned_nodes = *cloner->cloned_node();
+    auto &cloned_nodes = cloner.cloned_nodes();
     for (auto &fv : fg->paramter_obj_nodes()) {
       TraceGuard guard(std::make_shared<TraceCombileLikeGraphs>(fv->debug_info()));
       auto param = base_graph->add_parameter();
@@ -407,11 +450,11 @@ bool CombineLikeGraphs(const ResourcePtr &res) {
       auto &node_users = res->manager()->node_users()[fv];
       for (auto &n : node_users) {
         // If the user is not in this graph, no need to change.
-        auto cloned = cloned_nodes[n.first];
-        if (cloned == nullptr) {
+        auto iter = cloned_nodes.find(n.first);
+        if (iter == cloned_nodes.end()) {
           continue;
         }
-        auto repl_n = cloned->cast<CNodePtr>();
+        auto repl_n = iter->second->cast<CNodePtr>();
         MS_EXCEPTION_IF_NULL(repl_n);
         repl_n->set_input(IntToSize(n.second), param);
       }
@@ -570,9 +613,9 @@ bool OptimizeAction(const ResourcePtr &res, const std::vector<PassItem> &passes)
         auto fg_name = "opt_pass_" + std::to_string(counter) + "_" + pass.first;
         auto func_graph = res->func_graph();
         MS_EXCEPTION_IF_NULL(func_graph);
-        func_graph->DumpFuncGraph(fg_name);
         DumpIR(fg_name + ".ir", func_graph);
         ExportIR(fg_name + ".dat", func_graph);
+        func_graph->DumpFuncGraph(fg_name);
         MS_LOG(DEBUG) << "Dump " << fg_name << " func graph.";
       }
 #endif
@@ -603,7 +646,10 @@ bool VmOptimizeAction(const ResourcePtr &res) {
     kVmPasses.push_back({"server_communication_op_fusion", ps::Util::FuseServerCommOps});
   }
 #endif
-  return OptimizeAction(res, kVmPasses);
+  auto ret = OptimizeAction(res, kVmPasses);
+  TraceManager::ClearParseOrResolveDebugInfo();
+  TraceManager::CloseRecordDebugInfoFlag();
+  return ret;
 }
 
 bool PynativeElimOpt(const ResourcePtr &res) {
@@ -698,8 +744,11 @@ bool TaskEmitAction(const ResourcePtr &res) {
   if (res->func_graph() == nullptr) {
     MS_LOG(EXCEPTION) << "TaskEmit args error";
   }
-  // Disable mindRT in the control flow scenario.
-  ResetMindRTEnable(res);
+  auto closure_env = std::getenv("MS_DEV_ENABLE_CLOSURE");
+  if (closure_env == nullptr) {
+    // Disable mindRT in the control flow scenario.
+    ResetMindRTEnable(res);
+  }
   FuncGraphPtr func_graph = res->func_graph();
   MS_EXCEPTION_IF_NULL(func_graph);
   auto bc_ptr = res->results()[kBackend].cast<compile::BackendPtr>();
@@ -715,6 +764,9 @@ bool TaskEmitAction(const ResourcePtr &res) {
     std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
     auto manager = func_graph->manager();
     auto graphs = manager->func_graphs();
+    if (graphs.size() > 1 && device_target == kAscendDevice) {
+      MS_LOG(INFO) << "This func_graph has control flow nodes, owns " << graphs.size() << " subgraphs.";
+    }
     bool exist_while =
       std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
     if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
@@ -728,7 +780,6 @@ bool TaskEmitAction(const ResourcePtr &res) {
       context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, false);
     }
   }
-
   // The graph compiling of mindRT.
   if ((backend == kMsConvert) && context_ptr->get_param<bool>(MS_CTX_ENABLE_MINDRT)) {
     TaskEmitActionForMindRT(res);
@@ -810,6 +861,15 @@ bool StartFLWorkerAction(const ResourcePtr &) {
 }
 
 bool StartPSServerAction(const ResourcePtr &res) {
+  if (distributed::cluster::ClusterContext::instance()->initialized()) {
+    MS_LOG(INFO) << "This node is server. Start wait for finalizing.";
+    if (!distributed::cluster::ClusterContext::instance()->Finalize(UINT32_MAX)) {
+      MS_LOG(ERROR) << "Failed to finalize server.";
+      return false;
+    }
+    MS_LOG(INFO) << "Server is successfully finalized.";
+    return true;
+  }
   MS_EXCEPTION_IF_NULL(res);
   FuncGraphPtr func_graph = res->func_graph();
   auto &ps = ps::ParameterServer::GetInstance();
@@ -855,6 +915,10 @@ bool StartServerAction(const ResourcePtr &res) {
     std::max(static_cast<size_t>(std::ceil(share_secrets_threshold * share_secrets_ratio)), update_model_threshold);
   size_t client_list_threshold = std::max(static_cast<size_t>(std::ceil(update_model_threshold * share_secrets_ratio)),
                                           reconstruct_secrets_threshold);
+  size_t push_list_sign_threshold = std::max(
+    static_cast<size_t>(std::ceil(client_list_threshold * share_secrets_ratio)), reconstruct_secrets_threshold);
+  size_t get_list_sign_threshold = std::max(
+    static_cast<size_t>(std::ceil(push_list_sign_threshold * share_secrets_ratio)), reconstruct_secrets_threshold);
 #ifdef ENABLE_ARMOUR
   std::string encrypt_type = ps::PSContext::instance()->encrypt_type();
   if (encrypt_type == ps::kPWEncryptType) {
@@ -865,11 +929,21 @@ bool StartServerAction(const ResourcePtr &res) {
     rounds_config.push_back({"getSecrets", true, cipher_time_window, true, get_secrets_threshold});
     rounds_config.push_back({"getClientList", true, cipher_time_window, true, client_list_threshold});
     rounds_config.push_back({"reconstructSecrets", true, cipher_time_window, true, reconstruct_secrets_threshold});
+    if (ps::PSContext::instance()->pki_verify()) {
+      rounds_config.push_back({"pushListSign", true, cipher_time_window, true, push_list_sign_threshold});
+      rounds_config.push_back({"getListSign", true, cipher_time_window, true, get_list_sign_threshold});
+    }
+  }
+  if (encrypt_type == ps::kStablePWEncryptType) {
+    MS_LOG(INFO) << "Add stable secure aggregation rounds.";
+    rounds_config.push_back({"exchangeKeys", true, cipher_time_window, true, exchange_keys_threshold});
+    rounds_config.push_back({"getKeys", true, cipher_time_window, true, get_keys_threshold});
   }
 #endif
   fl::server::CipherConfig cipher_config = {
-    share_secrets_ratio,     cipher_time_window,    exchange_keys_threshold, get_keys_threshold,
-    share_secrets_threshold, get_secrets_threshold, client_list_threshold,   reconstruct_secrets_threshold};
+    share_secrets_ratio,     cipher_time_window,           exchange_keys_threshold, get_keys_threshold,
+    share_secrets_threshold, get_secrets_threshold,        client_list_threshold,   push_list_sign_threshold,
+    get_list_sign_threshold, reconstruct_secrets_threshold};
 
   size_t executor_threshold = 0;
   if (server_mode_ == ps::kServerModeFL || server_mode_ == ps::kServerModeHybrid) {
@@ -889,6 +963,15 @@ bool StartServerAction(const ResourcePtr &res) {
 }
 
 bool StartPSSchedulerAction(const ResourcePtr &) {
+  if (distributed::cluster::ClusterContext::instance()->initialized()) {
+    MS_LOG(INFO) << "This node is scheduler. Start wait for finalizing.";
+    if (!distributed::cluster::ClusterContext::instance()->Finalize(UINT32_MAX)) {
+      MS_LOG(ERROR) << "Failed to finalize server.";
+      return false;
+    }
+    MS_LOG(INFO) << "Scheduler is successfully finalized.";
+    return true;
+  }
   ps::Scheduler::GetInstance().Run();
   return true;
 }
@@ -989,9 +1072,11 @@ bool SetMindIRGraphAction(const ResourcePtr &res) {
                        });
   if (!AbstractBasePtrListDeepEqual(func_args, broaded_args)) {
     MS_LOG(EXCEPTION) << "The input arguments is not compatible with the function graph which has been exported before."
-                      << " Please check the args is same with export.\n"
-                      << "Export input args info:" << abstract::ArgsToString(func_args) << "\n"
-                      << "The input args info:" << abstract::ArgsToString(broaded_args);
+                      << "Please check the args is same with export.\n"
+                      << "The export input argument size: " << func_args.size() << "\n"
+                      << "The load input argument size: " << broaded_args.size() << "\n"
+                      << "Export input args info: " << abstract::ArgsToString(func_args) << "\n"
+                      << "The input args info: " << abstract::ArgsToString(broaded_args);
   }
 
   // suppose that there is not KeywordArgument for the top graph
@@ -1009,7 +1094,7 @@ bool SetMindIRGraphAction(const ResourcePtr &res) {
       broaded_args.push_back(abs_ref);
     }
   }
-  auto result = AbstractAnalyze(res, res->func_graph(), broaded_args, true);
+  (void)AbstractAnalyze(res, res->func_graph(), broaded_args, true);
   auto it = abstract::AnalysisResultCacheMgr::GetInstance().begin();
   auto it_end = abstract::AnalysisResultCacheMgr::GetInstance().end();
   for (; it != it_end; ++it) {
@@ -1086,7 +1171,7 @@ static std::vector<ActionItem> CommonPipeline() {
   (void)actions.emplace_back(std::make_pair("symbol_resolve", SymbolResolveAction));
 
   auto multi_graphs = parallel::CostModelContext::GetInstance()->is_multi_subgraphs();
-  if (!multi_graphs) {
+  if (!multi_graphs && pipeline::GetJitLevel() != "o0") {
     (void)actions.emplace_back(std::make_pair("combine_like_graphs", CombineLikeGraphs));
   }
 
@@ -1134,11 +1219,15 @@ std::vector<ActionItem> VmPipeline() {
   (void)actions.emplace_back(std::make_pair("validate", ValidateAction));
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
   if (ps::PSContext::instance()->is_worker()) {
-    std::string server_mode = ps::PSContext::instance()->server_mode();
-    if (server_mode == ps::kServerModeFL || server_mode == ps::kServerModeHybrid) {
-      (void)actions.emplace_back(std::make_pair("worker", StartFLWorkerAction));
+    if (distributed::cluster::ClusterContext::instance()->initialized()) {
+      MS_LOG(INFO) << "This worker is initialized. No need to add worker action.";
     } else {
-      (void)actions.emplace_back(std::make_pair("worker", StartPSWorkerAction));
+      std::string server_mode = ps::PSContext::instance()->server_mode();
+      if (server_mode == ps::kServerModeFL || server_mode == ps::kServerModeHybrid) {
+        (void)actions.emplace_back(std::make_pair("worker", StartFLWorkerAction));
+      } else {
+        (void)actions.emplace_back(std::make_pair("worker", StartPSWorkerAction));
+      }
     }
   }
 #endif
@@ -1189,7 +1278,10 @@ std::vector<ActionItem> PServerPipeline() {
 }
 
 std::vector<ActionItem> PSchedulerPipeline() {
-  std::vector<ActionItem> actions;
+  auto actions = CommonPipeline();
+  (void)actions.emplace_back(std::make_pair("optimize", VmOptimizeAction));
+  (void)actions.emplace_back(std::make_pair("auto_monad_reorder", OrderEnforceAction));
+  (void)actions.emplace_back(std::make_pair("validate", ValidateAction));
   (void)actions.emplace_back(std::make_pair("scheduler", StartPSSchedulerAction));
   return actions;
 }

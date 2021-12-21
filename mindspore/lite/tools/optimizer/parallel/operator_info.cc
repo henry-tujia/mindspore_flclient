@@ -16,10 +16,10 @@
 
 #include "tools/optimizer/parallel/operator_info.h"
 #include <algorithm>
-#include "tools/converter/ops/ops_def.h"
 #include "tools/optimizer/parallel/split_strategy.h"
 #include "ops/concat.h"
 #include "ops/addn.h"
+#include "ops/tuple_get_item.h"
 #include "utils/utils.h"
 #include "base/core_ops.h"
 #include "include/errorcode.h"
@@ -35,7 +35,7 @@ bool is_any_not_none(const std::vector<int64_t> &split) {
   return std::any_of(split.begin(), split.end(), [](int64_t v) { return v != static_cast<int64_t>(NoSplit); });
 }
 
-std::shared_ptr<abstract::AbstractTensor> OperatorInfo::CreateFakeAbstractTensor() {
+std::shared_ptr<abstract::AbstractTensor> OperatorInfo::CreateFakeAbstractTensor() const {
   auto type_ptr = TypeIdToType(operator_type_id_);
   std::vector<int64_t> shape_vector;
   return std::make_shared<abstract::AbstractTensor>(type_ptr, shape_vector);
@@ -120,7 +120,7 @@ int OperatorInfo::CreateMultipleOutputsOfAnfNode(const AnfNodePtr &node, size_t 
     auto abstract_scalar = std::make_shared<abstract::AbstractScalar>(index);
     MS_CHECK_TRUE_RET(abstract_scalar != nullptr, lite::RET_ERROR);
     idx->set_abstract(abstract_scalar);
-    auto tuple_getitem = func_graph_->NewCNode({NewValueNode(std::make_shared<lite::TupleGetItem>()), node, idx});
+    auto tuple_getitem = func_graph_->NewCNode({NewValueNode(std::make_shared<ops::TupleGetItem>()), node, idx});
     if (tuple_getitem == nullptr) {
       MS_LOG(ERROR) << name_ << " : Failed to create output nodes.";
       return lite::RET_ERROR;
@@ -135,7 +135,7 @@ int OperatorInfo::CreateMultipleOutputsOfAnfNode(const AnfNodePtr &node, size_t 
 }
 
 AnfNodePtr OperatorInfo::CreateConcateNode(const CNodePtr &orig_node, const std::vector<AnfNodePtr> &input_nodes,
-                                           int32_t concat_dim, size_t input_nodes_num, bool trans_format) {
+                                           int32_t concat_dim, size_t input_nodes_num) {
   MS_EXCEPTION_IF_NULL(orig_node);
   if (input_nodes.size() != input_nodes_num) {
     MS_LOG(ERROR) << name_ << " : Input nodes size of concat is not equal to input nodes number.";
@@ -162,7 +162,7 @@ AnfNodePtr OperatorInfo::CreateConcateNode(const CNodePtr &orig_node, const std:
 }
 
 AnfNodePtr OperatorInfo::CreateReduceNode(const CNodePtr &orig_node, const std::vector<AnfNodePtr> &input_nodes,
-                                          int32_t reduce_dim, size_t input_nodes_num, bool trans_format) {
+                                          size_t input_nodes_num) {
   MS_EXCEPTION_IF_NULL(orig_node);
   if (input_nodes.size() != input_nodes_num) {
     MS_LOG(ERROR) << name_ << " : Input nodes size of reduce is not equal to input nodes number.";

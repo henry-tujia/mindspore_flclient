@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <queue>
 #include "src/delegate/delegate_utils.h"
 
 namespace mindspore::lite {
@@ -40,7 +41,7 @@ TensorRTSubGraph::~TensorRTSubGraph() {
     engine_ = nullptr;
   }
   if (tensor_bindings_ != nullptr) {
-    delete tensor_bindings_;
+    delete[] tensor_bindings_;
     tensor_bindings_ = nullptr;
   }
   for (auto op : all_ops_) {
@@ -48,7 +49,7 @@ TensorRTSubGraph::~TensorRTSubGraph() {
   }
 }
 
-int TensorRTSubGraph::Init() {
+int TensorRTSubGraph::Init(cudaStream_t stream) {
   auto ret = GetGraphInOutOps(inputs_, outputs_, &in_ops_, &out_ops_, all_ops_);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Get NPU subgraph input and output ops failed.";
@@ -62,11 +63,10 @@ int TensorRTSubGraph::Init() {
   }
   for (size_t i = 0; i < inputs_.size(); i++) {
     if (inputs_[i].Shape().size() != DIMENSION_4D) {
-      MS_LOG(WARNING) << "hw dims resize is unsupported.";
       input_hw_index_ = -1;
     }
   }
-  if (SetDeviceConfig() != RET_OK) {
+  if (SetDeviceConfig(stream) != RET_OK) {
     MS_LOG(WARNING) << "set tensorrt config failed.";
   }
   profile_ = runtime_->GetBuilder()->createOptimizationProfile();
@@ -93,7 +93,7 @@ int TensorRTSubGraph::BuildEngine() {
   return RET_OK;
 }
 
-int TensorRTSubGraph::SetDeviceConfig() {
+int TensorRTSubGraph::SetDeviceConfig(cudaStream_t stream) {
   this->config_ = runtime_->GetBuilder()->createBuilderConfig();
   if (this->config_ == nullptr) {
     MS_LOG(ERROR) << "create builder config failed.";
@@ -103,12 +103,13 @@ int TensorRTSubGraph::SetDeviceConfig() {
   if (device_info_->GetEnableFP16() && runtime_->GetBuilder()->platformHasFastFp16()) {
     MS_LOG(INFO) << "set fp16 flag successfully for tensorrt.";
     config_->setFlag(nvinfer1::BuilderFlag::kFP16);
-    MS_LOG(INFO) << "hw resize is unsupported in fp16 mode for tensorrt.";
     input_hw_index_ = -1;
   }
 
-  // config setMaxWorkspaceSize to 32 MB for max limit
-  config_->setMaxWorkspaceSize(32 * (1 << 20));
+  config_->setProfileStream(stream);
+
+  // config setMaxWorkspaceSize to 1152 MB for max limit
+  config_->setMaxWorkspaceSize(1152 * (1 << 20));
   return RET_OK;
 }
 
@@ -140,6 +141,13 @@ bool TensorRTSubGraph::SupportFP16() {
 }
 
 nvinfer1::ITensor *TensorRTSubGraph::SetTensorRTNetworkInput(const mindspore::MSTensor &in_tensor) {
+  for (int i = 0; i < this->network_->getNbInputs(); i++) {
+    if (in_tensor.Name().compare(this->network_->getInput(i)->getName()) == 0) {
+      MS_LOG(INFO) << "input tensor is already added in network: " << in_tensor.Name();
+      return this->network_->getInput(i);
+    }
+  }
+
   auto cuda_dtype = ConvertDataType(in_tensor.DataType());
   if (static_cast<int>(cuda_dtype) == -1) {
     MS_LOG(ERROR) << "Unsupported input data type " << static_cast<int>(in_tensor.DataType());
@@ -149,15 +157,19 @@ nvinfer1::ITensor *TensorRTSubGraph::SetTensorRTNetworkInput(const mindspore::MS
   if (runtime_->GetBatchSize() == 0) {
     runtime_->SetBatchSize(input_dims.d[0]);
     MS_LOG(INFO) << "batch size init as " << runtime_->GetBatchSize();
-    input_dims.d[0] = -1;  // dynamic batch size with wildcard N, default batchsize is first dims
-    input_batchsize_index_ = 0;
+    if (input_batchsize_index_ != -1) {
+      input_dims.d[0] = -1;  // dynamic batch size with wildcard N, default batchsize is first dims
+      input_batchsize_index_ = 0;
+    }
   } else {
-    for (int n = 0; n < input_dims.nbDims; n++) {
-      if (input_dims.d[n] == runtime_->GetBatchSize()) {
-        // first dims equals to batchsize
-        input_dims.d[n] = -1;
-        input_batchsize_index_ = n;
-        break;
+    if (input_batchsize_index_ != -1) {
+      for (int n = 0; n < input_dims.nbDims; n++) {
+        if (input_dims.d[n] == runtime_->GetBatchSize()) {
+          // first dims equals to batchsize
+          input_dims.d[n] = -1;
+          input_batchsize_index_ = n;
+          break;
+        }
       }
     }
   }
@@ -170,27 +182,32 @@ nvinfer1::ITensor *TensorRTSubGraph::SetTensorRTNetworkInput(const mindspore::MS
   }
   // We do not need to check the return of setDimension and addOptimizationProfile here as all dims are explicitly set
   nvinfer1::Dims input_dims_min = ConvertCudaDims(in_tensor.Shape());
-  input_dims_min.d[input_batchsize_index_] = 1;
-  if (input_hw_index_ != -1) {
-    input_dims_min.d[input_hw_index_] = 1;
-    input_dims_min.d[input_hw_index_ + 1] = 1;
+  if (input_batchsize_index_ != -1) {
+    input_dims_min.d[input_batchsize_index_] = 1;
+    if (input_hw_index_ != -1) {
+      input_dims_min.d[input_hw_index_] = 1;
+      input_dims_min.d[input_hw_index_ + 1] = 1;
+    }
   }
   if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kMIN, input_dims_min)) {
-    MS_LOG(ERROR) << "setDimensions of kMIN failed.";
+    MS_LOG(ERROR) << "setDimensions of kMIN failed for " << in_tensor.Name();
     return nullptr;
   }
   nvinfer1::Dims input_dims_opt = ConvertCudaDims(in_tensor.Shape());
+  if (input_batchsize_index_ != -1) {
+    input_dims_opt.d[input_batchsize_index_] = 1;
+  }
   if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kOPT, input_dims_opt)) {
-    MS_LOG(ERROR) << "setDimensions of kOPT failed.";
+    MS_LOG(ERROR) << "setDimensions of kOPT failed for " << in_tensor.Name();
     return nullptr;
   }
   nvinfer1::Dims input_dims_max = ConvertCudaDims(in_tensor.Shape());
   // input_dims_max should be the same with input network dims
   if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kMAX, input_dims_max)) {
-    MS_LOG(ERROR) << "setDimensions of kMAX failed.";
+    MS_LOG(ERROR) << "setDimensions of kMAX failed for " << in_tensor.Name();
     return nullptr;
   }
-
+  MS_LOG(INFO) << "add network input: " << in_tensor.Name();
   return this->network_->addInput(in_tensor.Name().c_str(), cuda_dtype, input_dims);
 }
 
@@ -198,7 +215,9 @@ int TensorRTSubGraph::BuildTensorRTGraph() {
   MS_ASSERT(!all_ops_.empty());
   // Connect NetWork.
   int ret;
+
   for (auto cur_op : all_ops_) {
+    cur_op->SetRuntime(runtime_);
     for (auto in_tensor : cur_op->inputs()) {
       // Data From CPU
       if (IsSubGraphInputTensor(this->inputs(), in_tensor)) {
@@ -207,21 +226,27 @@ int TensorRTSubGraph::BuildTensorRTGraph() {
           MS_LOG(ERROR) << "SetTensorRTNetworkInput failed for " << in_tensor.Name();
           return RET_ERROR;
         }
-        cur_op->AddInnerInTensors(ITensorHelper{trt_tensor, in_tensor.format()});
+        cur_op->AddInnerInTensors(ITensorHelper{trt_tensor, in_tensor.format(), true});
         continue;
       }
 
       ITensorHelper trt_tensor = FindTensorRTInputs(cur_op, in_tensor);
       if (trt_tensor.trt_tensor_ == nullptr) {
         // weight tensor
-        if (trt_specific_weight_nodes_.find(cur_op->type()) == trt_specific_weight_nodes_.end()) {
-          if (in_tensor == nullptr) {
-            MS_LOG(ERROR) << "Weight Tensor is nullptr.";
+        if (IsCached(cur_op, in_tensor) && in_tensor.Data() != nullptr) {
+          ret = HandleCacheTensor(cur_op, in_tensor);
+          if (ret != RET_OK) {
+            MS_LOG(ERROR) << "HandleCacheTensor failed for " << in_tensor.Name();
             return RET_ERROR;
           }
-          trt_tensor.trt_tensor_ = lite::ConvertConstantTensor(this->network_, in_tensor);
+        } else if (trt_specific_weight_nodes_.find(cur_op->type()) == trt_specific_weight_nodes_.end()) {
+          if (in_tensor.Data() == nullptr) {
+            MS_LOG(ERROR) << "Weight Tensor data is nullptr.";
+            return RET_ERROR;
+          }
+          trt_tensor.trt_tensor_ = lite::ConvertConstantTensor(this->network_, in_tensor, cur_op->GetOpName());
           trt_tensor.format_ = Format::NHWC;
-          MS_LOG(INFO) << "auto convert constant tensor for: " << cur_op->GetOpName();
+          MS_LOG(INFO) << "auto convert constant tensor for: " << in_tensor.Name();
           cur_op->AddInnerInTensors(trt_tensor);
         }
       } else {
@@ -262,7 +287,8 @@ int TensorRTSubGraph::MarkOutputs() {
         if (out_op->outputs()[index] == out_tensor) {
           nvinfer1::ITensor *out_trt_tensor = out_op->GetInnerOutTensor()[index].trt_tensor_;
           if (out_op->GetInnerOutTensor()[index].trt_tensor_->getDimensions().nbDims == DIMENSION_4D &&
-              out_op->GetInnerOutTensor()[index].format_ == Format::NCHW) {
+              out_op->GetInnerOutTensor()[index].format_ == Format::NCHW &&
+              !SameDims(out_op->GetInnerOutTensor()[index].trt_tensor_->getDimensions(), out_tensor.Shape())) {
             // transpose subgraph output from nchw to nhwc
             nvinfer1::IShuffleLayer *transpose_layer_out =
               NCHW2NHWC(network_, *out_op->GetInnerOutTensor()[index].trt_tensor_);
@@ -271,6 +297,7 @@ int TensorRTSubGraph::MarkOutputs() {
               return RET_ERROR;
             }
             transpose_layer_out->setName((out_tensor.Name() + "_transpose2NHWC").c_str());
+            out_trt_tensor = transpose_layer_out->getOutput(0);
           }
 
           out_trt_tensor->setName(out_tensor.Name().c_str());
@@ -290,7 +317,10 @@ int TensorRTSubGraph::MarkOutputs() {
 }
 
 int TensorRTSubGraph::Prepare() {
-  lite::SetCudaDevice(device_info_);
+  int ret = lite::SetCudaDevice(device_info_);
+  if (ret != RET_OK) {
+    return ret;
+  }
   if (this->engine_ == nullptr) {
     MS_LOG(ERROR) << "engine_ is null in this builder_";
     return RET_ERROR;
@@ -327,11 +357,31 @@ int TensorRTSubGraph::Prepare() {
     }
   }
 
+  // malloc for cache weight tensor
+  for (auto cache_tensor : cache_const_inputs_) {
+    size_t data_size = cache_mgr_->GetCacheDataSize(cache_tensor);
+    auto device_ptr = runtime_->GetAllocator()->MallocDeviceMem(cache_tensor, data_size);
+    runtime_->GetAllocator()->MarkMemValid(cache_tensor.Name().c_str(), true);
+    int index = this->engine_->getBindingIndex(cache_tensor.Name().c_str());
+    tensor_bindings_[index] = device_ptr;
+    auto cache_ret = cache_mgr_->SetDeviceCacheAddr(cache_tensor.Name(), device_ptr, data_size);
+    if (cache_ret != kSuccess) {
+      MS_LOG(ERROR) << "SetDeviceCacheAddr failed, cache tensor: " << cache_tensor.Name();
+      return RET_ERROR;
+    }
+  }
+
   if (!this->trt_context_->allInputDimensionsSpecified()) {
     MS_LOG(ERROR) << "input dims need to be specified.";
     return RET_ERROR;
   }
-
+  for (auto op : all_ops_) {
+    ret = op->Prepare(tensor_bindings_, engine_);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "prepare op failed of " << op->GetOpName();
+      return RET_ERROR;
+    }
+  }
   for (auto tensor : outputs_) {
     tensor.MutableData();
     auto device_ptr = runtime_->GetAllocator()->MallocDeviceMem(tensor, tensor.DataSize());
@@ -347,6 +397,10 @@ int TensorRTSubGraph::Prepare() {
 }
 
 int TensorRTSubGraph::ReSize() {
+  if (input_batchsize_index_ == -1) {
+    MS_LOG(ERROR) << "current network don't support resize.";
+    return RET_ERROR;
+  }
   for (size_t i = 0; i < trt_in_tensor_name_.size(); i++) {
     // only support resize batch size
     for (int j = 0; j < this->network_->getNbInputs(); j++) {
@@ -373,7 +427,7 @@ int TensorRTSubGraph::ReSize() {
         }
       }
     }
-    MS_LOG(INFO) << "input_batch_index " << input_batchsize_index_ << ", update batch size to "
+    MS_LOG(INFO) << "resize at input_batch_index " << input_batchsize_index_ << ", update batch size to "
                  << inputs_[i].Shape()[input_batchsize_index_];
     runtime_->SetBatchSize(inputs_[i].Shape()[input_batchsize_index_]);
 
@@ -416,22 +470,44 @@ int TensorRTSubGraph::ReSize() {
 }
 
 int TensorRTSubGraph::Execute() {
-  lite::SetCudaDevice(device_info_);
+  int ret = lite::SetCudaDevice(device_info_);
+  if (ret != RET_OK) {
+    return ret;
+  }
   if (runtime_->GetBatchSize() <= 0) {
     MS_LOG(ERROR) << "TensorRTSubGraph has invalid batch size.";
     return RET_ERROR;
   }
   for (size_t i = 0; i < inputs_.size(); i++) {
-    runtime_->GetAllocator()->MarkMemValid(trt_in_tensor_name_[i], false);
-    int ret = runtime_->GetAllocator()->SyncMemInHostAndDevice(inputs_[i], trt_in_tensor_name_[i], true);
+    if (runtime_->GetAllocator()->GetMemIsValid(trt_in_tensor_name_[i])) {
+      MS_LOG(INFO) << "no need memcpy to cuda for input tensor: " << trt_in_tensor_name_[i];
+      continue;
+    }
+
+    auto iter = model_input_to_cache_tensors_.find(trt_in_tensor_name_[i]);
+    if (iter != model_input_to_cache_tensors_.end()) {
+      for (auto &cache_tensor : iter->second) {
+        ret = cache_mgr_->CacheHandle(cache_tensor.Name(), inputs_[i],
+                                      runtime_->GetAllocator()->GetDevicePtr(trt_in_tensor_name_[i]));
+        if (ret != RET_OK) {
+          MS_LOG(ERROR) << "handle cache failed " << trt_in_tensor_name_[i];
+          return RET_ERROR;
+        }
+        runtime_->GetAllocator()->MarkMemValid(trt_in_tensor_name_[i], true);
+        MS_LOG(DEBUG) << cache_tensor.Name() << " CacheHandle succ " << trt_in_tensor_name_[i];
+      }
+      continue;
+    }
+
+    ret = runtime_->GetAllocator()->SyncMemInHostAndDevice(inputs_[i], trt_in_tensor_name_[i], true);
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "sync mem from host to device failed for " << trt_in_tensor_name_[i];
       return ret;
     }
+    runtime_->GetAllocator()->MarkMemValid(trt_in_tensor_name_[i], true);
   }
 
-  auto ret = this->trt_context_->executeV2(tensor_bindings_);
-  if (!ret) {
+  if (!this->trt_context_->executeV2(tensor_bindings_)) {
     MS_LOG(ERROR) << "TensorRT execute failed.";
     return RET_ERROR;
   }
@@ -442,8 +518,10 @@ int TensorRTSubGraph::Execute() {
     auto out_dims = this->trt_context_->getBindingDimensions(index);
     std::vector<int64_t> new_shape = lite::ConvertMSShape(out_dims);
     // batchsize resize need set new batch size
-    if (runtime_->GetBatchSize() != new_shape[output_batchsize_index_]) {
-      new_shape[output_batchsize_index_] = runtime_->GetBatchSize();
+    if (input_batchsize_index_ != -1) {
+      if (runtime_->GetBatchSize() != new_shape[output_batchsize_index_]) {
+        new_shape[output_batchsize_index_] = runtime_->GetBatchSize();
+      }
     }
     for (int od = 0; od < out_dims.nbDims; od++) {
       MS_LOG(DEBUG) << "out tensor " << trt_out_tensor_name_[i] << " dims at " << od << " is " << new_shape[od];
@@ -460,6 +538,11 @@ int TensorRTSubGraph::Execute() {
       MS_LOG(ERROR) << "sync mem from device to host failed for " << trt_out_tensor_name_[i];
       return sync_ret;
     }
+    runtime_->GetAllocator()->MarkMemValid(trt_out_tensor_name_[i], false);
+  }
+  // make mem invalid, prepare for next execute
+  for (size_t i = 0; i < inputs_.size(); i++) {
+    runtime_->GetAllocator()->MarkMemValid(trt_in_tensor_name_[i], false);
   }
   return RET_OK;
 }
@@ -468,11 +551,73 @@ ITensorHelper TensorRTSubGraph::FindTensorRTInputs(TensorRTOp *cur_op, const min
   for (auto input_op : cur_op->in_ops()) {
     for (size_t i = 0; i < input_op->outputs().size(); i++) {
       auto out_tensor = input_op->outputs().at(i);
-      if (in_tensor == out_tensor) {
+      if (in_tensor.Name().compare(out_tensor.Name()) == 0) {
         return input_op->GetInnerOutTensor().at(i);
       }
     }
   }
   return ITensorHelper{};
+}
+bool TensorRTSubGraph::IsCached(TensorRTOp *cur_op, const mindspore::MSTensor &in_tensor) {
+  return cache_mgr_ != nullptr && cache_mgr_->IsCacheTensor(in_tensor);
+}
+
+void TensorRTSubGraph::FindCacheTensorInfo(TensorRTOp *cur_op, mindspore::MSTensor device_cache_tensor) {
+  auto iter = network_cache_tensor_info_.find(cur_op->GetOpName());
+  if (iter != network_cache_tensor_info_.end()) {
+    return;
+  }
+  std::queue<TensorRTOp *> front_ops;
+  front_ops.push(cur_op);
+  network_cache_tensor_info_[cur_op->GetOpName()].front_op_can_cache_ = true;
+  iter = network_cache_tensor_info_.find(cur_op->GetOpName());
+  while (!front_ops.empty()) {
+    auto front_op = front_ops.front();
+    iter->second.front_op_can_cache_ = CanOpCache(front_op) ? iter->second.front_op_can_cache_ : false;
+    for (auto in_tensor : front_op->inputs()) {
+      if (IsSubGraphInputTensor(this->inputs(), in_tensor)) {
+        iter->second.network_input_tensor_.push_back(in_tensor);
+        model_input_to_cache_tensors_[in_tensor.Name()].push_back(device_cache_tensor);
+        MS_LOG(DEBUG) << cur_op->GetOpName() << "'s network input tensor name is " << in_tensor.Name()
+                      << ", can cache: " << iter->second.front_op_can_cache_;
+      }
+    }
+    for (auto fronts_op : front_op->in_ops()) {
+      front_ops.push(fronts_op);
+    }
+    front_ops.pop();
+  }
+}
+
+bool TensorRTSubGraph::CanOpCache(TensorRTOp *cur_op) { return true; }
+
+int TensorRTSubGraph::HandleCacheTensor(TensorRTOp *cur_op, const mindspore::MSTensor &in_tensor) {
+  FindCacheTensorInfo(cur_op, in_tensor);
+  // cache kernel weight tensor
+  cache_const_inputs_.push_back(in_tensor);
+  auto shape = cache_mgr_->GetCacheShape(in_tensor);
+  MS_LOG(INFO) << "auto add cache constant tensor for: " << in_tensor.Name();
+  auto cuda_dtype = ConvertDataType(in_tensor.DataType());
+  nvinfer1::Dims input_dims = ConvertCudaDims(shape);
+  nvinfer1::ITensor *cache_input = network_->addInput(in_tensor.Name().c_str(), cuda_dtype, input_dims);
+  if (cache_input == nullptr) {
+    MS_LOG(ERROR) << "add cache Weight Tensor data is nullptr.";
+    return RET_ERROR;
+  }
+  if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kMIN, input_dims)) {
+    MS_LOG(ERROR) << "setDimensions of kMIN failed for " << in_tensor.Name();
+    return RET_ERROR;
+  }
+  if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kOPT, input_dims)) {
+    MS_LOG(ERROR) << "setDimensions of kOPT failed for " << in_tensor.Name();
+    return RET_ERROR;
+  }
+  if (!profile_->setDimensions(in_tensor.Name().c_str(), nvinfer1::OptProfileSelector::kMAX, input_dims)) {
+    MS_LOG(ERROR) << "setDimensions of kMAX failed for " << in_tensor.Name();
+    return RET_ERROR;
+  }
+  ITensorHelper trt_tensor{cache_input, Format::NHWC, true};
+  cur_op->AddInnerInTensors(trt_tensor);
+  return RET_OK;
 }
 }  // namespace mindspore::lite

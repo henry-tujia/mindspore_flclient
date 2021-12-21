@@ -43,7 +43,7 @@ int ScaleFp16CPUKernel::InitScaleOffset() {
   return RET_OK;
 }
 
-int ScaleFp16CPUKernel::Init() {
+int ScaleFp16CPUKernel::Prepare() {
   if (in_tensors_.size() < 2 || in_tensors_.size() > 3) {
     MS_LOG(ERROR) << "inputs to Scale operator should be 2 or 3, but " << in_tensors_.size() << " is given.";
     return RET_ERROR;
@@ -143,7 +143,7 @@ int ScaleFp16CPUKernel::MallocAssignTmpBuffer() {
       return RET_ERROR;
     }
   } else {
-    MS_CHECK_INT_MUL_NOT_OVERFLOW(in_tensors_.at(1)->ElementsNum(), sizeof(float16_t), RET_ERROR);
+    MS_CHECK_INT_MUL_NOT_OVERFLOW(in_tensors_.at(1)->ElementsNum(), static_cast<int>(sizeof(float16_t)), RET_ERROR);
     offset_ = reinterpret_cast<float16_t *>(
       ms_context_->allocator->Malloc(in_tensors_.at(1)->ElementsNum() * sizeof(float16_t)));
     if (offset_ == nullptr) {

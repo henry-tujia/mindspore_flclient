@@ -94,12 +94,13 @@ Status VirtualDatasetInfo::InferMirrorOps() { return SUCCESS; }
 Status VirtualDatasetInfo::InferForwardCommunication() { return SUCCESS; }
 
 Status VirtualDatasetInfo::InferTensorMap() {
-  auto slice_dim_iter = std::find(dev_matrix_shape_.begin(), dev_matrix_shape_.end(), shard_num_);
-  if (slice_dim_iter == dev_matrix_shape_.end()) {
+  auto dev_mat_origin = strategy_->GetInputDim()[max_size_strategy_dim_];
+  auto slice_dim_iter = std::find(dev_mat_origin.begin(), dev_mat_origin.end(), shard_num_);
+  if (slice_dim_iter == dev_mat_origin.end()) {
     MS_LOG(ERROR) << name_ << ": The dataset shard strategy only support shard in one dim.";
     return FAILED;
   }
-  size_t slice_dim = size_t(slice_dim_iter - dev_matrix_shape_.begin());
+  size_t slice_dim = size_t(slice_dim_iter - dev_mat_origin.begin());
   auto stra = strategy_->GetInputDim();
   for (size_t i = 0; i < stra.size(); i++) {
     Shape tensor_map_index;
@@ -107,7 +108,12 @@ Status VirtualDatasetInfo::InferTensorMap() {
       if (dim == 1) {
         tensor_map_index.push_back(MAP_NONE);
       } else if (dim == shard_num_) {
-        tensor_map_index.push_back(dev_matrix_shape_.size() - 1 - slice_dim);
+        if (repeated_num_in_dev_matrix_right_ && dev_matrix_shape_.size() != dev_mat_origin.size() &&
+            is_auto_parallel_) {
+          tensor_map_index.push_back(dev_mat_origin.size() - slice_dim);
+        } else {
+          tensor_map_index.push_back(dev_mat_origin.size() - 1 - slice_dim);
+        }
       } else {
         MS_LOG(ERROR) << name_ << ": The dataset shard strategy only support shard in one dim.";
         return FAILED;
@@ -121,21 +127,25 @@ Status VirtualDatasetInfo::InferTensorMap() {
 
 Status VirtualDatasetInfo::GetAttrs() { return SUCCESS; }
 
-Status VirtualDatasetInfo::Init(const StrategyPtr &strategy) {
+Status VirtualDatasetInfo::Init(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
   repeated_num_in_dev_matrix_right_ = false;
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
+  if (ParallelContext::GetInstance()->dataset_repeat_dim_right()) {
+    repeated_num_in_dev_matrix_right_ = true;
+  }
+  if (InitWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
     MS_LOG(ERROR) << name_ << ": Init failed.";
     return FAILED;
   }
   return SUCCESS;
 }
 
-Status VirtualDatasetInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
+Status VirtualDatasetInfo::InitForCostModel(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
+  is_auto_parallel_ = true;
+  if (InitForCostModelWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
     MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
     return FAILED;
   }
-
+  is_auto_parallel_ = false;
   MS_LOG(INFO) << name_ << ": Init for cost model success.";
   return SUCCESS;
 }

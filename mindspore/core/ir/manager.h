@@ -19,11 +19,9 @@
 #ifndef MINDSPORE_CORE_IR_MANAGER_H_
 #define MINDSPORE_CORE_IR_MANAGER_H_
 
-#include <unordered_set>
 #include <set>
 #include <map>
 #include <list>
-#include <deque>
 #include <string>
 #include <vector>
 #include <utility>
@@ -33,6 +31,8 @@
 #include "utils/any.h"
 #include "utils/misc.h"
 #include "utils/signal.h"
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "utils/ordered_set.h"
 #include "utils/ordered_map.h"
 #include "ir/anf.h"
@@ -55,9 +55,9 @@ class FuncGraphTransaction;
 class FuncGraphManager;
 using FuncGraphManagerPtr = std::shared_ptr<FuncGraphManager>;
 
-using AnfNodeIndexSet = api::AnfNodeIndexSet;
+using AnfNodeIndexSet = deprecated::api::AnfNodeIndexSet;
 // NodeUsersMap, for node B input i use node A, it will be one item in map with key: A, and value: (B, i)
-using NodeUsersMap = api::NodeUsersMap;
+using NodeUsersMap = deprecated::api::NodeUsersMap;
 using FuncGraphSetPair = std::pair<FuncGraphPtr, FuncGraphSet>;
 using FuncGraphSetPtr = std::shared_ptr<FuncGraphSet>;
 
@@ -137,7 +137,7 @@ class FuncGraphParentsTotalComputer final : public DepComputer {
   void RealRecompute(FuncGraphPtr fg) override;
 
  private:
-  FuncGraphSetPtr SeekParents(const FuncGraphPtr &fg, size_t seen_num);
+  FuncGraphSetPtr SeekParents(const FuncGraphPtr &fg, mindspore::HashMap<FuncGraphPtr, FuncGraphSetPtr> *seen_fgs);
 };
 
 using FuncGraphToFuncGraphMap = OrderedMap<FuncGraphPtr, FuncGraphPtr>;
@@ -277,7 +277,8 @@ class FuncGraphJTotalComputer final : public DepComputer {
   bool SeekJ(const FuncGraphPtr &fg, size_t seen_num);
 };
 
-class FuncGraphManager : public std::enable_shared_from_this<FuncGraphManager>, public api::FuncGraphManager {
+class FuncGraphManager : public std::enable_shared_from_this<FuncGraphManager>,
+                         public deprecated::api::FuncGraphManager {
  public:
   explicit FuncGraphManager(const std::vector<FuncGraphPtr> &roots, bool manage = true);
   ~FuncGraphManager() {
@@ -303,7 +304,7 @@ class FuncGraphManager : public std::enable_shared_from_this<FuncGraphManager>, 
   void MoveAllCNodeDropGraph(const FuncGraphPtr &source, const FuncGraphPtr &target, const ScopePtr &scope);
 
   FuncGraphTransaction Transact();
-  void CommitChanges(std::deque<change::ChangePtr> &&changes);
+  void CommitChanges(std::vector<change::ChangePtr> &&changes);
 
   bool IsManaged() const { return is_manage_; }
 
@@ -404,7 +405,7 @@ class FuncGraphTransaction {
 
  private:
   FuncGraphManager *manager_;
-  std::deque<change::ChangePtr> changes_;
+  std::vector<change::ChangePtr> changes_;
 };
 
 inline FuncGraphTransaction FuncGraphManager::Transact() { return FuncGraphTransaction(this); }

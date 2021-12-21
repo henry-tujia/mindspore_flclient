@@ -32,6 +32,11 @@ typedef struct CpuDeviceInfo {
 typedef struct GpuDeviceInfo {
   bool enable_float16_ = false; /**< prior enable float16 inference */
   uint32_t gpu_device_id_ = 0;
+  int rank_id_ = 0;
+  int group_size_ = 0;
+  bool enable_gl_texture_ = false; /**<enable sharing OpenGL texture with OpenCL */
+  void *gl_context_ = nullptr;
+  void *gl_display_ = nullptr;
 } GpuDeviceInfo;
 
 /// \brief NpuDeviceInfo defined for NPU's configuration information.
@@ -39,16 +44,18 @@ typedef struct NpuDeviceInfo {
   int frequency_ = 3; /**< npu frequency inference, low 1, medium 2, high 3, extreme 4, other values will be set to 3 */
 } NpuDeviceInfo;
 
-/// \brief Ascend310DeviceInfo defined for Ascend's configuration information.
+/// \brief AscendDeviceInfo defined for Ascend's configuration information.
 typedef struct AscendDeviceInfo {
   uint32_t device_id_;
+  std::string batch_size_;
+  std::string image_size_;
 } AscendDeviceInfo;
 /// \brief DeviceInfo defined for backend's configuration information.
 struct DeviceInfo {
   CpuDeviceInfo cpu_device_info_;
   GpuDeviceInfo gpu_device_info_;
   NpuDeviceInfo npu_device_info_;
-  AscendDeviceInfo ascend310_device_info_;
+  AscendDeviceInfo ascend_device_info_;
 };
 
 /// \brief DeviceContext defined for holding backend's configuration information.

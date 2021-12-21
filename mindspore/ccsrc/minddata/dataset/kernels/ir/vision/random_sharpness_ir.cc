@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -44,12 +45,12 @@ Status RandomSharpnessOperation::ValidateParams() {
     std::string err_msg = "RandomSharpness: degrees must be a vector of two values and greater than or equal to 0.";
     MS_LOG(ERROR) << "RandomSharpness: degrees must be a vector of two values and greater than or equal to 0, got: "
                   << degrees_;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (degrees_[dimension_one] < degrees_[dimension_zero]) {
     std::string err_msg = "RandomSharpness: degrees must be in the format of (min, max).";
     MS_LOG(ERROR) << "RandomSharpness: degrees must be in the format of (min, max), got: " << degrees_;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -66,7 +67,7 @@ Status RandomSharpnessOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status RandomSharpnessOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("degrees") != op_params.end(), "Failed to find degrees");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "degrees", kRandomSharpnessOperation));
   std::vector<float> degrees = op_params["degrees"];
   *operation = std::make_shared<vision::RandomSharpnessOperation>(degrees);
   return Status::OK();

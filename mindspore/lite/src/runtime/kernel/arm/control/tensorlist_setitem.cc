@@ -30,7 +30,7 @@ constexpr int kNumInputSize = 3;
 constexpr int kNumInput2 = 2;
 }  // namespace
 namespace mindspore::kernel {
-int TensorListSetItemCPUKernel::Init() {
+int TensorListSetItemCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), kNumInputSize);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_.at(0));
@@ -127,7 +127,10 @@ int TensorListSetItemCPUKernel::Run() {
     } else {
       auto src = input0_->GetTensor(i);
       auto dst = output0_->GetTensor(i);
-      MS_ASSERT(src != nullptr);
+      if (src == nullptr) {
+        MS_LOG(ERROR) << "src is nullptr.";
+        return RET_NULL_PTR;
+      }
       // merge move data will delete tensors
       if (dst == nullptr) {
         dst = lite::Tensor::CopyTensor(*src, src->data() != nullptr, ms_context_->allocator);

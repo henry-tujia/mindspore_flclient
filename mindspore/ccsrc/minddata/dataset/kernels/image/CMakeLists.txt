@@ -8,6 +8,7 @@ endif()
 add_library(kernels-image OBJECT
     adjust_gamma_op.cc
     affine_op.cc
+    auto_augment_op.cc
     auto_contrast_op.cc
     bounding_box.cc
     center_crop_op.cc
@@ -28,15 +29,20 @@ add_library(kernels-image OBJECT
     normalize_pad_op.cc
     pad_op.cc
     posterize_op.cc
+    random_adjust_sharpness_op.cc
     random_affine_op.cc
+    random_auto_contrast_op.cc
     random_color_adjust_op.cc
     random_crop_decode_resize_op.cc
     random_crop_and_resize_with_bbox_op.cc
     random_crop_and_resize_op.cc
     random_crop_op.cc
     random_crop_with_bbox_op.cc
+    random_equalize_op.cc
     random_horizontal_flip_op.cc
     random_horizontal_flip_with_bbox_op.cc
+    random_invert_op.cc
+    random_lighting_op.cc
     bounding_box_augment_op.cc
     random_posterize_op.cc
     random_resize_op.cc

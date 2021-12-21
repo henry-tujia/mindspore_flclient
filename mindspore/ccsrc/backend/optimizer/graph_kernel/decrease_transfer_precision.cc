@@ -30,8 +30,8 @@
 #include "backend/kernel_compiler/common_utils.h"
 #include "runtime/device/kernel_info.h"
 #include "backend/optimizer/graph_kernel/decrease_transfer_precision.h"
-namespace mindspore {
-namespace opt {
+
+namespace mindspore::graphkernel {
 static const size_t GK_MIN_SIZE = 2;  // 2
 
 int64_t ObtainGetItemIndex(const AnfNodePtr &getitem) {
@@ -157,7 +157,7 @@ bool DecreaseTransferPrecision::Process_Father(const FuncGraphPtr &, const AnfNo
     gk_graph->AddNode(cnode);
     cnode->set_abstract(std::make_shared<abstract::AbstractTensor>(kFloat16, GetShape(old_output)));
     cnode->set_scope(old_output->scope());
-    SetNodeAttrSafely("dst_type", MakeValue(kernel::TypeId2String(kFloat16->type_id())), cnode);
+    SetNodeAttrSafely(kAttrDstType, kFloat16, cnode);
     cnode->set_kernel_info(std::make_shared<device::KernelInfo>());
     std::vector<std::string> cnode_input_format = {AnfAlgo::GetOutputFormat(old_output, 0)};
     std::vector<TypeId> cnode_input_type = {kNumberTypeFloat32};
@@ -268,7 +268,7 @@ bool DecreaseTransferPrecision::Process_Son(const FuncGraphPtr &, const AnfNodeP
   gk_graph->AddNode(cnode);
   cnode->set_abstract(old_input->abstract());
   cnode->set_scope(old_input->scope());
-  SetNodeAttrSafely("dst_type", MakeValue(kernel::TypeId2String(kFloat32->type_id())), cnode);
+  SetNodeAttrSafely(kAttrDstType, kFloat32, cnode);
   MS_EXCEPTION_IF_NULL(cnode);
   old_input->set_abstract(std::make_shared<abstract::AbstractTensor>(kFloat16, GetShape(old_input)));
   cnode->set_kernel_info(std::make_shared<device::KernelInfo>());
@@ -289,5 +289,4 @@ bool DecreaseTransferPrecision::Process_Son(const FuncGraphPtr &, const AnfNodeP
   (void)mng->Replace(old_input, cnode);
   return true;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

@@ -44,7 +44,7 @@ Status PKSamplerRT::InitSampler() {
   // Compute that here for this case to find the total number of samples that are available to return.
   // (in this case, samples per class * total classes).
   if (samples_per_class_ > std::numeric_limits<int64_t>::max() / static_cast<int64_t>(labels_.size())) {
-    RETURN_STATUS_UNEXPECTED("Overflow in counting  num_rows");
+    RETURN_STATUS_UNEXPECTED("[Internal ERROR] Overflow in counting num_rows");
   }
   num_rows_ = samples_per_class_ * static_cast<int64_t>(labels_.size());
 
@@ -69,9 +69,10 @@ Status PKSamplerRT::InitSampler() {
 }
 
 Status PKSamplerRT::GetNextSample(TensorRow *out) {
+  RETURN_UNEXPECTED_IF_NULL(out);
   if (next_id_ > num_samples_ || num_samples_ == 0) {
     RETURN_STATUS_UNEXPECTED(
-      "Sampler index must be less than or equal to num_samples(total rows in dataset), but got: " +
+      "[Internal ERROR] Sampler index must be less than or equal to num_samples(total rows in dataset), but got: " +
       std::to_string(next_id_) + ", num_samplers:" + std::to_string(num_samples_));
   } else if (next_id_ == num_samples_) {
     (*out) = TensorRow(TensorRow::kFlagEOE);
@@ -133,6 +134,7 @@ void PKSamplerRT::SamplerPrint(std::ostream &out, bool show_all) const {
 }
 
 Status PKSamplerRT::to_json(nlohmann::json *out_json) {
+  RETURN_UNEXPECTED_IF_NULL(out_json);
   nlohmann::json args;
   RETURN_IF_NOT_OK(SamplerRT::to_json(&args));
   args["sampler_name"] = "PKSampler";

@@ -22,9 +22,14 @@
 #include <algorithm>
 #include "backend/kernel_compiler/gpu/data/dataset_utils.h"
 #include "backend/kernel_compiler/common_utils.h"
+#ifndef ENABLE_SECURITY
 #include "profiler/device/gpu/gpu_profiling.h"
+#endif
 #include "runtime/device/gpu/gpu_buffer_mgr.h"
 #include "runtime/device/gpu/gpu_common.h"
+#ifdef ENABLE_DUMP_IR
+#include "debug/rdr/running_data_recorder.h"
+#endif
 
 namespace mindspore {
 namespace kernel {
@@ -57,9 +62,6 @@ bool DatasetIteratorKernel::Init(const CNodePtr &kernel_node) {
   for (auto item : types) {
     MS_EXCEPTION_IF_NULL(item);
   }
-  if (types.size() < shapes.size()) {
-    MS_LOG(EXCEPTION) << "types size is less than shapes size.";
-  }
   for (size_t i = 0; i < shapes.size(); i++) {
     int unit = UnitSizeInBytes(types[i]->type_id());
     int nums = ElementNums(shapes[i]);
@@ -68,16 +70,10 @@ bool DatasetIteratorKernel::Init(const CNodePtr &kernel_node) {
     total_bytes_ += bytes;
   }
 
-  handle_ = GpuBufferMgr::GetInstance().Open(0, queue_name_, output_size_list_);
-  if (handle_ == HandleMgr::INVALID_HANDLE) {
-    MS_LOG(EXCEPTION) << "Gpu Queue(" << queue_name_ << ") Open Failed";
-  }
-
 #ifndef ENABLE_SECURITY
   auto profiler_inst = profiler::gpu::GPUProfiler::GetInstance();
   MS_EXCEPTION_IF_NULL(profiler_inst);
-  profiling_enable_ = profiler_inst->GetEnableFlag();
-  if (profiling_enable_) {
+  if (profiler_inst->IsInitialized()) {
     std::string path = profiler_inst->ProfileDataPath();
     profiling_op_ = std::make_shared<GetNextProfiling>(path);
     MS_EXCEPTION_IF_NULL(profiling_op_);
@@ -92,19 +88,27 @@ void DatasetIteratorKernel::InitSizeLists() { return; }
 bool DatasetIteratorKernel::ReadDevice(void **addr, size_t *len) {
   uint64_t start_time_stamp = 0;
   uint32_t queue_size = 0;
-
+#ifndef ENABLE_SECURITY
+  auto profiler_inst = profiler::gpu::GPUProfiler::GetInstance();
+  MS_EXCEPTION_IF_NULL(profiler_inst);
+#endif
   int repeat = 0;
   while (true) {
+#ifndef ENABLE_SECURITY
+    profiling_enable_ = profiler_inst->GetEnableFlag();
     if (profiling_enable_) {
       start_time_stamp = profiling_op_->GetTimeStamp();
       queue_size = GpuBufferMgr::GetInstance().Size(handle_);
     }
+#endif
     auto ret = GpuBufferMgr::GetInstance().Front(handle_, addr, len);
     if (ret == device::SUCCESS) {
+#ifndef ENABLE_SECURITY
       if (profiling_enable_) {
         uint64_t end_time_stamp = profiling_op_->GetTimeStamp();
         profiling_op_->RecordData(queue_size, start_time_stamp, end_time_stamp);
       }
+#endif
       break;
     }
 
@@ -114,14 +118,18 @@ bool DatasetIteratorKernel::ReadDevice(void **addr, size_t *len) {
         MS_LOG(INFO) << "Waiting for data...(" << repeat << " / 10)";
         continue;
       } else {
+#ifdef ENABLE_DUMP_IR
+        mindspore::RDR::TriggerAll();
+#endif
         MS_LOG(EXCEPTION) << "Get data timeout";
       }
     }
-
+#ifndef ENABLE_SECURITY
     if (profiling_enable_) {
       uint64_t end_time_stamp = profiling_op_->GetTimeStamp();
       profiling_op_->RecordData(queue_size, start_time_stamp, end_time_stamp);
     }
+#endif
     MS_LOG(ERROR) << "Get data failed, errcode " << ret;
     return false;
   }

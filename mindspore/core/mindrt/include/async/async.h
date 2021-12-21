@@ -28,13 +28,12 @@
 #include "async/future.h"
 
 namespace mindspore {
-
 using MessageHandler = std::function<void(ActorBase *)>;
 
 class MessageAsync : public MessageBase {
  public:
-  explicit MessageAsync(MessageHandler &h) : MessageBase("Async", Type::KASYNC), handler(h) {}
-  ~MessageAsync() override {}
+  explicit MessageAsync(MessageHandler &&h) : MessageBase("Async", Type::KASYNC), handler(h) {}
+  virtual ~MessageAsync() = default;
   void Run(ActorBase *actor) override { (handler)(actor); }
 
  private:
@@ -52,7 +51,7 @@ struct AsyncHelper<void> {
   template <typename F>
   void operator()(const AID &aid, F &&f) {
     std::function<void(ActorBase *)> handler = [=](ActorBase *) { f(); };
-    std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+    auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
     MINDRT_OOM_EXIT(msg);
     (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   }
@@ -62,13 +61,13 @@ template <typename R>
 struct AsyncHelper<Future<R>> {
   template <typename F>
   Future<R> operator()(const AID &aid, F &&f) {
-    std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+    auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
     MINDRT_OOM_EXIT(promise);
     Future<R> future = promise->GetFuture();
 
     MessageHandler handler = [=](ActorBase *) { promise->Associate(f()); };
 
-    std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+    auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
     MINDRT_OOM_EXIT(msg);
     (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
     return future;
@@ -79,12 +78,12 @@ template <typename R>
 struct AsyncHelper {
   template <typename F>
   Future<R> operator()(const AID &aid, F &&f) {
-    std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+    auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
     MINDRT_OOM_EXIT(promise);
     Future<R> future = promise->GetFuture();
 
     std::function<void(ActorBase *)> handler = [=](ActorBase *) { promise->SetValue(f()); };
-    std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+    auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
     MINDRT_OOM_EXIT(msg);
     (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
     return future;
@@ -102,7 +101,7 @@ void Async(const AID &aid, void (T::*method)()) {
     MINDRT_ASSERT(t != nullptr);
     (t->*method)();
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
 }
@@ -115,7 +114,7 @@ void Async(const AID &aid, void (T::*method)(Arg0), Arg1 &&arg) {
     MINDRT_ASSERT(t != nullptr);
     (t->*method)(arg);
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
 }
@@ -128,7 +127,7 @@ void Async(const AID &aid, void (T::*method)(Args0...), std::tuple<Args1...> &&t
     MINDRT_ASSERT(t != nullptr);
     Apply(t, method, tuple);
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
 }
@@ -142,7 +141,7 @@ void Async(const AID &aid, void (T::*method)(Args0...), Args1 &&... args) {
 // return future
 template <typename R, typename T>
 Future<R> Async(const AID &aid, Future<R> (T::*method)()) {
-  std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+  auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
   MINDRT_OOM_EXIT(promise);
   Future<R> future = promise->GetFuture();
 
@@ -152,7 +151,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)()) {
     MINDRT_ASSERT(t != nullptr);
     promise->Associate((t->*method)());
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  std::unique_ptr<MessageBase> msg(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -160,7 +159,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)()) {
 
 template <typename R, typename T, typename Arg0, typename Arg1>
 Future<R> Async(const AID &aid, Future<R> (T::*method)(Arg0), Arg1 &&arg) {
-  std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+  auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
   MINDRT_OOM_EXIT(promise);
   Future<R> future = promise->GetFuture();
 
@@ -171,7 +170,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)(Arg0), Arg1 &&arg) {
     promise->Associate((t->*method)(arg));
   };
 
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -179,7 +178,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)(Arg0), Arg1 &&arg) {
 
 template <typename R, typename T, typename... Args0, typename... Args1>
 Future<R> Async(const AID &aid, Future<R> (T::*method)(Args0...), std::tuple<Args1...> &&tuple) {
-  std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+  auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
   MINDRT_OOM_EXIT(promise);
   Future<R> future = promise->GetFuture();
 
@@ -190,7 +189,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)(Args0...), std::tuple<Arg
     promise->Associate(Apply(t, method, tuple));
   };
 
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -206,7 +205,7 @@ Future<R> Async(const AID &aid, Future<R> (T::*method)(Args0...), Args1 &&... ar
 template <typename R, typename std::enable_if<!std::is_same<R, void>::value, int>::type = 0,
           typename std::enable_if<!internal::IsFuture<R>::value, int>::type = 0, typename T>
 Future<R> Async(const AID &aid, R (T::*method)()) {
-  std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+  auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
   MINDRT_OOM_EXIT(promise);
   Future<R> future = promise->GetFuture();
 
@@ -217,7 +216,7 @@ Future<R> Async(const AID &aid, R (T::*method)()) {
     promise->SetValue((t->*method)());
   };
 
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  std::unique_ptr<MessageBase> msg(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -227,7 +226,7 @@ template <typename R, typename std::enable_if<!std::is_same<R, void>::value, int
           typename std::enable_if<!internal::IsFuture<R>::value, int>::type = 0, typename T, typename Arg0,
           typename Arg1>
 Future<R> Async(const AID &aid, R (T::*method)(Arg0), Arg1 &&arg) {
-  std::shared_ptr<Promise<R>> promise(new (std::nothrow) Promise<R>());
+  auto promise = std::shared_ptr<Promise<R>>(new (std::nothrow) Promise<R>());
   MINDRT_OOM_EXIT(promise);
   Future<R> future = promise->GetFuture();
 
@@ -237,7 +236,7 @@ Future<R> Async(const AID &aid, R (T::*method)(Arg0), Arg1 &&arg) {
     MINDRT_ASSERT(t != nullptr);
     promise->SetValue((t->*method)(arg));
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -257,7 +256,7 @@ Future<R> Async(const AID &aid, R (T::*method)(Args0...), std::tuple<Args1...> &
     MINDRT_ASSERT(t != nullptr);
     promise->SetValue(Apply(t, method, tuple));
   };
-  std::unique_ptr<MessageAsync> msg(new (std::nothrow) MessageAsync(handler));
+  auto msg = std::unique_ptr<MessageBase>(new (std::nothrow) MessageAsync(std::move(handler)));
   MINDRT_OOM_EXIT(msg);
   (void)ActorMgr::GetActorMgrRef()->Send(aid, std::move(msg));
   return future;
@@ -275,7 +274,6 @@ template <typename F, typename R = typename std::result_of<F()>::type>
 auto Async(const AID &aid, F &&f) -> decltype(internal::AsyncHelper<R>()(aid, std::forward<F>(f))) {
   return internal::AsyncHelper<R>()(aid, std::forward<F>(f));
 }
-
 }  // namespace mindspore
 
 #endif

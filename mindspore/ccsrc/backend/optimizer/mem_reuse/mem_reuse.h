@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@
 #define MINDSPORE_CCSRC_BACKEND_OPTIMIZER_MEM_REUSE_MEM_REUSE_H_
 #include <map>
 #include <memory>
-#include <unordered_map>
 #include <vector>
+#include "utils/hash_map.h"
 #include "backend/optimizer/mem_reuse/kernel_refcount.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/session/kernel_graph.h"
@@ -63,7 +63,9 @@ class MemReuseUtil {
   void SetWkMap(const CNodePtr &kernel, KernelDef *kernel_def_ptr);
   void SetKernelDefInputs();
   void SetReuseRefCount();
+#ifndef ENABLE_SECURITY
   void SetSummaryNodesRefCount();
+#endif
   void SetRefNodesInputRefCount();
   // Set the reference count of graph output specially.
   void SetGraphOutputRefCount();
@@ -85,7 +87,7 @@ class MemReuseUtil {
   uint8_t *GetNodeOutputPtr(const AnfNodePtr &node, size_t index) const;
   uint8_t *GetNodeWorkSpacePtr(const AnfNodePtr &node, size_t index) const;
   bool is_all_nop_node() const { return is_all_nop_node_; }
-  session::KernelWithIndex VisitKernelWithReturnType(const AnfNodePtr &node, size_t i, bool visit_nop_node);
+  session::KernelWithIndex VisitKernelWithReturnType(const AnfNodePtr &node, size_t i, bool skip_nop_node);
 
  private:
   KernelRefs kernel_output_refs_;
@@ -107,8 +109,8 @@ class MemReuseUtil {
 
   bool enable_visit_kernel_cache_{false};
 
-  std::unordered_map<AnfNodePtr, session::KernelWithIndex> visit_kernel_with_return_type_in0pos_cache_;
-  std::unordered_map<AnfNodePtr, session::KernelWithIndex> visit_kernel_with_return_type_in0pos_skip_nop_cache_;
+  mindspore::HashMap<AnfNodePtr, session::KernelWithIndex> visit_kernel_with_return_type_in0pos_cache_;
+  mindspore::HashMap<AnfNodePtr, session::KernelWithIndex> visit_kernel_with_return_type_in0pos_skip_nop_cache_;
 };
 using MemReuseUtilPtr = std::shared_ptr<MemReuseUtil>;
 

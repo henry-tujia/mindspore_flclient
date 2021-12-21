@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@
 
 #include <vector>
 #include <algorithm>
-#include <unordered_map>
 #include <utility>
 #include <memory>
 
+#include "utils/hash_map.h"
 #include "frontend/optimizer/irpass.h"
 #include "frontend/optimizer/optimizer.h"
 #include "frontend/optimizer/anf_visitor.h"
@@ -68,7 +68,7 @@ class CallOutputTransform {
   }
 
  private:
-  std::unordered_map<FuncGraphPtr, std::unordered_map<std::pair<size_t, bool>, FuncGraphPtr, PairHasher>> cache_;
+  mindspore::HashMap<FuncGraphPtr, mindspore::HashMap<std::pair<size_t, bool>, FuncGraphPtr, PairHasher>> cache_;
 };
 }  // namespace internal
 
@@ -121,9 +121,39 @@ class IncorporateCall : public AnfVisitor {
         (void)args.insert(args.end(), Xs_.begin(), Xs_.end());
       }
     }
+    return MakeNewNode(node, args);
+  }
 
+  AnfNodePtr MakeNewNode(const AnfNodePtr &node, const std::vector<AnfNodePtr> &args) {
     auto new_node = node->func_graph()->NewCNode(args);
     new_node->set_abstract(node->abstract());
+    // Check if the another only usage of {G, Xs} is UpdateState{s, {G, Xs}}, if yes, replace
+    // UpdateState{s, {G, Xs}} with UpdateState{s, new_node};
+    const auto &manager = fg_->manager();
+    MS_EXCEPTION_IF_NULL(manager);
+    auto &node_users_map = manager->node_users();
+    auto it = node_users_map.find(fg_call_cnode_);
+    if (it != node_users_map.end()) {
+      AnfNodePtr update_state_node = nullptr;
+      auto &node_users = it->second;
+      if (node_users.size() == 2) {
+        for (auto &node_user : node_users) {
+          if (IsPrimitiveCNode(node_user.first, prim::kPrimUpdateState)) {
+            update_state_node = node_user.first;
+          }
+        }
+      }
+      if (update_state_node != nullptr) {
+        auto update_state_cnode = update_state_node->cast<CNodePtr>();
+        // double check;
+        const size_t attach_index = 2;
+        if (update_state_cnode->input(attach_index) == fg_call_cnode_) {
+          MS_LOG(DEBUG) << "Replace UpdateState node: " << update_state_cnode->DebugString(2)
+                        << ", input 2 with: " << new_node->DebugString();
+          manager->SetEdge(update_state_cnode, attach_index, new_node);
+        }
+      }
+    }
     return new_node;
   }
 
@@ -135,16 +165,19 @@ class IncorporateCall : public AnfVisitor {
 
     auto &inputs = cnode->inputs();
     fg_ = GetValueNode<FuncGraphPtr>(inputs[0]);
+    fg_call_cnode_ = cnode;
     (void)std::copy(inputs.begin() + 1, inputs.end(), std::back_inserter(Xs_));
   }
 
   void Reset() {
     Xs_.clear();
     fg_ = nullptr;
+    fg_call_cnode_ = nullptr;
   }
 
  private:
   FuncGraphPtr fg_;
+  CNodePtr fg_call_cnode_{nullptr};
   std::vector<AnfNodePtr> Xs_{};
   internal::CallOutputTransform call_output_transform_;
 };

@@ -14,10 +14,6 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/reduce_eltwise_fusion_pass.h"
-#include <vector>
-#include <algorithm>
-#include <unordered_set>
-#include <memory>
 #include "backend/kernel_compiler/kernel_fusion.h"
 #include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -32,7 +28,7 @@ void ReduceEltwiseFusionPass::MatchReduceEltwise(const CNodePtr &cnode, const se
                                                  FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  std::unordered_set<AnfNodePtr> record{cnode};
+  mindspore::HashSet<AnfNodePtr> record{cnode};
   auto eltwise_input = cnode->input(kIndex1);
   while (CheckEltWiseNode(kernel_graph, eltwise_input)) {
     (void)record.insert(eltwise_input);
@@ -44,7 +40,7 @@ void ReduceEltwiseFusionPass::MatchReduceEltwise(const CNodePtr &cnode, const se
     }
   }
   MS_EXCEPTION_IF_NULL(eltwise_input);
-  if (!eltwise_input->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(eltwise_input) ||
+  if (!eltwise_input->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(eltwise_input) ||
       fusion_id_allocator->HasFusionIdAttr(eltwise_input)) {
     return;
   }
@@ -76,7 +72,7 @@ void ReduceEltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGrap
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   std::reverse(node_list.begin(), node_list.end());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "backend/kernel_compiler/cpu/print_cpu_kernel.h"
 #include <algorithm>
 #include "ir/tensor.h"
@@ -24,6 +25,8 @@ namespace mindspore {
 namespace kernel {
 template <typename T>
 void PrintCPUKernel<T>::InitKernel(const CNodePtr &kernel_node) {
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   size_t input_tensor_num = AnfAlgo::GetInputTensorNum(kernel_node);
   for (size_t i = 0; i < input_tensor_num; ++i) {
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, i);
@@ -42,7 +45,8 @@ bool PrintCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                const std::vector<kernel::AddressPtr> & /* outputs */) {
   auto data_type = CheckType();
   if (data_type == kTypeUnknown) {
-    MS_LOG(EXCEPTION) << "CPU print does not support the input type.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be bool, float, int, or uint, but got unsupported type.";
   }
   for (size_t i = 0; i < inputs.size(); ++i) {
     if (input_sizes_[i] == 0) {
@@ -51,7 +55,7 @@ bool PrintCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inputs,
     } else {
       ShapeVector shape;
       (void)std::transform(input_shapes_[i].begin(), input_shapes_[i].end(), std::back_inserter(shape),
-                           [](const size_t &value) { return static_cast<int64_t>(value); });
+                           [](const size_t &value) { return SizeToLong(value); });
       Tensor tensor(data_type, shape, inputs[i]->addr, input_sizes_[i] * sizeof(T));
       std::cout << tensor.ToStringNoLimit() << std::endl;
     }
@@ -83,6 +87,8 @@ TypeId PrintCPUKernel<T>::CheckType() {
     return kNumberTypeFloat16;
   } else if constexpr (std::is_same_v<T, float>) {
     return kNumberTypeFloat32;
+  } else if constexpr (std::is_same_v<T, double>) {
+    return kNumberTypeFloat64;
   }
   return kTypeUnknown;
 }

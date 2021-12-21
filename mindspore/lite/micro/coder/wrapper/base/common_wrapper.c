@@ -15,14 +15,14 @@
  */
 
 #include "wrapper/base/common_wrapper.h"
-#ifdef __ANDROID__
+#if defined(ENABLE_ARM64) && !defined(SUPPORT_NNIE) && !defined(MS_COMPILE_IOS)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
 #endif
 
 bool GetSupportOptFlag() {
   bool status = false;
-#ifdef ENABLE_ARM64
+#if defined(ENABLE_ARM64) && !defined(SUPPORT_NNIE) && !defined(MS_COMPILE_IOS) && !defined(SUPPORT_34XX)
   int hwcap_type = 16;
   // getHwCap
   const uint32_t hwcap = getauxval(hwcap_type);

@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_SPLIT_COMBINATION_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 #include "ops/split_combination_ops.h"
 
@@ -29,6 +29,10 @@ DECLARE_OP_USE_DYN_OUTPUT(SplitD)
 DECLARE_OP_ADAPTER(ConcatD)
 DECLARE_OP_USE_DYN_INPUT(ConcatD)
 DECLARE_OP_USE_OUTPUT(ConcatD)
+
+DECLARE_OP_ADAPTER(ConcatV2D)
+DECLARE_OP_USE_DYN_INPUT(ConcatV2D)
+DECLARE_OP_USE_OUTPUT(ConcatV2D)
 
 DECLARE_OP_ADAPTER(ParallelConcat)
 DECLARE_OP_USE_DYN_INPUT(ParallelConcat)

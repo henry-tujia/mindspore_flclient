@@ -30,7 +30,7 @@ template <typename T, typename S>
 class RandomChoiceWithMaskGpuKernel : public GpuKernel {
  public:
   RandomChoiceWithMaskGpuKernel()
-      : input_shape_size_(0), seed_(0), seed2_(0), input_size_(1), count_(0), ceil_power2_(0) {}
+      : input_shape_size_(0), seed_(0), seed2_(0), input_size_(1), count_(0), ceil_power2_(0), is_null_input_(false) {}
   ~RandomChoiceWithMaskGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -39,6 +39,9 @@ class RandomChoiceWithMaskGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspaces,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     S *output_index = GetDeviceAddress<S>(outputs, 0);
     T *output_mask = GetDeviceAddress<T>(outputs, 1);
@@ -83,6 +86,12 @@ class RandomChoiceWithMaskGpuKernel : public GpuKernel {
       return false;
     }
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'RandomChoiceWithMaskGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     input_shape_size_ = input_shape.size();
     if (input_shape_size_ < 1 || input_shape_size_ > MAX_DIMENSION) {
       MS_LOG(ERROR) << "Input is " << input_shape_size_
@@ -95,7 +104,7 @@ class RandomChoiceWithMaskGpuKernel : public GpuKernel {
     }
     // convert shape to 5D
     while (input_shape_5D_.size() != MAX_DIMENSION) {
-      input_shape_5D_.insert(input_shape_5D_.begin(), 1);
+      (void)input_shape_5D_.insert(input_shape_5D_.begin(), 1);
     }
     // init seedc
     seed_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "seed"));
@@ -138,6 +147,7 @@ class RandomChoiceWithMaskGpuKernel : public GpuKernel {
   int input_size_;
   int count_;
   int ceil_power2_;
+  bool is_null_input_;
   std::mt19937 generator_;
   std::vector<int> input_shape_5D_;
   std::vector<size_t> input_size_list_;

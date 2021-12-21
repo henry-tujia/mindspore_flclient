@@ -17,6 +17,15 @@
 #include "nnacl/infer/concat_infer.h"
 #include "nnacl/infer/infer_register.h"
 
+int DataTypeJudge(const TensorC *input, const TensorC *output) {
+  if ((input->data_type_ != output->data_type_) &&
+      !((input->data_type_ == kNumberTypeFloat16 && output->data_type_ == kNumberTypeFloat32) ||
+        (input->data_type_ == kNumberTypeFloat32 && output->data_type_ == kNumberTypeFloat16))) {
+    return NNACL_PARAM_INVALID;
+  }
+  return NNACL_OK;
+}
+
 int ConcatInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC **outputs, size_t outputs_size,
                      OpParameter *parameter) {
   int check_ret = CheckAugmentNullOutputSize(inputs, inputs_size, outputs, outputs_size, parameter, 1);
@@ -56,19 +65,14 @@ int ConcatInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC *
   for (size_t i = 1; i < inputs_size; ++i) {
     size_t input_i_shape_size = inputs[i]->shape_size_;
     if (input_i_shape_size != input0_shape_size) {
-      if (input_i_shape_size != 0) {
-        return NNACL_PARAM_INVALID;
-      } else {
-        continue;
-      }
+      return NNACL_PARAM_INVALID;
     }
     int shape_tmp[MAX_SHAPE_SIZE] = {0};
     size_t shape_tmp_size = 0;
     ShapeSet(shape_tmp, &shape_tmp_size, inputs[i]->shape_, inputs[i]->shape_size_);
-    if ((inputs[i]->data_type_ != output->data_type_) &&
-        !((inputs[i]->data_type_ == kNumberTypeFloat16 && output->data_type_ == kNumberTypeFloat32) ||
-          (inputs[i]->data_type_ == kNumberTypeFloat32 && output->data_type_ == kNumberTypeFloat16))) {
-      return NNACL_PARAM_INVALID;
+    int data_type_judge = DataTypeJudge(inputs[i], output);
+    if (data_type_judge != NNACL_OK) {
+      return data_type_judge;
     }
     int axis_tmp = shape_tmp[axis];
     erase_ret = ShapeErase(shape_tmp, &shape_tmp_size, axis);

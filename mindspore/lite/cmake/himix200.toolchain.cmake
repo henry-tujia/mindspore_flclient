@@ -2,12 +2,12 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 if(DEFINED ENV{HISI_TOOLCHAIN_PATH})
-    set(HISI_TOOLCHAIN_PATH $ENV{HISI_TOOLCHAIN_PATH})
+    set(TOOLCHAIN_PATH $ENV{HISI_TOOLCHAIN_PATH}/hisi-linux/x86_arm)
 else()
-    message(FATAL_ERROR "ENV HISI_TOOLCHAIN_PATH not found")
+    set(TOOLCHAIN_PATH "/opt/hisi-linux/x86-arm")
 endif()
-set(CMAKE_C_COMPILER ${HISI_TOOLCHAIN_PATH}/hisi-linux/x86_arm/arm-himix200-linux/bin/arm-himix200-linux-gcc)
-set(CMAKE_CXX_COMPILER ${HISI_TOOLCHAIN_PATH}/hisi-linux/x86_arm/arm-himix200-linux/bin/arm-himix200-linux-g++)
+set(CMAKE_C_COMPILER ${TOOLCHAIN_PATH}/arm-himix200-linux/bin/arm-himix200-linux-gcc)
+set(CMAKE_CXX_COMPILER ${TOOLCHAIN_PATH}/arm-himix200-linux/bin/arm-himix200-linux-g++)
 
 find_path(GCC_PATH gcc)
 find_path(GXX_PATH g++)
@@ -28,4 +28,4 @@ set(CMAKE_CXX_FLAGS "-march=armv7-a -mfloat-abi=softfp -mfpu=neon-vfpv4  ${CMAKE
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "c flags")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" CACHE STRING "c++ flags")
 
-set(HIMIX_STRIP ${HISI_TOOLCHAIN_PATH}/hisi-linux/x86_arm/arm-himix200-linux/bin/arm-himix200-linux-strip)
+set(HIMIX_STRIP ${TOOLCHAIN_PATH}/arm-himix200-linux/bin/arm-himix200-linux-strip)

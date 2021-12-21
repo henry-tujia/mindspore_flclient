@@ -51,9 +51,10 @@ STATUS GetReduceAxes(const BaseRef &n, std::vector<int> *axes) {
     }
     axes->resize(1);
     if (!axes_value->shape().empty()) {
-      axes->resize(axes_value->shape()[0]);
+      MS_CHECK_GE(axes_value->shape()[0], 0, lite::RET_ERROR);
+      axes->resize(static_cast<size_t>(axes_value->shape()[0]));
     }
-    if (memcpy_s(axes->data(), axes_value->Size(), axes_value->data_c(), axes_value->Size()) == EOK) {
+    if (memcpy_s(axes->data(), axes->size() * sizeof(int), axes_value->data_c(), axes_value->Size()) == EOK) {
       return lite::RET_OK;
     }
   }
@@ -140,7 +141,7 @@ bool NormFusion::GetNormTypeAndAxis(const FuncGraphPtr &func_graph, const CNodeP
                                     const std::vector<int> &mean_axes, const std::vector<int> &params_shape,
                                     schema::PrimitiveType *type, int *begin_norm_axis, int *begin_params_axis) const {
   MS_ASSERT(func_graph != nullptr);
-  MS_ASSERT(input_node != nullptr);
+  MS_ASSERT(input_cnode != nullptr);
   MS_ASSERT(type != nullptr);
   MS_ASSERT(begin_norm_axis != nullptr);
   MS_ASSERT(begin_params_axis != nullptr);
@@ -149,17 +150,11 @@ bool NormFusion::GetNormTypeAndAxis(const FuncGraphPtr &func_graph, const CNodeP
     MS_LOG(DEBUG) << "abstract of input is nullptr";
     return false;
   }
-  if (!utils::isa<abstract::AbstractTensorPtr>(abstract)) {
-    MS_LOG(DEBUG) << "Abstract should be abstract tensor";
+  ShapeVector shape;
+  if (FetchShapeFromAbstract(abstract, &shape) != lite::RET_OK) {
+    MS_LOG(ERROR) << "fetch shape failed.";
     return false;
   }
-  auto abstract_tensor = utils::cast<abstract::AbstractTensorPtr>(abstract);
-  MS_CHECK_TRUE_RET(abstract_tensor->BuildShape() != nullptr, false);
-  if (!utils::isa<abstract::ShapePtr>(abstract_tensor->BuildShape())) {
-    MS_LOG(DEBUG) << "Shape of Abstract should be ShapePtr";
-    return false;
-  }
-  auto shape = utils::cast<abstract::ShapePtr>(abstract_tensor->BuildShape())->shape();
   int shape_size = static_cast<int>(shape.size());
   if (shape.empty()) {
     auto shape_size_map = ShapeSizeInfer(func_graph);
@@ -174,6 +169,7 @@ bool NormFusion::GetNormTypeAndAxis(const FuncGraphPtr &func_graph, const CNodeP
       return false;
     }
   }
+  // shape input has 4 dim && mean input has 2 dim and mean is in [1, 2 ,...]
   if (shape_size == 4 && mean_axes.size() == 2 && mean_axes[0] == 1 && mean_axes[1] == 2) {
     if (params_shape.size() == 1 && params_shape.back() == shape.back()) {
       *type = schema::PrimitiveType_InstanceNorm;
@@ -290,7 +286,8 @@ int ExpandDimsShapeSizeInfer(const std::vector<int> &in_shape_size, const schema
 
 int StridedSliceShapeSizeInfer(const std::vector<int> &in_shape_size, const schema::PrimitiveT &primitive) {
   MS_ASSERT(in_shape_size.size() > 0);
-  auto new_axis_mask = primitive.value.AsStridedSlice()->new_axis_mask;
+  MS_ASSERT(primitive.value.AsStridedSlice() != nullptr);
+  auto new_axis_mask = static_cast<size_t>(primitive.value.AsStridedSlice()->new_axis_mask);
   auto add_dims = 0;
   while (new_axis_mask != 0) {
     new_axis_mask = (new_axis_mask - 1) & new_axis_mask;
@@ -355,7 +352,7 @@ std::map<string, int> NormFusion::ShapeSizeInfer(const FuncGraphPtr &func_graph)
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
-    auto origin_primc = GetValueNode<PrimitiveCPtr>(cnode->input(0));
+    MS_ASSERT(cnode != nullptr);
     auto prim_t = lite::GetPrimitiveT(cnode->input(0));
     if (prim_t == nullptr) {
       continue;
@@ -389,7 +386,8 @@ std::map<string, int> NormFusion::ShapeSizeInfer(const FuncGraphPtr &func_graph)
       int in_shape_size = 0;
       if (utils::isa<CNodePtr>(cnode->input(i))) {
         in_shape_size = node_shape_size[cnode->input(i)->fullname_with_scope()];
-        if (prim_type == schema::PrimitiveType_Reshape && i == 2 &&
+        // second input of reshape is shape
+        if (prim_type == schema::PrimitiveType_Reshape && i == THIRD_INPUT &&
             node_shape.find(cnode->input(i)->fullname_with_scope()) != node_shape.end()) {
           in_shape_size = node_shape[cnode->input(i)->fullname_with_scope()].at(0);
         }
@@ -398,7 +396,8 @@ std::map<string, int> NormFusion::ShapeSizeInfer(const FuncGraphPtr &func_graph)
         auto ret = GetTensorInfoFromAbstract(&tensor_info, cnode, i);
         if (ret == RET_OK) {
           in_shape_size = tensor_info->shape().size();
-          if (prim_type == schema::PrimitiveType_Reshape && i == 2) {
+          // second input of reshape is shape
+          if (prim_type == schema::PrimitiveType_Reshape && i == THIRD_INPUT) {
             in_shape_size = tensor_info->shape().at(0);
           }
         }
@@ -407,7 +406,7 @@ std::map<string, int> NormFusion::ShapeSizeInfer(const FuncGraphPtr &func_graph)
     }
     // Cal shape size infer function
     auto shape_size_infer_func = shape_size_infer_iter->second;
-    auto shape_size = shape_size_infer_iter->second(in_shape_sizes, *prim_t);
+    auto shape_size = shape_size_infer_func(in_shape_sizes, *prim_t);
     // Update node shape size map
     node_shape_size[cnode->fullname_with_scope()] = shape_size;
   }
@@ -547,6 +546,43 @@ const BaseRef OnnxLayerNormFusion::DefinePattern() const {
   auto is_mul = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimMulFusion>);
   MS_CHECK_TRUE_RET(is_mul != nullptr, {});
   VectorRef mul_ref = VectorRef({is_mul, gamma_, div_ref});
+  auto is_add2 = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimAddFusion>);
+  MS_CHECK_TRUE_RET(is_add2 != nullptr, {});
+  VectorRef add2_ref = VectorRef({is_add2, mul_ref, beta_});
+  return add2_ref;
+}
+
+// little different from OnnxLayerNormFusion on mul's inputs order
+const BaseRef OnnxLayerNormFusion2::DefinePattern() const {
+  if (!Init()) {
+    MS_LOG(ERROR) << "initial member failed.";
+    return {};
+  }
+  VectorRef mean1_ref = VectorRef({mean1_, input_, mean1_axes_});
+  auto is_sub1 = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimSubFusion>);
+  MS_CHECK_TRUE_RET(is_sub1 != nullptr, {});
+  VectorRef sub1_ref = VectorRef({is_sub1, input_, mean1_ref});
+  auto is_sub2 = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimSubFusion>);
+  MS_CHECK_TRUE_RET(is_sub2 != nullptr, {});
+  VectorRef sub2_ref = VectorRef({is_sub2, input_, mean1_ref});
+  auto is_pow = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimPowFusion>);
+  MS_CHECK_TRUE_RET(is_pow != nullptr, {});
+  auto is_var = std::make_shared<Var>();
+  MS_CHECK_TRUE_RET(is_var != nullptr, {});
+  VectorRef pow_ref = VectorRef({is_pow, sub2_ref, is_var});
+  VectorRef mean2_ref = VectorRef({mean2_, pow_ref, mean2_axes_});
+  auto is_add1 = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimAddFusion>);
+  MS_CHECK_TRUE_RET(is_add1 != nullptr, {});
+  VectorRef add1_ref = VectorRef({is_add1, mean2_ref, epsilon_});
+  auto is_sqrt = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimSqrt>);
+  MS_CHECK_TRUE_RET(is_sqrt != nullptr, {});
+  VectorRef sqrt_ref = VectorRef({is_sqrt, add1_ref});
+  auto is_div = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimDivFusion>);
+  MS_CHECK_TRUE_RET(is_div != nullptr, {});
+  VectorRef div_ref = VectorRef({is_div, sub1_ref, sqrt_ref});
+  auto is_mul = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimMulFusion>);
+  MS_CHECK_TRUE_RET(is_mul != nullptr, {});
+  VectorRef mul_ref = VectorRef({is_mul, div_ref, gamma_});
   auto is_add2 = std::make_shared<CondVar>(IsSpecifiedNode<&prim::kPrimAddFusion>);
   MS_CHECK_TRUE_RET(is_add2 != nullptr, {});
   VectorRef add2_ref = VectorRef({is_add2, mul_ref, beta_});

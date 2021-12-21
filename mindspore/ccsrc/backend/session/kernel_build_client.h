@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 
 #include "common/duplex_pipe.h"
 #include "utils/log_adapter.h"
@@ -88,6 +89,7 @@ class KernelBuildClient {
 
   // Send a request and fetch its response
   std::string SendRequest(std::string data) {
+    std::lock_guard<std::mutex> locker(mutex_);
     Request(data);
     return Response();
   }
@@ -137,11 +139,13 @@ class KernelBuildClient {
   virtual ~KernelBuildClient() = default;
 
  private:
+  // Support multi-thread.
+  std::mutex mutex_;
   bool init_;
   std::shared_ptr<DuplexPipe> dp_;
 };
 
-static std::string GetScriptFilePath(const std::string cmd_env, const std::string &cmd_script,
+static std::string GetScriptFilePath(const std::string &cmd_env, const std::string &cmd_script,
                                      const std::string &server_script) {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
@@ -209,15 +213,6 @@ class AscendKernelBuildClient : public KernelBuildClient {
   // Receive the response from server
   constexpr inline static auto kFailed = "-1";
 
-  // Send building request to server
-  constexpr inline static auto kContinue = "CONTINUE";  // More transactions to be continued
-  constexpr inline static auto kTbePre = "TBE/PRE";
-  constexpr inline static auto kTbeStart = "TBE/START";
-  constexpr inline static auto kTbeWait = "TBE/WAIT";
-  constexpr inline static auto kTbeReset = "TBE/RESET";
-  constexpr inline static auto kTbeTune = "TBE/TUNE";
-  constexpr inline static auto kTbeJob = "TBE/JOB";
-
   // Send server info. query to server
   constexpr inline static auto kFormat = "FORMAT";
   constexpr inline static auto kSupport = "SUPPORT";
@@ -233,16 +228,8 @@ class AscendKernelBuildClient : public KernelBuildClient {
     auto env = GetPyExe();
     return GetScriptFilePath(env, kGetPathScript, kServerScript);
   }
-
-  // Before building.
-  std::string SelectFormat(const std::string &json);
-  bool CheckSupported(const std::string &json);
-
   // Run TBE building.
-  std::string TbeSendJob(const std::string &json);
-  int TbeStart(const std::string &json, const std::string &mode);
-  bool TbeWait(int *task_id, std::string *task_result, std::string *pre_build_result);
-  void TbeReset();
+  std::string DispatchToServer(const std::string &job_json_str);
 
   AscendKernelBuildClient(const AscendKernelBuildClient &) = delete;
   AscendKernelBuildClient &operator=(const AscendKernelBuildClient &) = delete;
@@ -251,12 +238,11 @@ class AscendKernelBuildClient : public KernelBuildClient {
   AscendKernelBuildClient &operator=(AscendKernelBuildClient &&) = delete;
 
  private:
-  void TbePre(const std::string &mode);
   AscendKernelBuildClient() { Open(); }
   ~AscendKernelBuildClient() override { Close(); }
 };
 
-class GpuKernelBuildClient : public KernelBuildClient {
+class AkgKernelBuildClient : public KernelBuildClient {
  public:
   // Server configure
   constexpr inline static auto kGetPathScript =
@@ -264,15 +250,15 @@ class GpuKernelBuildClient : public KernelBuildClient {
     "\""
     "import pkgutil;"
     "path = pkgutil"
-    ".get_loader(\\\"mindspore._extends.remote.kernel_build_server_gpu\\\")"  // Server module name
+    ".get_loader(\\\"mindspore._extends.remote.kernel_build_server_akg\\\")"  // Server module name
     ".get_filename();"
     "print('[~]' + path)"
     "\"";
 
-  constexpr inline static auto kServerScript = "kernel_build_server_gpu.py";
+  constexpr inline static auto kServerScript = "kernel_build_server_akg.py";
 
-  static GpuKernelBuildClient &Instance() {
-    static GpuKernelBuildClient instance;
+  static AkgKernelBuildClient &Instance() {
+    static AkgKernelBuildClient instance;
     return instance;
   }
 
@@ -283,15 +269,15 @@ class GpuKernelBuildClient : public KernelBuildClient {
     return GetScriptFilePath(env, kGetPathScript, kServerScript);
   }
 
-  GpuKernelBuildClient(const GpuKernelBuildClient &) = delete;
-  GpuKernelBuildClient &operator=(const GpuKernelBuildClient &) = delete;
+  AkgKernelBuildClient(const AkgKernelBuildClient &) = delete;
+  AkgKernelBuildClient &operator=(const AkgKernelBuildClient &) = delete;
 
-  GpuKernelBuildClient(GpuKernelBuildClient &&) = delete;
-  GpuKernelBuildClient &operator=(GpuKernelBuildClient &&) = delete;
+  AkgKernelBuildClient(AkgKernelBuildClient &&) = delete;
+  AkgKernelBuildClient &operator=(AkgKernelBuildClient &&) = delete;
 
  private:
-  GpuKernelBuildClient() { Open(); }
-  ~GpuKernelBuildClient() override { Close(); }
+  AkgKernelBuildClient() { Open(); }
+  ~AkgKernelBuildClient() override { Close(); }
 };
 }  // namespace kernel
 }  // namespace mindspore

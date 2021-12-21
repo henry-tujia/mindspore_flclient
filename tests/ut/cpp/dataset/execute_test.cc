@@ -23,10 +23,18 @@
 #include "minddata/dataset/include/dataset/vision.h"
 #include "minddata/dataset/include/dataset/audio.h"
 #include "minddata/dataset/include/dataset/text.h"
+#include "minddata/dataset/text/char_n_gram.h"
+#include "minddata/dataset/text/fast_text.h"
+#include "minddata/dataset/text/glove.h"
+#include "minddata/dataset/text/vectors.h"
 #include "utils/log_adapter.h"
 
 using namespace mindspore::dataset;
 using mindspore::LogStream;
+using mindspore::dataset::CharNGram;
+using mindspore::dataset::FastText;
+using mindspore::dataset::GloVe;
+using mindspore::dataset::Vectors;
 using mindspore::ExceptionType::NoExceptionType;
 using mindspore::MsLogLevel::INFO;
 
@@ -177,6 +185,57 @@ TEST_F(MindDataTestExecute, TestComposeTransforms) {
   EXPECT_EQ(30, image.Shape()[1]);
 }
 
+/// Feature: ComputeDeltas
+/// Description: test basic function of ComputeDeltas
+/// Expectation: get correct number of data
+TEST_F(MindDataTestExecute, TestComputeDeltas) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestComputeDeltas.";
+  std::shared_ptr<Tensor> input_tensor_;
+
+  int win_length = 5;
+
+  // create tensor
+  TensorShape s = TensorShape({2, 15, 7});
+  // init input vec
+  std::vector<float> input_vec(s.NumOfElements());
+  for (int ind = 0; ind < input_vec.size(); ind++) {
+    input_vec[ind] = std::rand() % (1000) / (1000.0f);
+  }
+  ASSERT_OK(Tensor::CreateFromVector(input_vec, s, &input_tensor_));
+  auto input_ms = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+  std::shared_ptr<TensorTransform> compute_deltas_op = std::make_shared<audio::ComputeDeltas>(win_length);
+
+  // apply compute_deltas
+  mindspore::dataset::Execute Transform({compute_deltas_op});
+  Status status = Transform(input_ms, &input_ms);
+  EXPECT_TRUE(status.IsOk());
+}
+
+/// Feature: ComputeDeltas
+/// Description: test wrong input args of ComputeDeltas
+/// Expectation: get nullptr of iterator
+TEST_F(MindDataTestExecute, TestComputeDeltasWrongArgs) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestComputeDeltasWrongArgs.";
+  std::shared_ptr<Tensor> input_tensor_;
+  // win_length is less than minimum of 3
+  int win_length = 2;
+
+  // create tensor
+  TensorShape s = TensorShape({2, 15, 7});
+  // init input vec
+  std::vector<float> input_vec(s.NumOfElements());
+  for (int ind = 0; ind < input_vec.size(); ind++) {
+    input_vec[ind] = std::rand() % (1000) / (1000.0f);
+  }
+  ASSERT_OK(Tensor::CreateFromVector(input_vec, s, &input_tensor_));
+  auto input_ms = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+
+  std::shared_ptr<TensorTransform> compute_deltas_op = std::make_shared<audio::ComputeDeltas>(win_length);
+  mindspore::dataset::Execute Transform({compute_deltas_op});
+  Status status = Transform(input_ms, &input_ms);
+  EXPECT_FALSE(status.IsOk());
+}
+
 TEST_F(MindDataTestExecute, TestCrop) {
   MS_LOG(INFO) << "Doing MindDataTestExecute-TestCrop.";
 
@@ -206,6 +265,23 @@ TEST_F(MindDataTestExecute, TestFrequencyMasking) {
   mindspore::dataset::Execute transform({frequency_masking_op});
   Status status = transform(input_tensor, &input_tensor);
   EXPECT_TRUE(status.IsOk());
+}
+
+/// Feature: RandomLighting
+/// Description: test RandomLighting Op when alpha=0.1
+/// Expectation: the data is processed successfully
+TEST_F(MindDataTestExecute, TestRandomLighting) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRandomLighting.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto random_lighting_op = vision::RandomLighting(0.1);
+
+  auto transform = Execute({decode, random_lighting_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
 }
 
 TEST_F(MindDataTestExecute, TestTimeMasking) {
@@ -814,6 +890,28 @@ TEST_F(MindDataTestExecute, TestDeemphBiquadWithWrongArg) {
   EXPECT_FALSE(s01.IsOk());
 }
 
+// Feature: Gain
+// Description: test Gain in eager mode
+// Expectation: the data is processed successfully
+TEST_F(MindDataTestExecute, TestGainWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestGainWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> Gain_01 = std::make_shared<audio::Gain>();
+  mindspore::dataset::Execute Transform01({Gain_01});
+  // Filtered waveform by Gain
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
 TEST_F(MindDataTestExecute, TestHighpassBiquadEager) {
   MS_LOG(INFO) << "Doing MindDataTestExecute-TestHighpassBiquadEager.";
   int sample_rate = 44100;
@@ -864,16 +962,154 @@ TEST_F(MindDataTestExecute, TestHighpassBiquadParamCheckSampleRate) {
 TEST_F(MindDataTestExecute, TestMuLawDecodingEager) {
   MS_LOG(INFO) << "Doing MindDataTestExecute-TestMuLawDecodingEager.";
   // testing
-  std::shared_ptr<Tensor> input_tensor_;
-  Tensor::CreateFromVector(std::vector<float>({1, 254, 231, 155, 101, 77}), TensorShape({1, 6}), &input_tensor_);
+  std::shared_ptr<Tensor> input_tensor;
+  Tensor::CreateFromVector(std::vector<float>({1, 254, 231, 155, 101, 77}), TensorShape({1, 6}), &input_tensor);
 
-  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+  auto input_01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor));
   std::shared_ptr<TensorTransform> mu_law_encoding_01 = std::make_shared<audio::MuLawDecoding>(255);
 
   // Filtered waveform by mulawencoding
   mindspore::dataset::Execute Transform01({mu_law_encoding_01});
+  Status s01 = Transform01(input_01, &input_01);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+/// Feature: MuLawEncoding
+/// Description: test MuLawEncoding in eager mode
+/// Expectation: the data is processed successfully
+TEST_F(MindDataTestExecute, TestMuLawEncodingEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestMuLawEncodingEager.";
+  // testing
+  std::shared_ptr<Tensor> input_tensor;
+  Tensor::CreateFromVector(std::vector<float>({0.1, 0.2, 0.3, 0.4, 0.5, 0.6}), TensorShape({1, 6}), &input_tensor);
+
+  auto input_01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor));
+  std::shared_ptr<TensorTransform> mu_law_encoding_01 = std::make_shared<audio::MuLawEncoding>(255);
+
+  // Filtered waveform by mulawencoding
+  mindspore::dataset::Execute Transform01({mu_law_encoding_01});
+  Status s01 = Transform01(input_01, &input_01);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+/// Feature: Overdrive
+/// Description: test basic usage of Overdrive
+/// Expectation: get correct number of data
+TEST_F(MindDataTestExecute, TestOverdriveBasicWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestOverdriveBasicWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op_01 = std::make_shared<audio::Overdrive>(5.0, 3.0);
+  mindspore::dataset::Execute Transform01({phaser_op_01});
   Status s01 = Transform01(input_02, &input_02);
   EXPECT_TRUE(s01.IsOk());
+}
+
+/// Feature: Overdrive
+/// Description: test invalid parameter of Overdrive
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestOverdriveWrongArgWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestOverdriveWrongArgWithEager";
+  std::vector<double> labels = {0.271, 1.634, 9.246,  0.108, 1.138, 1.156, 3.394,
+                                1.55,  3.614, 1.8402, 0.718, 4.599, 5.64,  2.510620117187500000e-02,
+                                1.38,  5.825, 4.1906, 5.28,  1.052, 9.36};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({4, 5}), &input));
+
+  // verify the gain range from 0 to 100
+  auto input_01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> overdrive_op1 = std::make_shared<audio::Overdrive>(100.1);
+  mindspore::dataset::Execute Transform01({overdrive_op1});
+  Status s01 = Transform01(input_01, &input_01);
+  EXPECT_FALSE(s01.IsOk());
+
+  // verify the color range from 0 to 100
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> overdrive_op2 = std::make_shared<audio::Overdrive>(5.0, 100.1);
+  mindspore::dataset::Execute Transform02({overdrive_op2});
+  Status s02 = Transform02(input_02, &input_02);
+  EXPECT_FALSE(s02.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestRiaaBiquadWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRiaaBiquadWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> riaa_biquad_01 = std::make_shared<audio::RiaaBiquad>(44100);
+  mindspore::dataset::Execute Transform01({riaa_biquad_01});
+  // Filtered waveform by riaabiquad
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestRiaaBiquadWithWrongArg) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRiaaBiquadWithWrongArg.";
+  std::vector<float> labels = {3.156, 5.690, 1.362, 1.093, 5.782, 6.381, 5.982, 3.098, 1.222, 6.027,
+                               3.909, 7.993, 4.324, 1.092, 5.093, 0.991, 1.099, 4.092, 8.111, 6.666};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({4, 5}), &input));
+  auto input01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  // Check sample_rate
+  MS_LOG(INFO) << "sample_rate is zero.";
+  std::shared_ptr<TensorTransform> riaa_biquad_op01 = std::make_shared<audio::RiaaBiquad>(0);
+  mindspore::dataset::Execute Transform01({riaa_biquad_op01});
+  Status s01 = Transform01(input01, &input01);
+  EXPECT_FALSE(s01.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestTrebleBiquadWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestTrebleBiquadWithEager.";
+  // Original waveform
+  std::vector<float> labels = {3.156, 5.690, 1.362, 1.093, 5.782, 6.381, 5.982, 3.098, 1.222, 6.027,
+                               3.909, 7.993, 4.324, 1.092, 5.093, 0.991, 1.099, 4.092, 8.111, 6.666};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> treble_biquad_01 = std::make_shared<audio::TrebleBiquad>(44100, 200);
+  mindspore::dataset::Execute Transform01({treble_biquad_01});
+  // Filtered waveform by treblebiquad
+  EXPECT_OK(Transform01(input_01, &input_01));
+}
+
+TEST_F(MindDataTestExecute, TestTrebleBiquadWithWrongArg) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestTrebleBiquadWithWrongArg.";
+  std::vector<double> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  auto input02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  // Check sample_rate
+  MS_LOG(INFO) << "sample_rate is zero.";
+  std::shared_ptr<TensorTransform> treble_biquad_op01 = std::make_shared<audio::TrebleBiquad>(0.0, 200.0);
+  mindspore::dataset::Execute Transform01({treble_biquad_op01});
+  EXPECT_ERROR(Transform01(input01, &input01));
+  // Check Q
+  MS_LOG(INFO) << "Q is zero.";
+  std::shared_ptr<TensorTransform> treble_biquad_op02 =
+    std::make_shared<audio::TrebleBiquad>(44100, 200.0, 3000.0, 0.0);
+  mindspore::dataset::Execute Transform02({treble_biquad_op02});
+  EXPECT_ERROR(Transform02(input02, &input02));
 }
 
 TEST_F(MindDataTestExecute, TestLFilterWithEager) {
@@ -912,6 +1148,77 @@ TEST_F(MindDataTestExecute, TestLFilterWithWrongArg) {
   mindspore::dataset::Execute Transform01({lfilter_op});
   Status s01 = Transform01(input_02, &input_02);
   EXPECT_FALSE(s01.IsOk());
+}
+
+/// Feature: Phaser
+/// Description: test basic usage of Phaser
+/// Expectation: get correct number of data
+TEST_F(MindDataTestExecute, TestPhaserBasicWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestPhaserBasicWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op_01 = std::make_shared<audio::Phaser>(44100);
+  mindspore::dataset::Execute Transform01({phaser_op_01});
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+/// Feature: Phaser
+/// Description: test invalid parameter of Phaser
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestPhaserInputArgWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestPhaserInputArgWithEager";
+  std::vector<double> labels = {
+    0.271, 1.634, 9.246, 0.108,
+    1.138, 1.156, 3.394, 1.55,
+    3.614, 1.8402, 0.718, 4.599,
+    5.64, 2.510620117187500000e-02, 1.38, 5.825,
+    4.1906, 5.28, 1.052, 9.36};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({4, 5}), &input));
+
+  // check gain_in rang [0.0,1.0]
+  auto input_01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op1 = std::make_shared<audio::Phaser>(44100, 2.0);
+  mindspore::dataset::Execute Transform01({phaser_op1});
+  Status s01 = Transform01(input_01, &input_01);
+  EXPECT_FALSE(s01.IsOk());
+
+  // check gain_out range [0.0,1e9]
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op2 = std::make_shared<audio::Phaser>(44100, 0.2, -0.1);
+  mindspore::dataset::Execute Transform02({phaser_op2});
+  Status s02 = Transform02(input_02, &input_02);
+  EXPECT_FALSE(s02.IsOk());
+
+  // check delay_ms range [0.0,5.0]
+  auto input_03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op3 = std::make_shared<audio::Phaser>(44100, 0.2, 0.2, 6.0);
+  mindspore::dataset::Execute Transform03({phaser_op3});
+  Status s03 = Transform03(input_03, &input_03);
+  EXPECT_FALSE(s03.IsOk());
+
+  // check decay range [0.0,0.99]
+  auto input_04 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op4 = std::make_shared<audio::Phaser>(44100, 0.2, 0.2, 4.0, 1.0);
+  mindspore::dataset::Execute Transform04({phaser_op4});
+  Status s04 = Transform04(input_04, &input_04);
+  EXPECT_FALSE(s04.IsOk());
+
+  // check mod_speed range [0.1, 2]
+  auto input_05 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> phaser_op5 = std::make_shared<audio::Phaser>(44100, 0.2, 0.2, 4.0, 0.8, 3.0);
+  mindspore::dataset::Execute Transform05({phaser_op5});
+  Status s05 = Transform05(input_05, &input_05);
+  EXPECT_FALSE(s05.IsOk());
 }
 
 TEST_F(MindDataTestExecute, TestDCShiftEager) {
@@ -1056,4 +1363,876 @@ TEST_F(MindDataTestExecute, TestFadeWithInvalidArg) {
   mindspore::dataset::Execute Transform04({fade4});
   Status s04 = Transform04(input_04, &input_04);
   EXPECT_FALSE(s04.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestVolDefalutValue) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestVolDefalutValue.";
+  std::shared_ptr<Tensor> input_tensor_;
+  TensorShape s = TensorShape({2, 6});
+  ASSERT_OK(Tensor::CreateFromVector(
+    std::vector<float>({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f}), s, &input_tensor_));
+  auto input_tensor = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+  std::shared_ptr<TensorTransform> vol_op = std::make_shared<audio::Vol>(0.333);
+  mindspore::dataset::Execute transform({vol_op});
+  Status status = transform(input_tensor, &input_tensor);
+  EXPECT_TRUE(status.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestVolGainTypePower) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestVolGainTypePower.";
+  std::shared_ptr<Tensor> input_tensor_;
+  TensorShape s = TensorShape({4, 3});
+  ASSERT_OK(Tensor::CreateFromVector(
+    std::vector<double>({4.0f, 5.0f, 3.0f, 5.0f, 4.0f, 6.0f, 6.0f, 1.0f, 2.0f, 3.0f, 2.0f, 1.0f}), s, &input_tensor_));
+  auto input_tensor = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+  std::shared_ptr<TensorTransform> vol_op = std::make_shared<audio::Vol>(0.2, GainType::kPower);
+  mindspore::dataset::Execute transform({vol_op});
+  Status status = transform(input_tensor, &input_tensor);
+  EXPECT_TRUE(status.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestMagphaseEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestMagphaseEager.";
+  float power = 1.0;
+  std::vector<mindspore::MSTensor> output_tensor;
+  std::shared_ptr<Tensor> test;
+  std::vector<float> test_vector = {3, 4, -3, 4, 3, -4, -3, -4, 5, 12, -5, 12, 5, -12, -5, -12};
+  Tensor::CreateFromVector(test_vector, TensorShape({2, 4, 2}), &test);
+  auto input_tensor = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(test));
+  std::shared_ptr<TensorTransform> magphase(new audio::Magphase({power}));
+  auto transform = Execute({magphase});
+  Status rc = transform({input_tensor}, &output_tensor);
+  ASSERT_TRUE(rc.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestRandomInvertEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRandomInvertEager.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto random_invert_op = vision::RandomInvert(0.6);
+
+  auto transform = Execute({decode, random_invert_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
+}
+
+TEST_F(MindDataTestExecute, TestRandomAutoContrastEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRandomAutoContrastEager.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto random_auto_contrast_op = vision::RandomAutoContrast(0.6);
+
+  auto transform = Execute({decode, random_auto_contrast_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
+}
+
+TEST_F(MindDataTestExecute, TestRandomEqualizeEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRandomEqualizeEager.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto random_equalize_op = vision::RandomEqualize(0.6);
+
+  auto transform = Execute({decode, random_equalize_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
+}
+
+TEST_F(MindDataTestExecute, TestRandomAdjustSharpnessEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestRandomAdjustSharpnessEager.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto random_adjust_sharpness_op = vision::RandomAdjustSharpness(2.0, 0.6);
+
+  auto transform = Execute({decode, random_adjust_sharpness_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
+}
+
+TEST_F(MindDataTestExecute, TestDetectPitchFrequencyWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestDetectPitchFrequencyWithEager.";
+  // Original waveform
+  std::vector<double> labels = {
+    3.716064453125000000e-03, 2.347656250000000000e-03, 9.246826171875000000e-03, 4.089477539062500000e-02,
+    3.138305664062500000e-02, 1.156616210937500000e-02, 0.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 0.840209960937500000e-02, 1.718139648437500000e-02, 2.599121093750000000e-02,
+    5.647949218750000000e-02, 1.510620117187500000e-02, 2.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 3.284790039062500000e-02, 9.052856445312500000e-02, 2.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_01 =
+    std::make_shared<audio::DetectPitchFrequency>(30, 0.1, 3, 5, 25);
+  mindspore::dataset::Execute Transform01({detect_pitch_frequency_01});
+  // Detect pitch frequence
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestDetectPitchFrequencyWithWrongArg) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestDetectPitchFrequencyWithWrongArg.";
+  std::vector<float> labels = {
+    0.716064e-03, 5.347656e-03, 6.246826e-03, 2.089477e-02, 7.138305e-02,
+    4.156616e-02, 1.394653e-02, 3.550292e-02, 0.614379e-02, 3.840209e-02,
+  };
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 5}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  // Check frame_time
+  MS_LOG(INFO) << "frame_time is zero.";
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_01 =
+    std::make_shared<audio::DetectPitchFrequency>(40, 0, 3, 3, 20);
+  mindspore::dataset::Execute Transform01({detect_pitch_frequency_01});
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_FALSE(s01.IsOk());
+  // Check win_length
+  MS_LOG(INFO) << "win_length is zero.";
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_02 =
+    std::make_shared<audio::DetectPitchFrequency>(40, 0.1, 0, 3, 20);
+  mindspore::dataset::Execute Transform02({detect_pitch_frequency_02});
+  Status s02 = Transform02(input_02, &input_02);
+  EXPECT_FALSE(s02.IsOk());
+  // Check freq_low
+  MS_LOG(INFO) << "freq_low is zero.";
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_03 =
+    std::make_shared<audio::DetectPitchFrequency>(40, 0.1, 3, 0, 20);
+  mindspore::dataset::Execute Transform03({detect_pitch_frequency_03});
+  Status s03 = Transform03(input_02, &input_02);
+  EXPECT_FALSE(s03.IsOk());
+  // Check freq_high
+  MS_LOG(INFO) << "freq_high is zero.";
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_04 =
+    std::make_shared<audio::DetectPitchFrequency>(40, 0.1, 3, 3, 0);
+  mindspore::dataset::Execute Transform04({detect_pitch_frequency_04});
+  Status s04 = Transform04(input_02, &input_02);
+  EXPECT_FALSE(s04.IsOk());
+  // Check sample_rate
+  MS_LOG(INFO) << "sample_rate is zero.";
+  std::shared_ptr<TensorTransform> detect_pitch_frequency_05 = std::make_shared<audio::DetectPitchFrequency>(0);
+  mindspore::dataset::Execute Transform05({detect_pitch_frequency_05});
+  Status s05 = Transform05(input_02, &input_02);
+  EXPECT_FALSE(s05.IsOk());
+}
+
+/// Feature: Dither
+/// Description: test Dither in eager mode
+/// Expectation: the data is processed successfully
+TEST_F(MindDataTestExecute, TestDitherWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestDitherWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> dither_01 = std::make_shared<audio::Dither>();
+  mindspore::dataset::Execute Transform01({dither_01});
+  // Filtered waveform by Dither
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestFlangerWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestFlangerWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> flanger_01 = std::make_shared<audio::Flanger>(44100);
+  mindspore::dataset::Execute Transform01({flanger_01});
+  // Filtered waveform by flanger
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+TEST_F(MindDataTestExecute, TestFlangerWithWrongArg) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestFlangerWithWrongArg.";
+  std::vector<double> labels = {1.143, 1.3123, 2.632, 2.554, 1.213, 1.3, 0.456, 3.563};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({4, 2}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  // Check sample_rate
+  MS_LOG(INFO) << "sample_rate is zero.";
+  std::shared_ptr<TensorTransform> flanger_op = std::make_shared<audio::Flanger>(0);
+  mindspore::dataset::Execute Transform01({flanger_op});
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_FALSE(s01.IsOk());
+}
+
+/// Feature: Vectors
+/// Description: test basic usage of Vectors and the ToVectors with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestVectorsParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestVectorsParam.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  std::shared_ptr<Tensor> de_expected;
+  std::vector<float> expected = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  dsize_t dim = 6;
+  ASSERT_OK(Tensor::CreateFromVector(expected, TensorShape({dim}), &de_expected));
+  auto ms_expected = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/vectors.txt";
+  std::shared_ptr<Vectors> vectors01;
+  Status s01 = Vectors::BuildFromFile(&vectors01, vectors_dir);
+  EXPECT_EQ(s01, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(vectors01);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status01.IsOk());
+
+  std::shared_ptr<Vectors> vectors02;
+  Status s02 = Vectors::BuildFromFile(&vectors02, vectors_dir, 100);
+  EXPECT_EQ(s02, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(vectors02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status02.IsOk());
+
+  std::shared_ptr<Vectors> vectors03;
+  Status s03 = Vectors::BuildFromFile(&vectors03, vectors_dir, 3);
+  EXPECT_EQ(s03, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(vectors03);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status03.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test basic usage of ToVectors and the Vectors with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestToVectorsParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsParam.";
+  std::shared_ptr<Tensor> de_tensor01;
+  Tensor::CreateScalar<std::string>("none", &de_tensor01);
+  auto token01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor01));
+  std::shared_ptr<Tensor> de_tensor02;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor02);
+  auto token02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor02));
+  std::shared_ptr<Tensor> de_tensor03;
+  Tensor::CreateScalar<std::string>("OK", &de_tensor03);
+  auto token03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor03));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  dsize_t dim = 6;
+  std::shared_ptr<Tensor> de_expected01;
+  std::vector<float> expected01 = {0, 0, 0, 0, 0, 0};
+  ASSERT_OK(Tensor::CreateFromVector(expected01, TensorShape({dim}), &de_expected01));
+  auto ms_expected01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected01));
+  std::shared_ptr<Tensor> de_expected02;
+  std::vector<float> expected02 = {-1, -1, -1, -1, -1, -1};
+  ASSERT_OK(Tensor::CreateFromVector(expected02, TensorShape({dim}), &de_expected02));
+  auto ms_expected02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected02));
+  std::shared_ptr<Tensor> de_expected03;
+  std::vector<float> expected03 = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  ASSERT_OK(Tensor::CreateFromVector(expected03, TensorShape({dim}), &de_expected03));
+  auto ms_expected03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected03));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/vectors.txt";
+  std::shared_ptr<Vectors> vectors;
+  Status s = Vectors::BuildFromFile(&vectors, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(vectors);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected01);
+  EXPECT_TRUE(status01.IsOk());
+  std::vector<float> unknown_init = {-1, -1, -1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(vectors, unknown_init);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected02);
+  EXPECT_TRUE(status02.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(vectors, unknown_init);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token02, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status03.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors04 = std::make_shared<text::ToVectors>(vectors, unknown_init, true);
+  auto transform04 = Execute({to_vectors04});
+  Status status04 = transform04(token03, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status04.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test invalid parameter of ToVectors
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestToVectorsWithInvalidParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsWithInvalidParam.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("none", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/vectors.txt";
+  std::shared_ptr<Vectors> vectors01;
+  Status s = Vectors::BuildFromFile(&vectors01, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+  std::vector<float> unknown_init = {-1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(vectors01, unknown_init);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_FALSE(status01.IsOk());
+  std::shared_ptr<Vectors> vectors02 = nullptr;
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(vectors02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_FALSE(status02.IsOk());
+}
+
+/// Feature: FastText
+/// Description: test basic usage of FastText and the ToVectors with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestFastTextParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestFastTextParam.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  std::shared_ptr<Tensor> de_expected;
+  std::vector<float> expected = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  dsize_t dim = 6;
+  ASSERT_OK(Tensor::CreateFromVector(expected, TensorShape({dim}), &de_expected));
+  auto ms_expected = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/test_fast_text/fast_text.vec";
+  std::shared_ptr<FastText> fast_text01;
+  Status s01 = FastText::BuildFromFile(&fast_text01, vectors_dir);
+  EXPECT_EQ(s01, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(fast_text01);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status01.IsOk());
+
+  std::shared_ptr<FastText> fast_text02;
+  Status s02 = FastText::BuildFromFile(&fast_text02, vectors_dir, 100);
+  EXPECT_EQ(s02, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(fast_text02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status02.IsOk());
+
+  std::shared_ptr<FastText> fast_text03;
+  Status s03 = FastText::BuildFromFile(&fast_text03, vectors_dir, 3);
+  EXPECT_EQ(s03, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(fast_text03);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status03.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test basic usage of ToVectors and the FastText with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestToVectorsParamForFastText) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsParamForFastText.";
+  std::shared_ptr<Tensor> de_tensor01;
+  Tensor::CreateScalar<std::string>("none", &de_tensor01);
+  auto token01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor01));
+  std::shared_ptr<Tensor> de_tensor02;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor02);
+  auto token02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor02));
+  std::shared_ptr<Tensor> de_tensor03;
+  Tensor::CreateScalar<std::string>("OK", &de_tensor03);
+  auto token03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor03));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  dsize_t dim = 6;
+  std::shared_ptr<Tensor> de_expected01;
+  std::vector<float> expected01 = {0, 0, 0, 0, 0, 0};
+  ASSERT_OK(Tensor::CreateFromVector(expected01, TensorShape({dim}), &de_expected01));
+  auto ms_expected01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected01));
+  std::shared_ptr<Tensor> de_expected02;
+  std::vector<float> expected02 = {-1, -1, -1, -1, -1, -1};
+  ASSERT_OK(Tensor::CreateFromVector(expected02, TensorShape({dim}), &de_expected02));
+  auto ms_expected02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected02));
+  std::shared_ptr<Tensor> de_expected03;
+  std::vector<float> expected03 = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  ASSERT_OK(Tensor::CreateFromVector(expected03, TensorShape({dim}), &de_expected03));
+  auto ms_expected03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected03));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/test_fast_text/fast_text.vec";
+  std::shared_ptr<FastText> fast_text;
+  Status s = FastText::BuildFromFile(&fast_text, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(fast_text);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected01);
+  EXPECT_TRUE(status01.IsOk());
+  std::vector<float> unknown_init = {-1, -1, -1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(fast_text, unknown_init);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected02);
+  EXPECT_TRUE(status02.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(fast_text, unknown_init);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token02, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status03.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors04 = std::make_shared<text::ToVectors>(fast_text, unknown_init, true);
+  auto transform04 = Execute({to_vectors04});
+  Status status04 = transform04(token03, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status04.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test invalid parameter of ToVectors for FastText
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestToVectorsWithInvalidParamForFastText) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsWithInvalidParamForFastText.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("none", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/test_fast_text/fast_text.vec";
+  std::shared_ptr<FastText> fast_text01;
+  Status s = FastText::BuildFromFile(&fast_text01, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+  std::vector<float> unknown_init = {-1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(fast_text01, unknown_init);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_FALSE(status01.IsOk());
+  std::shared_ptr<FastText> fast_text02 = nullptr;
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(fast_text02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_FALSE(status02.IsOk());
+}
+
+/// Feature: GloVe
+/// Description: test basic usage of GloVe and the ToVectors with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestGloVeParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestGloVeParam.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  std::shared_ptr<Tensor> de_expected;
+  std::vector<float> expected = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  dsize_t dim = 6;
+  ASSERT_OK(Tensor::CreateFromVector(expected, TensorShape({dim}), &de_expected));
+  auto ms_expected = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testGloVe/glove.6B.test.txt";
+  std::shared_ptr<GloVe> glove01;
+  Status s01 = GloVe::BuildFromFile(&glove01, vectors_dir);
+  EXPECT_EQ(s01, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(glove01);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status01.IsOk());
+
+  std::shared_ptr<GloVe> glove02;
+  Status s02 = GloVe::BuildFromFile(&glove02, vectors_dir, 100);
+  EXPECT_EQ(s02, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(glove02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status02.IsOk());
+
+  std::shared_ptr<GloVe> glove03;
+  Status s03 = GloVe::BuildFromFile(&glove03, vectors_dir, 3);
+  EXPECT_EQ(s03, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(glove03);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected);
+  EXPECT_TRUE(status03.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test basic usage of ToVectors and the GloVe with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestToVectorsParamForGloVe) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsParamForGloVe.";
+  std::shared_ptr<Tensor> de_tensor01;
+  Tensor::CreateScalar<std::string>("none", &de_tensor01);
+  auto token01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor01));
+  std::shared_ptr<Tensor> de_tensor02;
+  Tensor::CreateScalar<std::string>("ok", &de_tensor02);
+  auto token02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor02));
+  std::shared_ptr<Tensor> de_tensor03;
+  Tensor::CreateScalar<std::string>("OK", &de_tensor03);
+  auto token03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor03));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  dsize_t dim = 6;
+  std::shared_ptr<Tensor> de_expected01;
+  std::vector<float> expected01 = {0, 0, 0, 0, 0, 0};
+  ASSERT_OK(Tensor::CreateFromVector(expected01, TensorShape({dim}), &de_expected01));
+  auto ms_expected01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected01));
+  std::shared_ptr<Tensor> de_expected02;
+  std::vector<float> expected02 = {-1, -1, -1, -1, -1, -1};
+  ASSERT_OK(Tensor::CreateFromVector(expected02, TensorShape({dim}), &de_expected02));
+  auto ms_expected02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected02));
+  std::shared_ptr<Tensor> de_expected03;
+  std::vector<float> expected03 = {0.418, 0.24968, -0.41242, 0.1217, 0.34527, -0.04445718411};
+  ASSERT_OK(Tensor::CreateFromVector(expected03, TensorShape({dim}), &de_expected03));
+  auto ms_expected03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected03));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testGloVe/glove.6B.test.txt";
+  std::shared_ptr<GloVe> glove;
+  Status s = GloVe::BuildFromFile(&glove, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(glove);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected01);
+  EXPECT_TRUE(status01.IsOk());
+  std::vector<float> unknown_init = {-1, -1, -1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(glove, unknown_init);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token01, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected02);
+  EXPECT_TRUE(status02.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(glove, unknown_init);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token02, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status03.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors04 = std::make_shared<text::ToVectors>(glove, unknown_init, true);
+  auto transform04 = Execute({to_vectors04});
+  Status status04 = transform04(token03, &lookup_result);
+  EXPECT_MSTENSOR_EQ(lookup_result, ms_expected03);
+  EXPECT_TRUE(status04.IsOk());
+}
+
+/// Feature: ToVectors
+/// Description: test invalid parameter of ToVectors for GloVe
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestToVectorsWithInvalidParamForGloVe) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsWithInvalidParamForGloVe.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("none", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testGloVe/glove.6B.test.txt";
+  std::shared_ptr<GloVe> glove01;
+  Status s = GloVe::BuildFromFile(&glove01, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+  std::vector<float> unknown_init = {-1, -1, -1, -1};
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(glove01, unknown_init);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_FALSE(status01.IsOk());
+  std::shared_ptr<GloVe> glove02 = nullptr;
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(glove02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_FALSE(status02.IsOk());
+}
+
+/// Feature: CharNGram
+/// Description: test basic usage of CharNGram and the ToVectors with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestCharNGramParam) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestCharNGramParam.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("the", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  std::shared_ptr<Tensor> de_expected01;
+  std::vector<float> expected01 = {-0.840079,-0.0270003,-0.833472,0.588367,-0.210012};
+  ASSERT_OK(Tensor::CreateFromVector(expected01, &de_expected01));
+  auto ms_expected01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected01));
+  std::shared_ptr<Tensor> de_expected02;
+  std::vector<float> expected02 = {-1.34122,0.0442693,-0.48697,0.662939,-0.367669};
+  ASSERT_OK(Tensor::CreateFromVector(expected02, &de_expected02));
+  auto ms_expected02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected02));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/char_n_gram_20.txt";
+  std::shared_ptr<CharNGram> char_n_gram01;
+  Status s01 = CharNGram::BuildFromFile(&char_n_gram01, vectors_dir);
+  EXPECT_EQ(s01, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(char_n_gram01);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected01.Shape());
+  EXPECT_TRUE(status01.IsOk());
+
+  std::shared_ptr<CharNGram> char_n_gram02;
+  Status s02 = CharNGram::BuildFromFile(&char_n_gram02, vectors_dir, 100);
+  EXPECT_EQ(s02, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(char_n_gram02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected01.Shape());
+  EXPECT_TRUE(status02.IsOk());
+
+  std::shared_ptr<CharNGram> char_n_gram03;
+  Status s03 = CharNGram::BuildFromFile(&char_n_gram03, vectors_dir, 18);
+  EXPECT_EQ(s03, Status::OK());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(char_n_gram03);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected02.Shape());
+  EXPECT_TRUE(status03.IsOk());
+}
+
+/// Feature: CharNGram
+/// Description: test basic usage of ToVectors and the CharNGram with default parameter
+/// Expectation: get correct MSTensor
+TEST_F(MindDataTestExecute, TestToVectorsParamForCharNGram) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsParamForCharNGram.";
+  std::shared_ptr<Tensor> de_tensor01;
+  Tensor::CreateScalar<std::string>("none", &de_tensor01);
+  auto token01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor01));
+  std::shared_ptr<Tensor> de_tensor02;
+  Tensor::CreateScalar<std::string>("the", &de_tensor02);
+  auto token02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor02));
+  std::shared_ptr<Tensor> de_tensor03;
+  Tensor::CreateScalar<std::string>("The", &de_tensor03);
+  auto token03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor03));
+  mindspore::MSTensor lookup_result;
+
+  // Create expected output.
+  std::shared_ptr<Tensor> de_expected01;
+  std::vector<float> expected01(5, 0);
+  ASSERT_OK(Tensor::CreateFromVector(expected01, &de_expected01));
+  auto ms_expected01 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected01));
+  std::shared_ptr<Tensor> de_expected02;
+  std::vector<float> expected02(5, -1);
+  ASSERT_OK(Tensor::CreateFromVector(expected02, &de_expected02));
+  auto ms_expected02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected02));
+  std::shared_ptr<Tensor> de_expected03;
+  std::vector<float> expected03 = {-0.840079,-0.0270003,-0.833472,0.588367,-0.210012};
+  ASSERT_OK(Tensor::CreateFromVector(expected03, &de_expected03));
+  auto ms_expected03 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_expected03));
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/char_n_gram_20.txt";
+  std::shared_ptr<CharNGram> char_n_gram;
+  Status s = CharNGram::BuildFromFile(&char_n_gram, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(char_n_gram);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token01, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected01.Shape());
+  EXPECT_TRUE(status01.IsOk());
+  std::vector<float> unknown_init(5, -1);
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(char_n_gram, unknown_init);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token01, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected02.Shape());
+  EXPECT_TRUE(status02.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors03 = std::make_shared<text::ToVectors>(char_n_gram, unknown_init);
+  auto transform03 = Execute({to_vectors03});
+  Status status03 = transform03(token02, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected03.Shape());
+  EXPECT_TRUE(status03.IsOk());
+  std::shared_ptr<TensorTransform> to_vectors04 = std::make_shared<text::ToVectors>(char_n_gram, unknown_init, true);
+  auto transform04 = Execute({to_vectors04});
+  Status status04 = transform04(token03, &lookup_result);
+  EXPECT_EQ(lookup_result.Shape(), ms_expected03.Shape());
+  EXPECT_TRUE(status04.IsOk());
+}
+
+/// Feature: CharNGram
+/// Description: test invalid parameter of ToVectors
+/// Expectation: throw exception correctly
+TEST_F(MindDataTestExecute, TestToVectorsWithInvalidParamForCharNGram) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestToVectorsWithInvalidParamForCharNGram.";
+  std::shared_ptr<Tensor> de_tensor;
+  Tensor::CreateScalar<std::string>("none", &de_tensor);
+  auto token = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(de_tensor));
+  mindspore::MSTensor lookup_result;
+
+  // Transform params.
+  std::string vectors_dir = "data/dataset/testVectors/char_n_gram_20.txt";
+  std::shared_ptr<CharNGram> char_n_gram01;
+  Status s = CharNGram::BuildFromFile(&char_n_gram01, vectors_dir);
+  EXPECT_EQ(s, Status::OK());
+  std::vector<float> unknown_init(4, -1);
+  std::shared_ptr<TensorTransform> to_vectors01 = std::make_shared<text::ToVectors>(char_n_gram01, unknown_init);
+  auto transform01 = Execute({to_vectors01});
+  Status status01 = transform01(token, &lookup_result);
+  EXPECT_FALSE(status01.IsOk());
+  std::shared_ptr<CharNGram> char_n_gram02 = nullptr;
+  std::shared_ptr<TensorTransform> to_vectors02 = std::make_shared<text::ToVectors>(char_n_gram02);
+  auto transform02 = Execute({to_vectors02});
+  Status status02 = transform02(token, &lookup_result);
+  EXPECT_FALSE(status02.IsOk());
+}
+
+// Feature: DBToAmplitude
+// Description: test DBToAmplitude in eager mode
+// Expectation: the data is processed successfully
+TEST_F(MindDataTestExecute, TestDBToAmplitudeWithEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestDBToAmplitudeWithEager.";
+  // Original waveform
+  std::vector<float> labels = {
+    2.716064453125000000e-03, 6.347656250000000000e-03, 9.246826171875000000e-03, 1.089477539062500000e-02,
+    1.138305664062500000e-02, 1.156616210937500000e-02, 1.394653320312500000e-02, 1.550292968750000000e-02,
+    1.614379882812500000e-02, 1.840209960937500000e-02, 1.718139648437500000e-02, 1.599121093750000000e-02,
+    1.647949218750000000e-02, 1.510620117187500000e-02, 1.385498046875000000e-02, 1.345825195312500000e-02,
+    1.419067382812500000e-02, 1.284790039062500000e-02, 1.052856445312500000e-02, 9.368896484375000000e-03};
+  std::shared_ptr<Tensor> input;
+  ASSERT_OK(Tensor::CreateFromVector(labels, TensorShape({2, 10}), &input));
+  auto input_02 = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input));
+  std::shared_ptr<TensorTransform> DBToAmplitude_01 = std::make_shared<audio::DBToAmplitude>(2, 2);
+  mindspore::dataset::Execute Transform01({DBToAmplitude_01});
+  // Filtered waveform by DBToAmplitude
+  Status s01 = Transform01(input_02, &input_02);
+  EXPECT_TRUE(s01.IsOk());
+}
+
+/// Feature: SlidingWindowCmn
+/// Description: test basic function of SlidingWindowCmn
+/// Expectation: get correct number of data
+TEST_F(MindDataTestExecute, TestSlidingWindowCmn) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestSlidingWindowCmn.";
+
+  std::shared_ptr<Tensor> input_tensor_;
+  int32_t cmn_window = 500;
+  int32_t min_cmn_window = 50;
+  bool center = false;
+  bool norm_vars = false;
+
+  // create tensor shape
+  TensorShape s = TensorShape({2, 2, 500});
+  // init input vector
+  std::vector<float> input_vec(s.NumOfElements());
+  for (int idx = 0; idx < input_vec.size(); ++idx) {
+    input_vec[idx] = std::rand() % (1000) / (1000.0f);
+  }
+  ASSERT_OK(Tensor::CreateFromVector(input_vec, s, &input_tensor_));
+  auto input_ms = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+  std::shared_ptr<TensorTransform> sliding_window_cmn_op =
+    std::make_shared<audio::SlidingWindowCmn>(cmn_window, min_cmn_window, center, norm_vars);
+
+  // apply sliding_window_cmn
+  mindspore::dataset::Execute Transform({sliding_window_cmn_op});
+  Status status = Transform(input_ms, &input_ms);
+  EXPECT_TRUE(status.IsOk());
+}
+
+/// Feature: SlidingWindowCmn
+/// Description: test wrong input args of SlidingWindowCmn
+/// Expectation: get nullptr of iterator
+TEST_F(MindDataTestExecute, TestSlidingWindowCmnWrongArgs) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestSlidingWindowCmnWrongArgs.";
+
+  std::shared_ptr<Tensor> input_tensor_;
+  // create tensor shape
+  TensorShape s = TensorShape({2, 2, 500});
+  // init input vector
+  std::vector<float> input_vec(s.NumOfElements());
+  for (int idx = 0; idx < input_vec.size(); ++idx) {
+    input_vec[idx] = std::rand() % (1000) / (1000.0f);
+  }
+  ASSERT_OK(Tensor::CreateFromVector(input_vec, s, &input_tensor_));
+  auto input_ms = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(input_tensor_));
+
+  // SlidingWindowCmn: cmn_window must be greater than or equal to 0.
+  std::shared_ptr<TensorTransform> sliding_window_cmn_op_1 =
+    std::make_shared<audio::SlidingWindowCmn>(-1, 100, false, false);
+  mindspore::dataset::Execute Transform_1({sliding_window_cmn_op_1});
+  Status status_1 = Transform_1(input_ms, &input_ms);
+  EXPECT_FALSE(status_1.IsOk());
+
+  // SlidingWindowCmn: min_cmn_window must be greater than or equal to 0.
+  std::shared_ptr<TensorTransform> sliding_window_cmn_op_2 =
+    std::make_shared<audio::SlidingWindowCmn>(500, -1, false, false);
+  mindspore::dataset::Execute Transform_2({sliding_window_cmn_op_2});
+  Status status_2 = Transform_2(input_ms, &input_ms);
+  EXPECT_FALSE(status_2.IsOk());
+}
+
+/// Feature: AutoAugment
+/// Description: test AutoAugment eager
+/// Expectation: load one image data and process auto augmentation with given policy on it.
+TEST_F(MindDataTestExecute, TestAutoAugmentEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-TestAutoAugmentEager.";
+  // Read images
+  auto image = ReadFileToTensor("data/dataset/apple.jpg");
+
+  // Transform params
+  auto decode = vision::Decode();
+  auto auto_augment_op = vision::AutoAugment(AutoAugmentPolicy::kImageNet, InterpolationMode::kLinear, {0, 0, 0});
+
+  auto transform = Execute({decode, auto_augment_op});
+  Status rc = transform(image, &image);
+  EXPECT_EQ(rc, Status::OK());
+}
+
+/// Feature: Spectrogram.
+/// Description: test Spectrogram in eager mode.
+/// Expectation: the data is processed successfully.
+TEST_F(MindDataTestExecute, TestSpectrogramEager) {
+  MS_LOG(INFO) << "Doing MindDataTestExecute-SpectrogramEager.";
+  std::shared_ptr<Tensor> test_input_tensor;
+  std::vector<double> waveform = {1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1};
+  ASSERT_OK(Tensor::CreateFromVector(waveform, TensorShape({1, (long)waveform.size()}), &test_input_tensor));
+  auto input_tensor = mindspore::MSTensor(std::make_shared<mindspore::dataset::DETensor>(test_input_tensor));
+  std::shared_ptr<TensorTransform> spectrogram = std::make_shared<audio::Spectrogram>(8, 8, 4, 0, WindowType::kHann,
+                                                                                      2., false, true,
+                                                                                      BorderType::kReflect, true);
+  auto transform = Execute({spectrogram});
+  Status rc = transform({input_tensor}, &input_tensor);
+  ASSERT_TRUE(rc.IsOk());
 }

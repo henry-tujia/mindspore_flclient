@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <memory>
 
 #include "minddata/dataset/engine/ir/cache/dataset_cache_impl.h"
 #include "minddata/dataset/engine/datasetops/cache_lookup_op.h"
@@ -88,7 +87,7 @@ Status DatasetCacheImpl::to_json(nlohmann::json *out_json) {
   if (hostname_) args["hostname"] = hostname_.value();
   if (port_) args["port"] = port_.value();
   if (num_connections_) args["num_connections"] = num_connections_.value();
-  if (prefetch_sz_) args["prefetch_size"] = prefetch_sz_.value();
+  if (prefetch_sz_) args["cache_prefetch_size"] = prefetch_sz_.value();
   *out_json = args;
   return Status::OK();
 }

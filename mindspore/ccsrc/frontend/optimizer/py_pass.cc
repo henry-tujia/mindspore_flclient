@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 #include "frontend/optimizer/py_pass.h"
-#include <unordered_set>
 #include <deque>
 #include <vector>
 
+#include "utils/hash_set.h"
 #include "ir/func_graph.h"
 #include "ir/manager.h"
 #include "pybind_api/ir/primitive_py.h"
@@ -151,11 +151,8 @@ AnfNodePtr ProcessSinglePattern(const PatternPtr &pattern, const MatchResultPtr 
     return BuildNewParameter(pattern, res, top_graph);
   } else if (pattern->isa<Imm>()) {
     return BuildImmNode(pattern);
-  } else {
-    MS_LOG(EXCEPTION) << "Cannot find or build target node, pattern: " + pattern->unique_name() + "\n";
-    return nullptr;
   }
-  return nullptr;
+  MS_LOG(EXCEPTION) << "Cannot find or build target node, pattern: " + pattern->unique_name() + "\n";
 }
 
 AnfNodePtr ProcessComplexPatternFirstInput(const PatternPtr &pattern, const MatchResultPtr &res,

@@ -64,6 +64,14 @@ class MS_API Model {
   /// \return Status.
   Status Resize(const std::vector<MSTensor> &inputs, const std::vector<std::vector<int64_t>> &dims);
 
+  /// \brief Change the size and or content of weight tensors
+  ///
+  /// \param[in] new_weights a vector of tensors with new shapes and data to use in the model
+  ///            If data pointer is null, the data of the original tensors will be copied to the new ones
+  ///
+  /// \return Status.
+  Status UpdateWeights(const std::vector<MSTensor> &new_weights);
+
   /// \brief Inference model.
   ///
   /// \param[in] inputs A vector where model inputs are arranged in sequence.
@@ -75,6 +83,14 @@ class MS_API Model {
   Status Predict(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs,
                  const MSKernelCallBack &before = nullptr, const MSKernelCallBack &after = nullptr);
 
+  /// \brief Train model by step.
+  ///
+  /// \param[in] before CallBack before predict.
+  /// \param[in] after CallBack after predict.
+  ///
+  /// \return Status.
+  Status RunStep(const MSKernelCallBack &before = nullptr, const MSKernelCallBack &after = nullptr);
+
   /// \brief Inference model with preprocess in model.
   ///
   /// \param[in] inputs A vector where model inputs are arranged in sequence.
@@ -84,7 +100,7 @@ class MS_API Model {
   /// \param[in] after CallBack after predict.
   ///
   /// \return Status.
-  Status PredictWithPreprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs,
+  Status PredictWithPreprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs,
                                const MSKernelCallBack &before = nullptr, const MSKernelCallBack &after = nullptr);
 
   /// \brief Apply data preprocess if it exits in model.
@@ -93,7 +109,7 @@ class MS_API Model {
   /// \param[out] outputs Which is a pointer to a vector. The model outputs are filled in the container in sequence.
   ///
   /// \return Status.
-  Status Preprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs);
+  Status Preprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs);
 
   /// \brief Check if data preprocess exists in model.
   /// \return true if data preprocess exists.
@@ -104,7 +120,15 @@ class MS_API Model {
   /// \param[in] config_path config file path.
   ///
   /// \return Status.
-  Status LoadConfig(const std::string &config_path);
+  inline Status LoadConfig(const std::string &config_path);
+
+  /// \brief Update config.
+  ///
+  /// \param[in] section define the config section.
+  /// \param[in] config define the config will be updated.
+  ///
+  /// \return Status.
+  inline Status UpdateConfig(const std::string &section, const std::pair<std::string, std::string> &config);
 
   /// \brief Obtains all input tensors of the model.
   ///
@@ -127,7 +151,18 @@ class MS_API Model {
   /// \return Status of operation
   Status ApplyGradients(const std::vector<MSTensor> &gradients);
 
-  /// \brief Obtains optimizer params tensors of the model.
+  /// \brief Obtains all weights tensors of the model.
+  ///
+  /// \return The vector that includes all gradient tensors.
+  std::vector<MSTensor> GetFeatureMaps() const;
+
+  /// \brief update weights tensors of the model.
+  ///
+  /// \param[in] inputs A vector new weights.
+  /// \return Status of operation
+  Status UpdateFeatureMaps(const std::vector<MSTensor> &new_weights);
+
+    /// \brief Obtains optimizer params tensors of the model.
   ///
   /// \return The vector that includes all params tensors.
   std::vector<MSTensor> GetOptimizerParams() const;
@@ -165,9 +200,19 @@ class MS_API Model {
   /// \return The vector of output MSTensor.
   inline std::vector<MSTensor> GetOutputsByNodeName(const std::string &node_name);
 
+  /// \brief Bind GLTexture2D object to cl Memory.
+  ///
+  /// \param[in] inputGlTexture The input GLTexture id for Model.
+  /// \param[in] outputGLTexture The output GLTexture id for Model.
+  ///
+  /// \return Status of operation.
+
+  Status BindGLTexture2DMemory(const std::map<std::string, unsigned int> &inputGLTexture,
+                               std::map<std::string, unsigned int> *outputGLTexture);
+
   /// \brief Inference model.
   ///
-  /// \param[in] device_type Device type，options are kGPU, kAscend910, etc.
+  /// \param[in] device_type Device type，options are kGPU, kAscend etc.
   /// \param[in] model_type The type of model file, options are ModelType::kMindIR, ModelType::kOM.
   ///
   /// \return Is supported or not.
@@ -189,9 +234,9 @@ class MS_API Model {
   /// \param[in] dec_mode Define the decryption mode. Options: AES-GCM, AES-CBC.
   ///
   /// \return Status.
-  Status Build(const void *model_data, size_t data_size, ModelType model_type,
-               const std::shared_ptr<Context> &model_context = nullptr, const Key &dec_key = {},
-               const std::string &dec_mode = kDecModeAesGcm);
+  inline Status Build(const void *model_data, size_t data_size, ModelType model_type,
+                      const std::shared_ptr<Context> &model_context = nullptr, const Key &dec_key = {},
+                      const std::string &dec_mode = kDecModeAesGcm);
 
   /// \brief Load and build a model from model buffer so that it can run on a device. Only valid for Lite.
   ///
@@ -203,9 +248,9 @@ class MS_API Model {
   /// \param[in] dec_mode Define the decryption mode. Options: AES-GCM, AES-CBC.
   ///
   /// \return Status.
-  Status Build(const std::string &model_path, ModelType model_type,
-               const std::shared_ptr<Context> &model_context = nullptr, const Key &dec_key = {},
-               const std::string &dec_mode = kDecModeAesGcm);
+  inline Status Build(const std::string &model_path, ModelType model_type,
+                      const std::shared_ptr<Context> &model_context = nullptr, const Key &dec_key = {},
+                      const std::string &dec_mode = kDecModeAesGcm);
 
  private:
   friend class Serialization;
@@ -214,6 +259,12 @@ class MS_API Model {
   std::vector<std::vector<char>> GetOutputTensorNamesChar();
   MSTensor GetOutputByTensorName(const std::vector<char> &tensor_name);
   std::vector<MSTensor> GetOutputsByNodeName(const std::vector<char> &node_name);
+  Status LoadConfig(const std::vector<char> &config_path);
+  Status UpdateConfig(const std::vector<char> &section, const std::pair<std::vector<char>, std::vector<char>> &config);
+  Status Build(const void *model_data, size_t data_size, ModelType model_type,
+               const std::shared_ptr<Context> &model_context, const Key &dec_key, const std::vector<char> &dec_mode);
+  Status Build(const std::vector<char> &model_path, ModelType model_type, const std::shared_ptr<Context> &model_context,
+               const Key &dec_key, const std::vector<char> &dec_mode);
 
   std::shared_ptr<ModelImpl> impl_;
 };
@@ -230,6 +281,24 @@ MSTensor Model::GetOutputByTensorName(const std::string &tensor_name) {
 
 std::vector<MSTensor> Model::GetOutputsByNodeName(const std::string &node_name) {
   return GetOutputsByNodeName(StringToChar(node_name));
+}
+
+Status Model::LoadConfig(const std::string &config_path) { return LoadConfig(StringToChar(config_path)); }
+
+Status Model::UpdateConfig(const std::string &section, const std::pair<std::string, std::string> &config) {
+  std::pair<std::vector<char>, std::vector<char>> config_pair = {StringToChar(config.first),
+                                                                 StringToChar(config.second)};
+  return UpdateConfig(StringToChar(section), config_pair);
+}
+
+Status Model::Build(const void *model_data, size_t data_size, ModelType model_type,
+                    const std::shared_ptr<Context> &model_context, const Key &dec_key, const std::string &dec_mode) {
+  return Build(model_data, data_size, model_type, model_context, dec_key, StringToChar(dec_mode));
+}
+
+Status Model::Build(const std::string &model_path, ModelType model_type, const std::shared_ptr<Context> &model_context,
+                    const Key &dec_key, const std::string &dec_mode) {
+  return Build(StringToChar(model_path), model_type, model_context, dec_key, StringToChar(dec_mode));
 }
 }  // namespace mindspore
 #endif  // MINDSPORE_INCLUDE_API_MODEL_H

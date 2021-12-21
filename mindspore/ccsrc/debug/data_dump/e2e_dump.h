@@ -26,6 +26,9 @@
 #include "runtime/device/device_address.h"
 #include "debug/data_dump/dump_json_parser.h"
 #include "debug/data_dump/dump_utils.h"
+#ifdef ENABLE_D
+#include "proto/dump_data.pb.h"
+#endif
 
 #ifndef ENABLE_DEBUGGER
 class Debugger;
@@ -35,17 +38,25 @@ class E2eDump {
  public:
   E2eDump() = default;
   ~E2eDump() = default;
-  static void DumpSetup(const session::KernelGraph *graph, uint32_t rank_id);
+  static void DumpSetup(const session::KernelGraph *graph);
+
+  static void UpdateIterGPUDump();
+
+  static void DumpRunIter(const KernelGraphPtr &graph_ptr, uint32_t rank_id = 0);
+
   static void DumpData(const session::KernelGraph *graph, uint32_t rank_id, const Debugger *debugger = nullptr);
 
-  static bool DumpParametersAndConstData(const session::KernelGraph *graph, uint32_t rank_id, const Debugger *debugger);
+  static void DumpConstantData(const session::KernelGraph *graph, const std::string &cst_dump_path,
+                               const Debugger *debugger = nullptr);
+
+  static void DumpConstantData(const session::KernelGraph *graph, uint32_t rank_id, const Debugger *debugger = nullptr);
+
+  static bool DumpParametersData(const session::KernelGraph *graph, uint32_t rank_id, const Debugger *debugger);
 
   static bool DumpSingleNodeData(const CNodePtr &node, uint32_t graph_id, uint32_t rank_id,
                                  const Debugger *debugger = nullptr);
 
   static bool isDatasetGraph(const session::KernelGraph *graph);
-
-  static bool CheckDatasetGraph(const session::KernelGraph *graph);
 
   // Dump data when task error.
   static void DumpInputImpl(const CNodePtr &node, bool trans_flag, const std::string &dump_path,
@@ -56,9 +67,12 @@ class E2eDump {
 
   static bool DumpDirExists(const std::string &dump_path);
 
-  static bool MoveDumpFiles(const std::string &first_dir, const std::string &second_dir);
+#ifdef ENABLE_D
+  static void DumpTensorToFile(const std::string &dump_path, const debugger::dump::DumpData &dump_data, char *data_ptr);
 
-  static bool DeleteDirContents(const std::string &dir_path);
+  static void DumpOpDebugToFile(const std::string &dump_path, const debugger::dump::DumpData &dump_data,
+                                char *data_ptr);
+#endif
 
  private:
   static void DumpOutput(const session::KernelGraph *graph, const std::string &dump_path, const Debugger *debugger);
@@ -69,8 +83,7 @@ class E2eDump {
 
   static void DumpInputSingleNode(const CNodePtr &node, const std::string &dump_path, const Debugger *debugger);
 
-  static void DumpParametersAndConst(const session::KernelGraph *graph, const std::string &dump_path,
-                                     const Debugger *debugger);
+  static void DumpParameters(const session::KernelGraph *graph, const std::string &dump_path, const Debugger *debugger);
 
   static void DumpGPUMemToFile(const std::string &file_path, const std::string &original_kernel_name,
                                const device::DeviceAddress &addr, const ShapeVector &int_shapes,
@@ -78,9 +91,17 @@ class E2eDump {
                                const Debugger *debugger);
   static bool IsDeviceTargetGPU();
   static void DumpSingleAnfNode(const AnfNodePtr &anf_node, const size_t output_index, const std::string &dump_path,
-                                bool trans_flag, std::map<std::string, size_t> *const_map, const Debugger *debugger);
+                                bool trans_flag, const Debugger *debugger);
 
   static void UpdateIterDumpSetup(const session::KernelGraph *graph, bool sink_mode);
+
+#ifdef ENABLE_D
+  static nlohmann::json ParseOverflowInfo(char *data_ptr);
+
+  template <typename T>
+  static bool ConvertFormatForTensorAndDump(std::string dump_path, const T &tensor, char *data_ptr,
+                                            const std::string &io, uint32_t slot);
+#endif
 
   inline static unsigned int starting_graph_id = INT32_MAX;
 };

@@ -31,7 +31,7 @@ abstract::ShapePtr ZerosInferShape(const PrimitivePtr &primitive, const std::vec
   auto prim_name = primitive->name();
   // check
   auto shape_value = input_args[0]->BuildValue();
-  std::vector<int64_t> out_shape = CheckAndConvertUtils::CheckAttrIntOrTupleInt("shape", shape_value, prim_name);
+  std::vector<int64_t> out_shape = CheckAndConvertUtils::CheckIntOrTupleInt("input[shape]", shape_value, prim_name);
   (void)CheckAndConvertUtils::CheckPositiveVector("shape", out_shape, prim_name);
   return std::make_shared<abstract::Shape>(out_shape);
 }
@@ -57,6 +57,8 @@ AbstractBasePtr ZerosInfer(const abstract::AnalysisEnginePtr &, const PrimitiveP
 
 ValuePtr ZerosInferValue(const PrimitivePtr &prim, const std::vector<AbstractBasePtr> &input_args) {
   MS_EXCEPTION_IF_NULL(prim);
+  const int64_t input_num = 2;
+  CheckAndConvertUtils::CheckInputArgs(input_args, kGreaterEqual, input_num, prim->name());
   auto abs = ZerosInfer(nullptr, prim, input_args);
   // check
   auto out_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(abs->BuildShape())[kShape];

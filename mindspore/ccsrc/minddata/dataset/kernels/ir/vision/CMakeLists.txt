@@ -4,6 +4,7 @@ set_property(SOURCE ${_CURRENT_SRC_FILES} PROPERTY COMPILE_DEFINITIONS SUBMODULE
 set(DATASET_KERNELS_IR_VISION_SRC_FILES
         adjust_gamma_ir.cc
         affine_ir.cc
+        auto_augment_ir.cc
         auto_contrast_ir.cc
         bounding_box_augment_ir.cc
         center_crop_ir.cc
@@ -21,14 +22,19 @@ set(DATASET_KERNELS_IR_VISION_SRC_FILES
         normalize_ir.cc
         normalize_pad_ir.cc
         pad_ir.cc
+        random_adjust_sharpness_ir.cc
         random_affine_ir.cc
+        random_auto_contrast_ir.cc
         random_color_adjust_ir.cc
         random_color_ir.cc
         random_crop_decode_resize_ir.cc
         random_crop_ir.cc
         random_crop_with_bbox_ir.cc
+        random_equalize_ir.cc
         random_horizontal_flip_ir.cc
         random_horizontal_flip_with_bbox_ir.cc
+        random_invert_ir.cc
+        random_lighting_ir.cc
         random_posterize_ir.cc
         random_resized_crop_ir.cc
         random_resized_crop_with_bbox_ir.cc

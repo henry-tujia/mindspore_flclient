@@ -16,6 +16,7 @@
 
 #include "tools/optimizer/graph/infershape_pass.h"
 #include "tools/common/node_util.h"
+#include "tools/common/tensor_util.h"
 #include "nnacl/op_base.h"
 #include "src/common/log_util.h"
 
@@ -37,35 +38,11 @@ int GetCNodeCertainInputFormat(const CNodePtr cnode, int index, mindspore::Forma
     cnode->set_inputs(origin_inputs);
     return lite::RET_NO_CHANGE;
   }
-  auto real_cnode = cnode->input(index)->cast<CNodePtr>();
-  MS_ASSERT(real_cnode != nullptr);
-  if (CheckPrimitiveType(real_cnode, prim::kPrimTupleGetItem)) {
-    real_cnode = real_cnode->input(1)->cast<CNodePtr>();
+  if (DetermineCertainVarInputFormat(cnode, index, format) != RET_OK) {
+    MS_LOG(ERROR) << "determine certain var-input's  format failed.";
+    return RET_ERROR;
   }
   cnode->set_inputs(origin_inputs);
-  MS_ASSERT(real_cnode != nullptr);
-  auto primitive = GetValueNode<PrimitivePtr>(real_cnode->input(0));
-  MS_CHECK_TRUE_MSG(primitive != nullptr, lite::RET_NULL_PTR, "GetValueNode Failed");
-  if (primitive->GetAttr(ops::kFormat) == nullptr) {
-    MS_LOG(ERROR) << "cnode has no format attr. " << real_cnode->fullname_with_scope();
-    return lite::RET_ERROR;
-  }
-  *format = static_cast<mindspore::Format>(GetValue<int64_t>(primitive->GetAttr(ops::kFormat)));
-  if (CheckPrimitiveType(real_cnode, prim::kPrimTranspose)) {
-    std::vector<int> perm;
-    if (GetTransposePerm(real_cnode, &perm) != lite::RET_OK) {
-      MS_LOG(ERROR) << "get transpose perm failed.";
-      return lite::RET_ERROR;
-    }
-    if (perm.size() != 4) {
-      return RET_OK;
-    }
-    if (perm == kNH2NC && *format == mindspore::NHWC) {
-      *format = mindspore::NCHW;
-    } else if (perm == kNC2NH && *format == mindspore::NCHW) {
-      *format = mindspore::NHWC;
-    }
-  }
   return lite::RET_OK;
 }
 
@@ -90,6 +67,94 @@ int ModifySubGraphInputCNodeFormat(const FuncGraphPtr &sub_graph, const Paramete
   }
   return lite::RET_OK;
 }
+
+int JudgeControlFlowCertainOutputHasInferred(const CNodePtr &return_cnode, size_t index, bool *infer_info) {
+  MS_ASSERT(return_cnode != nullptr && infer_info != nullptr);
+  MS_CHECK_TRUE_MSG(index < return_cnode->size(), RET_ERROR, "input index is out of range.");
+  *infer_info = true;
+  auto abstract_base = GetCNodeInputAbstract(return_cnode, index);
+  MS_CHECK_TRUE_MSG(abstract_base != nullptr, RET_ERROR, "anfnode has no abstract.");
+  ShapeVector shape;
+  auto ret = FetchShapeFromAbstract(abstract_base, &shape);
+  MS_CHECK_TRUE_MSG(ret == lite::RET_OK, RET_ERROR, "fetch shape from abstract failed.");
+  if (std::find(shape.begin(), shape.end(), -1) != shape.end()) {
+    *infer_info = false;
+    return RET_OK;
+  }
+  if (utils::isa<CNodePtr>(return_cnode->input(index))) {
+    ret = DetermineCertainVarInputHasInferred(return_cnode, index, infer_info);
+    MS_CHECK_TRUE_MSG(ret == RET_OK, RET_ERROR, "determine infer flag failed.");
+  }
+  return RET_OK;
+}
+
+int ModifyWhileBodyGraphInputs(const CNodePtr &cnode, const FuncGraphPtr &sub_graph, const ParameterPtr &graph_input,
+                               size_t input_index) {
+  MS_ASSERT(cnode != nullptr && sub_graph != nullptr && graph_input != nullptr);
+  if (!CheckPrimitiveType(cnode, prim::kPrimWhile)) {
+    return RET_OK;
+  }
+  auto body_graph = GetValueNode<FuncGraphPtr>(cnode->input(kInputIndexTwo));
+  MS_ASSERT(body_graph != nullptr);
+  if (body_graph.get() != sub_graph.get()) {
+    MS_LOG(DEBUG) << "sub_graph is not body graph.";
+    return RET_OK;
+  }
+  auto return_cnode = sub_graph->get_return();
+  MS_CHECK_TRUE_MSG(return_cnode != nullptr, RET_ERROR, "return node is a nullptr.");
+  auto origin_outputs = return_cnode->inputs();
+  auto ret = lite::RemoveIfDepend(return_cnode);
+  if (ret != RET_OK) {
+    return_cnode->set_inputs(origin_outputs);
+    MS_LOG(ERROR) << "remove depend node failed.";
+    return RET_ERROR;
+  }
+  ret = lite::RemoveIfMakeTuple(return_cnode);
+  if (ret != RET_OK) {
+    return_cnode->set_inputs(origin_outputs);
+    MS_LOG(ERROR) << "remove make_tuple node failed.";
+    return RET_ERROR;
+  }
+  RemoveIfMonad(return_cnode);
+  if (return_cnode->size() == 0 || input_index >= return_cnode->size() - 1) {
+    return_cnode->set_inputs(origin_outputs);
+    MS_LOG(ERROR) << "input index is out of range.";
+    return RET_ERROR;
+  }
+  auto output = return_cnode->input(input_index + 1);
+  return_cnode->set_inputs(origin_outputs);
+  MS_CHECK_TRUE_MSG(output != nullptr, RET_ERROR, "output node is a nullptr.");
+  if (output->isa<CNode>()) {
+    graph_input->set_default_param(nullptr);
+  }
+  return RET_OK;
+}
+
+int MergeTwoBranchOfIfOp(const CNodePtr &cnode, const CNodePtr &return_cnode, size_t index, bool *true_branch) {
+  MS_ASSERT(cnode != nullptr && return_cnode != nullptr && true_branch != nullptr);
+  *true_branch = true;
+  if (!CheckPrimitiveType(cnode, prim::kPrimIf)) {
+    return RET_OK;
+  }
+  bool infer_info{false};
+  // judge true branch.
+  if (JudgeControlFlowCertainOutputHasInferred(return_cnode, index, &infer_info) != RET_OK) {
+    MS_LOG(ERROR) << "determine certain output has inferred failed.";
+    return RET_ERROR;
+  }
+  if (infer_info) {
+    return RET_OK;
+  }
+  // judge false branch.
+  if (JudgeControlFlowCertainOutputHasInferred(cnode, index + kInputSizeThree, &infer_info) != RET_OK) {
+    MS_LOG(ERROR) << "determine certain output has inferred failed.";
+    return RET_ERROR;
+  }
+  if (infer_info) {
+    *true_branch = false;
+  }
+  return RET_OK;
+}
 }  // namespace
 
 bool InferShapePass::Run(const FuncGraphPtr &func_graph) {
@@ -103,15 +168,24 @@ bool InferShapePass::Run(const FuncGraphPtr &func_graph) {
     MS_LOG(ERROR) << "create NodeInferShape object failed.";
     return false;
   }
+  sub_inputs_map_ = {};
   if (!JudgeAllOpsCanInfer(func_graph)) {
     MS_LOG(WARNING) << "exist op cannot support infer shape.";
+    return false;
+  }
+  manager_ = Manage(func_graph, true);
+  if (manager_ == nullptr) {
+    MS_LOG(ERROR) << "generate a manager for func_graph failed.";
     return false;
   }
   if (InferProcess(func_graph) != lite::RET_OK) {
     MS_LOG(ERROR) << "infer shape failed.";
     return false;
   }
-  ResetSubGraphInput();
+  if (ResetSubGraphInput() != lite::RET_OK) {
+    MS_LOG(ERROR) << "ResetSubGraphInput failed.";
+    return false;
+  }
   return true;
 }
 
@@ -163,6 +237,7 @@ bool InferShapePass::JudgeAllOpsCanInfer(const FuncGraphPtr &func_graph) {
 
 STATUS InferShapePass::InferProcess(const FuncGraphPtr &func_graph) {
   MS_ASSERT(func_graph != nullptr);
+  manager_->AddFuncGraph(func_graph);
   auto node_list = TopoSort(func_graph->get_return());
   for (auto &node : node_list) {
     if (!utils::isa<CNode>(node)) {
@@ -177,43 +252,54 @@ STATUS InferShapePass::InferProcess(const FuncGraphPtr &func_graph) {
       auto sub_func_graph = GetValueNode<FuncGraphPtr>(cnode->input(1));
       if (sub_func_graph == nullptr) {
         lite::ReturnCode::GetSingleReturnCode()->UpdateReturnCode(lite::RET_NULL_PTR);
-        return false;
+        return RET_ERROR;
       }
       auto ret = SetSubGraphInput(cnode, sub_func_graph);
       if (ret != RET_OK) {
         MS_LOG(ERROR) << "SetSubGraphInput failed: " << ret;
-        return false;
+        return RET_ERROR;
       }
       if (InferProcess(sub_func_graph) != lite::RET_OK) {
         MS_LOG(ERROR) << "subgraph infer shape failed.";
-        return false;
+        return RET_ERROR;
       }
-      SetSubGraphOutput(cnode, sub_func_graph);
+      if (SetSubGraphOutput(sub_func_graph) != lite::RET_OK) {
+        MS_LOG(ERROR) << "SetSubGraphOutput failed.";
+        return RET_ERROR;
+      }
       sub_func_graph = GetValueNode<FuncGraphPtr>(cnode->input(kInputIndexTwo));
       if (sub_func_graph == nullptr) {
         lite::ReturnCode::GetSingleReturnCode()->UpdateReturnCode(lite::RET_NULL_PTR);
-        return false;
+        return RET_ERROR;
       }
       ret = SetSubGraphInput(cnode, sub_func_graph);
       if (ret != RET_OK) {
         MS_LOG(ERROR) << "SetSubGraphInput failed: " << ret;
-        return false;
+        return RET_ERROR;
       }
       if (InferProcess(sub_func_graph) != lite::RET_OK) {
         MS_LOG(ERROR) << "subgraph infer shape failed.";
-        return false;
+        return RET_ERROR;
       }
-      SetSubGraphOutput(cnode, sub_func_graph);
+      if (SetSubGraphOutput(sub_func_graph) != lite::RET_OK) {
+        MS_LOG(ERROR) << "SetSubGraphOutput failed.";
+        return RET_ERROR;
+      }
       ret = SetSubGraphAbstract(cnode, sub_func_graph);
       if (ret != RET_OK) {
         MS_LOG(ERROR) << "SetSubGraphAbstract failed: " << ret;
-        return false;
+        return RET_ERROR;
       }
       continue;
     }
     auto status = node_infer_shape_->InferShape(cnode);
     if (status != lite::RET_OK && status != lite::RET_INFER_INVALID) {
       MS_LOG(ERROR) << "node infer shape failed, node is " << node->fullname_with_scope();
+      return lite::RET_ERROR;
+    }
+    status = PostProcess(func_graph, cnode);
+    if (status != lite::RET_OK) {
+      MS_LOG(ERROR) << "post process current node failed, node is " << node->fullname_with_scope();
       return lite::RET_ERROR;
     }
   }
@@ -231,14 +317,22 @@ STATUS InferShapePass::SetSubGraphInput(const CNodePtr &cnode, const FuncGraphPt
     auto last_underline = node_name.find_last_of("_");
     node_name = node_name.substr(0, last_underline);
     last_underline = node_name.find_last_of("_");
-    auto index = std::stoi(node_name.substr(last_underline + 1)) + 3;
-    param_node->set_abstract(opt::GetCNodeInputAbstract(cnode, index)->Clone());
-    if (utils::isa<CNodePtr>(cnode->input(index))) {
+    size_t index = 0;
+    try {
+      index = static_cast<size_t>(std::stoi(node_name.substr(last_underline + 1))) + kInputSizeThree;
+    } catch (const std::exception &e) {
+      MS_LOG(ERROR) << "Get index failed: " << e.what();
+      return RET_ERROR;
+    }
+    auto abstract = GetCNodeInputAbstract(cnode, index);
+    MS_CHECK_TRUE_MSG(abstract != nullptr, RET_ERROR, "abstract is a nullptr.");
+    param_node->set_abstract(abstract->Clone());
+    if (utils::isa<CNode>(cnode->input(index))) {
       ShapeVector shape_vec = {-1};
-      auto out_cnode = cnode->input(index)->cast<CNodePtr>();
-      MS_ASSERT(trans_cnode != nullptr);
-      auto out_prim = GetValueNode<PrimitivePtr>(out_cnode->input(0));
-      if (out_prim->GetAttr(opt::kInferDone) == nullptr || !GetValue<bool>(out_prim->GetAttr(opt::kInferDone))) {
+      bool has_inferred{false};
+      auto ret = DetermineCertainVarInputHasInferred(cnode, index, &has_inferred);
+      MS_CHECK_TRUE_MSG(ret == RET_OK, RET_ERROR, "determine infer flag failed.");
+      if (!has_inferred) {
         auto abstract_shape = std::make_shared<abstract::Shape>(shape_vec);
         CHECK_NULL_RETURN(abstract_shape);
         param_node->abstract()->set_shape(abstract_shape);
@@ -251,36 +345,34 @@ STATUS InferShapePass::SetSubGraphInput(const CNodePtr &cnode, const FuncGraphPt
       if (ModifySubGraphInputCNodeFormat(sub_graph, param_node, format) != lite::RET_OK) {
         MS_LOG(DEBUG) << "modify subgraph input cnode format failed." << cnode->func_graph_as_var();
       }
-    } else {
+      continue;
+    }
+    if (utils::isa<Parameter>(cnode->input(index))) {
+      param_node->set_default_param(cnode->input(index)->cast<ParameterPtr>()->default_param());
+    }
+    if (utils::isa<ValueNode>(cnode->input(index))) {
       lite::DataInfo data_info;
-      if (utils::isa<ParameterPtr>(cnode->input(index))) {
-        if (cnode->input(index)->cast<ParameterPtr>()->has_default()) {
-          param_node->set_default_param(cnode->input(index)->cast<ParameterPtr>()->default_param());
-        }
-        continue;
-      }
-      auto status = lite::FetchDataFromValueNode(cnode, index, fmk_type_, train_flag_, &data_info);
+      auto status = lite::FetchDataFromValueNode(cnode, index, fmk_type_, train_flag_, &data_info, false);
       if (status != lite::RET_OK) {
         continue;
       }
       ShapeVector shape_vec(data_info.shape_.begin(), data_info.shape_.end());
-      if (data_info.data_.empty()) {
-        auto tensor_info = std::make_shared<tensor::Tensor>((TypeId)data_info.data_type_, shape_vec);
-        CHECK_NULL_RETURN(tensor_info);
-        param_node->set_default_param(tensor_info);
-      } else {
-        auto tensor_info = std::make_shared<tensor::Tensor>((TypeId)data_info.data_type_, shape_vec,
-                                                            data_info.data_.data(), data_info.data_.size());
-        CHECK_NULL_RETURN(tensor_info);
-        param_node->set_default_param(tensor_info);
-      }
+      auto tensor_info =
+        lite::CreateTensorInfo(data_info.data_.data(), data_info.data_.size(), shape_vec, (TypeId)data_info.data_type_);
+      MS_CHECK_TRUE_MSG(tensor_info != nullptr, RET_ERROR, "created tensor is a nullptr.");
+      param_node->set_default_param(tensor_info);
+    }
+    // while's body graph:if the corresponding output is a variable, the corresponding input's data will be set to NULL.
+    if (ModifyWhileBodyGraphInputs(cnode, sub_graph, param_node, index - kInputSizeThree) != RET_OK) {
+      MS_LOG(ERROR) << "modify while body graph's certain input failed.";
+      return RET_ERROR;
     }
   }
   return RET_OK;
 }
 
-void InferShapePass::SetSubGraphOutput(const CNodePtr &cnode, const FuncGraphPtr &sub_graph) {
-  MS_ASSERT(cnode != nullptr && sub_graph != nullptr);
+STATUS InferShapePass::SetSubGraphOutput(const FuncGraphPtr &sub_graph) {
+  MS_ASSERT(sub_graph != nullptr);
   auto return_node = sub_graph->get_return();
   MS_ASSERT(return_node != nullptr);
   auto origin_input = return_node->inputs();
@@ -308,6 +400,7 @@ void InferShapePass::SetSubGraphOutput(const CNodePtr &cnode, const FuncGraphPtr
     trans_cnode->set_fullname_with_scope(trans_input_name);
   }
   return_node->set_inputs(origin_input);
+  return lite::RET_OK;
 }
 
 STATUS InferShapePass::SetSubGraphAbstract(const CNodePtr &cnode, const FuncGraphPtr &sub_graph) {
@@ -318,66 +411,62 @@ STATUS InferShapePass::SetSubGraphAbstract(const CNodePtr &cnode, const FuncGrap
   lite::RemoveIfDepend(return_node);
   lite::RemoveIfMakeTuple(return_node);
   AbstractBasePtrList abstract_list;
-  bool infer_done = true;
+  std::vector<bool> infer_infos;
   for (size_t i = 1; i < return_node->size(); ++i) {
-    auto abstract_base = opt::GetCNodeInputAbstract(return_node, i);
-    MS_ASSERT(abstract_base != nullptr);
-    abstract_list.emplace_back(abstract_base->Clone());
-    auto abstract_tensor = abstract_base->cast<abstract::AbstractTensorPtr>();
-    MS_ASSERT(abstract_tensor != nullptr);
-    auto shape_ptr = utils::cast<abstract::ShapePtr>(abstract_tensor->BuildShape());
-    MS_ASSERT(shape_ptr != nullptr);
-    auto shape = shape_ptr->shape();
-    if (std::find(shape.begin(), shape.end(), -1) != shape.end()) {
-      infer_done = false;
-    }
-    if (utils::isa<CNodePtr>(return_node->input(i))) {
-      auto input_cnode = return_node->input(i)->cast<CNodePtr>();
-      MS_ASSERT(input_cnode != nullptr);
-      if (opt::CheckPrimitiveType(input_cnode, prim::kPrimTupleGetItem)) {
-        input_cnode = input_cnode->input(1)->cast<CNodePtr>();
+    bool true_branch{false};
+    auto ret = MergeTwoBranchOfIfOp(cnode, return_node, i, &true_branch);
+    MS_CHECK_TRUE_MSG(ret == RET_OK, RET_ERROR, "decide to fetch which branch failed.");
+    AbstractBasePtr abstract;
+    bool infer_info;
+    if (true_branch) {
+      abstract = GetCNodeInputAbstract(return_node, i);
+      if (JudgeControlFlowCertainOutputHasInferred(return_node, i, &infer_info) != lite::RET_OK) {
+        MS_LOG(ERROR) << "determine certain output has inferred failed.";
+        return lite::RET_ERROR;
       }
-      auto input_prim = GetValueNode<PrimitivePtr>(input_cnode->input(0));
-      CHECK_NULL_RETURN(input_prim);
-      if (input_prim->GetAttr(opt::kInferDone) == nullptr || !GetValue<bool>(input_prim->GetAttr(opt::kInferDone))) {
-        infer_done = false;
-      }
+    } else {
+      abstract = GetCNodeInputAbstract(cnode, i + kInputSizeThree);
+      infer_info = true;
     }
+    MS_CHECK_TRUE_MSG(abstract != nullptr, RET_ERROR, "get a nullptr abstract.");
+    abstract_list.emplace_back(abstract->Clone());
+    infer_infos.push_back(infer_info);
   }
   return_node->set_inputs(origin_inputs);
   if (utils::isa<abstract::AbstractTuplePtr>(cnode->abstract())) {
     auto abstract_tuple = std::make_shared<abstract::AbstractTuple>(abstract_list);
-    CHECK_NULL_RETURN(abstract_tuple);
+    MS_CHECK_TRUE_MSG(abstract_tuple != nullptr, RET_ERROR, "created AbstractTuple is a nullptr.");
     cnode->set_abstract(abstract_tuple);
   } else {
-    if (abstract_list.size() != 1) {
-      MS_LOG(ERROR) << "cnode output is invalid.";
-    }
+    MS_CHECK_TRUE_MSG(abstract_list.size() == 1, RET_ERROR, "cnode output is invalid.");
     cnode->set_abstract(abstract_list.front());
   }
   auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
-  CHECK_NULL_RETURN(prim);
-  prim->AddAttr(opt::kInferDone, MakeValue<bool>(infer_done));
+  MS_CHECK_TRUE_MSG(prim != nullptr, RET_ERROR, "cnode's input0 is not a primitive.");
+  prim->AddAttr(kInferFlags, MakeValue(infer_infos));
   return RET_OK;
 }
 
-void InferShapePass::ResetSubGraphInput() {
-  for (auto iter = sub_inputs_map_.begin(); iter != sub_inputs_map_.end(); ++iter) {
-    auto &sub_graph = iter->first;
-    auto &sub_inputs = iter->second;
-    auto manager = sub_graph->manager();
-    MS_ASSERT(manager != nullptr);
+int InferShapePass::ResetSubGraphInput() {
+  for (auto &iter : sub_inputs_map_) {
+    auto &sub_graph = iter.first;
+    auto &sub_inputs = iter.second;
+    MS_ASSERT(manager_ != nullptr);
     for (auto &sub_input : sub_inputs) {
       auto param_node = sub_graph->add_parameter();
-      MS_CHECK_TRUE_MSG(param_node != nullptr, , "Add parameter Failed");
+      MS_CHECK_TRUE_MSG(param_node != nullptr, RET_ERROR, "Add parameter Failed");
       param_node->set_abstract(sub_input->abstract()->Clone());
       param_node->set_name(sub_input->fullname_with_scope());
-      manager->Replace(sub_input, param_node);
+      if (!manager_->Replace(sub_input, param_node)) {
+        MS_LOG(ERROR) << "replace cnode failed.";
+        return RET_ERROR;
+      }
       auto sub_param_input = sub_input->cast<ParameterPtr>();
       MS_ASSERT(sub_param_input != nullptr);
       sub_param_input->set_default_param(nullptr);
     }
   }
+  return lite::RET_OK;
 }
 }  // namespace opt
 }  // namespace mindspore

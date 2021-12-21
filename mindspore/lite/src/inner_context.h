@@ -18,9 +18,11 @@
 #define MINDSPORE_LITE_SRC_INNER_CONTEXT_H
 #include <set>
 #include <string>
+#include <unordered_map>
 #include "include/context.h"
 #include "src/runtime/inner_allocator.h"
 #include "thread/threadpool.h"
+#include "nnacl/op_base.h"
 #ifdef ENABLE_ARM
 #include "src/cpu_info.h"
 #endif
@@ -37,6 +39,10 @@ struct InnerContext : public Context {
   bool IsCpuFloat16Enabled() const;
 
   bool IsGpuFloat16Enabled() const;
+
+#ifdef ENABLE_OPENGL_TEXTURE
+  bool IsGLTextureEnabled() const;
+#endif
 
   bool IsCpuEnabled() const;
 
@@ -64,6 +70,10 @@ struct InnerContext : public Context {
 
   bool device_and_pkg_support_fp16() const;
 
+  std::set<void *> GetLinkInfo(void *pre) const;
+
+  void SetLinkInfo(void *pre, void *suc);
+
  private:
   bool IsAllDeviceTypeValid() const;
 
@@ -82,6 +92,9 @@ struct InnerContext : public Context {
   bool device_and_pkg_support_fp16_ = false;
 
   ThreadPool *thread_pool_{nullptr};
+
+  // key is the precursor tensor's pointer, value is the group of successors' pointer.
+  std::unordered_map<void *, std::set<void *>> link_info_{};
 };
 
 int ParallelLaunch(const Context *context, const Func &func, Content content, int task_num);

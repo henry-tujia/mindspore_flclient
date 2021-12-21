@@ -26,7 +26,7 @@
 #include "minddata/dataset/engine/datasetops/device_queue_op.h"
 #include "minddata/dataset/engine/datasetops/source/sampler/sampler.h"
 
-#include "minddata/dataset/engine/db_connector.h"
+#include "minddata/dataset/engine/operator_connector.h"
 #ifndef ENABLE_ANDROID
 #include "utils/system/crc32c.h"
 #include "utils/log_adapter.h"
@@ -63,7 +63,7 @@ Status DatasetOp::AddChild(std::shared_ptr<DatasetOp> child) {
   }
   if (operator_id_ == kInvalidOperatorId) {
     std::string err_msg(
-      "Cannot add child node. Tree node connections can only "
+      "[Internal ERROR] Cannot add child node. Tree node connections can only "
       "be made if the node belongs to a tree.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
@@ -71,7 +71,7 @@ Status DatasetOp::AddChild(std::shared_ptr<DatasetOp> child) {
   // disallow relationships with other trees
   if (tree_ != child->tree_) {
     std::string err_msg(
-      "Cannot add child node. Tree node connections can only be made if both nodes belong to the same tree.");
+      "Invalid operator structure, the relationship of operators should be one by one, but got too many branches.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
   child_.push_back(child);
@@ -82,7 +82,7 @@ Status DatasetOp::AddChild(std::shared_ptr<DatasetOp> child) {
 Status DatasetOp::RemoveChild(std::shared_ptr<DatasetOp> child) {
   if (operator_id_ == kInvalidOperatorId) {
     std::string err_msg(
-      "Cannot remove child node. Tree node connections can only "
+      "[Internal ERROR] Cannot remove child node. Tree node connections can only "
       "be made if the node belongs to a tree.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
@@ -90,7 +90,7 @@ Status DatasetOp::RemoveChild(std::shared_ptr<DatasetOp> child) {
   // disallow relationships with other trees
   if (tree_ != child->tree_) {
     std::string err_msg(
-      "Cannot remove child node. Tree node connections can only be made if both nodes belong to the same tree.");
+      "Invalid operator structure, the relationship of operators should be one by one, but got too many branches.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
 
@@ -100,6 +100,7 @@ Status DatasetOp::RemoveChild(std::shared_ptr<DatasetOp> child) {
 }
 
 Status DatasetOp::InsertAsParent(std::shared_ptr<DatasetOp> to_add) {
+  RETURN_UNEXPECTED_IF_NULL(to_add);
   for (auto &prev_parent : this->parent_) {
     RETURN_IF_NOT_OK(prev_parent->RemoveChild(shared_from_this()));
     RETURN_IF_NOT_OK(prev_parent->AddChild(to_add));
@@ -131,11 +132,15 @@ void DatasetOp::RemoveParent(const DatasetOp *parent) {
 // Removes this node from the tree and connects it's parent/child together
 Status DatasetOp::Remove() {
   if (parent_.size() > 1) {
-    std::string err_msg("[Internal ERROR], no support for the relationship between operators is not one-to-one.");
+    std::string err_msg(
+      "Invalid operator structure, the relationship between operators should be one-to-one, but encountered more than "
+      "one parent, namely: " +
+      std::to_string(parent_.size()));
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
   if (child_.size() > 1) {
-    std::string err_msg("[Internal ERROR], no support for the relationship between operators is not one-to-one.");
+    std::string err_msg(
+      "Invalid operator structure, the relationship of operators should be one by one, but got too many branches.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
 
@@ -150,7 +155,8 @@ Status DatasetOp::Remove() {
     // If we have a parent, then assign child's parent to point to our parent.
     if (!parent_.empty()) {
       CHECK_FAIL_RETURN_UNEXPECTED(parent_[0]->Children().size() == 1,
-                                   "Removing a node whose parent has more than 1 child is not supported.");
+                                   "Invalid operator structure, the relationship of operators should be one by one, "
+                                   "but got too many branches.");
       child_[0]->parent_[0] = parent_[0];
     } else {
       // We don't have a parent, so we are the root node being removed.
@@ -208,13 +214,10 @@ void DatasetOp::Parent(DatasetOp **parent, int32_t parent_index) const {
 std::vector<DatasetOp *> DatasetOp::parents() const { return parent_; }
 
 // Creates the connector within this operator
-void DatasetOp::CreateConnector(int32_t num_producers, int32_t num_consumers) {
-  MS_LOG(DEBUG) << "Creating connector in tree operator: " << operator_id_ << ". Producer: " << num_producers
-                << ". Consumer: " << num_consumers << ".";
+void DatasetOp::CreateConnector() {
+  MS_LOG(DEBUG) << "Creating connector in tree operator: " << operator_id_ << ".";
   if (oc_queue_size_ > 0) {
-    out_connector_ = std::make_unique<DbConnector>(num_producers,  // The number of producers
-                                                   num_consumers,  // Only one consumer (the training App)
-                                                   oc_queue_size_);
+    out_connector_ = std::make_unique<OperatorConnector>(oc_queue_size_);
   } else {
     // Some op's may choose not to have an output connector
     MS_LOG(DEBUG) << "Bypassed connector creation for tree operator: " << operator_id_ << ".";
@@ -253,19 +256,22 @@ void DatasetOp::Print(std::ostream &out, bool show_all) const {
 }
 
 Status DatasetOp::GetNextRowPullMode(TensorRow *const row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   RETURN_UNEXPECTED_IF_NULL(child_[0]);
   return child_[0]->GetNextRowPullMode(row);
 }
 
 // Gets the next row from the given child
-Status DatasetOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
+Status DatasetOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   // pop is a blocked call and will throw an interruption if the whole group shuts down.
-  RETURN_IF_NOT_OK(out_connector_->PopWithRetry(static_cast<int>(worker_id), row, retry_if_eoe));
+  RETURN_IF_NOT_OK(out_connector_->PopFront(row));
   return Status::OK();
 }
 
 // Gets the number of classes
 Status DatasetOp::GetNumClasses(int64_t *num_classes) {
+  RETURN_UNEXPECTED_IF_NULL(num_classes);
   if (child_.size() == 1) {
     return child_[0]->GetNumClasses(num_classes);
   } else if (child_.size() > 1) {
@@ -282,6 +288,7 @@ Status DatasetOp::GetNumClasses(int64_t *num_classes) {
 }
 
 Status DatasetOp::GetClassIndexing(std::vector<std::pair<std::string, std::vector<int32_t>>> *output_class_indexing) {
+  RETURN_UNEXPECTED_IF_NULL(output_class_indexing);
   if (child_.size() == 1) {
     return child_[0]->GetClassIndexing(output_class_indexing);
   } else if (child_.size() > 1) {
@@ -291,30 +298,25 @@ Status DatasetOp::GetClassIndexing(std::vector<std::pair<std::string, std::vecto
     return child_[child_.size() - 1]->GetClassIndexing(output_class_indexing);
   } else {
     *output_class_indexing = {};
-    RETURN_STATUS_UNEXPECTED("Trying to get class index from leaf node, missing override.");
+    RETURN_STATUS_UNEXPECTED("Unsupported scenario, GetClassIndexing failed for " + Name() +
+                             " doesn't support GetClassIndexing yet.");
   }
 }
 
 // Performs handling for when an eoe message is received.
 // The base class implementation simply flows the eoe message to output. Derived classes
 // may override if they need to perform special eoe handling.
-Status DatasetOp::EoeReceived(int32_t worker_id) { return out_connector_->SendEOE(worker_id); }
+Status DatasetOp::EoeReceived(int32_t worker_id) { return out_connector_->SendEOE(); }
 
 // Performs handling for when an eof message is received.
 // The base class implementation simply flows the eof message to output. Derived classes
 // may override if they need to perform special eof handling.
-Status DatasetOp::EofReceived(int32_t worker_id) { return out_connector_->SendEOF(worker_id); }
+Status DatasetOp::EofReceived(int32_t worker_id) { return out_connector_->SendEOF(); }
 
 // During tree prepare phase, operators may have specific post-operations to perform depending on their role.
 Status DatasetOp::PrepareOperator() {
   // Creating Connector object for each op.
-  // The consumer of the root node is assumed to be one thread.
-  // If multiple threads are consuming from the root node, they will get the ordered data in round robin fashion.
-  if (parent_.empty()) {
-    this->CreateConnector(num_producers(), 1);
-  } else {
-    this->CreateConnector(num_producers(), parent_[0]->num_consumers());
-  }
+  this->CreateConnector();
   if (out_connector_) {
     RETURN_IF_NOT_OK(out_connector_->Register(tree_->AllTasks()));
   }
@@ -347,12 +349,14 @@ std::string DatasetOp::ColumnNameMapAsString() const {
 // Operations changing the column map must overwrite this function.
 Status DatasetOp::ComputeColMap() {
   if (child_.size() > 1) {
-    RETURN_STATUS_UNEXPECTED("[Internal ERROR], no support for the relationship between operators is not one-to-one.");
+    RETURN_STATUS_UNEXPECTED(
+      "Invalid operator structure, the relationship of operators should be one by one, but got too many branches.");
   }
   if (column_name_id_map_.empty()) {
     column_name_id_map_ = child_[0]->column_name_id_map();
     if (column_name_id_map_.empty()) {
-      RETURN_STATUS_UNEXPECTED("Child column name map cannot be empty!");
+      RETURN_STATUS_UNEXPECTED("Invalid column list, the column list of " + child_[0]->Name() +
+                               " should have one column at least, but got empty.");
     }
     MS_LOG(DEBUG) << "Setting column map:\n" << DatasetOp::ColumnNameMapAsString();
   } else {
@@ -363,6 +367,7 @@ Status DatasetOp::ComputeColMap() {
 
 // Getter for the sampler, and it also removes the sampler from the op
 Status DatasetOp::FetchRemoveSampler(std::shared_ptr<SamplerRT> *sampler) {
+  RETURN_UNEXPECTED_IF_NULL(sampler);
   *sampler = sampler_;  // It's okay if it sampler_ points to nullptr
   sampler_.reset();     // clear our member-copy of this pointer.  We no longer have this sampler
   return Status::OK();

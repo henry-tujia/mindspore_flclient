@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include "minddata/dataset/engine/perf/profiling.h"
+#include "minddata/dataset/util/path.h"
 
 namespace mindspore {
 namespace dataset {
@@ -31,16 +32,10 @@ class DeviceQueueTracing : public Tracing {
   // Destructor
   ~DeviceQueueTracing() override = default;
 
-  // Record tracing data
-  // @return Status The status code returned
-  void Record(const int32_t type, const int32_t extra_info, const int32_t batch_num, const int32_t value,
-              const uint64_t time_stamp);
-
   std::string Name() const override { return kDeviceQueueTracingName; };
 
-  Status Init(const std::string &dir_path, const std::string &device_id) override;
-
-  Status ChangeFileMode() override;
+ private:
+  Path GetFileName(const std::string &dir_path, const std::string &rank_id) override;
 };
 }  // namespace dataset
 }  // namespace mindspore

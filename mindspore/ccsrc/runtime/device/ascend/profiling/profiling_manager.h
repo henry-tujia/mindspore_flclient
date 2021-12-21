@@ -27,8 +27,8 @@
 #include "toolchain/prof_acl_api.h"
 #include "toolchain/slog.h"
 #include "runtime/base.h"
-#include "runtime/device/ascend/profiling/profiling_callback_register.h"
 #include "profiler/device/profiling.h"
+#include "acl/acl_prof.h"
 
 using std::map;
 using std::string;
@@ -42,46 +42,55 @@ struct MsprofCallback {
   MsprofReporterCallback msprofReporterCallback;
 };
 
+enum ProfCommandHandleType {
+  kProfCommandhandleInit = 0,
+  kProfCommandhandleStart,
+  kProfCommandhandleStop,
+  kProfCommandhandleFinalize,
+  kProfCommandhandleModelSubscribe,
+  kProfCommandhandleModelUnsubscribe
+};
+
+enum ProfilingState { kProfilingInvalid, kProfilingInit, kProfilingStart, kProfilingStop, kProfilingFinalize };
+
 class ProfilingManager {
  public:
   static ProfilingManager &GetInstance();
   uint64_t GetJobId() const;
-  bool ReportProfilingData(const map<uint32_t, string> &op_taskId_map) const;
   bool ProfRegisterCtrlCallback() const;
-  bool StartupProfiling(uint32_t device_id);
-  bool StopProfiling();
-
-  inline bool IsProfiling() const {
-    auto profiler_manager = profiler::ProfilerManager::GetInstance();
-    MS_EXCEPTION_IF_NULL(profiler_manager);
-    return profiler_manager->GetProfilingEnableFlag();
-  }
+  bool InitProfiling(const std::string &profiling_path, uint32_t device_id);
+  bool IsProfilingInitialized() const { return cur_state_ >= kProfilingInit; }
+  inline bool IsProfilingStart() const { return cur_state_ >= kProfilingStart; }
   Status PluginInit() const;
   void PluginUnInit() const;
   Status CallMsprofReport(NotNull<ReporterData *> reporter_data) const;
+  void QueryHashId(const int32_t &device_id, const std::string &src_str, uint64_t &hash_id);
   const struct MsprofCallback &GetMsprofCallback() { return prof_cb_; }
   void SetMsprofCtrlCallback(MsprofCtrlCallback func) { prof_cb_.msprofCtrlCallback = func; }
   void SetMsprofReporterCallback(MsprofReporterCallback func) { prof_cb_.msprofReporterCallback = func; }
   void SetMsprofSetDeviceCallback(MsprofSetDeviceCallback func) { prof_cb_.msprofSetDeviceCallback = func; }
   Status GetProfConf(NotNull<MsprofGeOptions *> prof);
-  void SetHcclEnabledBefProfilingEnabled() { hccl_enabled_bef_profiling_enabled_ = true; }
+  Status ProfCommandHandle(ProfCommandHandleType type);
+  Status ProfHandleInit();
+  Status ProfHandleStart();
+  Status ProfHandleStop();
+  Status ProfHandleFinalize();
+  void ReportErrorMessage() const;
 
  protected:
   ProfilingManager();
   ~ProfilingManager() {}
 
  private:
-  bool ProfStartUp(NotNull<MsprofGeOptions *> prof_conf) const;
   uint32_t device_id_;
   MsprofCallback prof_cb_;
-  bool hccl_enabled_bef_profiling_enabled_;
+  aclprofConfig *acl_config_;
+  ProfilingState cur_state_;
+  std::string profiling_path_;
 };
 
-Status RegProfCtrlCallback(MsprofCtrlCallback func);
-Status RegProfSetDeviceCallback(MsprofSetDeviceCallback func);
-Status RegProfReporterCallback(MsprofReporterCallback func);
 Status ProfCommandHandle(ProfCommandHandleType type);
-rtError_t CtrlCallbackHandle(uint32_t rt_type, void *data, uint32_t len);
+rtError_t CtrlCallbackHandle(uint32_t rt_type, void *data, uint32_t /*len*/);
 Status ProfCtrlSwitchHandle(void *data);
 }  // namespace ascend
 }  // namespace device

@@ -23,14 +23,14 @@
 #include "nnacl/op_base.h"
 
 namespace mindspore::lite {
-STATUS ConcatQuantParamPropogator::PropogateQuantParams(mindspore::schema::MetaGraphT *graph,
-                                                        const mindspore::schema::CNodeT &node) {
+int ConcatQuantParamPropogator::PropogateQuantParams(mindspore::schema::MetaGraphT *graph,
+                                                     const mindspore::schema::CNodeT &node) {
   MS_CHECK_TRUE_MSG(graph != nullptr, RET_NULL_PTR, "graph is nullptr.");
   UpdateQuantParamsNum(*graph, node);
 
   if (input_inited_quant_params_ != node.inputIndex.size()) {
     MS_LOG(DEBUG) << "Can not determine concat inputTensor quantParam, node " << node.name;
-    return RET_ERROR;
+    return RET_NO_CHANGE;
   }
 
   if (output_inited_quant_params_ != 1) {
@@ -74,7 +74,7 @@ STATUS ConcatQuantParamPropogator::PropogateQuantParams(mindspore::schema::MetaG
     auto out_quant_param = std::make_unique<QuantParamT>();
     MS_CHECK_TRUE_MSG(out_quant_param != nullptr, RET_NULL_PTR, "out_quant_param is nullptr.");
 
-    auto status = quant::CalQuantizationParams(out_quant_param.get(), min_min, max_max, narrow_range, num_bits);
+    auto status = CalQuantizationParams(out_quant_param.get(), min_min, max_max, num_bits, narrow_range);
     if (status != RET_OK) {
       MS_LOG(DEBUG) << "in aware quantization run CalQuantizationParams failed!";
       return RET_ERROR;

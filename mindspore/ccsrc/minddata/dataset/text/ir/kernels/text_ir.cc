@@ -33,6 +33,7 @@
 #include "minddata/dataset/text/kernels/sentence_piece_tokenizer_op.h"
 #include "minddata/dataset/text/kernels/sliding_window_op.h"
 #include "minddata/dataset/text/kernels/to_number_op.h"
+#include "minddata/dataset/text/kernels/to_vectors_op.h"
 #include "minddata/dataset/text/kernels/truncate_sequence_pair_op.h"
 #include "minddata/dataset/text/kernels/unicode_char_tokenizer_op.h"
 #include "minddata/dataset/text/kernels/wordpiece_tokenizer_op.h"
@@ -43,6 +44,7 @@
 #include "minddata/dataset/core/data_type.h"
 #include "minddata/dataset/core/type_id.h"
 #include "minddata/dataset/util/path.h"
+#include "minddata/dataset/util/validators.h"
 
 #include "minddata/dataset/text/ir/validators.h"
 
@@ -65,7 +67,15 @@ BasicTokenizerOperation::BasicTokenizerOperation(bool lower_case, bool keep_whit
       preserve_unused_token_(preserve_unused_token),
       with_offsets_(with_offsets) {}
 
-Status BasicTokenizerOperation::ValidateParams() { return Status::OK(); }
+Status BasicTokenizerOperation::ValidateParams() {
+  if (normalize_form_ != NormalizeForm::kNone && normalize_form_ != NormalizeForm::kNfc &&
+      normalize_form_ != NormalizeForm::kNfkc && normalize_form_ != NormalizeForm::kNfd &&
+      normalize_form_ != NormalizeForm::kNfkd) {
+    std::string err_msg = "BasicTokenizer: Invalid NormalizeForm, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+  return Status::OK();
+}
 
 std::shared_ptr<TensorOp> BasicTokenizerOperation::Build() {
   std::shared_ptr<BasicTokenizerOp> tensor_op = std::make_shared<BasicTokenizerOp>(
@@ -94,15 +104,20 @@ BertTokenizerOperation::~BertTokenizerOperation() = default;
 Status BertTokenizerOperation::ValidateParams() {
   if (vocab_ == nullptr) {
     std::string err_msg = "BertTokenizer: vocab object type is incorrect or null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+
+  if (normalize_form_ != NormalizeForm::kNone && normalize_form_ != NormalizeForm::kNfc &&
+      normalize_form_ != NormalizeForm::kNfkc && normalize_form_ != NormalizeForm::kNfd &&
+      normalize_form_ != NormalizeForm::kNfkd) {
+    std::string err_msg = "BertTokenizer: Invalid NormalizeForm, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (max_bytes_per_token_ < 0) {
     std::string err_msg = "BertTokenizer : The parameter max_bytes_per_token must be greater than or equal to 0: " +
                           std::to_string(max_bytes_per_token_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -132,14 +147,17 @@ JiebaTokenizerOperation::JiebaTokenizerOperation(const std::string &hmm_path, co
 Status JiebaTokenizerOperation::ValidateParams() {
   if (hmm_path_.empty()) {
     std::string err_msg = "JiebaTokenizer: The dict of HMMSegment in cppjieba is not provided.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (mp_path_.empty()) {
     std::string err_msg = "JiebaTokenizer: The dict of MPSegment in cppjieba is not provided.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+
+  if (mode_ != JiebaMode::kMix && mode_ != JiebaMode::kMp && mode_ != JiebaMode::kHmm) {
+    std::string err_msg = "JiebaTokenizer: Invalid JiebaMode, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   RETURN_IF_NOT_OK(ValidateTokenizerDirParam("JiebaTokenizer", hmm_path_));
@@ -185,23 +203,20 @@ LookupOperation::~LookupOperation() = default;
 Status LookupOperation::ValidateParams() {
   if (vocab_ == nullptr) {
     std::string err_msg = "Lookup: vocab object type is incorrect or null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (unknown_token_ != std::nullopt) {
     default_id_ = vocab_->Lookup(*unknown_token_);
     if (default_id_ == Vocab::kNoTokenExists) {
       std::string err_msg = "Lookup: \"" + *unknown_token_ + "\" doesn't exist in vocab.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
 
   if (!data_type_.IsNumeric()) {
     // Note: For DEType, Bool is counted as numeric, and is a valid type for Lookup
     std::string err_msg = "Lookup : The parameter data_type must be numeric including bool.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -219,16 +234,14 @@ NgramOperation::NgramOperation(const std::vector<int32_t> &ngrams, const std::pa
 
 Status NgramOperation::ValidateParams() {
   if (ngrams_.size() == 0) {
-    std::string err_msg = "Ngram : Container cannot be empty.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Ngram : The size of the parameter 'ngrams' is not to be 0.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   } else {
     for (int32_t i = 0; i < ngrams_.size(); ++i) {
       if (ngrams_[i] <= 0) {
         std::string err_msg =
           "Ngram : The value of ngrams vector must be greater than 0: " + std::to_string(ngrams_[i]);
-        MS_LOG(ERROR) << err_msg;
-        RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
       }
     }
   }
@@ -237,16 +250,14 @@ Status NgramOperation::ValidateParams() {
     std::string err_msg =
       "Ngram : The second parameter pad_width in left_pad vector must be greater than or equal to 0: " +
       std::to_string(left_pad_.second);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (right_pad_.second < 0) {
     std::string err_msg =
       "Ngram : The second parameter pad_width in right_pad vector must be greater than or equal to 0: " +
       std::to_string(right_pad_.second);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -264,7 +275,15 @@ std::shared_ptr<TensorOp> NgramOperation::Build() {
 // NormalizeUTF8Operation
 NormalizeUTF8Operation::NormalizeUTF8Operation(NormalizeForm normalize_form) : normalize_form_(normalize_form) {}
 
-Status NormalizeUTF8Operation::ValidateParams() { return Status::OK(); }
+Status NormalizeUTF8Operation::ValidateParams() {
+  if (normalize_form_ != NormalizeForm::kNone && normalize_form_ != NormalizeForm::kNfc &&
+      normalize_form_ != NormalizeForm::kNfkc && normalize_form_ != NormalizeForm::kNfd &&
+      normalize_form_ != NormalizeForm::kNfkd) {
+    std::string err_msg = "NormalizeUTF8: Invalid NormalizeForm, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+  return Status::OK();
+}
 
 std::shared_ptr<TensorOp> NormalizeUTF8Operation::Build() {
   std::shared_ptr<NormalizeUTF8Op> tensor_op = std::make_shared<NormalizeUTF8Op>(normalize_form_);
@@ -308,11 +327,14 @@ SentencePieceTokenizerOperation::SentencePieceTokenizerOperation(const std::stri
     : vocab_(nullptr), vocab_path_(vocab_path), load_type_(SPieceTokenizerLoadType::kFile), out_type_(out_type) {}
 
 Status SentencePieceTokenizerOperation::ValidateParams() {
+  if (out_type_ != SPieceTokenizerOutType::kString && out_type_ != SPieceTokenizerOutType::kInt) {
+    std::string err_msg = "SentencePieceTokenizer: Invalid SPieceTokenizerOutType, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
   if (load_type_ == SPieceTokenizerLoadType::kModel) {
     if (vocab_ == nullptr) {
       std::string err_msg = "SentencePieceTokenizer: vocab object type is incorrect or null.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   } else {
     std::string real_vocab_path;
@@ -320,13 +342,11 @@ Status SentencePieceTokenizerOperation::ValidateParams() {
     Path vocab_file(real_vocab_path);
     if (!vocab_file.Exists() || vocab_file.IsDirectory()) {
       std::string err_msg = "SentencePieceTokenizer : vocab file: [" + vocab_path_ + "] is invalid or does not exist.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
     if (access(vocab_file.ToString().c_str(), R_OK) == -1) {
       std::string err_msg = "SentencePieceTokenizer : no access to specified dataset file: " + vocab_path_;
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   return Status::OK();
@@ -352,8 +372,7 @@ Status SlidingWindowOperation::ValidateParams() {
   if (width_ < 1) {
     std::string err_msg =
       "SlidingWindow : The parameter width must be greater than or equal to 1: " + std::to_string(width_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -378,8 +397,7 @@ Status ToNumberOperation::ValidateParams() {
   if (!data_type_.IsNumeric() || data_type_.IsBool()) {
     // Note: For DEType, Bool is counted as numeric, but is not a valid type for ToNumber.
     std::string err_msg = "ToNumber : The parameter data_type must be numeric and excludes bool.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -398,10 +416,31 @@ Status ToNumberOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status ToNumberOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("data_type") != op_params.end(), "Failed to find data_type");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "data_type", kToNumberOperation));
   std::string data_type = op_params["data_type"];
   *operation = std::make_shared<text::ToNumberOperation>(data_type);
   return Status::OK();
+}
+
+// ToVectorsOperation
+ToVectorsOperation::ToVectorsOperation(const std::shared_ptr<Vectors> &vectors, const std::vector<float> &unk_init,
+                                       bool lower_case_backup)
+    : vectors_(vectors), unk_init_(unk_init), lower_case_backup_(lower_case_backup) {}
+
+ToVectorsOperation::~ToVectorsOperation() = default;
+
+Status ToVectorsOperation::ValidateParams() {
+  if (vectors_ == nullptr) {
+    std::string err_msg = "ToVectors: vectors can't be nullptr.";
+    MS_LOG(ERROR) << err_msg;
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+  return Status::OK();
+}
+
+std::shared_ptr<TensorOp> ToVectorsOperation::Build() {
+  std::shared_ptr<ToVectorsOp> tensor_op = std::make_shared<ToVectorsOp>(vectors_, unk_init_, lower_case_backup_);
+  return tensor_op;
 }
 
 // TruncateSequencePairOperation
@@ -411,8 +450,7 @@ Status TruncateSequencePairOperation::ValidateParams() {
   if (max_length_ < 0) {
     std::string err_msg = "TruncateSequencePair : The parameter max_length must be greater than or equal to 0: " +
                           std::to_string(max_length_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -447,15 +485,13 @@ WordpieceTokenizerOperation::WordpieceTokenizerOperation(const std::shared_ptr<V
 Status WordpieceTokenizerOperation::ValidateParams() {
   if (vocab_ == nullptr) {
     std::string err_msg = "WordpieceTokenizer: vocab object type is incorrect or null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (max_bytes_per_token_ < 0) {
     std::string err_msg =
       "WordpieceTokenizer : The parameter max_bytes_per_token must be greater than or equal to 0: " +
       std::to_string(max_bytes_per_token_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }

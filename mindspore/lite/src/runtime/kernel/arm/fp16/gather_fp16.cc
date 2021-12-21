@@ -39,7 +39,7 @@ GatherFp16CPUKernel::~GatherFp16CPUKernel() {
   }
 }
 
-int GatherFp16CPUKernel::Init() {
+int GatherFp16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 3);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto input_tensor = in_tensors_.at(0);
@@ -73,7 +73,7 @@ int GatherFp16CPUKernel::DoGather(int task_id) {
   int in_rank = in_shape.size();
   int indices_element_size = indices_tensor->ElementsNum();
   auto axis = (reinterpret_cast<GatherParameter *>(op_parameter_))->axis_;
-  MS_CHECK_LT(axis, in_shape.size(), RET_ERROR);
+  MS_CHECK_LT(axis, static_cast<int>(in_shape.size()), RET_ERROR);
   const int limit = in_shape.at(axis);
   int outer_size = 1, inner_size = 1;
   for (int i = 0; i < axis; ++i) {

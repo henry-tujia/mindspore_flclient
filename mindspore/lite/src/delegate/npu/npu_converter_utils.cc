@@ -54,11 +54,21 @@ void Float16ToFloat32(const float16_t *__restrict input, float *__restrict outpu
 }
 #endif
 
-ge::Shape ConverterToNPUShape(const std::vector<int64_t> &src_shape) {
+ge::Shape ConverterToNPUShape(const std::vector<int64_t> &src_shape, bool is_expand_4d) {
   vector<int64_t> shapes;
   shapes.reserve(src_shape.size());
   for (int i = 0; i < src_shape.size(); i++) {
     shapes.push_back(src_shape[i]);
+  }
+  if (is_expand_4d) {
+    if (shapes.size() == 1) {
+      return ge::Shape({1, shapes[0], 1, 1});
+    } else {
+      const int dimension4 = 4;
+      for (int i = src_shape.size(); i < dimension4; i++) {
+        shapes.push_back(1);
+      }
+    }
   }
   return ge::Shape({shapes});
 }
@@ -111,7 +121,7 @@ ge::DataType ConverterToNPUDataType(DataType type_id) {
   return data_type;
 }
 
-hiai::op::Data *ConverterToNPUData(mindspore::MSTensor src, const std::string &name) {
+hiai::op::Data *ConverterToNPUData(const mindspore::MSTensor &src, const std::string &name) {
   auto data = new (std::nothrow) hiai::op::Data(name);
   if (data == nullptr) {
     MS_LOG(ERROR) << "new data failed.";
@@ -122,13 +132,14 @@ hiai::op::Data *ConverterToNPUData(mindspore::MSTensor src, const std::string &n
   return data;
 }
 
-std::shared_ptr<ge::Tensor> ConverterToNPUTensor(mindspore::MSTensor src) {
+std::shared_ptr<ge::Tensor> ConverterToNPUTensor(mindspore::MSTensor src, bool is_expand_4d) {
   std::shared_ptr<ge::Tensor> ge_tensor = std::make_shared<ge::Tensor>();
   if (ge_tensor == nullptr) {
     MS_LOG(ERROR) << "new ge_tensor failed.";
     return nullptr;
   }
-  ge::TensorDesc tensor_desc(ConverterToNPUShape(src.Shape()), ge::FORMAT_NCHW, ConverterToNPUDataType(src.DataType()));
+  ge::TensorDesc tensor_desc(ConverterToNPUShape(src.Shape(), is_expand_4d), ge::FORMAT_NCHW,
+                             ConverterToNPUDataType(src.DataType()));
 
   ge_tensor->SetTensorDesc(tensor_desc);
 
@@ -186,6 +197,33 @@ int TransFormAxis(int axis) {
   }
 }
 
+void AssistDataNHWC2NCHW(int *data, size_t unit_size) {
+  MS_ASSERT(data != nullptr);
+  for (size_t i = 0; i < unit_size; ++i) {
+    int c = data[3 * unit_size + i];
+    // n h w c
+    // n c h w
+    data[3 * unit_size + i] = data[2 * unit_size + i];
+    data[2 * unit_size + i] = data[unit_size + i];
+    data[unit_size + i] = c;
+  }
+}
+
+int MaskDataNHWC2NCHW(int mask) {
+  int mask_vec[4];
+  for (int i = 0; i < 4; ++i) {
+    mask_vec[i] = (uint32_t)(mask) & (1 << i);
+  }
+  AssistDataNHWC2NCHW(mask_vec, 1);
+  int ret = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (mask_vec[i]) {
+      ret += 1 << i;
+    }
+  }
+  return ret;
+}
+
 int ConverterToNPUActivationMode(schema::ActivationType type) {
   switch (type) {
     case schema::ActivationType_SIGMOID:
@@ -200,12 +238,10 @@ int ConverterToNPUActivationMode(schema::ActivationType type) {
       return HARD_SIGMOID;
     case schema::ActivationType_RELU6:
       return RELU6;
+    case schema::ActivationType_ELU:
+      return ELU;
     default:
       return ACTIVATION_INVALID;
   }
-}
-
-bool IsContainMSTensor(const std::vector<mindspore::MSTensor> &tensor_vec, const mindspore::MSTensor tensor) {
-  return find(tensor_vec.begin(), tensor_vec.end(), tensor) != tensor_vec.end();
 }
 }  // namespace mindspore

@@ -28,16 +28,18 @@ class DivInt8CPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~DivInt8CPUKernel() override;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int DoExecute(int task_id);
+  int DivScalarDoExecute(int task_id);
 
  private:
   DivQuantArg *quant_args_ = nullptr;
   int8_t *tile0_data_ = nullptr;
   int8_t *tile1_data_ = nullptr;
   bool broadcast_ = false;
+  bool div_scalar_ = false;
 };
 }  // namespace mindspore::kernel
 

@@ -22,6 +22,7 @@
 #endif
 #include <vector>
 #include "src/inner_kernel.h"
+#include "src/common/common.h"
 #include "nnacl/matmul_parameter.h"
 
 namespace mindspore::kernel {
@@ -33,7 +34,7 @@ class MatmulBaseFP16CPUKernel : public InnerKernel {
     params_ = reinterpret_cast<MatMulParameter *>(op_parameter_);
   }
   ~MatmulBaseFP16CPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 
@@ -58,6 +59,10 @@ class MatmulBaseFP16CPUKernel : public InnerKernel {
  protected:
   MatMulParameter *params_ = nullptr;
   int row_tile_ = 0;
+  int a_batch_ = 1;
+  int b_batch_ = 1;
+  std::vector<int> a_offset_;
+  std::vector<int> b_offset_;
 
  private:
   int thread_stride_ = 0;

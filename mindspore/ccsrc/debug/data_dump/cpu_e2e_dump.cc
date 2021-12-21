@@ -18,6 +18,7 @@
 #include <map>
 #include "backend/session/anf_runtime_algorithm.h"
 #include "debug/anf_ir_utils.h"
+#include "debug/common.h"
 
 namespace mindspore {
 void CPUE2eDump::DumpCNodeData(const CNodePtr &node, uint32_t graph_id) {
@@ -37,6 +38,31 @@ void CPUE2eDump::DumpCNodeData(const CNodePtr &node, uint32_t graph_id) {
   if (dump_json_parser.OutputNeedDump()) {
     DumpCNodeOutputs(node, dump_path);
   }
+}
+
+void CPUE2eDump::DumpRunIter(const KernelGraphPtr &graph, uint32_t rank_id) {
+  auto &json_parser = DumpJsonParser::GetInstance();
+  if (!(json_parser.e2e_dump_enabled())) {
+    return;
+  }
+  std::string execution_order_path = json_parser.path() + "/rank_" + std::to_string(rank_id) + "/execution_order/";
+  std::string file_name_to_check =
+    execution_order_path + "/ms_global_execution_order_graph_" + std::to_string(graph->graph_id()) + ".csv";
+  auto real_path = Common::CreatePrefixPath(file_name_to_check);
+  if (!real_path.has_value()) {
+    MS_LOG(WARNING) << "Check file path: " << file_name_to_check << " failed.";
+    return;
+  }
+  std::string file_name = real_path.value();
+  ChangeFileMode(file_name, S_IWUSR);
+  std::ofstream fout(file_name, std::ofstream::app);
+  if (!fout.is_open()) {
+    MS_LOG(WARNING) << "Open file for saving graph global execution order failed.";
+    return;
+  }
+  fout << std::to_string(json_parser.cur_dump_iter()) + "\n";
+  fout.close();
+  ChangeFileMode(file_name, S_IRUSR);
 }
 
 void CPUE2eDump::DumpCNodeInputs(const CNodePtr &node, const std::string &dump_path) {
@@ -107,28 +133,29 @@ void CPUE2eDump::DumpOutputImpl(const CNodePtr &node, const std::string &dump_pa
   }
 }
 
-void CPUE2eDump::DumpSingleAnfNode(const AnfNodePtr &anf_node, const size_t output_index, const std::string &dump_path,
-                                   std::map<std::string, size_t> *const_map) {
+void CPUE2eDump::DumpSingleAnfNode(const AnfNodePtr &anf_node, const size_t output_index,
+                                   const std::string &dump_path) {
   MS_EXCEPTION_IF_NULL(anf_node);
   auto &dump_json_parser = DumpJsonParser::GetInstance();
   if (!anf_node->isa<Parameter>() && !anf_node->isa<ValueNode>()) {
     return;
   }
   std::string node_name = GetKernelNodeName(anf_node);
-  std::string dump_name = node_name;
-  if (anf_node->isa<ValueNode>()) {
-    auto iter = const_map->find(node_name);
-    if (iter == const_map->end()) {
-      return;
-    }
-    dump_name = std::string("cst") + std::to_string(iter->second);
-  }
-
   if (!dump_json_parser.NeedDump(node_name)) {
     return;
   }
   DumpJsonParser::GetInstance().MatchKernel(node_name);
   GetFileKernelName(NOT_NULL(&node_name));
+  std::string dump_name = node_name;
+  const std::string cst_prefix = "Default--";
+  if (anf_node->isa<ValueNode>()) {
+    if (dump_name.find(cst_prefix) == std::string::npos) {
+      MS_LOG(INFO) << "Incorrect constant format: " << dump_name;
+      return;
+    }
+    dump_name = node_name.substr(cst_prefix.length());
+  }
+
   // check if output address exists, if not, return;
   if (!AnfAlgo::OutputAddrExist(anf_node, output_index)) {
     return;
@@ -150,29 +177,45 @@ void CPUE2eDump::DumpSingleAnfNode(const AnfNodePtr &anf_node, const size_t outp
   DumpMemToFile(file_path, *addr, int_shapes, type);
 }
 
-void CPUE2eDump::DumpParametersAndConst(const session::KernelGraph *graph, uint32_t graph_id) {
+void CPUE2eDump::DumpParameters(const session::KernelGraph *graph, uint32_t graph_id) {
   MS_EXCEPTION_IF_NULL(graph);
-  MS_LOG(INFO) << "Start e2e dump parameters and Const values";
-  std::map<std::string, size_t> const_map;
-  GetConstantId(graph, &const_map);
+  MS_LOG(INFO) << "Start e2e dump parameters.";
   const std::string &dump_path = GenerateDumpPath(graph_id);
 
   // dump parameters
   const auto &parameters = graph->inputs();
   for (auto &item : parameters) {
-    DumpSingleAnfNode(item, PARAMETER_OUTPUT_INDEX, dump_path, &const_map);
-  }
-  // dump const values
-  auto value_nodes = graph->graph_value_nodes();
-  for (const auto &value_node : value_nodes) {
-    DumpSingleAnfNode(value_node, VALUE_NODE_OUTPUT_INDEX, dump_path, &const_map);
+    DumpSingleAnfNode(item, PARAMETER_OUTPUT_INDEX, dump_path);
   }
 }
 
-void CPUE2eDump::DumpParametersAndConst() {
+void CPUE2eDump::DumpParametersData() {
   auto &graphs = DumpJsonParser::GetInstance().graphs();
   for (auto graph : graphs) {
-    DumpParametersAndConst(graph, graph->graph_id());
+    DumpParameters(graph, graph->graph_id());
+  }
+}
+
+void CPUE2eDump::DumpConstants(const session::KernelGraph *graph, uint32_t graph_id) {
+  MS_EXCEPTION_IF_NULL(graph);
+  MS_LOG(INFO) << "Start e2e dump constant.";
+  uint32_t cur_iteration = DumpJsonParser::GetInstance().cur_dump_iter();
+  if (cur_iteration != 0) {
+    return;
+  }
+  const std::string &dump_path = GenerateDumpPath(graph_id, 0, true);
+
+  // dump constants
+  const auto value_nodes = graph->graph_value_nodes();
+  for (auto &item : value_nodes) {
+    DumpSingleAnfNode(item, VALUE_NODE_OUTPUT_INDEX, dump_path);
+  }
+}
+
+void CPUE2eDump::DumpConstantsData() {
+  auto &graphs = DumpJsonParser::GetInstance().graphs();
+  for (auto graph : graphs) {
+    DumpConstants(graph, graph->graph_id());
   }
 }
 }  // namespace mindspore

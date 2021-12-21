@@ -343,11 +343,6 @@ Status Normalize(const std::shared_ptr<Tensor> &input, std::shared_ptr<Tensor> *
                          const_cast<void *>(reinterpret_cast<const void *>(input->GetBuffer())),
                          GetLiteCVDataType(input->type()));
 
-    std::shared_ptr<Tensor> output_tensor;
-    RETURN_IF_NOT_OK(Tensor::CreateEmpty(input->shape(), DataType(DataType::DE_FLOAT32), &output_tensor));
-
-    uint8_t *buffer = reinterpret_cast<uint8_t *>(&(*output_tensor->begin<uint8_t>()));
-
     if (input->type() == DataType::DE_UINT8) {
       LiteMat lite_mat_float;
       // change input to float
@@ -358,6 +353,10 @@ Status Normalize(const std::shared_ptr<Tensor> &input, std::shared_ptr<Tensor> *
       ret = SubStractMeanNormalize(lite_mat_rgb, lite_mat_norm, vec_mean, vec_std);
     }
     CHECK_FAIL_RETURN_UNEXPECTED(ret, "Normalize: normalize failed.");
+
+    std::shared_ptr<Tensor> output_tensor;
+    RETURN_IF_NOT_OK(Tensor::CreateFromMemory(input->shape(), DataType(DataType::DE_FLOAT32),
+                                              static_cast<uchar *>(lite_mat_norm.data_ptr_), &output_tensor));
 
     *output = output_tensor;
   } catch (std::runtime_error &e) {
@@ -421,7 +420,7 @@ Status ResizePreserve(const TensorRow &inputs, int32_t height, int32_t width, in
                       TensorRow *outputs) {
   outputs->resize(3);
   CHECK_FAIL_RETURN_UNEXPECTED(inputs.size() > 0,
-                               "Invalid input, should greater than 0, but got " + std::to_string(inputs.size()));
+                               "Invalid input, should be greater than 0, but got " + std::to_string(inputs.size()));
   std::shared_ptr<Tensor> input = inputs[0];
   CHECK_FAIL_RETURN_UNEXPECTED(input->shape().Size() >= 3, "Invalid input shape, should be greater than 3 dimensions.");
   LiteMat lite_mat_src(input->shape()[1], input->shape()[0], input->shape()[2],
@@ -814,6 +813,9 @@ Status GaussianBlur(const std::shared_ptr<Tensor> &input, std::shared_ptr<Tensor
 Status ValidateImageRank(const std::string &op_name, int32_t rank) {
   if (rank != 2 && rank != 3) {
     std::string err_msg = op_name + ": image shape is not <H,W,C> or <H, W>, but got rank:" + std::to_string(rank);
+    if (rank == 1) {
+      err_msg = err_msg + ", may need to do Decode operation first.";
+    }
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
   return Status::OK();

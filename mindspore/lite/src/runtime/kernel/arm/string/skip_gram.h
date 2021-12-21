@@ -20,7 +20,7 @@
 #include <vector>
 #include "src/inner_kernel.h"
 #include "nnacl/skip_gram_parameter.h"
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 
 namespace mindspore::kernel {
 
@@ -31,7 +31,7 @@ class SkipGramCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx), ctx_(ctx), thread_count_(ctx->thread_num_) {}
   ~SkipGramCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int DoExcute(int task_id);

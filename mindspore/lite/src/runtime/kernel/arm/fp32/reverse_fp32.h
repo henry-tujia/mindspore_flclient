@@ -35,14 +35,14 @@ class ReverseCPUKernel : public InnerKernel {
     }
   }
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int Stride(int index);
   int DoReverse(int task_id);
 
  private:
-  void UpdateAxisInfo();
+  int UpdateAxisInfo();
   int thread_sz_count_ = 0;
   int thread_sz_stride_ = 0;
   int data_size_ = 0;

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,7 +106,7 @@ class ConfigManager {
 
   /// getter function
   /// \return Prefetch size
-  int32_t prefetch_size() const { return prefetch_size_; }
+  int32_t cache_prefetch_size() const { return cache_prefetch_size_; }
 
   /// getter function
   /// \return auto_num_workers_
@@ -142,8 +142,8 @@ class ConfigManager {
   void set_num_connections(int32_t num_connections);
 
   /// setter function
-  /// \param prefetch_size
-  void set_prefetch_size(int32_t prefetch_size);
+  /// \param cache_prefetch_size
+  void set_cache_prefetch_size(int32_t cache_prefetch_size);
 
   /// setter function
   /// \param numa_switch
@@ -179,22 +179,6 @@ class ConfigManager {
   // getter function
   // @return The interval of monitor sampling
   int32_t monitor_sampling_interval() const { return monitor_sampling_interval_; }
-
-  // setter function
-  // @param stop_profiler - The setting to apply to the config
-  void stop_dataset_profiler(bool stop_profiler);
-
-  // getter function
-  // @return The status of stop profiler
-  bool stop_profiler_status() const { return stop_profiler_; }
-
-  // setter function
-  // @param file_ready - The setting to apply to the config
-  void set_profiler_file_status(bool file_ready);
-
-  // getter function
-  // @return The status of profiler file, whether generated
-  bool get_profiler_file_status() const { return file_ready_; }
 
   // setter function
   // @param auto_num_workers - whether assign threads to each op automatically
@@ -238,6 +222,30 @@ class ConfigManager {
   // @return - Flag to indicate whether shared memory for multi-processing is enabled
   bool enable_shared_mem() { return enable_shared_mem_; }
 
+  // setter function
+  // @param offload - To enable automatic offloading of dataset ops
+  void set_auto_offload(bool offload) { auto_offload_ = offload; }
+
+  // getter function
+  // @return - Flag to indicate whether automatic offloading is enabled for the dataset
+  bool get_auto_offload() { return auto_offload_; }
+
+  // setter function
+  // @param enable - To enable autotune
+  void set_enable_autotune(bool enable) { enable_autotune_ = enable; }
+
+  // getter function
+  // @return - Flag to indicate whether autotune is enabled
+  bool enable_autotune() { return enable_autotune_; }
+
+  // getter function
+  // @return - autotune interval in steps
+  int64_t autotune_interval() { return autotune_interval_; }
+
+  // setter function
+  // @param interval - autotune interval in steps
+  void set_autotune_interval(int64_t interval) { autotune_interval_ = interval; }
+
  private:
   int32_t num_parallel_workers_;
   int32_t worker_connector_size_;
@@ -249,19 +257,20 @@ class ConfigManager {
   int32_t rank_id_;
   uint32_t seed_;
   uint32_t monitor_sampling_interval_;
-  std::atomic_bool stop_profiler_;
-  std::atomic_bool file_ready_;
   uint32_t callback_timout_;
   std::string cache_host_;
   int32_t cache_port_;
   int32_t num_connections_;
   bool numa_enable_;
-  int32_t prefetch_size_;
+  int32_t cache_prefetch_size_;
   bool auto_num_workers_;
   int32_t num_cpu_threads_;
   int32_t auto_num_workers_num_shards_;
   uint8_t auto_worker_config_;
   bool enable_shared_mem_;
+  bool auto_offload_;
+  bool enable_autotune_;
+  int64_t autotune_interval_;
   // Private helper function that takes a nlohmann json format and populates the settings
   // @param j - The json nlohmann json info
   Status FromJson(const nlohmann::json &j);

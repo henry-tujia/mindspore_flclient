@@ -17,14 +17,52 @@
 #include "runtime/framework/actor/memory_manager_actor.h"
 #include "runtime/framework/actor/data_source_actor.h"
 #include "runtime/framework/actor/kernel_actor.h"
+#include "runtime/hardware/device_context_manager.h"
 #include "mindrt/include/async/async.h"
 #include "utils/log_adapter.h"
 
 namespace mindspore {
 namespace runtime {
+namespace {
+void FreeMemoryInner(DeviceTensor *const device_tensor, const DeviceContext *device_context) {
+  MS_EXCEPTION_IF_NULL(device_tensor);
+  // The device context may be not accurate in the control flow scene, so need fetch by device name and device id.
+  if ((device_context == nullptr) || (device_context->GetDeviceAddressType() != device_tensor->DeviceType())) {
+    const auto &new_device_context = device::DeviceContextManager::GetInstance().GetOrCreateDeviceContext(
+      {device_tensor->device_name(), device_tensor->device_id()});
+    MS_EXCEPTION_IF_NULL(new_device_context);
+    new_device_context->FreeMemory(device_tensor);
+  } else {
+    device_context->FreeMemory(device_tensor);
+  }
+}
+
+// Only one of the static and dynamic reference counts will take effect.
+void FreeMemoryByRefCount(DeviceTensor *const device_tensor, const DeviceContext *device_context) {
+  MS_EXCEPTION_IF_NULL(device_tensor);
+  if (device_tensor->original_ref_count() != SIZE_MAX) {
+    // The static reference count is decremented to zero to free memory, and reset to the original count.
+    device_tensor->DecreaseRefCount();
+    if (device_tensor->ref_count() == 0) {
+      if (device_tensor->GetPtr() != nullptr) {
+        FreeMemoryInner(device_tensor, device_context);
+      }
+      device_tensor->ResetRefCount();
+    }
+  } else if (device_tensor->dynamic_ref_conut() != INT32_MAX) {
+    // The dynamic reference count is decremented to zero to free memory.
+    device_tensor->DecreaseDynamicRefCount();
+    if ((device_tensor->dynamic_ref_conut() == 0) && (device_tensor->GetPtr() != nullptr)) {
+      MS_LOG(DEBUG) << "Free memory by the dynamic reference count, device address" << device_tensor->GetPtr();
+      FreeMemoryInner(device_tensor, device_context);
+    }
+  }
+}
+}  // namespace
+
 void MemoryManagerActor::AllocateMemory(const std::vector<DeviceTensor *> *alloc_list,
                                         const DeviceContext *device_context, OpContext<DeviceTensor> *const op_context,
-                                        const AID from_aid) {
+                                        const AID &from_aid) {
   MS_EXCEPTION_IF_NULL(alloc_list);
   MS_EXCEPTION_IF_NULL(device_context);
   MS_EXCEPTION_IF_NULL(op_context);
@@ -42,14 +80,14 @@ void MemoryManagerActor::AllocateMemory(const std::vector<DeviceTensor *> *alloc
   }
 
   // Call back to the from actor to process after memory allocation finished.
-  Async(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
+  ActorDispatcher::Send(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
 }
 
 void MemoryManagerActor::AllocateContinuousMemory(const std::vector<std::vector<DeviceTensorPtr>> *alloc_list_list,
                                                   const std::vector<std::vector<size_t>> *size_list_list,
                                                   const std::vector<size_t> *total_size_list,
                                                   const std::vector<const DeviceContext *> *device_contexts,
-                                                  OpContext<DeviceTensor> *const op_context, const AID from_aid) {
+                                                  OpContext<DeviceTensor> *const op_context, const AID &from_aid) {
   MS_EXCEPTION_IF_NULL(alloc_list_list);
   MS_EXCEPTION_IF_NULL(size_list_list);
   MS_EXCEPTION_IF_NULL(total_size_list);
@@ -67,6 +105,7 @@ void MemoryManagerActor::AllocateContinuousMemory(const std::vector<std::vector<
     auto &size_list = (*size_list_list)[i];
     auto &total_size = (*total_size_list)[i];
     auto &device_context = (*device_contexts)[i];
+    MS_EXCEPTION_IF_NULL(device_context);
     // Allocate memory through the device context.
     if (!device_context->AllocateContinuousMemory(alloc_list, total_size, size_list)) {
       SetOpContextMemoryAllocFail(from_aid.Name(), device_context, total_size, op_context);
@@ -75,12 +114,12 @@ void MemoryManagerActor::AllocateContinuousMemory(const std::vector<std::vector<
   }
 
   // Call back to the from actor to process after memory allocation finished.
-  Async(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
+  ActorDispatcher::Send(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
 }
 
 void MemoryManagerActor::AllocateBatchMemory(const std::vector<DeviceTensor *> *alloc_list,
                                              const std::vector<const DeviceContext *> *device_contexts,
-                                             OpContext<DeviceTensor> *const op_context, const AID from_aid) {
+                                             OpContext<DeviceTensor> *const op_context, const AID &from_aid) {
   MS_EXCEPTION_IF_NULL(alloc_list);
   MS_EXCEPTION_IF_NULL(device_contexts);
   MS_EXCEPTION_IF_NULL(op_context);
@@ -106,27 +145,14 @@ void MemoryManagerActor::AllocateBatchMemory(const std::vector<DeviceTensor *> *
   }
 
   // Call back to the from actor to process after memory allocation finished.
-  Async(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
+  ActorDispatcher::Send(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
 }
 
 void MemoryManagerActor::FreeMemory(const std::vector<DeviceTensor *> *free_list, const DeviceContext *device_context,
                                     OpContext<DeviceTensor> *) {
   MS_EXCEPTION_IF_NULL(free_list);
-  MS_EXCEPTION_IF_NULL(device_context);
   for (auto &device_tensor : *free_list) {
-    MS_EXCEPTION_IF_NULL(device_tensor);
-    if (device_tensor->original_ref_count() == SIZE_MAX) {
-      continue;
-    }
-    // The reference count is decremented to zero to free memory, and reset to the original count.
-    device_tensor->DecreaseRefCount();
-    if (device_tensor->ref_count() == 0) {
-      // Free memory through the device context.
-      if (device_tensor->GetPtr() != nullptr) {
-        device_context->FreeMemory(device_tensor);
-      }
-      device_tensor->ResetRefCount();
-    }
+    FreeMemoryByRefCount(device_tensor, device_context);
   }
 }
 
@@ -144,26 +170,13 @@ void MemoryManagerActor::FreeBatchMemory(const std::vector<DeviceTensor *> *free
   for (size_t i = 0; i < (*free_list).size(); ++i) {
     auto &device_tensor = (*free_list)[i];
     auto &device_context = (*device_contexts)[i];
-    MS_EXCEPTION_IF_NULL(device_tensor);
-    MS_EXCEPTION_IF_NULL(device_context);
-    if (device_tensor->original_ref_count() == SIZE_MAX) {
-      continue;
-    }
-    // The reference count is decremented to zero to free memory, and reset to the original count.
-    device_tensor->DecreaseRefCount();
-    if (device_tensor->ref_count() == 0) {
-      // Free memory through the device context.
-      if (device_tensor->GetPtr() != nullptr) {
-        device_context->FreeMemory(device_tensor);
-      }
-      device_tensor->ResetRefCount();
-    }
+    FreeMemoryByRefCount(device_tensor, device_context);
   }
 }
 
-void MemoryManagerActor::Wait(OpContext<DeviceTensor> *const op_context, const AID from_aid) {
+void MemoryManagerActor::Wait(OpContext<DeviceTensor> *const op_context, const AID &from_aid) {
   // Call back to the from actor to process.
-  Async(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
+  ActorDispatcher::Send(from_aid, &MemoryAwareActor::OnMemoryAllocFinish, op_context);
 }
 
 void MemoryManagerActor::SetOpContextMemoryAllocFail(const std::string &kernel_name,
@@ -172,13 +185,12 @@ void MemoryManagerActor::SetOpContextMemoryAllocFail(const std::string &kernel_n
   MS_EXCEPTION_IF_NULL(device_context);
   MS_EXCEPTION_IF_NULL(op_context);
 
-  MS_EXCEPTION_IF_NULL(op_context->sequential_num_);
-  auto step_id = uuids::uuid::ToBytes(*(op_context->sequential_num_));
+  int step_id = op_context->sequential_num_;
   // First occur allocating memory failed.
   if (mem_alloc_failed_step_ids_.find(step_id) == mem_alloc_failed_step_ids_.end()) {
     mem_alloc_failed_step_ids_.clear();
     (void)mem_alloc_failed_step_ids_.insert(step_id);
-    SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(GraphExecutionStrategy::kPipeline, (*op_context), device_context,
+    SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(GraphExecutionStrategy::kPipeline, *op_context, *device_context,
                                                 kernel_name, alloc_size);
   }
 }

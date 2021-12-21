@@ -32,6 +32,13 @@
 namespace mindspore {
 namespace parallel {
 Status Conv2DInfo::GetAttrsBase() {
+  // format
+  format_ = GetStringAttr(FORMAT);
+  if (format_ != NCHW) {
+    MS_LOG(ERROR) << name_ << ": The format must be 'NCHW', but got " << format_;
+    return FAILED;
+  }
+
   // out_channel
   out_channel_ = GetIntAttr(OUT_CHANNEL);
   if (out_channel_ <= 0) {
@@ -104,13 +111,6 @@ Status Conv2DInfo::GetAttrsBase() {
 
   // group
   group_ = GetIntAttr(GROUP);
-
-  // format
-  format_ = GetStringAttr(FORMAT);
-  if (format_ != NCHW) {
-    MS_LOG(ERROR) << name_ << ": The format must be 'NCHW', but got " << format_;
-    return FAILED;
-  }
 
   MS_LOG(INFO) << name_ << ": The out channel is " << out_channel_ << ", kernel size is " << kernel_size_
                << ", mode is " << mode_ << ", pad mode is " << pad_mode_ << ", pad list is " << pad_list_
@@ -639,12 +639,16 @@ OperatorAttrs Conv2DInfo::CreateNeighborExchangeAttrs(const CNodePtr &cnode) {
   MS_EXCEPTION_IF_NULL(tensor_type);
   auto dtype = tensor_type->element();
   MS_EXCEPTION_IF_NULL(dtype);
-  Attr send_ranks = {SEND_RNAK_IDS, MakeValue(send_rank_ids_)};
-  Attr recv_ranks = {RECV_RNAK_IDS, MakeValue(recv_rank_ids_)};
-  Attr send_shapes = {SEND_SHAPES, MakeValue(send_shapes_)};
-  Attr recv_shapes = {RECV_SHAPES, MakeValue(recv_shapes_)};
+
+  // the type of send_rank_ids, recv_rank_ids, send_shapes, recv_shapes is list, is not tuple, can not use MakeValue
+  // the MakeValue(vector) return a tuple
+  Attr send_ranks = {SEND_RANK_IDS, MakeListValue(send_rank_ids_)};
+  Attr recv_ranks = {RECV_RANK_IDS, MakeListValue(recv_rank_ids_)};
+  Attr send_shapes = {SEND_SHAPES, MakeTupleListValue(send_shapes_)};
+  Attr recv_shapes = {RECV_SHAPES, MakeTupleListValue(recv_shapes_)};
   Attr recv_type = {RECV_TYPE, dtype};
-  OperatorAttrs attrs = {send_ranks, recv_ranks, recv_shapes, send_shapes, recv_type};
+  Attr group = {GROUP, MakeValue(g_device_manager->world_group())};
+  OperatorAttrs attrs = {send_ranks, recv_ranks, recv_shapes, send_shapes, recv_type, group};
   return attrs;
 }
 
@@ -821,25 +825,6 @@ std::vector<StrategyPtr> Conv2DInfo::GenerateOpStrategies(int64_t stage_id) {
   std::vector<StrategyPtr> sp_vector;
   sp_vector.push_back(sp);
   return sp_vector;
-}
-
-Status Conv2DInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << ": Init success.";
-  return SUCCESS;
-}
-
-Status Conv2DInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success.";
-  return SUCCESS;
 }
 
 Status Conv2DBackpropInputInfo::GetOutShape() {

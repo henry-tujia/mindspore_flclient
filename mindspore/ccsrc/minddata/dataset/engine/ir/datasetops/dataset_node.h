@@ -38,8 +38,10 @@
 #include "minddata/dataset/engine/ir/cache/dataset_cache.h"
 #include "minddata/dataset/engine/ir/datasetops/source/samplers/samplers_ir.h"
 #include "minddata/dataset/include/dataset/datasets.h"
+#include "minddata/dataset/kernels/ir/validators.h"
 #include "minddata/dataset/util/path.h"
 #include "minddata/dataset/util/status.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -74,6 +76,7 @@ constexpr char kTransferNode[] = "Transfer";
 constexpr char kZipNode[] = "Zip";
 
 // Names for leaf IR node
+constexpr char kAGNewsNode[] = "AGNewsDataset";
 constexpr char kAlbumNode[] = "AlbumDataset";
 constexpr char kCelebANode[] = "CelebADataset";
 constexpr char kCifar100Node[] = "Cifar100Dataset";
@@ -82,25 +85,46 @@ constexpr char kCityscapesNode[] = "CityscapesDataset";
 constexpr char kCLUENode[] = "CLUEDataset";
 constexpr char kCocoNode[] = "CocoDataset";
 constexpr char kCSVNode[] = "CSVDataset";
+constexpr char kDBpediaNode[] = "DBpediaDataset";
 constexpr char kDIV2KNode[] = "DIV2KDataset";
+constexpr char kEMnistNode[] = "EMnistDataset";
+constexpr char kFakeImageNode[] = "FakeImageDataset";
+constexpr char kFashionMnistNode[] = "FashionMnistDataset";
 constexpr char kFlickrNode[] = "FlickrDataset";
 constexpr char kGeneratorNode[] = "GeneratorDataset";
 constexpr char kImageFolderNode[] = "ImageFolderDataset";
+constexpr char kIWSLT2016Node[] = "IWSLT2016Dataset";
+constexpr char kIWSLT2017Node[] = "IWSLT2017Dataset";
+constexpr char kKMnistNode[] = "KMnistDataset";
+constexpr char kLJSpeechNode[] = "LJSpeechDataset";
 constexpr char kManifestNode[] = "ManifestDataset";
 constexpr char kMindDataNode[] = "MindDataDataset";
 constexpr char kMnistNode[] = "MnistDataset";
+constexpr char kPennTreebankNode[] = "PennTreebankDataset";
+constexpr char kPhotoTourNode[] = "PhotoTourDataset";
+constexpr char kPlaces365Node[] = "Places365Dataset";
+constexpr char kQMnistNode[] = "QMnistDataset";
 constexpr char kRandomNode[] = "RandomDataset";
 constexpr char kSBUNode[] = "SBUDataset";
+constexpr char kSogouNewsNode[] = "SogouNewsDataset";
+constexpr char kSpeechCommandsNode[] = "SpeechCommandsDataset";
+constexpr char kSTL10Node[] = "STL10Dataset";
+constexpr char kTedliumNode[] = "TedliumDataset";
 constexpr char kTextFileNode[] = "TextFileDataset";
 constexpr char kTFRecordNode[] = "TFRecordDataset";
+constexpr char kUDPOSNode[] = "UDPOSDataset";
 constexpr char kUSPSNode[] = "USPSDataset";
 constexpr char kVOCNode[] = "VOCDataset";
+constexpr char kYahooAnswersNode[] = "YahooAnswersDataset";
+constexpr char kYelpReviewNode[] = "YelpReviewDataset";
+constexpr char kYesNoNode[] = "YesNoDataset";
 
 Status AddShuffleOp(int64_t num_files, int64_t num_devices, int64_t num_rows, int64_t total_rows,
                     int32_t connector_que_size, std::shared_ptr<DatasetOp> *shuffle_op);
 
 // Helper function to validate dataset files parameter
-Status ValidateDatasetFilesParam(const std::string &dataset_name, const std::vector<std::string> &dataset_files);
+Status ValidateDatasetFilesParam(const std::string &dataset_name, const std::vector<std::string> &dataset_files,
+                                 const std::string &file_name = "dataset file");
 
 // Helper function to validate dataset num_shards and shard_id parameters
 Status ValidateDatasetShardParams(const std::string &dataset_name, int32_t num_shards, int32_t shard_id);
@@ -117,6 +141,12 @@ Status ValidateDatasetColumnParam(const std::string &dataset_name, const std::st
 
 // Helper function to validate dataset directory parameter
 Status ValidateDatasetDirParam(const std::string &dataset_name, std::string dataset_dir);
+
+Status ValidateMapKey(const std::string &dataset_name, const std::string &key,
+                      const std::map<std::string, std::vector<std::string>> &map);
+
+Status ValidateMapValue(const std::string &dataset_name, const std::string &str,
+                        const std::vector<std::string> &valid_strings);
 
 /// \brief Function to create a sampler for non-mappable dataset (to be used by cache op later).
 /// \notes Non-mappable dataset does not directly support a sampler. It has provided sampling arguments (shuffle,
@@ -256,7 +286,7 @@ class DatasetNode : public std::enable_shared_from_this<DatasetNode> {
   void HasCacheAbove() { descendant_of_cache_ = true; }
 
   /// \brief Getter of the number of workers
-  int32_t num_workers() { return num_workers_; }
+  int32_t NumWorkers() { return num_workers_; }
 
   /// \brief Getter of dataset cache
   std::shared_ptr<DatasetCache> GetDatasetCache() { return cache_; }

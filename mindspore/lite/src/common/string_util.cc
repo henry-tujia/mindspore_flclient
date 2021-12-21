@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <cstring>
 #include <fstream>
 #include <climits>
 #include "include/ms_tensor.h"
@@ -74,7 +75,7 @@ int WriteStringsToTensor(Tensor *tensor, const std::vector<StringPack> &string_b
   auto *string_info = reinterpret_cast<int32_t *>(data);
   char *string_data = reinterpret_cast<char *>(data);
 
-  string_info[0] = num;
+  string_info[0] = static_cast<int32_t>(num);
   for (size_t i = 0; i <= num; i++) {
     string_info[i + 1] = offset[i];
   }
@@ -112,7 +113,7 @@ int WriteSeperatedStringsToTensor(Tensor *tensor, const std::vector<std::vector<
   auto *string_info = reinterpret_cast<int32_t *>(data);
   auto *string_data = reinterpret_cast<char *>(data);
 
-  string_info[0] = num;
+  string_info[0] = static_cast<int32_t>(num);
   for (size_t i = 0; i <= num; i++) {
     string_info[i + 1] = offset[i];
   }
@@ -155,7 +156,9 @@ uint32_t Fetch32Bit(const char *p) {
 }
 
 uint64_t Rotate64(uint64_t value, int shift) {
-  return shift == 0 ? value : ((value >> shift) | (value << (64 - shift)));
+  return shift == 0
+           ? value
+           : ((value >> static_cast<unsigned int>(shift)) | (value << static_cast<unsigned int>((64 - shift))));
 }
 
 uint64_t HashLen16(uint64_t u, uint64_t v, uint64_t multiple) {

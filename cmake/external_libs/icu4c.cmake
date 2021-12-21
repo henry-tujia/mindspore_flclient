@@ -4,7 +4,7 @@ set(LIB_ICU_I18N icui18n)
 
 if(ENABLE_GITEE)
     set(REQ_URL "https://gitee.com/mirrors/icu/repository/archive/release-67-1.tar.gz")
-    set(MD5 "72415ffd1af3acf19f9aa3fa82c7b5bc")
+    set(MD5 "0c2662a2b0bc80b0eb56495205247c8f")
 else()
     set(REQ_URL "https://github.com/unicode-org/icu/archive/release-67-1.tar.gz")
     set(MD5 "fd525fb47d8827b0b7da78b51dd2d93f")
@@ -28,7 +28,7 @@ else()
                 URL ${REQ_URL}
                 MD5 ${MD5}
                 PATCHES ${CMAKE_SOURCE_DIR}/third_party/patch/icu4c/icu4c.patch01
-                CONFIGURE_COMMAND ./icu4c/source/runConfigureICU MacOSX --enable-rpath --disable-tests
+                CONFIGURE_COMMAND ./icu4c/source/runConfigureICU MacOSX --disable-tests
                                   --disable-samples --disable-icuio --disable-extras
                                   ICU_DATA_FILTER_FILE=${CMAKE_BINARY_DIR}/icu4c_filter.json
                 )
@@ -45,6 +45,12 @@ else()
                 )
     endif()
     include_directories(${icu4c_INC})
+    if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+        include(${CMAKE_SOURCE_DIR}/cmake/change_rpath.cmake)
+        changerpath($<TARGET_FILE:icu4c::${LIB_ICU_COMMON}> ${LIB_ICU_COMMON} "libicuuc;libicudata")
+        changerpath($<TARGET_FILE:icu4c::${LIB_ICU_DATA}> ${LIB_ICU_DATA} "libicudata")
+        changerpath($<TARGET_FILE:icu4c::${LIB_ICU_I18N}> ${LIB_ICU_I18N} "libicuuc;libicudata;libicui18n")
+    endif()
     add_library(mindspore::icuuc ALIAS icu4c::${LIB_ICU_COMMON})
     add_library(mindspore::icudata ALIAS icu4c::${LIB_ICU_DATA})
     add_library(mindspore::icui18n ALIAS icu4c::${LIB_ICU_I18N})

@@ -21,13 +21,14 @@
 #include <vector>
 #include "src/inner_kernel.h"
 #include "nnacl/conv_parameter.h"
+#include "src/tensor_category.h"
 
 namespace mindspore::kernel {
 struct TensorInfo {
   std::vector<int> shape_;
   mindspore::Format format_;
   TypeId data_type_;
-  lite::Tensor::Category tensor_type_;
+  lite::Category tensor_type_;
   bool is_in_;
 };
 
@@ -51,7 +52,7 @@ class GroupConvCreator {
   void SetShapeOfTensors();
   int CreateConvs(std::vector<kernel::InnerKernel *> *group_convs);
   std::vector<kernel::InnerKernel *> *get_group_conv() { return &group_convs_; }
-  void CopyQuantParam(std::vector<lite::Tensor *> *tensors);
+  void CopyQuantParam(const std::vector<lite::Tensor *> *tensors);
   int GetSingleConvParam(ConvParameter *conv_param, std::vector<lite::Tensor *> *new_inputs,
                          std::vector<lite::Tensor *> *new_outputs, int group_id);
 
@@ -80,7 +81,7 @@ class GroupConvCreator {
   const lite::InnerContext *ctx_ = nullptr;
 };
 
-ConvParameter *CreateNewConvParameter(ConvParameter *parameter);
+ConvParameter *CreateNewConvParameter(const ConvParameter *parameter);
 }  // namespace mindspore::kernel
 
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ARM_GROUP_CONVOLUTION_CREATOR_H_

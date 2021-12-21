@@ -29,6 +29,7 @@
 
 #include "utils/ms_utils.h"
 #include "minddata/dataset/include/dataset/constants.h"
+#include "minddata/dataset/util/validators.h"
 
 #ifndef ENABLE_ANDROID
 #include "minddata/dataset/core/cv_tensor.h"
@@ -274,7 +275,7 @@ Status Tensor::CreateFromFile(const std::string &path, std::shared_ptr<Tensor> *
   fs.open(path, std::ios::binary | std::ios::in);
   CHECK_FAIL_RETURN_UNEXPECTED(!fs.fail(), "Failed to open file: " + path);
   int64_t num_bytes = fs.seekg(0, std::ios::end).tellg();
-  CHECK_FAIL_RETURN_UNEXPECTED(num_bytes <= kDeMaxDim, "Invalid file to allocate tensor memory, check path: " + path);
+  CHECK_FAIL_RETURN_UNEXPECTED(num_bytes < kDeMaxDim, "Invalid file to allocate tensor memory, check path: " + path);
   CHECK_FAIL_RETURN_UNEXPECTED(fs.seekg(0, std::ios::beg).good(), "Failed to find size of file, check path: " + path);
   RETURN_IF_NOT_OK(Tensor::CreateEmpty(TensorShape{num_bytes}, DataType(DataType::DE_UINT8), out));
   int64_t written_bytes = fs.read(reinterpret_cast<char *>((*out)->GetMutableBuffer()), num_bytes).gcount();
@@ -530,9 +531,7 @@ Status Tensor::GetItemPtr(uchar **ptr, const std::vector<dsize_t> &index, offset
     RETURN_IF_NOT_OK(shape_.ToFlatIndex(index, &flat_idx));
     offset_t length_temp = 0;
     RETURN_IF_NOT_OK(GetStringAt(flat_idx, ptr, &length_temp));
-    if (length != nullptr) {
-      *length = length_temp;
-    }
+    *length = length_temp;
     return Status::OK();
   } else {
     std::string err = "data type not compatible";
@@ -703,9 +702,9 @@ Status Tensor::to_json_convert(nlohmann::json *args) {
 }
 
 Status Tensor::from_json(nlohmann::json op_params, std::shared_ptr<Tensor> *tensor) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("shape") != op_params.end(), "Failed to find shape");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("type") != op_params.end(), "Failed to find type");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("data") != op_params.end(), "Failed to find data");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "shape", "Tensor"));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "type", "Tensor"));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "data", "Tensor"));
   std::string type = op_params["type"];
   std::vector<dsize_t> list = op_params["shape"];
   TensorShape shape = TensorShape(list);
@@ -1020,7 +1019,7 @@ Status Tensor::GetSliceOption(const SliceOption &slice_option, const int32_t &sl
     RETURN_STATUS_UNEXPECTED("Both indices and slices can not be given.");
   }
 
-  CHECK_FAIL_RETURN_UNEXPECTED(shape_.Size() > slice_index, "Invalid shape, should greater than slices index.");
+  CHECK_FAIL_RETURN_UNEXPECTED(shape_.Size() > slice_index, "Invalid shape, should be greater than slices index.");
   // if slice object was provided, indices should be empty. Generate indices from the slice object.
   if (slice_option.indices_.empty()) {
     // check if slice is valid

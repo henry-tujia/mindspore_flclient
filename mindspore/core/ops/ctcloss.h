@@ -24,16 +24,20 @@
 
 namespace mindspore {
 namespace ops {
+/// \brief Calculates the CTC (Connectionist Temporal Classification) loss and the gradient.
+/// Refer to Python API @ref mindspore.ops.CTCLoss for more details.
 class MS_CORE_API CTCLoss : public PrimitiveC {
  public:
+  /// \brief Constructor.
   CTCLoss() : PrimitiveC(prim::kPrimCTCLoss->name()) {}
+  /// \brief Destructor.
   ~CTCLoss() = default;
   MS_DECLARE_PARENT(CTCLoss, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.CTCLoss for the inputs.
   void Init() {}
 };
 AbstractBasePtr CTCLossInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                              const std::vector<AbstractBasePtr> &input_args);
-using PrimCTCLossPtr = std::shared_ptr<CTCLoss>;
 }  // namespace ops
 }  // namespace mindspore
 

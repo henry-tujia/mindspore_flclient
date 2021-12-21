@@ -3,7 +3,7 @@ project(nnacl)
 set(NNACL_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${NNACL_DIR}/..)
 
-if(PLATFORM_ARM32 OR PLATFORM_ARM64)
+if(APPLE OR PLATFORM_ARM32 OR PLATFORM_ARM64)
     if("${CMAKE_BUILD_TYPE}" STREQUAL "Release" AND DEFINED ARCHS)
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -fstrict-aliasing \
         -ffunction-sections -fdata-sections -ffast-math -Wno-shorten-64-to-32")
@@ -19,7 +19,7 @@ if(NOT MSVC)
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1 -mavx -mavx2 -mfma")
     endif()
     if("${X86_64_SIMD}" STREQUAL "avx512")
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1 -mavx -mavx2 -mfma")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1 -mavx -mavx2 -mfma -mavx512f")
     endif()
     if("${X86_64_SIMD}" STREQUAL "sse")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1")
@@ -30,13 +30,38 @@ endif()
 file(GLOB KERNEL_SRC
     ${NNACL_DIR}/*.c
     ${NNACL_DIR}/fp32/*.c
-    ${NNACL_DIR}/int8/*.c
     ${NNACL_DIR}/infer/*.c
     ${NNACL_DIR}/base/*.c
     ${NNACL_DIR}/fp32_grad/*.c
 )
 
-if(MSLITE_STRING_KERNEL)
+if((NOT DEFINED MSLITE_ENABLE_INT8) OR MSLITE_ENABLE_INT8)
+    file(GLOB KERNEL_SRC_INT8
+            ${NNACL_DIR}/int8/*.c
+            )
+    set(KERNEL_SRC
+            ${KERNEL_SRC}
+            ${KERNEL_SRC_INT8}
+            )
+else()
+    set(KERNEL_SRC
+            ${KERNEL_SRC}
+            ${NNACL_DIR}/int8/pack_int8.c
+            ${NNACL_DIR}/int8/quantize.c
+            )
+endif()
+
+if(MSLITE_ENABLE_SPARSE_COMPUTE)
+    file(GLOB KERNEL_SRC_SPARSE
+            ${NNACL_DIR}/fp32_sparse/*.c
+            )
+    set(KERNEL_SRC
+            ${KERNEL_SRC}
+            ${KERNEL_SRC_SPARSE}
+            )
+endif()
+
+if(MSLITE_ENABLE_STRING_KERNEL)
     file(GLOB KERNEL_SRC_INFER_STRING
             ${NNACL_DIR}/infer/string/*.c
             )
@@ -45,7 +70,7 @@ if(MSLITE_STRING_KERNEL)
             ${KERNEL_SRC_INFER_STRING}
             )
 endif()
-if(MSLITE_CONTROLFLOW_TENSORLIST)
+if(MSLITE_ENABLE_CONTROLFLOW)
     file(GLOB KERNEL_SRC_INFER_CONTROL_TENSORLIST
             ${NNACL_DIR}/infer/control/*.c
             )
@@ -105,13 +130,15 @@ if(ENABLE_CPU)
     elseif("${X86_64_SIMD}" STREQUAL "avx")
         target_compile_definitions(nnacl_mid PRIVATE ENABLE_SSE ENABLE_AVX)
     elseif("${X86_64_SIMD}" STREQUAL "avx512")
-        target_compile_definitions(nnacl_mid PRIVATE ENABLE_AVX512)
+        target_compile_definitions(nnacl_mid PRIVATE ENABLE_SSE ENABLE_AVX ENABLE_AVX512)
         target_compile_options(nnacl_mid PRIVATE -mavx512f)
     endif()
     target_compile_options(nnacl_mid PRIVATE -fPIC)
     add_library(nnacl SHARED $<TARGET_OBJECTS:nnacl_mid>)
     if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
-        target_link_options(nnacl PRIVATE -Wl,-z,relro,-z,now,-z,noexecstack)
+        if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
+            target_link_options(nnacl PRIVATE -Wl,-z,relro,-z,now,-z,noexecstack)
+        endif()
         if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
             target_link_options(nnacl PRIVATE -s)
         endif()

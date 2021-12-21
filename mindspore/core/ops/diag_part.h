@@ -24,15 +24,18 @@
 
 namespace mindspore {
 namespace ops {
+/// \brief Extracts the diagonal part from given tensor.
+/// Refer to Python API @ref mindspore.ops.DiagPart for more details.
 class MS_CORE_API DiagPart : public PrimitiveC {
  public:
+  /// \brief Constructor.
   DiagPart() : PrimitiveC(prim::kPrimDiagPart->name()) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~DiagPart() = default;
   MS_DECLARE_PARENT(DiagPart, PrimitiveC);
 };
 AbstractBasePtr DiagPartInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                               const std::vector<AbstractBasePtr> &input_args);
-using PrimDiagPartPtr = std::shared_ptr<DiagPart>;
 }  // namespace ops
 }  // namespace mindspore
 

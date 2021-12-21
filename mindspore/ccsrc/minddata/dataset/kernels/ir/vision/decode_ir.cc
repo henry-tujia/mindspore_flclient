@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/decode_ir.h"
 
 #include "minddata/dataset/kernels/image/decode_op.h"
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -40,12 +39,11 @@ Status DecodeOperation::to_json(nlohmann::json *out_json) {
   return Status::OK();
 }
 Status DecodeOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("rgb") != op_params.end(), "Failed to find rgb");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "rgb", kDecodeOperation));
   bool rgb = op_params["rgb"];
   *operation = std::make_shared<vision::DecodeOperation>(rgb);
   return Status::OK();
 }
-
 }  // namespace vision
 }  // namespace dataset
 }  // namespace mindspore

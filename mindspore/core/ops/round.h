@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,17 +26,22 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameRound = "Round";
+/// \brief Returns half to even of a tensor element-wise.
+/// Refer to Python API @ref mindspore.ops.Round for more details.
 class MS_CORE_API Round : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Round() : PrimitiveC(kNameRound) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~Round() = default;
   MS_DECLARE_PARENT(Round, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 
 AbstractBasePtr RoundInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimRoundPtr = std::shared_ptr<Round>;
+using kPrimRoundPtr = std::shared_ptr<Round>;
 }  // namespace ops
 }  // namespace mindspore
 

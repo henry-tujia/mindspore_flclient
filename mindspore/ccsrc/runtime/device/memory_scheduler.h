@@ -21,6 +21,7 @@
 #include <set>
 #include <memory>
 #include <utility>
+#include "runtime/device/memory_offload_strategy.h"
 
 namespace mindspore {
 namespace device {
@@ -31,36 +32,20 @@ class MemHandler {
   virtual void FreeDevice(void *ptr) = 0;
   virtual void *MallocHost(size_t mem_size) = 0;
   virtual void FreeHost(void *ptr) = 0;
-  virtual void SwapIn(void *host_ptr, void *device_ptr, size_t mem_size, void *stream) = 0;
-  virtual void SwapOut(void *device_ptr, void *host_ptr, size_t mem_size, void *stream) = 0;
+  virtual void SwapIn(const void *host_ptr, void *device_ptr, size_t mem_size, void *stream) = 0;
+  virtual void SwapOut(const void *device_ptr, void *host_ptr, size_t mem_size, void *stream) = 0;
 };
 
-enum MemPriority { kMemPriorityLow, kMemPriorityMedium, kMemPriorityHigh };
-
 class MemScheduler {
-  enum EventType { kInit, kMalloc, kGet, kFree, kSwapIn, kSwapOut };
-
-  struct Event {
-    Event(const EventType &in_type, size_t in_index) {
-      type = in_type;
-      index = in_index;
-    }
-
-    EventType type;
-    size_t index{0};
-    size_t mem_size{0};
-    const void *key{nullptr};
-  };
-
  public:
   MemScheduler() = default;
   ~MemScheduler() = default;
 
   bool need_record_event() const { return need_record_event_; }
 
-  bool optimized() const { return optimized_; }
+  void set_need_record_event(bool flag) { need_record_event_ = flag; }
 
-  void SetOptimized(bool flag) { optimized_ = flag; }
+  void Update();
 
   void SetMemHandler(const std::shared_ptr<MemHandler> &handler) { mem_handler_ = handler; }
 
@@ -68,50 +53,64 @@ class MemScheduler {
 
   void *GetOrMalloc(const void *key, size_t mem_size, MemPriority priority = kMemPriorityLow);
 
-  void RecordMemUsage() { compute_index_ = 0; }
+  bool HasDeviceMem(const void *key) const { return mem_result_.find(key) != mem_result_.end(); }
+
+  void UpdateHighPriorityMem(const void *key) {
+    if (need_record_event_) {
+      high_priority_updated_step_[key].emplace_back(current_step_);
+    }
+  }
+
+  void SetTotalStep(size_t step) {
+    total_step_ = step;
+    step_events_.resize(total_step_);
+  }
+
+  void Reset() { current_step_ = 0; }
 
   bool PreCompute(void *stream);
 
   bool PostCompute(void *stream);
 
-  void OptMemUsage();
+  bool Optimize();
 
   void Clear();
 
-  bool IsHighPriorityMem(const void *key);
+  void ClearAllocatedMem();
 
-  void SetMemPriority(const void *key, MemPriority priority);
+  void SetOffload(const void *key) { (void)manual_offload_keys_.insert(key); }
 
-  void SetMemUsedFactor(float factor) { mem_used_factor_ = factor; }
+  void AddMemNeedInit(const void *key) { high_priority_mem_need_init_.insert(key); }
 
-  void SetNeedSwap(bool flag) { need_swap_ = flag; }
+  void ClearMemNeedInit() { high_priority_mem_need_init_.clear(); }
 
  private:
-  void Record(const void *key, const EventType &event_type, size_t mem_size = 0);
-  void GenEvents();
-  void CheckMemSize();
-  void CountMemUsage();
-  void GenEventSpan();
-  void GenNoSwapEventSet();
+  void Record(const void *key, const MemEventType &event_type, size_t mem_size = 0);
+
+  void OptMemUsage(float mem_used_factor = 1.0f);
+
+  void AdjustFirstEventIndex();
+
   std::map<const void *, MemPriority> mem_priority_;
-  std::map<const void *, std::vector<std::shared_ptr<Event>>> mem_events_;
-  std::vector<std::vector<std::shared_ptr<Event>>> pre_compute_events_;
-  std::vector<std::vector<std::shared_ptr<Event>>> post_compute_events_;
+  std::map<const void *, std::vector<std::shared_ptr<MemEvent>>> mem_events_;
+  std::set<const void *> manual_offload_keys_;
+  std::vector<std::vector<std::shared_ptr<MemEvent>>> step_events_;
   std::map<const void *, void *> mem_result_;
   std::map<const void *, void *> init_host_ptr_;
   std::map<const void *, void *> swap_host_ptr_;
-  std::map<const void *, void *> high_priority_device_ptr_;
-  size_t compute_index_{0};
+  std::map<const void *, std::vector<size_t>> high_priority_updated_step_;
+  std::set<const void *> high_priority_mem_need_init_;
+  size_t total_step_{0};
+  size_t current_step_{0};
   bool need_record_event_{true};
   bool optimized_{false};
-  std::shared_ptr<MemHandler> mem_handler_{nullptr};
-  bool need_swap_{false};
-  std::multimap<size_t, std::shared_ptr<Event>> event_span_;
-  std::set<std::shared_ptr<Event>> no_swap_events_;
-  std::vector<size_t> min_mem_used_;
-  size_t mem_used_without_swap_{0};
-  size_t min_mem_needed_{0};
   float mem_used_factor_{0.9};
+  double compute_start_time_{0};
+  std::vector<double> compute_time_;
+  bool record_compute_time_{false};
+  bool updated_{false};
+  std::shared_ptr<MemHandler> mem_handler_{nullptr};
+  std::shared_ptr<MemOffloadStrategy> strategy_{nullptr};
 };
 
 class MemSchedulerManager {

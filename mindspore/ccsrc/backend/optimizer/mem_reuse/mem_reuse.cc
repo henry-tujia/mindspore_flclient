@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -362,6 +362,7 @@ void MemReuseUtil::SetReuseRefCount() {
   }
 }
 
+#ifndef ENABLE_SECURITY
 void MemReuseUtil::SetSummaryNodesRefCount() {
   bool summary_exist = graph_->summary_node_exist();
   if (!summary_exist) {
@@ -393,6 +394,7 @@ void MemReuseUtil::SetSummaryNodesRefCount() {
 #endif
   MS_LOG(INFO) << "Special Tensor total size: SummaryNodes: " << total_summary_size;
 }
+#endif
 
 void MemReuseUtil::SetRefNodesInputRefCount() {
   size_t total_size = 0;
@@ -424,7 +426,7 @@ void MemReuseUtil::SetGraphOutputRefCount() {
       kernel_input = AnfAlgo::VisitKernelWithReturnType(node, 0, true);
     }
     MS_EXCEPTION_IF_NULL(kernel_input.first);
-    if (!kernel_input.first->isa<CNode>() || !AnfAlgo::IsRealKernel(kernel_input.first)) {
+    if (!kernel_input.first->isa<CNode>() || !AnfUtils::IsRealKernel(kernel_input.first)) {
       continue;
     }
     auto ak_node = kernel_input.first->cast<CNodePtr>();
@@ -457,14 +459,16 @@ void MemReuseUtil::SetAllInfo(const KernelGraph *graph) {
   }
   SetKernelDefMap();
   SetReuseRefCount();
+#ifndef ENABLE_SECURITY
   SetSummaryNodesRefCount();
+#endif
   SetRefNodesInputRefCount();
   SetWorkSpaceList();
 #ifdef MEM_REUSE_DEBUG
   MemReuseChecker::GetInstance().CheckMemReuseIR(total_refs_list_, kernel_def_ptr_list_, graph);
 #endif
 
-  enable_visit_kernel_cache_ = context::GraphKernelFlags::GetInstance().IsEnableGraphKernel();
+  enable_visit_kernel_cache_ = graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel();
 }
 
 uint8_t *MemReuseUtil::GetNodeOutputPtr(const AnfNodePtr &node, size_t index) const {
@@ -497,18 +501,17 @@ uint8_t *MemReuseUtil::GetNodeWorkSpacePtr(const AnfNodePtr &node, size_t index)
   return ptr;
 }
 
-session::KernelWithIndex MemReuseUtil::VisitKernelWithReturnType(const AnfNodePtr &node, size_t i,
-                                                                 bool visit_nop_node) {
+session::KernelWithIndex MemReuseUtil::VisitKernelWithReturnType(const AnfNodePtr &node, size_t i, bool skip_nop_node) {
   if (!enable_visit_kernel_cache_ || i != 0) {
-    return AnfAlgo::VisitKernelWithReturnType(node, i, visit_nop_node);
+    return AnfAlgo::VisitKernelWithReturnType(node, i, skip_nop_node);
   }
 
   auto &cache =
-    visit_nop_node ? visit_kernel_with_return_type_in0pos_cache_ : visit_kernel_with_return_type_in0pos_skip_nop_cache_;
-  std::unordered_map<AnfNodePtr, session::KernelWithIndex>::iterator tag_iter;
+    skip_nop_node ? visit_kernel_with_return_type_in0pos_cache_ : visit_kernel_with_return_type_in0pos_skip_nop_cache_;
+  mindspore::HashMap<AnfNodePtr, session::KernelWithIndex>::iterator tag_iter;
   if (auto iter = cache.find(node); iter == cache.end()) {
-    auto tmp_item = std::pair<AnfNodePtr, session::KernelWithIndex>{
-      node, AnfAlgo::VisitKernelWithReturnType(node, i, visit_nop_node)};
+    auto tmp_item =
+      std::pair<AnfNodePtr, session::KernelWithIndex>{node, AnfAlgo::VisitKernelWithReturnType(node, i, skip_nop_node)};
     tag_iter = cache.emplace(tmp_item).first;
   } else {
     tag_iter = iter;

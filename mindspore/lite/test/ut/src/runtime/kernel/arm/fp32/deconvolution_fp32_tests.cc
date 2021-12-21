@@ -21,6 +21,7 @@
 #include "mindspore/lite/src/runtime/kernel/arm/fp32/deconvolution_fp32.h"
 #include "nnacl/fp32/deconv_fp32.h"
 #include "nnacl/op_base.h"
+#include "src/tensor_category.h"
 
 namespace mindspore {
 class TestDeConvolutionFp32 : public mindspore::CommonTest {
@@ -104,7 +105,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test1) {
                 2.0889723,  6.6916203,   -5.3981733, 11.997365,   -7.0394287, 0, 0, 0,
                 -9.254076,  -5.5964484,  -5.981469,  -0.51114964, -2.7693212, 0, 0, 0};
   float bias[] = {0.7429814, 0.4863214, 0.9888875, 0.19727881, 0.009881007, 0, 0, 0};
-  float out[8] = {0};
+  float __attribute__((aligned(32))) out[8] = {0};
 
   float no[] = {-8.646674, -4.7133026, -0.11849791, -4.530405, -5.419181, 14.387108, 2.8319538, -8.511095};
   PostConvFuncFp32C8(in, out, bias, 1, 8, 1, ActType_No);
@@ -129,7 +130,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test2) {
                 2.0889723,  6.6916203,   -5.3981733, 11.997365,   -7.0394287, 0, 0, 0,
                 -9.254076,  -5.5964484,  -5.981469,  -0.51114964, -2.7693212, 0, 0, 0};
   float bias[] = {0.7429814, 0.4863214, 0.9888875, 0.19727881, 0.009881007, 0, 0, 0};
-  float out[16] = {0};
+  float __attribute__((aligned(32))) out[16] = {0};
 
   float no[] = {-8.646674, 0, -4.7133026, 0, -0.11849791, 0, -4.530405, 0,
                 -5.419181, 0, 14.387108,  0, 2.8319538,   0, -8.511095, 0};
@@ -155,7 +156,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test3) {
                 2.0889723,  6.6916203,   -5.3981733, 11.997365,   -7.0394287, 0, 0, 0,
                 -9.254076,  -5.5964484,  -5.981469,  -0.51114964, -2.7693212, 0, 0, 0};
   float bias[] = {0.7429814, 0.4863214, 0.9888875, 0.19727881, 0.009881007, 0, 0, 0};
-  float out[24] = {0};
+  float __attribute__((aligned(32))) out[24] = {0};
 
   float no[] = {-8.646674, -5.3524485, 8.56133,     -4.7133026, 1.2270198, 17.954533,   -0.11849791, -3.9182835,
                 11.90631,  -4.530405,  -0.47735345, -3.7422307, -5.419181, -0.14518678, -8.15199,    14.387108,
@@ -174,7 +175,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test4) {
                 2.0889723,  6.6916203,   -5.3981733, 11.997365,   -7.0394287, 0, 0, 0,
                 -9.254076,  -5.5964484,  -5.981469,  -0.51114964, -2.7693212, 0, 0, 0};
   float bias[] = {0.7429814, 0.4863214, 0.9888875, 0.19727881, 0.009881007, 0, 0, 0};
-  float out[32] = {0};
+  float __attribute__((aligned(32))) out[32] = {0};
 
   float co32[] = {0, 0, 0, 0, 0,         1.2270198, 0, 0, 0,         0,        0, 0, 0, 0, 0, 0,
                   0, 0, 0, 0, 14.387108, 8.693133,  0, 0, 2.8319538, 7.177942, 0, 0, 0, 0, 0, 0};
@@ -197,7 +198,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test5) {
                 2.0889723,  6.6916203,   -5.3981733, 11.997365,   -7.0394287, 0, 0, 0,
                 -9.254076,  -5.5964484,  -5.981469,  -0.51114964, -2.7693212, 0, 0, 0};
   float bias[] = {0.7429814, 0.4863214, 0.9888875, 0.19727881, 0.009881007, 0, 0, 0};
-  float out[40] = {0};
+  float __attribute__((aligned(32))) out[40] = {0};
 
   float no[] = {-8.646674,   -5.3524485, 8.56133,     -1.2702886, -2.6201365,  -4.7133026,  1.2270198,   17.954533,
                 11.086085,   -7.2591906, -0.11849791, -3.9182835, 11.90631,    0.3088621,   11.196218,   -4.530405,
@@ -226,7 +227,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test6) {
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
                 2.0889723,  6.6916203,  -5.3981733, 11.997365,  -9.254076,  -5.5964484,  -5.981469, -0.51114964};
   float bias[] = {0, 0, 0, 0, 0, 0, 0, 0};
-  float out[24] = {0};
+  float __attribute__((aligned(32))) out[24] = {0};
 
   float no_3[] = {-9.389655,  -5.83877,   7.5724425, 0, 0, 0, -0.8614793, -4.404605, 10.917422,  0, 0, 0,
                   -6.1621623, -0.6315082, -9.140878, 0, 0, 0, 2.0889723,  6.6916203, -5.3981733, 0, 0, 0};
@@ -246,7 +247,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test7) {
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
                 2.0889723,  6.6916203,  -5.3981733, 11.997365,  -9.254076,  -5.5964484,  -5.981469, -0.51114964};
   float bias[] = {0, 0, 0, 0, 0, 0, 0, 0};
-  float out[28] = {0};
+  float __attribute__((aligned(32))) out[28] = {0};
 
   float no[] = {-9.389655,  -5.83877,   7.5724425,  -1.4675674, -5.456284,  0.7406984,   16.965645,
                 -0.8614793, -4.404605,  10.917422,  0.11158327, -5.2733865, -0.96367484, -4.731118,
@@ -262,7 +263,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test8_2) {
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
                 2.0889723,  6.6916203,  -5.3981733, 11.997365,  -9.254076,  -5.5964484,  -5.981469, -0.51114964};
   float bias[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  float out[28] = {0};
+  float __attribute__((aligned(32))) out[28] = {0};
 
   float no[] = {-9.389655,  -5.83877,   7.5724425,  -1.4675674, -5.456284,  0.7406984,   16.965645, 10.888806,
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
@@ -282,7 +283,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test8_4) {
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
                 2.0889723,  6.6916203,  -5.3981733, 11.997365,  -9.254076,  -5.5964484,  -5.981469, -0.51114964};
   float bias[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  float out[64] = {0};
+  float __attribute__((aligned(32))) out[64] = {0};
 
   float no[] = {-9.389655,  -5.83877,   7.5724425,  -1.4675674, -5.456284,  0.7406984,   16.965645, 10.888806,
                 -9.389655,  -5.83877,   7.5724425,  -1.4675674, -5.456284,  0.7406984,   16.965645, 10.888806,
@@ -306,7 +307,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test8_8) {
                 -6.1621623, -0.6315082, -9.140878,  9.266748,   13.644127,  8.206812,    7.091153,  -0.50162584,
                 2.0889723,  6.6916203,  -5.3981733, 11.997365,  -9.254076,  -5.5964484,  -5.981469, -0.51114964};
   float bias[] = {0, 0, 0, 0, 0, 0, 0, 0};
-  float out[64] = {0};
+  float __attribute__((aligned(32))) out[64] = {0};
 
   float no[] = {-9.389655,  -5.83877,   7.5724425,  -1.4675674, -5.456284,  0.7406984,   16.965645, 10.888806,
                 -0.8614793, -4.404605,  10.917422,  0.11158327, -5.2733865, -0.96367484, -4.731118, -7.576815,
@@ -323,7 +324,7 @@ TEST_F(TestDeConvolutionFp32, PostConvFuncC8Test8_8) {
 int DeConvTestInit1(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *> *outputs_,
                     ConvParameter *conv_param, float **correct) {
   std::vector<int> in_dims_nhwc = {1, 5, 7, 2};
-  auto *in_t = new lite::Tensor(kNumberTypeFloat, in_dims_nhwc, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *in_t = new lite::Tensor(kNumberTypeFloat, in_dims_nhwc, mindspore::NHWC, lite::Category::CONST_TENSOR);
   in_t->MallocData();
   float in_nchw[] = {
     0.39451003, 0.15045597,  0.5367726,   0.62690735, 0.113554195, 0.5402554,  0.5522764,  0.044319753, 0.25721782,
@@ -339,8 +340,7 @@ int DeConvTestInit1(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
   inputs_->push_back(in_t);
 
   std::vector<int> weight_dims_nhwc = {2, 3, 3, 6};
-  auto *weight_t =
-    new lite::Tensor(kNumberTypeFloat, weight_dims_nhwc, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *weight_t = new lite::Tensor(kNumberTypeFloat, weight_dims_nhwc, mindspore::NHWC, lite::Category::CONST_TENSOR);
   weight_t->MallocData();
   float weight_nchw[] = {
     0.061163727,  -0.06261389,  0.07708351,  -0.019354159, -0.3859104,  -0.082844816, -0.21268463,  -0.15746808,
@@ -361,15 +361,14 @@ int DeConvTestInit1(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
                      weight_t->Channel(), 0, 0);
   inputs_->push_back(weight_t);
 
-  auto *bias_t = new lite::Tensor(kNumberTypeFloat, {6}, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *bias_t = new lite::Tensor(kNumberTypeFloat, {6}, mindspore::NHWC, lite::Category::CONST_TENSOR);
   bias_t->MallocData();
   float bias[] = {-0.19064677, -0.0034778118, 0.63741624, -1.0311537, -1.0288948, 0.71384084};
   memcpy(bias_t->MutableData(), bias, sizeof(float) * 6);
   inputs_->push_back(bias_t);
 
   std::vector<int> output_nhwc_dims = {1, 9, 13, 6};
-  auto *out_t =
-    new lite::Tensor(kNumberTypeFloat, output_nhwc_dims, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *out_t = new lite::Tensor(kNumberTypeFloat, output_nhwc_dims, mindspore::NHWC, lite::Category::CONST_TENSOR);
   out_t->MallocData();
   outputs_->push_back(out_t);
 
@@ -478,13 +477,14 @@ TEST_F(TestDeConvolutionFp32, DeConvTest1) {
   auto *deconv_param = new ConvParameter();
   auto *ctx = new lite::InnerContext;
   deconv_param->op_parameter_.thread_num_ = 1;
+  deconv_param->op_parameter_.is_zero_shape_ = false;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   float *correct;
   int total_size = DeConvTestInit1(&inputs_, &outputs_, deconv_param, &correct);
   auto *deconv =
     new kernel::DeConvolutionCPUKernel(reinterpret_cast<OpParameter *>(deconv_param), inputs_, outputs_, ctx);
 
-  deconv->Init();
+  deconv->Prepare();
   deconv->Run();
 
   ASSERT_EQ(0, CompareOutputData(reinterpret_cast<float *>(outputs_[0]->MutableData()), correct, total_size, 0.0001));
@@ -497,7 +497,7 @@ TEST_F(TestDeConvolutionFp32, DeConvTest1) {
 
 int DeConvTestInit2(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *> *outputs_,
                     ConvParameter *conv_param, float **correct) {
-  auto *in_t = new lite::Tensor(kNumberTypeFloat, {1, 4, 2, 3}, mindspore::NHWC, lite::Tensor::Category::VAR);
+  auto *in_t = new lite::Tensor(kNumberTypeFloat, {1, 4, 2, 3}, mindspore::NHWC, lite::Category::VAR);
   in_t->MallocData();
   float in[] = {7.7566547,   19.250782, 17.923292,   13.584222, 3.3293908,  9.734102,   18.83455,  -1.5142503,
                 -0.29382008, 18.686155, 0.087307654, 4.2010098, -2.2539594, 4.1795673,  13.142356, -3.5939367,
@@ -505,8 +505,7 @@ int DeConvTestInit2(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
   memcpy(in_t->MutableData(), in, sizeof(float) * in_t->ElementsNum());
   inputs_->push_back(in_t);
 
-  auto *weight_t =
-    new lite::Tensor(kNumberTypeFloat, {3, 3, 3, 2}, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *weight_t = new lite::Tensor(kNumberTypeFloat, {3, 3, 3, 2}, mindspore::NHWC, lite::Category::CONST_TENSOR);
   weight_t->MallocData();
   float weight[] = {-0.39557076, 0.15087655,  0.35216075,  -0.20893791, 0.28683448,  0.08006268,  0.9830812,
                     0.27212173,  0.5171944,   -0.0014505,  0.78694165,  0.25425306,  0.16605458,  -0.06127124,
@@ -520,7 +519,7 @@ int DeConvTestInit2(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
   inputs_->push_back(weight_t);
 
   std::vector<int> out_nhwc_dims = {1, 7, 3, 2};
-  auto *out_t = new lite::Tensor(kNumberTypeFloat, out_nhwc_dims, mindspore::NHWC, lite::Tensor::Category::VAR);
+  auto *out_t = new lite::Tensor(kNumberTypeFloat, out_nhwc_dims, mindspore::NHWC, lite::Category::VAR);
   out_t->MallocData();
   outputs_->push_back(out_t);
 
@@ -548,11 +547,12 @@ TEST_F(TestDeConvolutionFp32, DeConvTest2) {
   int total_size = DeConvTestInit2(&inputs_, &outputs_, deconv_param, &correct);
   auto *ctx = new lite::InnerContext;
   deconv_param->op_parameter_.thread_num_ = 1;
+  deconv_param->op_parameter_.is_zero_shape_ = false;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto *deconv =
     new kernel::DeConvolutionCPUKernel(reinterpret_cast<OpParameter *>(deconv_param), inputs_, outputs_, ctx);
 
-  deconv->Init();
+  deconv->Prepare();
   deconv->Run();
   ASSERT_EQ(0, CompareOutputData(reinterpret_cast<float *>(outputs_[0]->MutableData()), correct, total_size, 0.0001));
 
@@ -566,7 +566,7 @@ TEST_F(TestDeConvolutionFp32, DeConvTest2) {
 int DeConvTestInit3(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tensor *> *outputs_,
                     ConvParameter *conv_param, float **correct) {
   std::vector<int> in_dims_nhwc = {1, 3, 3, 2};
-  auto *in_t = new lite::Tensor(kNumberTypeFloat, in_dims_nhwc, mindspore::NHWC, lite::Tensor::Category::VAR);
+  auto *in_t = new lite::Tensor(kNumberTypeFloat, in_dims_nhwc, mindspore::NHWC, lite::Category::VAR);
   in_t->MallocData();
   float in_nchw[] = {0.10411751, 0.24034509, 0.71456534, 0.75286126, 0.9778457,  0.21043599,
                      0.26498786, 0.6701024,  0.9744634,  0.49075702, 0.03877404, 0.48646277,
@@ -576,8 +576,7 @@ int DeConvTestInit3(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
   inputs_->push_back(in_t);
 
   std::vector<int> w_dims_nhwc = {2, 2, 2, 2};
-  auto *weight_t =
-    new lite::Tensor(kNumberTypeFloat, w_dims_nhwc, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto *weight_t = new lite::Tensor(kNumberTypeFloat, w_dims_nhwc, mindspore::NHWC, lite::Category::CONST_TENSOR);
   weight_t->MallocData();
   float w_nchw[] = {-0.108016446, -0.44254777, 0.29249913, 0.18764605, 1.1250675,   0.29441583,
                     -0.34362152,  0.7557833,   0.16503833, 0.2418737,  -0.26612744, 0.5072577,
@@ -587,7 +586,7 @@ int DeConvTestInit3(std::vector<lite::Tensor *> *inputs_, std::vector<lite::Tens
   inputs_->push_back(weight_t);
 
   std::vector<int> out_dims_nhwc = {1, 9, 9, 2};
-  auto *out_t = new lite::Tensor(kNumberTypeFloat, out_dims_nhwc, mindspore::NC4HW4, lite::Tensor::Category::VAR);
+  auto *out_t = new lite::Tensor(kNumberTypeFloat, out_dims_nhwc, mindspore::NC4HW4, lite::Category::VAR);
   out_t->MallocData();
   outputs_->push_back(out_t);
 
@@ -627,11 +626,12 @@ TEST_F(TestDeConvolutionFp32, DeConvTest3) {
   int total_size = DeConvTestInit3(&inputs_, &outputs_, deconv_param, &correct);
   auto *ctx = new lite::InnerContext;
   deconv_param->op_parameter_.thread_num_ = 2;
+  deconv_param->op_parameter_.is_zero_shape_ = false;
   ASSERT_EQ(lite::RET_OK, ctx->Init());
   auto *deconv =
     new kernel::DeConvolutionCPUKernel(reinterpret_cast<OpParameter *>(deconv_param), inputs_, outputs_, ctx);
 
-  deconv->Init();
+  deconv->Prepare();
   deconv->Run();
   ASSERT_EQ(0, CompareOutputData(reinterpret_cast<float *>(outputs_[0]->MutableData()), correct, total_size, 0.0001));
 

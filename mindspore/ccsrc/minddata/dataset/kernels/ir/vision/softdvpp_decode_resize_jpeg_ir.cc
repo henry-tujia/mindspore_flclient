@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -42,8 +43,7 @@ Status SoftDvppDecodeResizeJpegOperation::ValidateParams() {
     if (size_[i] % value_two == value_one) {
       std::string err_msg = "SoftDvppDecodeResizeJpeg: size[" + std::to_string(i) +
                             "] must be even values, got: " + std::to_string(size_[i]);
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   return Status::OK();
@@ -74,7 +74,7 @@ Status SoftDvppDecodeResizeJpegOperation::to_json(nlohmann::json *out_json) {
 
 Status SoftDvppDecodeResizeJpegOperation::from_json(nlohmann::json op_params,
                                                     std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Failed to find size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kSoftDvppDecodeResizeJpegOperation));
   std::vector<int32_t> size = op_params["size"];
   *operation = std::make_shared<vision::SoftDvppDecodeResizeJpegOperation>(size);
   return Status::OK();

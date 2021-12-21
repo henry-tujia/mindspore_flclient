@@ -25,7 +25,6 @@
 #include "minddata/dataset/core/config_manager.h"
 #include "minddata/dataset/core/tensor_shape.h"
 #include "minddata/dataset/engine/datasetops/source/sampler/sequential_sampler.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #include "utils/ms_utils.h"
 
@@ -63,26 +62,7 @@ DIV2KOp::DIV2KOp(int32_t num_workers, const std::string &dataset_dir, const std:
       downgrade_(downgrade),
       scale_(scale),
       decode_(decode),
-      data_schema_(std::move(data_schema)) {
-  io_block_queues_.Init(num_workers_, queue_size);
-}
-
-Status DIV2KOp::LaunchThreadsAndInitOp() {
-  if (tree_ == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Pipeline init failed, Execution tree not set.");
-  }
-
-  RETURN_IF_NOT_OK(io_block_queues_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&DIV2KOp::WorkerEntry, this, std::placeholders::_1), "", id()));
-  TaskManager::FindMe()->Post();
-  // The order of the following 3 functions must not be changed!
-  RETURN_IF_NOT_OK(ParseDIV2KData());    // Parse div2k data and get num rows, blocking
-  RETURN_IF_NOT_OK(CountDatasetInfo());  // Count the total rows
-  RETURN_IF_NOT_OK(InitSampler());       // Pass numRows to Sampler
-  return Status::OK();
-}
+      data_schema_(std::move(data_schema)) {}
 
 // Load 1 TensorRow (hr_image, lr_image) using 1 ImageLabelPair. 1 function call produces 1 TensorTow.
 Status DIV2KOp::LoadTensorRow(row_id_type row_id, TensorRow *trow) {
@@ -96,13 +76,15 @@ Status DIV2KOp::LoadTensorRow(row_id_type row_id, TensorRow *trow) {
   if (decode_ == true) {
     Status hr_rc = Decode(hr_image, &hr_image);
     if (hr_rc.IsError()) {
-      std::string err = "Invalid data, failed to decode image: " + data.first;
+      std::string err =
+        "Invalid image, failed to decode " + data.first + ", the image is damaged or permission denied.";
       RETURN_STATUS_UNEXPECTED(err);
     }
 
     Status lr_rc = Decode(lr_image, &lr_image);
     if (lr_rc.IsError()) {
-      std::string err = "Invalid data, failed to decode image: " + data.second;
+      std::string err =
+        "Invalid image, failed to decode " + data.second + ", the image is damaged or permission denied.";
       RETURN_STATUS_UNEXPECTED(err);
     }
   }
@@ -126,7 +108,7 @@ void DIV2KOp::Print(std::ostream &out, bool show_all) const {
   }
 }
 
-Status DIV2KOp::ParseDIV2KData() {
+Status DIV2KOp::PrepareData() {
   std::string hr_dir_key;
   std::string lr_dir_key;
 
@@ -144,6 +126,7 @@ Status DIV2KOp::ParseDIV2KData() {
     RETURN_IF_NOT_OK(GetDIV2KLRDirRealName(hr_dir_key, lr_dir_key));
     RETURN_IF_NOT_OK(GetDIV2KDataByUsage());
   }
+  RETURN_IF_NOT_OK(CountDatasetInfo());  // Count the total rows
   return Status::OK();
 }
 
@@ -160,7 +143,7 @@ Status DIV2KOp::GetDIV2KLRDirRealName(const std::string &hr_dir_key, const std::
                     out_str += ("\t" + item.first + ": " + item.second + ",\n");
                   });
     out_str += "\n}";
-    RETURN_STATUS_UNEXPECTED("Invalid param, " + lr_dir_key + " not found in DatasetPramMap: \n" + out_str);
+    RETURN_STATUS_UNEXPECTED("Invalid param, dir: " + lr_dir_key + " not found under div2k dataset dir, " + out_str);
   }
 
   if (downgrade_2017.find(downgrade_) != downgrade_2017.end() && scale_2017.find(scale_) != scale_2017.end()) {
@@ -177,8 +160,8 @@ Status DIV2KOp::GetDIV2KDataByUsage() {
 
   auto real_dataset_dir = FileUtils::GetRealPath(dataset_dir_.data());
   if (!real_dataset_dir.has_value()) {
-    MS_LOG(ERROR) << "Get real path failed, path=" << dataset_dir_;
-    RETURN_STATUS_UNEXPECTED("Get real path failed, path=" + dataset_dir_);
+    MS_LOG(ERROR) << "Invalid file path, div2k dataset dir: " << dataset_dir_ << " does not exist.";
+    RETURN_STATUS_UNEXPECTED("Invalid file path, div2k dataset dir: " + dataset_dir_ + " does not exist.");
   }
 
   Path dataset_dir(real_dataset_dir.value());
@@ -186,14 +169,15 @@ Status DIV2KOp::GetDIV2KDataByUsage() {
   Path lr_images_dir = dataset_dir / lr_dir_real_name_;
 
   if (!hr_images_dir.IsDirectory()) {
-    RETURN_STATUS_UNEXPECTED("Invalid path, " + hr_images_dir.ToString() + " is an invalid directory path.");
+    RETURN_STATUS_UNEXPECTED("Invalid path, div2k hr image dir: " + hr_images_dir.ToString() + " is not a directory.");
   }
   if (!lr_images_dir.IsDirectory()) {
-    RETURN_STATUS_UNEXPECTED("Invalid path, " + lr_images_dir.ToString() + " is an invalid directory path.");
+    RETURN_STATUS_UNEXPECTED("Invalid path, div2k lr image dir: " + lr_images_dir.ToString() + " is not a directory.");
   }
   auto hr_it = Path::DirIterator::OpenDirectory(&hr_images_dir);
   if (hr_it == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid path, failed to open directory: " + hr_images_dir.ToString());
+    RETURN_STATUS_UNEXPECTED("Invalid path, failed to open div2k hr image dir: " + hr_images_dir.ToString() +
+                             ", permission denied.");
   }
 
   std::string image_name;
@@ -221,12 +205,14 @@ Status DIV2KOp::GetDIV2KDataByUsage() {
 
       Path lr_image_file_path(lr_image_file_path_);
       if (!lr_image_file_path.Exists()) {
-        RETURN_STATUS_UNEXPECTED("Invalid file, " + lr_image_file_path.ToString() + " not found.");
+        RETURN_STATUS_UNEXPECTED("Invalid file, div2k image file: " + lr_image_file_path.ToString() +
+                                 " does not exist.");
       }
 
       image_hr_lr_map_[hr_image_file_path.ToString()] = lr_image_file_path.ToString();
     } catch (const std::exception &err) {
-      RETURN_STATUS_UNEXPECTED("Invalid path, failed to load DIV2K Dataset: " + dataset_dir_);
+      RETURN_STATUS_UNEXPECTED("Invalid path, failed to load DIV2K Dataset from " + dataset_dir_ + ": " +
+                               std::string(err.what()));
     }
   }
   for (auto item : image_hr_lr_map_) {
@@ -239,14 +225,15 @@ Status DIV2KOp::CountDatasetInfo() {
   num_rows_ = static_cast<int64_t>(image_hr_lr_pairs_.size());
   if (num_rows_ == 0) {
     RETURN_STATUS_UNEXPECTED(
-      "Invalid data, no valid data matching the dataset API DIV2KDataset. Please check file path or dataset API.");
+      "Invalid data, no valid data matching the dataset API 'DIV2KDataset'. Please check dataset API or file path: " +
+      dataset_dir_ + ".");
   }
   return Status::OK();
 }
 
 Status DIV2KOp::CountTotalRows(const std::string &dir, const std::string &usage, const std::string &downgrade,
                                int32_t scale, int64_t *count) {
-  // the logic of counting the number of samples is copied from ParseDIV2KData()
+  // the logic of counting the number of samples is copied from PrepareData()
   RETURN_UNEXPECTED_IF_NULL(count);
   *count = 0;
   const int64_t num_samples = 0;
@@ -265,7 +252,7 @@ Status DIV2KOp::CountTotalRows(const std::string &dir, const std::string &usage,
   int32_t op_connect_size = cfg->op_connector_size();
   std::shared_ptr<DIV2KOp> op = std::make_shared<DIV2KOp>(
     num_workers, dir, usage, downgrade, scale, false, op_connect_size, std::move(new_schema), std::move(new_sampler));
-  RETURN_IF_NOT_OK(op->ParseDIV2KData());
+  RETURN_IF_NOT_OK(op->PrepareData());
   *count = static_cast<int64_t>(op->image_hr_lr_pairs_.size());
   return Status::OK();
 }

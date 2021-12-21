@@ -19,6 +19,8 @@
 
 namespace mindspore {
 namespace ps {
+constexpr int kRetryDuration = 2000;
+
 void Worker::Run() {
   std::lock_guard<std::mutex> lock(running_mutex_);
 
@@ -209,13 +211,13 @@ void Worker::AddEmbeddingTable(const Key &key, const size_t &row_count) {
   embedding_row_cnt_[key] = row_count;
 }
 
-void Worker::InitPSEmbeddingTable(const size_t &key, const std::vector<size_t> &input_shape,
+bool Worker::InitPSEmbeddingTable(const size_t &key, const std::vector<size_t> &input_shape,
                                   const std::vector<size_t> &indices_shape, const std::vector<size_t> &output_shape,
-                                  const ParamInitInfoMessage &info) {
+                                  const ParamInitInfoMessage &info, uint32_t timeout) {
   bool has_init = IsKeyInit(key);
   if (has_init) {
     MS_LOG(DEBUG) << "The key embedding table of key " << key << " is initialized.";
-    return;
+    return true;
   }
 
   EmbeddingTableMeta embedding_table_meta;
@@ -227,15 +229,28 @@ void Worker::InitPSEmbeddingTable(const size_t &key, const std::vector<size_t> &
 
   std::string kv_data = embedding_table_meta.SerializeAsString();
 
+#ifdef __APPLE__
+  std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
   std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
   size_t dest_size = kv_data.length();
   int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
   if (ret != 0) {
     MS_LOG(ERROR) << "memcpy_s error, errorno(" << ret << ")";
-    return;
+    return false;
   }
 
-  worker_node_.Broadcast(core::NodeRole::SERVER, res, kv_data.length(), kInitEmbeddingsCmd);
+  while (!worker_node_.Broadcast(core::NodeRole::SERVER, res, kv_data.length(), kInitEmbeddingsCmd, timeout)) {
+    MS_LOG(INFO) << "Worker Broadcast failed!, retrying.";
+    if (!running_) {
+      MS_LOG(ERROR) << "Worker Broadcast failed!";
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kRetryDuration));
+  }
+
+  return true;
 }
 
 void Worker::InitPSParamAndOptim(const AnfNodePtr &input_node, const tensor::TensorPtr &tensor) {
@@ -277,7 +292,7 @@ void Worker::InitPSParamAndOptim(const AnfNodePtr &input_node, const tensor::Ten
   }
 }
 
-void Worker::DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_ids, std::vector<float> *lookup_result,
+bool Worker::DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_ids, std::vector<float> *lookup_result,
                                  int64_t cmd) {
   MS_EXCEPTION_IF_NULL(lookup_result);
   EmbeddingTableLookup embedding_table_lookup;
@@ -293,13 +308,16 @@ void Worker::DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_
     if (messages.at(i).first) {
       rank_ids.push_back(i);
       std::string kv_data = messages.at(i).second.SerializeAsString();
-
+#ifdef __APPLE__
+      std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
       std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
       size_t dest_size = kv_data.length();
       int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
       if (ret != 0) {
         MS_LOG(ERROR) << "memcpy_s error, errorno(" << ret << ")";
-        return;
+        return false;
       }
       data.push_back(res);
       sizes.push_back(kv_data.length());
@@ -307,11 +325,17 @@ void Worker::DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_
   }
 
   std::vector<VectorPtr> resp;
-  if (!worker_node_.Send(core::NodeRole::SERVER, rank_ids, data, sizes, LongToInt(cmd), &resp)) {
-    MS_LOG(ERROR) << "Worker send failed!";
+  while (!worker_node_.Send(core::NodeRole::SERVER, rank_ids, data, sizes, LongToInt(cmd), &resp)) {
+    MS_LOG(INFO) << "Worker send failed!, retrying.";
+    if (!running_) {
+      MS_LOG(ERROR) << "Worker send failed!";
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kRetryDuration));
   }
+
   int64_t single_id_len = SizeToLong(lookup_result->size() / lookup_ids.size());
-  std::unordered_map<Key, std::shared_ptr<std::pair<float *, int64_t>>> id_addr_map;
+  mindspore::HashMap<Key, std::shared_ptr<std::pair<float *, int64_t>>> id_addr_map;
   std::shared_ptr<std::vector<float>> values = std::make_shared<std::vector<float>>();
   std::shared_ptr<std::vector<Key>> keys = std::make_shared<std::vector<Key>>();
   int64_t value_offset = 0;
@@ -357,14 +381,15 @@ void Worker::DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_
     MS_EXCEPTION_IF_NULL(src_data);
     auto mem_ret = memcpy_s(dst_data, dst_size, src_data, src_size);
     if (mem_ret != 0) {
-      MS_LOG(EXCEPTION) << "memcpy_s error, errorno(" << mem_ret << ")";
-      return;
+      MS_LOG(ERROR) << "memcpy_s error, errorno(" << mem_ret << ")";
+      return false;
     }
     offset += single_id_len;
   }
+  return true;
 }
 
-void Worker::UpdateEmbeddingTable(const std::vector<Key> &keys, const std::vector<int> &lookup_ids,
+bool Worker::UpdateEmbeddingTable(const std::vector<Key> &keys, const std::vector<int> &lookup_ids,
                                   const std::vector<float> &vals) {
   KVMessage kvs;
   *kvs.mutable_keys() = {keys.begin(), keys.end()};
@@ -380,18 +405,32 @@ void Worker::UpdateEmbeddingTable(const std::vector<Key> &keys, const std::vecto
       rank_ids.push_back(i);
       std::string kv_data = messages.at(i).second.SerializeAsString();
 
+#ifdef __APPLE__
+      std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
       std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
       size_t dest_size = kv_data.length();
       int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
       if (ret != 0) {
         MS_LOG(ERROR) << "memcpy_s error, errorno(" << ret << ")";
-        return;
+        return false;
       }
       data.push_back(res);
       sizes.push_back(kv_data.length());
     }
   }
-  worker_node_.Send(core::NodeRole::SERVER, rank_ids, data, sizes, LongToInt(kUpdateEmbeddingsCmd));
+
+  while (!worker_node_.Send(core::NodeRole::SERVER, rank_ids, data, sizes, LongToInt(kUpdateEmbeddingsCmd))) {
+    MS_LOG(INFO) << "Worker send failed!, retrying.";
+    if (!running_) {
+      MS_LOG(ERROR) << "Worker send failed!";
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kRetryDuration));
+  }
+
+  return true;
 }
 
 void Worker::Finalize() {
@@ -401,7 +440,11 @@ void Worker::Finalize() {
     kvs.add_keys(0);
     kvs.add_values(0.0f);
     std::string kv_data = kvs.SerializeAsString();
+#ifdef __APPLE__
+    std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
     std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
     size_t dest_size = kv_data.length();
     int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
     if (ret != 0) {
@@ -532,7 +575,7 @@ bool Worker::IsReadyForPull(const Key &key) {
   }
 }
 
-void Worker::PrepareSparseGradient(const size_t, const size_t, const std::unordered_set<int> &distinct_ids,
+void Worker::PrepareSparseGradient(const size_t, const size_t, const mindspore::HashSet<int> &distinct_ids,
                                    const std::vector<std::pair<int, float *>> &indice_to_grads, const int *all_indice,
                                    const size_t segment_size, float *gradient, int *indices) {
   MS_EXCEPTION_IF_NULL(all_indice);
@@ -642,7 +685,11 @@ void Worker::PushData(const std::vector<Key> &keys, const std::vector<float> &va
       SendForPush(cmd, kvs, worker_init_embedding_partitioner_, {});
     } else {
       std::string kv_data = kvs.SerializeAsString();
+#ifdef __APPLE__
+      std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
       std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
       size_t dest_size = kv_data.length();
       int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
       if (ret != 0) {
@@ -694,7 +741,7 @@ void Worker::LookupIdPartitioner(const EmbeddingTableLookup &send, PartitionEmbe
     const EmbeddingTableShardMetadata &range = ranges[i];
     const auto &begin = range.begin();
     const auto &end = range.end();
-    std::unordered_set<int32_t> unique_ids;
+    mindspore::HashSet<int32_t> unique_ids;
     auto &kvs = partition->at(i).second;
 
     kvs.set_key(key);
@@ -738,8 +785,8 @@ void Worker::SparsePartitioner(const KVMessage &send, PartitionKVMessages *parti
   iter = attrs.find(kOutDimSize);
   size_t outer_dim_size = static_cast<size_t>(iter->second);
 
-  size_t grad_size = send.len()[grad_index];
-  size_t indice_size = send.len()[indice_index];
+  size_t grad_size = send.len()[SizeToInt(grad_index)];
+  size_t indice_size = send.len()[SizeToInt(indice_index)];
   size_t segment_size = grad_size / indice_size;
 
   size_t grad_offset = 0;
@@ -778,7 +825,7 @@ void Worker::SparsePartitioner(const KVMessage &send, PartitionKVMessages *parti
 
     // Prepare the sparse gradient and indice
     std::vector<int> indice_ids;
-    std::unordered_set<int> distinct_ids;
+    mindspore::HashSet<int> distinct_ids;
     for (size_t j = 0; j < indice_size; j++) {
       size_t indice = static_cast<size_t>(indice_data[j]);
       if (indice >= begin && indice <= end) {
@@ -892,6 +939,10 @@ void Worker::UpdateEmbeddingPartitioner(const KVMessage &send, PartitionKVMessag
   const uint64_t *lookup_ids = send.len().data();
   size_t val_size = IntToSize(send.values_size());
   size_t id_size = IntToSize(send.len_size());
+  if (id_size == 0) {
+    MS_LOG(EXCEPTION) << "The id size is 0.";
+    return;
+  }
   size_t embedding_dim = val_size / id_size;
 
   const Key &key = send.keys()[0];
@@ -944,7 +995,11 @@ void Worker::SendForPush(int cmd, const KVMessage &send, const KVPartitioner &pa
       rank_ids.push_back(i);
       std::string kv_data = messages.at(i).second.SerializeAsString();
 
+#ifdef __APPLE__
+      std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
       std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
       size_t dest_size = kv_data.length();
       int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
       if (ret != 0) {
@@ -971,7 +1026,11 @@ void Worker::SendForPull(int cmd, const KVMessage &send, const KVPartitioner &pa
       rank_ids.push_back(i);
       std::string kv_data = messages.at(i).second.SerializeAsString();
 
+#ifdef __APPLE__
+      std::shared_ptr<unsigned char> res(new unsigned char[kv_data.length()], std::default_delete<unsigned char[]>());
+#else
       std::shared_ptr<unsigned char[]> res(new unsigned char[kv_data.length()]);
+#endif
       size_t dest_size = kv_data.length();
       int ret = memcpy_s(res.get(), dest_size, kv_data.data(), kv_data.length());
       if (ret != 0) {

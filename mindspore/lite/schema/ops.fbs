@@ -111,7 +111,7 @@ union PrimitiveType {
     MaximumGrad,
     MaxPoolFusion,
     MaxPoolGrad,
-    Merge,
+    SwitchLayer,
     Mfcc,
     Minimum,
     MinimumGrad,
@@ -218,6 +218,8 @@ union PrimitiveType {
     TensorArrayRead,
     TensorArrayWrite,
     Affine,
+    AllGather,
+    ReduceScatter,
 }
 
 table Abs {
@@ -712,7 +714,7 @@ table MaxPoolGrad {
     format: Format;
 }
 
-table Merge {
+table SwitchLayer {
 }
 
 table Mfcc {
@@ -1116,6 +1118,7 @@ table LogSoftmax {
 }
 
 table Call {
+    is_tail_call: bool = true;
 }
 
 table CumSum {
@@ -1200,4 +1203,15 @@ table Affine {
 }
 
 table ScatterNdUpdate {
+}
+
+table AllGather {
+    group: string;
+    rank_size: int;
+}
+
+table ReduceScatter {
+    group: string;
+    mode: ReduceMode;
+    rank_size: int;
 }

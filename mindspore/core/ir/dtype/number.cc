@@ -29,27 +29,11 @@ bool Number::operator==(const Type &other) const {
   return ((number_type_ == other_number.number_type_) && (nbits_ == other_number.nbits_));
 }
 
-Int::Int(const int nbits) : Number(IntBitsToTypeId(nbits), nbits, false) {
-  if (nbits != 8 && nbits != 16 && nbits != 32 && nbits != 64) {
-    MS_LOG(EXCEPTION) << "Wrong number of bits.";
-  }
-}
+Int::Int(const int nbits) : Number(IntBitsToTypeId(nbits), nbits, false) {}
 
-UInt::UInt(const int nbits) : Number(UIntBitsToTypeId(nbits), nbits, false) {
-  if (nbits != 8 && nbits != 16 && nbits != 32 && nbits != 64) {
-    MS_LOG(EXCEPTION) << "Wrong number of bits.";
-  }
-}
+UInt::UInt(const int nbits) : Number(UIntBitsToTypeId(nbits), nbits, false) {}
 
-Float::Float(const int nbits) : Number(FloatBitsToTypeId(nbits), nbits, false) {
-  if (nbits != 16 && nbits != 32 && nbits != 64) {
-    MS_LOG(EXCEPTION) << "Wrong number of bits.";
-  }
-}
+Float::Float(const int nbits) : Number(FloatBitsToTypeId(nbits), nbits, false) {}
 
-Complex::Complex(const int nbits) : Number(ComplexBitsToTypeId(nbits), nbits, false) {
-  if (nbits != 64 && nbits != 128) {
-    MS_LOG(EXCEPTION) << "Wrong number of bits.";
-  }
-}
+Complex::Complex(const int nbits) : Number(ComplexBitsToTypeId(nbits), nbits, false) {}
 }  // namespace mindspore

@@ -25,7 +25,7 @@
 
 namespace mindspore {
 namespace opt {
-constexpr auto kInferDone = "infer_done";
+constexpr auto kOutputsFormat = "outputs_format";
 enum FormatTransNodeType { kNCHW2NHWC, kNHWC2NCHW, kNONE };
 struct TransTypePair {
   FormatTransNodeType pre_;
@@ -34,6 +34,7 @@ struct TransTypePair {
 };
 const std::unordered_map<std::string, std::vector<size_t>> &GetNHWCOpMap();
 const std::unordered_map<std::string, std::vector<size_t>> &GetNCHWOpMap();
+const std::unordered_map<std::string, std::vector<size_t>> &GetToNCHWOpMap();
 const std::vector<std::string> &GetDynamicFormatOpList();
 bool IsDynamicFormatOp(const std::string &op_type);
 bool IsDynamicFormatOpWithAxis(const std::string &op_type);
@@ -41,6 +42,7 @@ STATUS GetTransposePerm(const CNodePtr &cnode, std::vector<int> *perm);
 void RemoveIfMonad(const CNodePtr &cnode);
 bool IsMonadNode(const AnfNodePtr &node);
 bool IsSpecialType(const CNodePtr &cnode);
+int DetermineCertainVarInputFormat(const CNodePtr &cnode, size_t index, Format *format);
 }  // namespace opt
 }  // namespace mindspore
 

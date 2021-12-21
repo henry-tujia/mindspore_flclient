@@ -80,7 +80,7 @@ void DumpAllGraphs(NotNull<KernelGraphPtr> kg, std::set<KernelGraphPtr> *memo) {
   }
 }
 
-void DumpGraphForDebug(NotNull<KernelGraphPtr> kg) {
+void DumpGraphForDebug(const NotNull<KernelGraphPtr> kg) {
   if (IsSaveGraph()) {
     std::set<KernelGraphPtr> memo;
     DumpAllGraphs(kg, &memo);
@@ -89,7 +89,7 @@ void DumpGraphForDebug(NotNull<KernelGraphPtr> kg) {
 #endif
 
 #ifndef ENABLE_SECURITY
-void DumpExecuteOrder(NotNull<KernelGraphPtr> kg) {
+void DumpExecuteOrder(const NotNull<KernelGraphPtr> kg) {
   if (!IsSaveGraph()) {
     return;
   }
@@ -535,6 +535,7 @@ class CallInfoFinder {
   }
 
   void DoSearchRecursiveCall(const KernelGraphPtr &graph, const CallSite &call_site, SearchRecursiveContext *ctx) {
+    MS_EXCEPTION_IF_NULL(ctx);
     // Record call path.
     ctx->call_path.push_back(graph);
     // Handle callee graphs.
@@ -547,6 +548,7 @@ class CallInfoFinder {
           context_.call_info_map[g].recursive = true;
         }
         // Mark recursive for the start call-site.
+        MS_EXCEPTION_IF_NULL(ctx->start_site);
         ctx->start_site->recursive = true;
         continue;
       }
@@ -742,6 +744,7 @@ class AscendAutoMonadConverter {
 
   // Set iteration end points for Profiling.
   static void SetIterEndAttrForTopGraph(AscendAutoMonadContext *context, const KernelGraphPtr &kg) {
+    MS_EXCEPTION_IF_NULL(kg);
     kg->SetExecOrderByDefault();
     auto &nodes = kg->execution_order();
     auto end_iter = nodes.rend();
@@ -756,7 +759,7 @@ class AscendAutoMonadConverter {
       end_iter = std::find(nodes.rbegin(), nodes.rend(), end_node);
     }
     for (auto iter = nodes.rbegin(); iter != end_iter; ++iter) {
-      if (!AnfAlgo::IsRealCNodeKernel(*iter)) {
+      if (!AnfUtils::IsRealCNodeKernel(*iter)) {
         continue;
       }
       if (AnfAlgo::CheckPrimitiveType(*iter, prim::kPrimLabelSet)) {
@@ -777,6 +780,7 @@ class AscendAutoMonadConverter {
 
   // Set Attr to the iter-end points.
   static void SetIterEndAttr(AscendAutoMonadContext *context, const KernelGraphPtr &kg, bool has_call_site) {
+    MS_EXCEPTION_IF_NULL(kg);
     kg->SetExecOrderByDefault();
     auto &nodes = kg->execution_order();
     auto end_iter = nodes.rend();
@@ -785,7 +789,7 @@ class AscendAutoMonadConverter {
       end_iter = std::find(nodes.rbegin(), nodes.rend(), end_node);
     }
     for (auto iter = nodes.rbegin(); iter != end_iter; ++iter) {
-      if (!AnfAlgo::IsRealCNodeKernel(*iter)) {
+      if (!AnfUtils::IsRealCNodeKernel(*iter)) {
         continue;
       }
       if (AnfAlgo::CheckPrimitiveType(*iter, prim::kPrimLabelGoto) && AnfAlgo::HasNodeAttr(kAttrReturn, *iter)) {
@@ -807,6 +811,7 @@ class AscendAutoMonadConverter {
   // Find all iteration end points recursively.
   static void FindProfilingEndPoints(AscendAutoMonadContext *context, const KernelGraphPtr &kg,
                                      std::set<KernelGraphPtr> *memo) {
+    MS_EXCEPTION_IF_NULL(memo);
     memo->insert(kg);
     auto call_info = context->call_info_map[kg];
     // 1. find the last call site; if no call site, goto step 3.
@@ -833,6 +838,7 @@ class AscendAutoMonadConverter {
   void InitStack() {
     if (!context_.HasInitedStack() && need_stackops_) {
       auto top_graph = context_.TopGraph();
+      MS_EXCEPTION_IF_NULL(top_graph);
       auto exec_order = top_graph->execution_order();
       auto stack_init = StackInit(top_graph);
       AnfAlgo::KeepOrder(top_graph, stack_init, *exec_order.begin());
@@ -879,6 +885,7 @@ class AscendAutoMonadConverter {
   // Find nodes which need StackOps, and insert StackOps for node.
   void FindInputNode(const std::vector<AnfNodePtr> &before_nodes, const CNodePtr &node,
                      std::vector<CNodePtr> *stack_pushs) {
+    MS_EXCEPTION_IF_NULL(node);
     uint32_t start_index = 1;
     if (AnfAlgo::CheckPrimitiveType(node, prim::kPrimAssign)) {
       start_index = kInputIndex;
@@ -889,6 +896,7 @@ class AscendAutoMonadConverter {
       if (HasAbstractMonad(node_input)) {
         continue;
       }
+      MS_EXCEPTION_IF_NULL(node_input);
       MS_LOG(DEBUG) << "check node input[" << i << "]: " << node_input->DebugString();
       if (node_input->isa<Parameter>()) {
         MS_LOG(DEBUG) << "node_input:" << node_input->DebugString() << " is a param";
@@ -909,9 +917,12 @@ class AscendAutoMonadConverter {
 
   // Create StackOps for node_input.
   CNodePtr InsertStackPop(const AnfNodePtr &node_input, std::vector<CNodePtr> *stack_pushs) {
+    MS_EXCEPTION_IF_NULL(node_input);
+    MS_EXCEPTION_IF_NULL(stack_pushs);
     auto stack_push = StackPush(node_input);
     stack_pushs->emplace_back(stack_push);
     auto stack_pop = StackPop();
+    MS_EXCEPTION_IF_NULL(stack_pop);
     stack_pop->set_abstract(node_input->abstract());
     return stack_pop;
   }
@@ -1190,7 +1201,7 @@ class AscendAutoMonadConverter {
       if (target == value) {
         continue;
       }
-      tuple_inputs.emplace_back(AssignAll(target, value, true, keep, false));
+      (void)tuple_inputs.emplace_back(AssignAll(target, value, true, keep, false));
     }
     auto new_tuple = kernel_graph_->NewCNode(tuple_inputs);
     // Set abstract for the MakeTuple node.
@@ -1252,7 +1263,7 @@ class AscendAutoMonadConverter {
     tuple_inputs.reserve(targets.size() + 1);
     tuple_inputs.emplace_back(NewValueNode(prim::kPrimMakeTuple));
     for (size_t i = 0; i < targets.size(); ++i) {
-      tuple_inputs.emplace_back(Assign(targets[i], sources[i], link, keep, output));
+      (void)tuple_inputs.emplace_back(Assign(targets[i], sources[i], link, keep, output));
     }
     auto new_tuple = kernel_graph_->NewCNode(tuple_inputs);
     // Set abstract for the MakeTuple node.
@@ -1742,9 +1753,9 @@ class ExecuteOrderGenerator {
       if (node->isa<CNode>() && AnfAlgo::CheckPrimitiveType(node, prim::kPrimTransData)) {
         auto cnode = node->cast<CNodePtr>();
         MS_EXCEPTION_IF_NULL(cnode);
-        auto first_input = cnode->input(kFirstDataInputIndex);
-        MS_EXCEPTION_IF_NULL(first_input);
-        return first_input;
+        auto first_input = AnfAlgo::VisitKernelWithReturnType(cnode->input(kFirstDataInputIndex), 0, true);
+        MS_EXCEPTION_IF_NULL(first_input.first);
+        return first_input.first;
       }
       return node;
     };

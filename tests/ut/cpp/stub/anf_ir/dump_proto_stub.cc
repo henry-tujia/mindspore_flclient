@@ -24,10 +24,12 @@ std::string GetFuncGraphProtoString(const FuncGraphPtr &func_graph) { return "";
 
 std::string GetOnnxProtoString(const FuncGraphPtr &func_graph) { return ""; }
 
-std::string GetBinaryProtoString(const FuncGraphPtr &func_graph) { return ""; }
+std::string GetBinaryProtoString(const FuncGraphPtr &func_graph) {
+  return "";
+}
 
-mind_ir::ModelProto GetBinaryProto(const FuncGraphPtr &func_graph, bool save_tensor_data) {
-  mind_ir::ModelProto empty_model;
+ModelProtoPtr GetBinaryProto(const FuncGraphPtr &func_graph, const FuncGraphPtr &layout_fg) {
+  ModelProtoPtr empty_model;
   return empty_model;
 }
 }  // namespace mindspore

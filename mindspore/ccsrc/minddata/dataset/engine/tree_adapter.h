@@ -25,13 +25,26 @@
 
 #include "minddata/dataset/engine/execution_tree.h"
 #include "minddata/dataset/engine/ir/datasetops/dataset_node.h"
+#include "minddata/dataset/engine/perf/auto_tune.h"
 #include "minddata/dataset/engine/perf/dataset_iterator_tracing.h"
 
 namespace mindspore {
 namespace dataset {
 class DatasetNode;
+class TreeModifier;
+class ToDevice;
+class IteratorConsumer;
 
 class TreeAdapter {
+#ifndef ENABLE_SECURITY
+  friend ProfilingManager;
+  friend TreeConsumer;
+  friend ToDevice;
+  friend IteratorConsumer;
+  friend AutoTune;
+#endif
+  friend TreeModifier;
+
  public:
   // this flag is used to indicate the purpose of the creation of this tree adapter (type of the tree_consumer).
   // Currently there are 3 types of consumer, Iterator, Getter and TDT/Vocab/Save ...
@@ -72,7 +85,23 @@ class TreeAdapter {
   // Optional optimizations status
   bool OptimizationEnabled() const { return optimize_; }
 
- private:
+  // Return Offload Json
+  nlohmann::json GetOffloadJson();
+
+#ifndef ENABLE_SECURITY
+  /// \brief Setter for Profiling Manager
+  Status SetProfilingManagerPtr(std::shared_ptr<ProfilingManager> profiling_manager,
+                                std::shared_ptr<Tracing> tracing_node = nullptr) {
+    profiling_manager_ = profiling_manager;
+    if (tracing_node != nullptr) tracing_ = std::dynamic_pointer_cast<DatasetIteratorTracing>(tracing_node);
+    return Status::OK();
+  }
+
+  /// \brief Getter for profiling manager, no ownership
+  ProfilingManager *GetProfilingManager() { return profiling_manager_.get(); }
+#endif
+
+ protected:
   // Run the mandatory pass checking the syntax and semantics of the IR tree
   Status PrePass(std::shared_ptr<DatasetNode> ir);
 
@@ -93,7 +122,8 @@ class TreeAdapter {
   std::unique_ptr<ExecutionTree> tree_;  // current connector capacity of root op, used for profiling
   bool optimize_;                        // Flag to enable optional optimization pass
 #ifndef ENABLE_SECURITY
-  std::shared_ptr<DatasetIteratorTracing> tracing_;  // trace profiling data
+  std::shared_ptr<ProfilingManager> profiling_manager_;  // Profiling manager
+  std::shared_ptr<DatasetIteratorTracing> tracing_;      // trace profiling data
 #endif
   int32_t cur_batch_num_;           // current batch number, used for profiling
   int32_t cur_connector_size_;      // current connector size of root op, used for profiling
@@ -109,6 +139,7 @@ class TreeAdapter {
     kCompileStateReady          // Execution tree is generated from the optimized IR
   };
   CompileState tree_state_;
+  nlohmann::json offload_json_;
 };
 }  // namespace dataset
 }  // namespace mindspore

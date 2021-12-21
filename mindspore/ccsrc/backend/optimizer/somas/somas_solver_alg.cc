@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -160,7 +160,7 @@ bool FootPrint::findOffset(const std::vector<DynamicBitSet> *constraints, const 
         int64_t accumulator = 0;
         for (auto block_tensor = block.m_start_tensor_; block_tensor != nullptr; block_tensor = block_tensor->right_) {
           if ((*constraints)[block_tensor->index_].IsBitTrue(allocated_tensor->index_) == false) {
-            int64_t start_first_contiguous = allocated_offset - accumulator - block_tensor->size_;
+            int64_t start_first_contiguous = allocated_offset - accumulator - SizeToLong(block_tensor->size_);
             int64_t end_first_contiguous = allocated_offset - accumulator + allocated_size;
             if (start_first_contiguous > start_offset) {
               l_interval.emplace_back(Interval(start_first_contiguous, end_first_contiguous));
@@ -170,7 +170,7 @@ bool FootPrint::findOffset(const std::vector<DynamicBitSet> *constraints, const 
               }
             }
           }
-          accumulator += block_tensor->size_;
+          accumulator += SizeToLong(block_tensor->size_);
         }
         allocated_tensor = allocated_tensor->right_;
       }
@@ -201,13 +201,12 @@ void FootPrint::addElem(BlockTensor *block, const size_t &offset) {
   size_t offset1 = offset;
   SomasSolverTensorDescPtr tensor = block->m_start_tensor_;
   MS_LOG(DEBUG) << "Allocating block: " << tensor->index_ << " in offset: " << offset;
-  pair<uint32_t, size_t> sol_offset;
-  sol_offset.first = block->m_current_sol_;
-  sol_offset.second = offset;
-  if (block->offsets_.count(sol_offset.first))
-    MS_LOG(WARNING) << "Warning addElem: Offset overwritten at solution " << block->m_current_sol_ << " for block "
+  auto sol_id = block->m_current_sol_;
+  if (block->offsets_.find(sol_id) != block->offsets_.end()) {
+    MS_LOG(WARNING) << "Warning addElem: Offset overwritten at solution " << sol_id << " for block "
                     << block->m_start_tensor_->index_;
-  block->offsets_.insert(sol_offset);
+  }
+  (void)block->offsets_.emplace(sol_id, offset);
   while (tensor) {
     tensor->offset_ = offset1;
     offset1 += tensor->size_;
@@ -219,7 +218,7 @@ void FootPrint::addElem(BlockTensor *block, const size_t &offset) {
 void FootPrint::printStats() {
   MS_LOG(DEBUG) << "Footprint blocks: " << m_starts_.size() << " \toffset: " << m_offset_;
 }
-bool FastHeuristic::Eval(vector<BlockTensor> *block_tensors_v, std::shared_ptr<FootPrint> foot_print,
+bool FastHeuristic::Eval(vector<BlockTensor> *block_tensors_v, const std::shared_ptr<FootPrint> &foot_print,
                          const std::vector<DynamicBitSet> *pConstraints) {
   MS_EXCEPTION_IF_NULL(foot_print);
   auto start = std::chrono::system_clock::now();
@@ -231,18 +230,16 @@ bool FastHeuristic::Eval(vector<BlockTensor> *block_tensors_v, std::shared_ptr<F
   m_tensors_allocated_ = 0;
   SomasSolverTensorDescPtr tensor = nullptr;
 
-  for (size_t i = 0; i < (*block_tensors_v).size(); i++) {
-    BlockTensor &block = (*block_tensors_v)[i];
-    if (block.m_bre_allocate_ == false) {
+  for (auto &block : *block_tensors_v) {
+    if (!block.m_bre_allocate_) {
       offset = block.m_start_tensor_->offset_;
-      pair<uint32_t, size_t> aux;
-      aux.first = foot_print->m_solId_;
-      aux.second = block.m_start_tensor_->offset_;
-      if (block.offsets_.count(aux.first)) {
-        MS_LOG(WARNING) << "Warning: Offset overwritten at solution " << aux.first << " for block "
+      auto aux_id = foot_print->m_solId_;
+      auto aux_offset = block.m_start_tensor_->offset_;
+      if (block.offsets_.find(aux_id) != block.offsets_.end()) {
+        MS_LOG(WARNING) << "Warning: Offset overwritten at solution " << aux_id << " for block "
                         << block.m_start_tensor_->index_;
       }
-      block.offsets_.insert(aux);
+      (void)block.offsets_.emplace(aux_id, aux_offset);
       continue;
     }
     bpushed = false;
@@ -264,7 +261,7 @@ bool FastHeuristic::Eval(vector<BlockTensor> *block_tensors_v, std::shared_ptr<F
       if (p->Next() != nullptr) {
         p = p->Next();
       } else if (bpushed == false) {  // something went wrong
-        MS_LOG(WARNING) << "Could not allocate memory for tensor: " << tensor->index_;
+        MS_LOG(WARNING) << "Internal Error: Could not allocate memory for tensor: " << tensor->index_;
         return false;
       }
     }

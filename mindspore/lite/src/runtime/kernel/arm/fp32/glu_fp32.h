@@ -28,7 +28,7 @@
 using mindspore::lite::InnerContext;
 
 namespace mindspore::kernel {
-constexpr int kSplitNum = 2;
+constexpr size_t kSplitNum = 2;
 
 class GluCPUKernel : public InnerKernel {
  public:
@@ -40,12 +40,14 @@ class GluCPUKernel : public InnerKernel {
   }
   ~GluCPUKernel() override { FreeTmpBuffer(); }
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-  int Split(int task_id);
-  int Sigmoid(int task_id);
-  int Mul(int task_id);
+  int Split(int task_id) const;
+  int Sigmoid(int task_id) const;
+  int Mul(int task_id) const;
+
+ private:
   void FreeTmpBuffer();
   int MallocTmpBuffer();
 
@@ -54,8 +56,8 @@ class GluCPUKernel : public InnerKernel {
   GluParameter *glu_param_ = nullptr;
   void *input_ptr_ = nullptr;
   int8_t *sigmoid_ptr_ = nullptr;
-  std::vector<int8_t *> split_ptr_;
-  int split_sizes_[kSplitNum];
+  std::vector<void *> split_ptr_;
+  int split_sizes_[kSplitNum] = {0};
   int thread_n_stride_ = 0;
   int usable_thread_num_ = 0;
   int num_unit_ = 0;

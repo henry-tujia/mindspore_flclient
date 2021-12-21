@@ -15,8 +15,8 @@
  */
 
 #include "backend/kernel_compiler/rts/assign.h"
-#include <memory>
 #include "runtime/mem.h"
+#include "acl/acl_rt.h"
 
 using mindspore::ge::model_runner::MemcpyAsyncTaskInfo;
 using MemcpyAsyncTaskInfoPtr = std::shared_ptr<MemcpyAsyncTaskInfo>;
@@ -27,21 +27,23 @@ AssignKernel::AssignKernel() {}
 
 AssignKernel::~AssignKernel() {}
 
-bool AssignKernel::Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> & /*workspace*/,
+bool AssignKernel::Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> & /* workspace */,
                           const std::vector<AddressPtr> & /*outputs*/, void *stream_ptr) {
   if (inputs.size() != 2) {
     MS_LOG(ERROR) << "inputs size is not two";
     return false;
   }
 
+  MS_EXCEPTION_IF_NULL(inputs[0]);
+  MS_EXCEPTION_IF_NULL(inputs[1]);
   if (inputs[0]->addr == inputs[1]->addr) {
     MS_LOG(INFO) << "first addr is same with second addr , no need assign";
     return true;
   }
-  rtError_t status = rtMemcpyAsync(inputs[0]->addr, inputs[0]->size, inputs[1]->addr, inputs[1]->size,
-                                   RT_MEMCPY_DEVICE_TO_DEVICE, stream_ptr);
+  rtError_t status = aclrtMemcpyAsync(inputs[0]->addr, inputs[0]->size, inputs[1]->addr, inputs[1]->size,
+                                      ACL_MEMCPY_DEVICE_TO_DEVICE, stream_ptr);
   if (status != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "Assign op rtMemcpyAsync failed!";
+    MS_LOG(ERROR) << "Assign op aclrtMemcpyAsync failed!";
     return false;
   }
   return true;
@@ -50,13 +52,15 @@ bool AssignKernel::Launch(const std::vector<AddressPtr> &inputs, const std::vect
 std::vector<TaskInfoPtr> AssignKernel::GenTask(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
                                                const std::vector<AddressPtr> &, uint32_t stream_id) {
   if (inputs.size() != 2) {
-    MS_LOG(EXCEPTION) << "inputs size is not two, got " << inputs.size();
+    MS_LOG(EXCEPTION) << "Inputs size should be 2, but got " << inputs.size();
   }
   stream_id_ = stream_id;
 
+  MS_EXCEPTION_IF_NULL(inputs[0]);
+  MS_EXCEPTION_IF_NULL(inputs[1]);
   std::shared_ptr<MemcpyAsyncTaskInfo> task_info_ptr =
     std::make_shared<MemcpyAsyncTaskInfo>(unique_name_, stream_id, inputs[0]->addr, inputs[0]->size, inputs[1]->addr,
-                                          inputs[1]->size, RT_MEMCPY_DEVICE_TO_DEVICE, false);
+                                          inputs[1]->size, ACL_MEMCPY_DEVICE_TO_DEVICE, false);
   MS_EXCEPTION_IF_NULL(task_info_ptr);
   return {task_info_ptr};
 }

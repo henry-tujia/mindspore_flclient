@@ -19,9 +19,124 @@
 #include "minddata/dataset/engine/ir/datasetops/dataset_node.h"
 #include "minddata/dataset/include/dataset/datasets.h"
 #include "minddata/dataset/include/dataset/vision.h"
+#include "minddata/dataset/kernels/ir/data/transforms_ir.h"
 
 using namespace mindspore::dataset;
 using mindspore::dataset::Tensor;
+
+namespace mindspore {
+namespace dataset {
+namespace test {
+class NoOp : public TensorOp {
+ public:
+  NoOp(){};
+
+  ~NoOp(){};
+
+  Status Compute(const std::shared_ptr<Tensor> &input, std::shared_ptr<Tensor> *output) override {
+    *output = std::move(input);
+    return Status::OK();
+  };
+
+  void Print(std::ostream &out) const override { out << "NoOp"; };
+
+  std::string Name() const override { return kNoOp; }
+};
+
+class ThreeToOneOp : public TensorOp {
+ public:
+  ThreeToOneOp(){};
+
+  ~ThreeToOneOp(){};
+
+  uint32_t NumInput() override { 
+    uint32_t numInput = 3; 
+    return numInput; 
+  }
+
+  // Compute function that holds the actual implementation of the operation.
+  Status Compute(const TensorRow &input, TensorRow *output) override {
+    output->push_back(input[0]);
+    return Status::OK();
+  };
+
+  void Print(std::ostream &out) const override { out << "ThreeToOneOp"; };
+
+  std::string Name() const override { return "ThreeToOneOp"; }
+};
+
+class OneToThreeOp : public TensorOp {
+ public:
+  OneToThreeOp(){};
+
+  ~OneToThreeOp(){};
+
+  uint32_t NumOutput() override {
+    uint32_t numOutput = 3;
+    return numOutput; 
+  }
+
+  // Compute function that holds the actual implementation of the operation.
+  // Simply pushing the same shared pointer of the first element of input vector three times.
+  Status Compute(const TensorRow &input, TensorRow *output) override {
+    output->push_back(input[0]);
+    output->push_back(input[0]);
+    output->push_back(input[0]);
+    return Status::OK();
+  };
+
+  void Print(std::ostream &out) const override { out << "OneToThreeOp"; };
+
+  std::string Name() const override { return "OneToThreeOp"; };
+};
+
+class NoTransform final : public TensorTransform {
+ public:
+  explicit NoTransform() {}
+  ~NoTransform() = default;
+
+ protected:
+  std::shared_ptr<TensorOperation> Parse() override {
+    return std::make_shared<transforms::PreBuiltOperation>(std::make_shared<mindspore::dataset::test::NoOp>());
+  }
+
+ private:
+  struct Data;
+  std::shared_ptr<Data> data_;
+};
+
+class ThreeToOneTransform final : public TensorTransform {
+ public:
+  explicit ThreeToOneTransform() {}
+  ~ThreeToOneTransform() = default;
+
+ protected:
+  std::shared_ptr<TensorOperation> Parse() override {
+    return std::make_shared<transforms::PreBuiltOperation>(std::make_shared<mindspore::dataset::test::ThreeToOneOp>());
+  }
+
+ private:
+  struct Data;
+  std::shared_ptr<Data> data_;
+};
+
+class OneToThreeTransform final : public TensorTransform {
+ public:
+  explicit OneToThreeTransform() {}
+  ~OneToThreeTransform() = default;
+
+ protected:
+  std::shared_ptr<TensorOperation> Parse() override {
+    return std::make_shared<transforms::PreBuiltOperation>(std::make_shared<mindspore::dataset::test::OneToThreeOp>());
+  }
+
+ private:
+  struct Data;
+  std::shared_ptr<Data> data_;
+};
+}  // namespace test
+}  // namespace dataset
+}  // namespace mindspore
 
 class MindDataTestPipeline : public UT::DatasetOpTesting {
  protected:
@@ -779,21 +894,20 @@ TEST_F(MindDataTestPipeline, TestFilterFail3) {
   EXPECT_EQ(iter, nullptr);
 }
 
-TEST_F(MindDataTestPipeline, TestImageFolderBatchAndRepeat) {
-  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestImageFolderBatchAndRepeat.";
-
+void ImageFolderBatchAndRepeat(int32_t repeat_count, int32_t batch_size, int64_t num_samples, 
+                               bool replacement, std::string datasets_root_path) {
   // Create an ImageFolder Dataset
-  std::string folder_path = datasets_root_path_ + "/testPK/data/";
-  std::shared_ptr<Dataset> ds = ImageFolder(folder_path, true, std::make_shared<RandomSampler>(false, 10));
+  std::string folder_path = datasets_root_path + "/testPK/data/";
+  std::shared_ptr<Dataset> ds = ImageFolder(folder_path, true, 
+                                            std::make_shared<RandomSampler>(replacement, num_samples));
+  uint64_t ds_size = 44;
   EXPECT_NE(ds, nullptr);
 
   // Create a Repeat operation on ds
-  int32_t repeat_num = 2;
-  ds = ds->Repeat(repeat_num);
+  ds = ds->Repeat(repeat_count);
   EXPECT_NE(ds, nullptr);
 
   // Create a Batch operation on ds
-  int32_t batch_size = 2;
   ds = ds->Batch(batch_size);
   EXPECT_NE(ds, nullptr);
 
@@ -814,10 +928,33 @@ TEST_F(MindDataTestPipeline, TestImageFolderBatchAndRepeat) {
     ASSERT_OK(iter->GetNextRow(&row));
   }
 
-  EXPECT_EQ(i, 10);
+  uint64_t expect = 0;
+  if (batch_size != 0) {
+    if (num_samples == 0) {
+      expect = ds_size * repeat_count / batch_size;
+    } else {
+      expect = num_samples * repeat_count / batch_size;
+    }
+  } else {
+    expect = 0;
+  }
+  
+  EXPECT_EQ(i, expect);
 
   // Manually terminate the pipeline
   iter->Stop();
+}
+
+// Feature: Test ImageFolder with Batch and Repeat operations
+// Description: Perform Repeat and Batch ops with varying parameters, 
+// iterate through dataset and count rows
+// Expectation: Number of rows should be equal to the size of the dataset/num_samples 
+// times the repeat_count divided by the batch_size
+TEST_F(MindDataTestPipeline, TestImageFolderBatchAndRepeat) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestImageFolderBatchAndRepeat.";
+  ImageFolderBatchAndRepeat(2, 2, 10, false, datasets_root_path_);
+  ImageFolderBatchAndRepeat(2, 11, 0, false, datasets_root_path_);
+  ImageFolderBatchAndRepeat(3, 2, 12, true, datasets_root_path_);
 }
 
 TEST_F(MindDataTestPipeline, TestPipelineGetDatasetSize) {
@@ -1384,6 +1521,48 @@ TEST_F(MindDataTestPipeline, TestShuffleDataset) {
   iter->Stop();
 }
 
+
+void TestShuffleTFRecord(int32_t shuffle_size, std::string dataset_root_path) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestShuffleTFRecord.";
+
+  // Create an TFRecord Dataset
+  std::string folder_path = dataset_root_path + "/testDataset1/testDataset1.data";
+  std::shared_ptr<Dataset> ds = TFRecord({folder_path}, "", {}, 0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Shuffle operation on ds
+  ds = ds->Shuffle(shuffle_size);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 10);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test shuffle operation on TFRecord dataset
+// Description: Iterate through dataset with a shuffle size of 4 and 100 and count the number of rows
+// Expectation: There should be 10 rows in the dataset
+TEST_F(MindDataTestPipeline, TestShuffleTFRecord) {
+ TestShuffleTFRecord(4, datasets_root_path_);
+ TestShuffleTFRecord(100, datasets_root_path_);
+}
+
 TEST_F(MindDataTestPipeline, TestSkipDataset) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestSkipDataset.";
 
@@ -1908,4 +2087,686 @@ TEST_F(MindDataTestPipeline, TestNumWorkersValidate) {
     ASSERT_OK(ds->SetNumWorkers(cpu_core_cnt)->IRNode()->ValidateParams());
     ASSERT_OK(ds->SetNumWorkers(1)->IRNode()->ValidateParams());
   }
+}
+
+// Feature: Test Conact operation on TFRecord dataset
+// Description: Perform Concat on two identical datasets, iterate through the product and count rows
+// Expectation: There should be 2 rows in the concatenated dataset (2 times original size)
+TEST_F(MindDataTestPipeline, TestConcatTFRecord) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestConcatSuccess.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/testTFTestAllTypes/test.data";
+  std::string schema_path = datasets_root_path_ + "/testTFTestAllTypes/datasetSchema1Row.json";
+  std::shared_ptr<Dataset> ds1 = TFRecord({file_path}, schema_path);
+  EXPECT_NE(ds1, nullptr);
+
+
+  // Create a TFRecord Dataset
+  std::shared_ptr<Dataset> ds2 = TFRecord({file_path}, schema_path);
+  EXPECT_NE(ds2, nullptr);
+
+  // Create a Project operation on ds
+  ds1 = ds1->Project({"col_sint16"});
+  EXPECT_NE(ds1, nullptr);
+  ds2 = ds2->Project({"col_sint16"});
+  EXPECT_NE(ds2, nullptr);
+
+  // Create a Concat operation on the ds
+  ds1 = ds1->Concat({ds2});
+  EXPECT_NE(ds1, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds1->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 2);
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test ImageFolder with Sequential Sampler and Decode 
+// Description: Create ImageFolder dataset with decode=true, iterate through dataset and count rows
+// Expectation: There should be 20 rows in the dataset (# of samples taken)
+TEST_F(MindDataTestPipeline, TestImageFolderDecode) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestImageFolderDecode.";
+
+  std::shared_ptr<Sampler> sampler = std::make_shared<SequentialSampler>(0 , 20);
+  EXPECT_NE(sampler, nullptr);
+
+  // Create an ImageFolder Dataset
+  std::string folder_path = datasets_root_path_ + "/testPK/data/";
+  std::shared_ptr<Dataset> ds = ImageFolder(folder_path, true, sampler);
+  EXPECT_NE(ds, nullptr);
+
+  // Iterate the dataset and get each row
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 20);
+  iter->Stop();
+}
+
+// Feature: Test TFRecord with Take operation
+// Description: Perform Take operation with count = 5, iterate through dataset and count rows
+// Expectation: There should be 5 rows in the dataset
+TEST_F(MindDataTestPipeline, TestTFRecordTake) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestTFRecordTake.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/testTFTestAllTypes/test.data";
+  std::string schema_path = datasets_root_path_ + "/testTFTestAllTypes/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path}, schema_path);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Take operation on ds
+  ds = ds->Take(5);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+  MS_LOG(INFO) << "Number of rows: " << i;
+
+  // Expect 5 rows
+  EXPECT_EQ(i, 5);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Skip operation on TFRecord dataset
+// Description: Perform skip operation with count = 5, iterate through dataset and count rows
+// Expectation: There should be 7 rows, (12 rows initially and 5 are skipped)
+TEST_F(MindDataTestPipeline, TestTFRecordSkip) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestTFRecordSkip.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/testTFTestAllTypes/test.data";
+  std::string schema_path = datasets_root_path_ + "/testTFTestAllTypes/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path}, schema_path);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Take operation on ds
+  ds = ds->Skip(5);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+  MS_LOG(INFO) << "Number of rows: " << i;
+
+  // Expect 7 rows
+  EXPECT_EQ(i, 7);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Rename operation on TFRecord
+// Description: Rename columns in dataset, iterate through dataset and count rows
+// Expectation: The columns should have a new name after the Rename op and there should be 3 rows in the dataset
+TEST_F(MindDataTestPipeline, TestTFRecordRename) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestTFRecordRename.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/test_tf_file_3_images/train-0000-of-0001.data";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Rename operation on ds
+  ds = ds->Rename({"label"}, {"label1"});
+  ds = ds->Rename({"label1", "image"}, {"label2", "image1"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  EXPECT_NE(row.find("label2"), row.end());
+  EXPECT_NE(row.find("image1"), row.end());
+  EXPECT_EQ(row.find("image"), row.end());
+  EXPECT_EQ(row.find("label"), row.end());
+  EXPECT_EQ(row.find("label1"), row.end());
+
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 3);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test TFRecord with Zip and Repeat operation
+// Description: Create two datasets and apply Zip operation on them. 
+// Apply Repeat operation on resulting dataset and count rows
+// Expectation: There should be 9 rows in the dataset
+TEST_F(MindDataTestPipeline, TestTFRecordZip) {
+  // Testing the member zip() function
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestTFRecordZip.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/test_tf_file_3_images/train-0000-of-0001.data";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path});
+  EXPECT_NE(ds, nullptr);
+  
+  // Create a TFRecord Dataset
+  std::string file_path1 = datasets_root_path_ + "/testBatchDataset/test.data";
+  std::shared_ptr<Dataset> ds1 = TFRecord({file_path1});
+  EXPECT_NE(ds1, nullptr);
+
+  // Create a Zip operation on the datasets
+  ds = ds->Zip({ds1});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Repeat operation on ds
+  int32_t repeat_num = 3;
+  ds = ds->Repeat(repeat_num);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 9);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Repeat and Map with decode and resize ops on TFRecord
+// Description: Iterate through dataset and count the number of rows and check the shape of the image data
+// Expectation: There should be 6 rows in the dataset and shape is {30,30}
+TEST_F(MindDataTestPipeline, TestTFRecordDecodeRepeatResize) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.TestTFRecordDecodeRepeatResize";
+
+  // Create an ImageFolder Dataset
+  std::string file_path = datasets_root_path_ + "/test_tf_file_3_images/train-0000-of-0001.data";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path}, "", {"image", "label"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Repeat operation on ds
+  int32_t repeat_num = 2;
+  ds = ds->Repeat(repeat_num);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::vector<int32_t> size = {30,30};
+  std::shared_ptr<TensorTransform> decode_op = std::make_shared<vision::Decode>();
+  std::shared_ptr<TensorTransform> resize_op = std::make_shared<vision::Resize>(size);
+  EXPECT_NE(decode_op, nullptr);
+  EXPECT_NE(resize_op, nullptr);
+
+  // Create a Map operation on ds
+  // {"image"} is the project columns. This will trigger auto injection of ProjectOp after MapOp.
+  ds = ds->Map({decode_op, resize_op}, {}, {}, {"image"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  // 'label' is dropped during the project op
+  EXPECT_EQ(row.find("label"), row.end());
+  // 'image' column should still exist
+  EXPECT_NE(row.find("image"), row.end());
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    auto image = row["image"];
+    MS_LOG(INFO) << "Tensor image shape: " << image.Shape();
+    EXPECT_EQ(image.Shape()[0], 30);
+    EXPECT_EQ(image.Shape()[1], 30);
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 6);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Batch on TFRecord
+// Description: Iterate through dataset, count the number of rows and verify the data in the row
+// Expectation: There should be 1 row in the dataset and the data should the expected data
+TEST_F(MindDataTestPipeline, TestBatch) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestBatch.";
+
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path_ + "/testBatchDataset/test.data";
+  std::vector<std::string> files = {file_path};
+  std::shared_ptr<Dataset> ds = TFRecord(files, nullptr, {}, 0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Batch operation on ds
+  int32_t batch_size = 12;
+  ds = ds->Batch(batch_size);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  std::vector<int64_t> data = {-9223372036854775807 - 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 9223372036854775807};
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+
+    auto this_row = row["col_sint64"];
+    auto value = this_row.Data();
+    int64_t *p = (int64_t *)value.get();
+    for (size_t j = 0; j < data.size(); j++) {
+      EXPECT_EQ(p[j], data[j]);
+    }
+
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 1);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+void TestRepeatBatch(bool drop, uint64_t expected_rows, std::string datasets_root_path) {
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path + "/testBatchDataset/test.data";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Repeat operation on ds
+  int32_t repeat_num = 2;
+  ds = ds->Repeat(repeat_num);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Batch operation on ds
+  int32_t batch_size = 7;
+  ds = ds->Batch(batch_size, drop);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+  
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, expected_rows);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Repeat and Batch on TFRecord
+// Description: Apply repeat then batch with drop on and off, count rows in the dataset
+// Expectation: The number of rows should equal the expected number of rows
+TEST_F(MindDataTestPipeline, TestRepeatBatchDrop) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestRepeatBatchDrop.";
+  TestRepeatBatch(true, 3, datasets_root_path_);
+  TestRepeatBatch(false, 4, datasets_root_path_);
+}
+
+void TestBatchRepeat(bool drop, uint64_t expected_rows, std::string datasets_root_path) {
+  // Create a TFRecord Dataset
+  std::string file_path = datasets_root_path + "/testBatchDataset/test.data";
+  std::shared_ptr<Dataset> ds = TFRecord({file_path});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Batch operation on ds
+  int32_t batch_size = 7;
+  ds = ds->Batch(batch_size, drop);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Repeat operation on ds
+  int32_t repeat_num = 2;
+  ds = ds->Repeat(repeat_num);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+  
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, expected_rows);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Batch and Repeat on TFRecord
+// Description: Apply batch then repeat with drop on and off, count rows in the dataset
+// Expectation: The number of rows should equal the expected number of rows
+TEST_F(MindDataTestPipeline, TestBatchDropRepeat) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestBatchDropRepeat.";
+  TestBatchRepeat(true, 2, datasets_root_path_);
+  TestBatchRepeat(false, 4, datasets_root_path_);
+}
+
+// Feature: Test Map on TFRecord
+// Description: Apply Map with a TensorOp that does noting but swaps input columns with output column
+// Expectation: "Image" column is replaced with "X"
+TEST_F(MindDataTestPipeline, TestMap) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.TestMap";
+
+  // Create a TFRecord Dataset
+  std::string data_file = datasets_root_path_ + "/testDataset2/testDataset2.data";
+  std::string schema_file = datasets_root_path_ + "/testDataset2/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({data_file}, schema_file, {"image", "label", "A", "B"},
+                                         0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::shared_ptr<TensorTransform> no_op = std::make_shared<mindspore::dataset::test::NoTransform>();
+  EXPECT_NE(no_op, nullptr);
+
+  // Create a Map operation on ds
+  ds = ds->Map({no_op}, {"image"}, {"X"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  while (row.size() != 0) {
+    EXPECT_EQ(row.find("image"), row.end());
+    EXPECT_NE(row.find("label"), row.end());
+    EXPECT_NE(row.find("X"), row.end());
+    EXPECT_NE(row.find("A"), row.end());
+    EXPECT_NE(row.find("B"), row.end());
+
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Map on TFRecord
+// Description: Apply Map with a TensorOp that swaps 3 input columns with 1 output column
+// Expectation: "Image", "A", "B" are replaced with "X"
+TEST_F(MindDataTestPipeline, Test3to1) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.Test3to1";
+
+  // Create a TFRecord Dataset
+  std::string data_file = datasets_root_path_ + "/testDataset2/testDataset2.data";
+  std::string schema_file = datasets_root_path_ + "/testDataset2/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({data_file}, schema_file, {"image", "label", "A", "B"},
+                                         0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::shared_ptr<TensorTransform> three_to_one_op = std::make_shared<mindspore::dataset::test::ThreeToOneTransform>();
+  EXPECT_NE(three_to_one_op, nullptr);
+
+  // Create a Map operation on ds
+  ds = ds->Map({three_to_one_op}, {"image", "A", "B"}, {"X"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  while (row.size() != 0) {
+    EXPECT_EQ(row.find("image"), row.end());
+    EXPECT_NE(row.find("label"), row.end());
+    EXPECT_NE(row.find("X"), row.end());
+    EXPECT_EQ(row.find("A"), row.end());
+    EXPECT_EQ(row.find("B"), row.end());
+
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Map on TFRecord
+// Description: Apply Map with a TensorOp that swaps 1 input column with 3 output columns
+// Expectation: "Image" is replaced with "X", "Y", "Z"
+TEST_F(MindDataTestPipeline, Test1to3) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.Test1to3";
+
+  // Create a TFRecord Dataset
+  std::string data_file = datasets_root_path_ + "/testDataset2/testDataset2.data";
+  std::string schema_file = datasets_root_path_ + "/testDataset2/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({data_file}, schema_file, {"image", "label", "A", "B"},
+                                         0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::shared_ptr<TensorTransform> one_to_three_op = std::make_shared<mindspore::dataset::test::OneToThreeTransform>();
+  EXPECT_NE(one_to_three_op, nullptr);
+
+  // Create a Map operation on ds
+  ds = ds->Map({one_to_three_op}, {"image"}, {"X", "Y", "Z"}, {"X", "Y", "Z", "label", "A", "B"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  while (row.size() != 0) {
+    EXPECT_EQ(row.find("image"), row.end());
+    EXPECT_NE(row.find("label"), row.end());
+    EXPECT_NE(row.find("A"), row.end());
+    EXPECT_NE(row.find("B"), row.end());
+    EXPECT_NE(row.find("X"), row.end());
+    EXPECT_NE(row.find("Y"), row.end());
+    EXPECT_NE(row.find("Z"), row.end());
+
+    EXPECT_EQ(row["X"].Shape(), std::vector<int64_t>({3, 4, 2}));
+    EXPECT_EQ(row["Y"].Shape(), std::vector<int64_t>({3, 4, 2}));
+    EXPECT_EQ(row["Z"].Shape(), std::vector<int64_t>({3, 4, 2}));
+    EXPECT_EQ(row["A"].Shape(), std::vector<int64_t>({1, 13, 14, 12}));
+    EXPECT_EQ(row["B"].Shape(), std::vector<int64_t>({9}));
+
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Map on TFRecord
+// Description: Apply 3to1 and then 1to3 to replace 3 input columns with 3 output columns
+// Expectation: "Image", "A", "B" are replaced with "X", "y", "Z"
+TEST_F(MindDataTestPipeline, TestMultiTensorOp) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.TestMultiTensorOp";
+
+  // Create a TFRecord Dataset
+  std::string data_file = datasets_root_path_ + "/testDataset2/testDataset2.data";
+  std::string schema_file = datasets_root_path_ + "/testDataset2/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({data_file}, schema_file, {"image", "label", "A", "B"},
+                                         0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::shared_ptr<TensorTransform> three_to_one_op = std::make_shared<mindspore::dataset::test::ThreeToOneTransform>();
+  std::shared_ptr<TensorTransform> one_to_three_op = std::make_shared<mindspore::dataset::test::OneToThreeTransform>();
+  EXPECT_NE(one_to_three_op, nullptr);
+  EXPECT_NE(three_to_one_op, nullptr);
+
+  // Create a Map operation on ds
+  ds = ds->Map({three_to_one_op, one_to_three_op}, {"image", "A", "B"}, {"X", "Y", "Z"});
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  while (row.size() != 0) {
+    EXPECT_EQ(row.find("image"), row.end());
+    EXPECT_NE(row.find("label"), row.end());
+    EXPECT_EQ(row.find("A"), row.end());
+    EXPECT_EQ(row.find("B"), row.end());
+    EXPECT_NE(row.find("X"), row.end());
+    EXPECT_NE(row.find("Y"), row.end());
+    EXPECT_NE(row.find("Z"), row.end());
+
+    EXPECT_EQ(row["X"].Shape(), std::vector<int64_t>({3, 4, 2}));
+    EXPECT_EQ(row["Y"].Shape(), std::vector<int64_t>({3, 4, 2}));
+    EXPECT_EQ(row["Z"].Shape(), std::vector<int64_t>({3, 4, 2}));
+
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Repeat and Map on TFRecord
+// Description: Apply Map with NoOp and Repeat with num_repeats=3, iterate through dataset and count rows
+// Expectation: There should  be 10 rows in the dataset
+TEST_F(MindDataTestPipeline, TestTFReaderRepeatMap) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline.TestTFReaderRepeatMap";
+
+  // Create a TFRecord Dataset
+  std::string data_file = datasets_root_path_ + "/testDataset2/testDataset2.data";
+  std::string schema_file = datasets_root_path_ + "/testDataset2/datasetSchema.json";
+  std::shared_ptr<Dataset> ds = TFRecord({data_file}, schema_file, {"image", "label", "A", "B"}, 
+                                         0, ShuffleMode::kFalse);
+  EXPECT_NE(ds, nullptr);
+
+  // Create objects for the tensor ops
+  std::shared_ptr<TensorTransform> no_op = std::make_shared<mindspore::dataset::test::NoTransform>();
+  EXPECT_NE(no_op, nullptr);
+
+  // Create a Map operation on ds
+  ds = ds->Map({no_op}, {"label"}, {});
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Repeat operation on ds
+  int32_t repeat_num = 3;
+  ds = ds->Repeat(repeat_num);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // iterate over the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 30);
+
+  // Manually terminate the pipeline
+  iter->Stop();
 }

@@ -29,12 +29,10 @@ namespace dataset {
 Status CacheLookupOp::operator()() {
   if (!sampler_) {
     return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
-                  "Invalid parameter, CacheLookupOp requires a sampler before it can be executed, but got nullptr.");
+                  "Invalid sampler, Cache requires a sampler before it can be executed, but got nullptr.");
   }
   RETURN_IF_NOT_OK(RegisterResources());
-  // Kick off the workers
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&CacheLookupOp::WorkerEntry, this, std::placeholders::_1), "", id()));
+
   // required task group sync after launching workers
   TaskManager::FindMe()->Post();
   // We have to wait until the leaf op has handshake with us.
@@ -49,6 +47,7 @@ Status CacheLookupOp::WorkerEntry(int32_t worker_id) {
 }
 Status CacheLookupOp::ResetSampler() { return Status::OK(); }
 Status CacheLookupOp::HandshakeRandomAccessOp(const RandomAccessOp *op) {
+  RETURN_UNEXPECTED_IF_NULL(op);
   // We act like a sampler and as a dataset op. During handshake with leaf op,
   // We must wait until the leaf op has indexed everything.
   RETURN_IF_NOT_OK(sampler_->HandshakeRandomAccessOp(op));
@@ -67,6 +66,7 @@ void CacheLookupOp::SamplerPrint(std::ostream &out, bool show_all) const {
   }
 }
 Status CacheLookupOp::GetNextSample(TensorRow *out) {
+  RETURN_UNEXPECTED_IF_NULL(out);
   std::vector<row_id_type> cache_miss;
   RETURN_IF_NOT_OK(keys_miss_->Pop(0, &cache_miss));
   // Ignore the case we have no cache miss, we can't return empty samples.

@@ -105,8 +105,8 @@ void BindShardWriter(py::module *m) {
   (void)py::class_<ShardWriter>(*m, "ShardWriter", py::module_local())
     .def(py::init<>())
     .def("open",
-         [](ShardWriter &s, const std::vector<std::string> &paths, bool append) {
-           THROW_IF_ERROR(s.Open(paths, append));
+         [](ShardWriter &s, const std::vector<std::string> &paths, bool append, bool overwrite) {
+           THROW_IF_ERROR(s.Open(paths, append, overwrite));
            return SUCCESS;
          })
     .def("open_for_append",
@@ -348,7 +348,8 @@ json ToJsonImpl(const py::handle &obj) {
     }
     return out;
   }
-  MS_LOG(ERROR) << "Failed to convert Python object to json, object is: " << py::cast<std::string>(obj);
+  MS_LOG(ERROR) << "[Internal ERROR] Failed to convert Python object: " << py::cast<std::string>(obj)
+                << " to type json.";
   return json();
 }
 }  // namespace detail

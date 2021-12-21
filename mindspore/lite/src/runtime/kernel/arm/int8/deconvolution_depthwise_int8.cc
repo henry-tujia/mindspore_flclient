@@ -66,6 +66,7 @@ int DeconvolutionDepthwiseInt8CPUKernel::InitWeightBias() {
     CHECK_NULL_RETURN(bias_tensor);
     auto ori_bias = reinterpret_cast<int32_t *>(bias_tensor->data());
     CHECK_NULL_RETURN(ori_bias);
+    MS_CHECK_GT(bias_tensor->ElementsNum(), 0, RET_ERROR);
     memcpy(bias_data_, ori_bias, bias_tensor->ElementsNum() * sizeof(int32_t));
   }
   conv_param_->thread_num_ = MSMIN(thread_count_, OC4);
@@ -125,7 +126,7 @@ int DeconvolutionDepthwiseInt8CPUKernel::InitBuffer() {
   return RET_OK;
 }
 
-int DeconvolutionDepthwiseInt8CPUKernel::Init() {
+int DeconvolutionDepthwiseInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_NULL_RETURN(in_tensors_.at(kInputIndex));
   CHECK_NULL_RETURN(in_tensors_.at(kWeightIndex));
@@ -161,7 +162,7 @@ int DeconvolutionDepthwiseInt8CPUKernel::ReSize() {
   CHECK_NULL_RETURN(sliding_);
 
   InitSlideParam();
-  ConvolutionBaseCPUKernel::Init();
+  ConvolutionBaseCPUKernel::Prepare();
   return RET_OK;
 }
 
@@ -214,6 +215,7 @@ int DeconvolutionDepthwiseInt8CPUKernel::Run() {
   PackDepthwiseInt8Input(input_addr, packed_input_, conv_param_);
 
   if (!need_align_) {
+    MS_CHECK_GT(out_tensors_.at(kOutputIndex)->ElementsNum(), 0, RET_ERROR);
     memset(output_addr, 0, out_tensors_.at(kOutputIndex)->ElementsNum() * sizeof(int8_t));
     packed_output_ = output_addr;
   }

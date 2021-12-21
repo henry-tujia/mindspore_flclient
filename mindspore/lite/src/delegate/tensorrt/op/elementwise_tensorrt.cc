@@ -31,7 +31,9 @@ int ElementWiseTensorRT::IsSupport(const schema::Primitive *primitive,
     {schema::PrimitiveType_DivFusion, nvinfer1::ElementWiseOperation::kDIV},
     {schema::PrimitiveType_SubFusion, nvinfer1::ElementWiseOperation::kSUB},
     {schema::PrimitiveType_MulFusion, nvinfer1::ElementWiseOperation::kPROD},
-  };
+    {schema::PrimitiveType_Minimum, nvinfer1::ElementWiseOperation::kMIN},
+    {schema::PrimitiveType_Maximum, nvinfer1::ElementWiseOperation::kMAX},
+    {schema::PrimitiveType_BiasAdd, nvinfer1::ElementWiseOperation::kSUM}};
   auto iter_op = element_wise_ops.find(this->type_);
   if (iter_op != element_wise_ops.end()) {
     element_wise_op_ = iter_op->second;
@@ -67,7 +69,8 @@ int ElementWiseTensorRT::IsSupport(const schema::Primitive *primitive,
   }
 
   // if constant tensor is scalar, it needs to know another input tensor's shape to broadcast
-  if (in_tensors[0].Shape()[0] == -1 && in_tensors[1].Shape().size() == 0) {
+  if ((in_tensors[0].Shape().size() > 0 && in_tensors[0].Shape()[0] == -1 && in_tensors[1].Shape().size() == 0) ||
+      (in_tensors[1].Shape().size() > 0 && in_tensors[1].Shape()[0] == -1 && in_tensors[0].Shape().size() == 0)) {
     MS_LOG(ERROR) << "invalid all input tensor shape unknown for: " << op_name_;
     return RET_ERROR;
   }
@@ -80,16 +83,20 @@ int ElementWiseTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     MS_LOG(ERROR) << "network or input tensor size is invalid";
     return RET_ERROR;
   }
-  first_in_tensor_index_ =
-    strcmp(tensorrt_in_tensors_[0].trt_tensor_->getName(), in_tensors_[0].Name().c_str()) == 0 ? 0 : 1;
+  input_x_index_ = SameTensor(tensorrt_in_tensors_[0].trt_tensor_, &in_tensors_[0]) ? 0 : 1;
 
   if (this->tensorrt_in_tensors_.size() != INPUT_SIZE2) {
     int ret = AddConstTensor(network);
     if (ret != RET_OK) {
-      MS_LOG(ERROR) << "AddConstTensor failed for " << op_name_;
       return ret;
     }
   }
+  MS_LOG(DEBUG) << "before transpose "
+                << GetTensorFormat(tensorrt_in_tensors_[input_x_index_].trt_tensor_,
+                                   tensorrt_in_tensors_[input_x_index_].format_);
+  MS_LOG(DEBUG) << "before transpose "
+                << GetTensorFormat(tensorrt_in_tensors_[1 - input_x_index_].trt_tensor_,
+                                   tensorrt_in_tensors_[1 - input_x_index_].format_);
 
   if (tensorrt_in_tensors_[0].trt_tensor_->getDimensions().nbDims == DIMENSION_4D &&
       tensorrt_in_tensors_[0].format_ != tensorrt_in_tensors_[1].format_) {
@@ -104,14 +111,17 @@ int ElementWiseTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     transpose_layer->setName((op_name_ + "_input_transpose2NHWC").c_str());
     tensorrt_in_tensors_[transpose_input_tensor].trt_tensor_ = transpose_layer->getOutput(0);
     tensorrt_in_tensors_[transpose_input_tensor].format_ = Format::NHWC;
-  } else if (tensorrt_in_tensors_[0].format_ != tensorrt_in_tensors_[1].format_) {
-    MS_LOG(ERROR) << "elementwise op inputs are in different format: " << op_name_;
-    return RET_ERROR;
   }
+  MS_LOG(DEBUG) << "after transpose "
+                << GetTensorFormat(tensorrt_in_tensors_[input_x_index_].trt_tensor_,
+                                   tensorrt_in_tensors_[input_x_index_].format_);
+  MS_LOG(DEBUG) << "after transpose "
+                << GetTensorFormat(tensorrt_in_tensors_[1 - input_x_index_].trt_tensor_,
+                                   tensorrt_in_tensors_[1 - input_x_index_].format_);
 
   nvinfer1::IElementWiseLayer *cal_layer =
-    network->addElementWise(*tensorrt_in_tensors_[first_in_tensor_index_].trt_tensor_,
-                            *tensorrt_in_tensors_[1 - first_in_tensor_index_].trt_tensor_, element_wise_op_);
+    network->addElementWise(*tensorrt_in_tensors_[input_x_index_].trt_tensor_,
+                            *tensorrt_in_tensors_[1 - input_x_index_].trt_tensor_, element_wise_op_);
 
   if (cal_layer == nullptr) {
     MS_LOG(ERROR) << "addElementWise failed for TensorRT.";
@@ -141,8 +151,10 @@ int ElementWiseTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
       MS_LOG(WARNING) << "deal with scale and shift for pow op";
     }
   }
-  op_out_tensor->setName(out_tensors_[0].Name().c_str());
-  this->AddInnerOutTensors(ITensorHelper{op_out_tensor, tensorrt_in_tensors_[1].format_});
+  op_out_tensor->setName((op_name_ + "_output").c_str());
+  this->AddInnerOutTensors(
+    ITensorHelper{op_out_tensor, tensorrt_in_tensors_[1].format_, tensorrt_in_tensors_[1].same_format_});
+  MS_LOG(DEBUG) << "output " << GetTensorFormat(op_out_tensor, tensorrt_in_tensors_[1].format_);
   return RET_OK;
 }
 
@@ -196,25 +208,60 @@ nvinfer1::ITensor *ElementWiseTensorRT::AddActivation(nvinfer1::INetworkDefiniti
   return activation_out_tensor;
 }
 int ElementWiseTensorRT::AddConstTensor(nvinfer1::INetworkDefinition *network) {
-  // create ITensor from MS constant tensor of index 1 - first_in_tensor_index_
   nvinfer1::ITensor *constant_input = nullptr;
-  if (this->in_tensors_[1 - first_in_tensor_index_].Shape().size() == 0) {
-    constant_input = lite::ConvertScalarToITensor(network, this->in_tensors_[first_in_tensor_index_].Shape().size(),
-                                                  in_tensors_[1 - first_in_tensor_index_].Data().get(),
-                                                  in_tensors_[1 - first_in_tensor_index_].DataType());
+  int const_tensor_index = (in_tensors_[0].Data() != nullptr && in_tensors_[0].IsConst()) ? 0 : 1;
+  if (this->in_tensors_[const_tensor_index].Shape().size() == 0 ||
+      this->in_tensors_[const_tensor_index].ElementNum() == 1) {
+    constant_input = lite::ConvertScalarToITensor(network, this->in_tensors_[1 - const_tensor_index].Shape().size(),
+                                                  in_tensors_[const_tensor_index].Data().get(),
+                                                  in_tensors_[const_tensor_index].DataType(), op_name_);
+    if (constant_input == nullptr) {
+      MS_LOG(ERROR) << "create Itensor from scalar tensor failed: " << op_name_;
+      return RET_ERROR;
+    }
+    this->AddInnerInTensors(ITensorHelper{constant_input, tensorrt_in_tensors_[0].format_, true});
+  } else if (this->in_tensors_[const_tensor_index].Shape().size() ==
+             this->in_tensors_[1 - const_tensor_index].Shape().size()) {
+    constant_input = lite::ConvertConstantTensor(network, in_tensors_[const_tensor_index], op_name_);
     if (constant_input == nullptr) {
       MS_LOG(ERROR) << "create Itensor from constant tensor failed: " << op_name_;
       return RET_ERROR;
     }
-    this->AddInnerInTensors(ITensorHelper{constant_input, tensorrt_in_tensors_[0].format_});
+    this->AddInnerInTensors(ITensorHelper{constant_input, Format::NHWC, true});
+  } else if (this->in_tensors_[const_tensor_index].Shape().size() == 1 &&
+             this->in_tensors_[const_tensor_index].ElementNum() >= 1) {
+    constant_input = ConvertTensorWithExpandDims(network, in_tensors_[const_tensor_index],
+                                                 in_tensors_[1 - const_tensor_index].Shape().size(), op_name_);
+    if (constant_input == nullptr) {
+      MS_LOG(ERROR) << "create Itensor from ConvertTensorWithExpandDims failed: " << op_name_;
+      return RET_ERROR;
+    }
+    this->AddInnerInTensors(ITensorHelper{constant_input, Format::NHWC, true});
   } else {
-    constant_input = lite::ConvertConstantTensor(network, in_tensors_[1 - first_in_tensor_index_]);
-    if (constant_input == nullptr) {
-      MS_LOG(ERROR) << "create Itensor from constant tensor failed: " << op_name_;
-      return RET_ERROR;
-    }
-    this->AddInnerInTensors(ITensorHelper{constant_input, Format::NHWC});
+    MS_LOG(ERROR) << "const tensor value needs check: " << op_name_;
   }
   return RET_OK;
 }
+bool ElementWiseTensorRT::SameTensor(nvinfer1::ITensor *trt_tensor, mindspore::MSTensor *ms_tensor) {
+  if (SameDims(trt_tensor->getDimensions(), ms_tensor->Shape())) {
+    return true;
+  }
+  if (ms_tensor->Shape().size() == DIMENSION_4D) {
+    // nhwc nchw
+    auto nchw_shape = NHWC2NCHW(ms_tensor->Shape());
+    if (SameDims(trt_tensor->getDimensions(), nchw_shape)) {
+      return true;
+    }
+  }
+  auto str_name = strstr(trt_tensor->getName(), ms_tensor->Name().c_str());
+  if (str_name != nullptr) {
+    return true;
+  }
+  str_name = strstr(ms_tensor->Name().c_str(), trt_tensor->getName());
+  if (str_name != nullptr) {
+    return true;
+  }
+  return false;
+}
+
 }  // namespace mindspore::lite

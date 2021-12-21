@@ -25,8 +25,7 @@
 #include "backend/optimizer/graph_kernel/add_atomic_clean.h"
 #include "backend/session/kernel_graph.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 /*
  * output = SubGraph(input_x, indices, update) {
  *   %0 = TensorScatterAdd(%para1, %para2, %para3)
@@ -49,16 +48,21 @@ class TsaAtomicAddToFirstTensor : public AtomicCleanInsertter {
   bool Run(const FuncGraphPtr &func_graph) override;
 
  private:
-  void ProcessOriginCNode(const AnfNodePtr &composite_node, const AnfNodePtr &new_input) override;
-  void CorrectKernelBuildInfo(const AnfNodePtr &composite_node, const AnfNodePtr &new_input) override;
-  void ProcessTsa(const KernelGraphPtr &main_graph, const AnfNodePtr &anf_node, const FuncGraphManagerPtr &mng);
-  AnfNodePtr ProcessTsaFirstNode(const KernelGraphPtr &main_graph, const AnfNodePtr &node);
-  AnfNodePtr FindTsaFirstRealInputInGraph(const KernelGraphPtr &main_graph, const AnfNodePtr &node);
+  void ProcessOriginCNode(const AnfNodePtr &composite_node,
+                          const std::vector<std::tuple<AtomicAddInfo, AnfNodePtr, size_t>> &outer_nodes);
+  void CorrectKernelBuildInfo(const AnfNodePtr &composite_node,
+                              const std::vector<std::tuple<AtomicAddInfo, AnfNodePtr, size_t>> &outer_infos);
+  void ProcessTsa(const KernelGraphPtr &main_graph, const AnfNodePtr &anf_node,
+                  const std::vector<AtomicAddInfo> &atomic_add_infos, const FuncGraphManagerPtr &mng);
+  std::pair<AnfNodePtr, size_t> GetOrCreateNewTsaFirstNode(const KernelGraphPtr &main_graph,
+                                                           const AtomicAddInfo &atomic_add_info,
+                                                           const AnfNodePtr &node);
+  std::pair<AnfNodePtr, size_t> FindTsaFirstRealInputInGraph(const KernelGraphPtr &main_graph, const CNodePtr &tsa_node,
+                                                             const AnfNodePtr &node);
 
   size_t tsa_first_input_index_{0};  // sub-graph parameter index.
 };
 using TsaAtomicAddToFirstTensorPtr = std::shared_ptr<TsaAtomicAddToFirstTensor>;
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel
 
 #endif  // MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_TSA_ATOMIC_ADD_TO_FIRST_TENSOR_H_

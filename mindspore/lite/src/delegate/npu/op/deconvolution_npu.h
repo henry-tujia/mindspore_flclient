@@ -18,6 +18,7 @@
 
 #include <vector>
 #include <string>
+#include <memory>
 #include "include/graph/op/all_ops.h"
 #include "src/delegate/npu/op/convolution_base_npu.h"
 
@@ -44,7 +45,9 @@ class DeconvolutionNPUOp : public ConvolutionBaseNPUOp {
  private:
   int SetDeconvParam(const schema::Conv2dTransposeFusion *conv_prim);
   schema::ActivationType act_type_ = schema::ActivationType_NO_ACTIVATION;
+  std::vector<int32_t> out_shape_value_{};
   hiai::op::ConvTranspose *deconv_ = nullptr;
+  hiai::op::Const *out_shape_ = nullptr;
 };
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_NPU_OP_DECONVOLUTION_NPU_H_

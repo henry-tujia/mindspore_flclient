@@ -32,7 +32,6 @@ int ReadImage(const std::string &image_path, cv::Mat *image) {
     MS_LOG(ERROR) << "missing file, improper permissions, unsupported or invalid format.";
     return RET_ERROR;
   }
-  image->convertTo(*image, CV_32FC3);
   return RET_OK;
 }
 
@@ -116,7 +115,7 @@ int CenterCrop(cv::Mat *image, int width, int height) {
 }
 
 int PreProcess(const preprocess::DataPreProcessParam &data_pre_process_param, const std::string &input_name,
-               int image_index, mindspore::tensor::MSTensor *tensor) {
+               size_t image_index, mindspore::tensor::MSTensor *tensor) {
   if (tensor == nullptr) {
     MS_LOG(ERROR) << "tensor is nullptr.";
     return RET_NULL_PTR;
@@ -155,7 +154,7 @@ int PreProcess(const preprocess::DataPreProcessParam &data_pre_process_param, co
   return RET_OK;
 }
 
-int PreProcess(const DataPreProcessParam &data_pre_process_param, const std::string &input_name, int image_index,
+int PreProcess(const DataPreProcessParam &data_pre_process_param, const std::string &input_name, size_t image_index,
                void **data, size_t *size) {
   if (data == nullptr || size == nullptr) {
     MS_LOG(ERROR) << "data or size is nullptr.";

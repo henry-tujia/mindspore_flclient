@@ -48,8 +48,8 @@ void ProjectOp::Print(std::ostream &out, bool show_all) const {
 }
 
 // Gets a row from the child operator and projects the buffer.
-Status ProjectOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
-  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+Status ProjectOp::GetNextRow(TensorRow *row) {
+  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
   if (!row->eoe() && !row->eof()) {
     *row = Project(*row);
   }
@@ -74,28 +74,7 @@ TensorRow ProjectOp::Project(const TensorRow &row) {
 // However, the ProjectOp is defined as a inlined operator, so it is invalid to launch the
 // functor since this op runs inlined inside another operator. The function is overloaded to
 // ensure that it is not called by mistake (it will generate an error).
-Status ProjectOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. ProjectOp is an inlined operator."); }
-
-int32_t ProjectOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Project operator, no parent node, assuming it's the root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Project operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
-}
-
-int32_t ProjectOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Project operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
-  }
-}
+Status ProjectOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] ProjectOp is an inlined operator."); }
 
 Status ProjectOp::EoeReceived(int32_t worker_id) {
   state_ = OpState::kDeOpIdle;
@@ -113,7 +92,7 @@ Status ProjectOp::ComputeColMap() {
     for (size_t i = 0; i < columns_to_project_.size(); i++) {
       std::string &current_column = columns_to_project_[i];
       if (child_column_name_mapping.find(current_column) == child_column_name_mapping.end()) {
-        std::string err_msg = "Invalid parameter, column name: " + current_column + " does not exist in dataset.";
+        std::string err_msg = "Invalid column, column name: " + current_column + " does not exist.";
         RETURN_STATUS_UNEXPECTED(err_msg);
       }
       // Setup the new column name mapping for ourself (base class field)

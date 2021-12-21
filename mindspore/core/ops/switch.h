@@ -23,12 +23,16 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSwitch = "Switch";
+/// \brief Switch defined Switch operator prototype of lite.
 class MS_CORE_API Switch : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Switch() : PrimitiveC(kNameSwitch) {}
+
+  /// \brief Destructor.
   ~Switch() = default;
+
   MS_DECLARE_PARENT(Switch, PrimitiveC);
-  void Init() {}
 };
 }  // namespace ops
 }  // namespace mindspore

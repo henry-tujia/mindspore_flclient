@@ -20,14 +20,18 @@
 #include <string>
 #include <vector>
 #include "include/api/format.h"
-#include "include/registry/parser_context.h"
+#include "include/registry/converter_context.h"
 #include "tools/common/flag_parser.h"
 #include "ir/dtype/type_id.h"
 #include "schema/inner/model_generated.h"
 #include "tools/converter/preprocess/preprocess_param.h"
 #include "tools/converter/quantizer/quant_params.h"
+#include "tools/converter/adapter/acl/common/acl_types.h"
 
 namespace mindspore {
+namespace lite {
+class ConfigFileParser;
+}  // namespace lite
 namespace converter {
 using mindspore::schema::QuantType;
 enum ParallelSplitType { SplitNo = 0, SplitByUserRatio = 1, SplitByUserAttr = 2 };
@@ -59,6 +63,8 @@ class Flags : public virtual mindspore::lite::FlagParser {
 
   int InitGraphInputFormat();
 
+  int InitExtendedIntegrationInfo(const lite::ConfigFileParser &config_file_parser);
+
   int Init(int argc, const char **argv);
 
  public:
@@ -83,12 +89,14 @@ class Flags : public virtual mindspore::lite::FlagParser {
   std::string dec_key = "";
   std::string dec_mode = "AES-GCM";
   std::string graphInputFormatStr;
+  std::string device;
   mindspore::Format graphInputFormat = mindspore::NHWC;
 
   lite::quant::CommonQuantParam commonQuantParam;
   lite::quant::MixedBitWeightQuantParam mixedBitWeightQuantParam;
   lite::quant::FullQuantParam fullQuantParam;
   lite::preprocess::DataPreProcessParam dataPreProcessParam;
+  lite::acl::AclModelOptionCfg aclModelOptionCfgParam;
 };
 
 bool CheckOfflineParallelConfig(const std::string &file, ParallelSplitConfig *parallel_split_config);

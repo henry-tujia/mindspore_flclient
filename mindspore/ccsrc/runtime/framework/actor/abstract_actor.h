@@ -21,6 +21,7 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <set>
 #include "mindrt/include/actor/op_actor.h"
 #include "runtime/framework/actor/actor_common.h"
 #include "runtime/framework/device_tensor_store.h"
@@ -45,16 +46,43 @@ class AbstractActor : public OpActor<DeviceTensor> {
 
   bool IsActive(int msg_num) override { return msg_num >= running_dependent_msg_num_ ? true : false; }
 
+  // The actor run when receive the input data.
+  void RunOpData(OpData<DeviceTensor> *const input_data, OpContext<DeviceTensor> *const context) override;
+  // The actor run when receive the input control.
+  void RunOpControl(AID *const input_control, OpContext<DeviceTensor> *const context) override;
+
   // Get the position of node in the actor.
   virtual size_t FetchNodePosition(const AnfNodePtr &node) const { return 0; }
 
+  // Get the member.
+  KernelTransformType type() const { return type_; }
+  const std::vector<const DeviceContext *> &device_contexts() const { return device_contexts_; }
+  const std::vector<AnfNodePtr> &output_data_nodes() const { return output_data_nodes_; }
+  const std::vector<std::pair<size_t, AnfNodePtr>> &device_tensor_store_keys() const {
+    return device_tensor_store_keys_;
+  }
+  const std::vector<AID> &input_data_arrow_aids() const { return input_data_arrow_aids_; }
+  const std::vector<AID> &input_control_arrow_aids() const { return input_control_arrow_aids_; }
+
  protected:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
 
   // Check whether satisfy the actor running condition.
-  bool CheckRunningCondition(OpContext<DeviceTensor> *const context) const;
+  virtual bool CheckRunningCondition(const OpContext<DeviceTensor> *context) const;
+  // The actor run really when satisfy the actor running condition.
+  virtual void Run(OpContext<DeviceTensor> *const context) {}
+
   // Erase input data and input controls when finish actor running.
-  void EraseInput(OpContext<DeviceTensor> *const context);
+  virtual void EraseInput(const OpContext<DeviceTensor> *context);
+
+  // Update the output data before send output data.
+  virtual void UpdateOutputData(OpData<DeviceTensor> *const output_data, const DataArrowPtr &data_arrow,
+                                const AnfNodePtr &output_node, OpContext<DeviceTensor> *const context) {}
+  // Send output to downstream actors to trigger running.
+  virtual void SendOutput(OpContext<DeviceTensor> *const context);
+  // Send recorder info to recorder actor.
+  virtual void SendRecorderInfo(OpContext<DeviceTensor> *const context) const {}
 
   KernelTransformType type_;
 
@@ -64,12 +92,15 @@ class AbstractActor : public OpActor<DeviceTensor> {
   // The id of recorder actor. Send message to it for recording info.
   const AID *recorder_aid_;
 
-  // The output result arrows of graph output.
-  std::vector<DataArrowPtr> output_result_arrows_;
+  // The output_data_nodes_ and output_data_ corresponds to the output_data_arrows_ one by one.
+  std::vector<AnfNodePtr> output_data_nodes_;
+  std::vector<OpDataUniquePtr<DeviceTensor>> output_data_;
 
-  // The dependent device tensor stores,  the dependent expression is pair<index, AnfNode>.
+  // The dependent device tensor stores, the dependent expression is pair<index, AnfNode>.
   // Index is the input position, AnfNode is the key of the device tensor store.
   std::vector<std::pair<size_t, AnfNodePtr>> device_tensor_store_keys_;
+  // The device tensor stores which have the auto monad attribute.
+  std::set<AnfNodePtr> auto_monad_device_tensor_stores_;
 
   // The dependent input actors.
   std::vector<AID> input_data_arrow_aids_;

@@ -15,6 +15,7 @@
  */
 #include "backend/optimizer/graph_kernel/raise_reduction_precision.h"
 
+#include <memory>
 #include "base/core_ops.h"
 #include "utils/utils.h"
 #include "backend/optimizer/common/helper.h"
@@ -25,8 +26,7 @@
 #include "backend/kernel_compiler/common_utils.h"
 #include "runtime/device/kernel_info.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 bool RaiseReductionPrecision::IsFp16ReduceSum(const AnfNodePtr &node) const {
   return IsPrimitiveCNode(node, prim::kPrimReduceSum) && AnfAlgo::GetInputDeviceDataType(node, 0) == kNumberTypeFloat16;
 }
@@ -37,7 +37,8 @@ AnfNodePtr RaiseReductionPrecision::CreateCast(const AnfNodePtr &input, const Ty
   MS_EXCEPTION_IF_NULL(func_graph);
   AnfNodePtrList inputs = {NewValueNode(prim::kPrimCast), input};
   auto cnode = CreateCNode(inputs, func_graph, {.format = format, .shape = GetShape(input), .type = dst_type});
-  SetNodeAttrSafely("dst_type", MakeValue(kernel::TypeId2String(dst_type->type_id())), cnode);
+  SetNodeAttrSafely(kAttrDstType, dst_type, cnode);
+  AnfAlgo::SetNodeAttr(kIsBackendCast, MakeValue(true), cnode);
   return cnode;
 }
 
@@ -109,8 +110,8 @@ bool RaiseReductionPrecision::Run(const FuncGraphPtr &func_graph) {
     mng = Manage(func_graph, true);
     func_graph->set_manager(mng);
   }
-  auto todos = TopoSort(func_graph->get_return());
   bool changed = false;
+  auto todos = TopoSort(func_graph->get_return());
   for (const auto &node : todos) {
     if (AnfAlgo::IsGraphKernel(node)) {
       auto sub_func_graph = AnfAlgo::GetCNodeFuncGraphPtr(node);
@@ -119,10 +120,8 @@ bool RaiseReductionPrecision::Run(const FuncGraphPtr &func_graph) {
     }
   }
   if (changed) {
-    mng->RemoveRoots();
-    mng->KeepRoots({func_graph});
+    UpdateMng(mng, func_graph);
   }
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

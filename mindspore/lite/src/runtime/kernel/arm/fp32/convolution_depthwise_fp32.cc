@@ -22,7 +22,7 @@ using mindspore::lite::RET_INFER_INVALID;
 using mindspore::lite::RET_OK;
 
 namespace mindspore::kernel {
-int ConvolutionDepthwiseCPUKernel::Init() {
+int ConvolutionDepthwiseCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   if (op_parameter_->is_train_session_) {
@@ -47,9 +47,9 @@ int ConvolutionDepthwiseCPUKernel::Init() {
 }
 
 int ConvolutionDepthwiseCPUKernel::ReSize() {
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
-    MS_LOG(ERROR) << "ConvolutionBaseCPUKernel::Init() return is:" << ret;
+    MS_LOG(ERROR) << "ConvolutionBaseCPUKernel::Prepare() return is:" << ret;
     return ret;
   }
   conv_param_->thread_num_ = MSMIN(thread_count_, conv_param_->output_h_);
@@ -108,19 +108,21 @@ void ConvolutionDepthwiseCPUKernel::PackWeight() {
 int ConvolutionDepthwiseCPUKernel::MallocWeightBiasData() {
   auto weight_tensor = in_tensors_.at(kWeightIndex);
   int channel = weight_tensor->Batch();
+  MS_CHECK_TRUE_RET(channel > 0, RET_ERROR);
   int pack_weight_size = weight_tensor->Batch() * weight_tensor->Height() * weight_tensor->Width();
   if (pack_weight_size >= std::numeric_limits<int>::max() / static_cast<int>(sizeof(float))) {
     MS_LOG(ERROR) << "pack_weight_size is invalid, pack_weight_size: " << pack_weight_size;
     return RET_ERROR;
   }
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, pack_weight_size * sizeof(float));
     packed_weight_ = malloc(pack_weight_size * sizeof(float));
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "Malloc buffer failed.";
       return RET_ERROR;
     }
   }
-
+  CHECK_LESS_RETURN(MAX_MALLOC_SIZE, channel * sizeof(float));
   bias_data_ = malloc(channel * sizeof(float));
   if (bias_data_ == nullptr) {
     MS_LOG(ERROR) << "Malloc buffer failed.";

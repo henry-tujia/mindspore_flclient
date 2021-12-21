@@ -48,7 +48,7 @@ constexpr size_t kXIndexB = 3;
 constexpr int kBoxPointNum = 4;
 }  // namespace
 
-int NonMaxSuppressionCPUKernel::Init() {
+int NonMaxSuppressionCPUKernel::Prepare() {
   // boxes, scores, max_output_boxes, iou_threshold, score_threshold
   if (in_tensors_.size() < kMinInputsSize || in_tensors_.size() > kMaxInputsSize || out_tensors_.size() != kOutputNum) {
     MS_LOG(ERROR) << "NonMaxSuppression input size should be in [" << kMinInputsSize << ", " << kMaxInputsSize << "]"
@@ -110,7 +110,7 @@ void ExpandDims(std::vector<int> *shape, size_t size) {
 }
 
 int NonMaxSuppressionCPUKernel::Run_Selecte(bool simple_out, int box_num, int batch_num, int class_num,
-                                            float *scores_data, float *box_data) {
+                                            const float *scores_data, const float *box_data) {
   std::vector<NMSBox> selected_box_per_class;
   selected_box_per_class.reserve(std::min(static_cast<int32_t>(box_num), max_output_per_class_));
   std::vector<NMSIndex> selected_index;
@@ -119,8 +119,8 @@ int NonMaxSuppressionCPUKernel::Run_Selecte(bool simple_out, int box_num, int ba
     int batch_offset = i * class_num * box_num;
     for (auto j = 0; j < class_num; ++j) {
       // per batch per class filter
-      float *per_class_scores = scores_data + batch_offset + j * box_num;
-      float *box = box_data + i * box_num * kBoxPointNum;
+      const float *per_class_scores = scores_data + batch_offset + j * box_num;
+      const float *box = box_data + i * box_num * kBoxPointNum;
       std::vector<NMSBox> above_score_candidates;
       above_score_candidates.reserve(box_num);
       for (auto k = 0; k < box_num; ++k) {
@@ -138,16 +138,16 @@ int NonMaxSuppressionCPUKernel::Run_Selecte(bool simple_out, int box_num, int ba
         auto cand = sorted_candidates.top();
         bool selected = true;
         auto IoUSuppressed = [this, &cand](const NMSBox &box) {
-          float intersec_x1 = std::max(cand.x1_, box.x1_);
-          float intersec_x2 = std::min(cand.x2_, box.x2_);
-          float intersec_y1 = std::max(cand.y1_, box.y1_);
-          float intersec_y2 = std::min(cand.y2_, box.y2_);
+          float intersec_x1 = std::max(cand.get_x1(), box.get_x1());
+          float intersec_x2 = std::min(cand.get_x2(), box.get_x2());
+          float intersec_y1 = std::max(cand.get_y1(), box.get_y1());
+          float intersec_y2 = std::min(cand.get_y2(), box.get_y2());
           const float intersec_area =
             std::max(intersec_x2 - intersec_x1, 0.0f) * std::max(intersec_y2 - intersec_y1, 0.0f);
           if (intersec_area <= 0.0f) {
             return false;
           }
-          const float intersec_over_union = intersec_area / (cand.area_ + box.area_ - intersec_area);
+          const float intersec_over_union = intersec_area / (cand.get_area() + box.get_area() - intersec_area);
           return intersec_over_union > this->iou_threshold_;
         };
         if (std::any_of(selected_box_per_class.begin(), selected_box_per_class.end(), IoUSuppressed)) {
@@ -156,7 +156,7 @@ int NonMaxSuppressionCPUKernel::Run_Selecte(bool simple_out, int box_num, int ba
         if (selected) {
           selected_box_per_class.push_back(cand);
           selected_index.emplace_back(
-            NMSIndex{static_cast<int32_t>(i), static_cast<int32_t>(j), static_cast<int32_t>(cand.index_)});
+            NMSIndex{static_cast<int32_t>(i), static_cast<int32_t>(j), static_cast<int32_t>(cand.get_index())});
         }
         sorted_candidates.pop();
       }

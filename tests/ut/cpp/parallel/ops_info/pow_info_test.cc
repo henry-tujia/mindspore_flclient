@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ void TestPowInfo::SetUp() {
   g_device_manager = std::make_shared<DeviceManager>();
   g_device_manager->Init(dev_list, local_dev, stage_map, "hccl");
 
-  std::unordered_map<std::string, ValuePtr> attr;
+  mindspore::HashMap<std::string, ValuePtr> attr;
 
   Shapes inputs_shape = {{32, 64, 128}, {32, 64, 128}};
   Shapes outputs_shape = {{32, 64, 128}};
@@ -66,7 +66,7 @@ TEST_F(TestPowInfo, InferDevMatrixShape1) {
   Strategys inputs = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  pow->Init(strategy);
+  pow->Init(strategy, nullptr);
   Shape dev_matrix_shape = pow->dev_matrix_shape();
 
   Shape expect = {2, 4, 8};
@@ -77,7 +77,7 @@ TEST_F(TestPowInfo, InferSliceShape1) {
   Strategys str = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, str);
 
-  pow->Init(strategy);
+  pow->Init(strategy, nullptr);
   std::vector<TensorInfo> inputs = pow->inputs_tensor_info();
   std::vector<TensorInfo> outputs = pow->outputs_tensor_info();
 
@@ -98,7 +98,7 @@ TEST_F(TestPowInfo, GetTensorLayout1) {
   Strategys str = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, str);
 
-  pow->Init(strategy);
+  pow->Init(strategy, nullptr);
   std::vector<TensorInfo> inputs = pow->inputs_tensor_info();
   std::vector<TensorInfo> outputs = pow->outputs_tensor_info();
 
@@ -119,7 +119,7 @@ TEST_F(TestPowInfo, GetForwardOp1) {
   Strategys inputs = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  pow->Init(strategy);
+  pow->Init(strategy, nullptr);
   OperatorVector forward_op = pow->forward_op();
   size_t size = forward_op.size();
 
@@ -130,7 +130,7 @@ TEST_F(TestPowInfo, GetMirrorOPs1) {
   Strategys inputs = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  pow->Init(strategy);
+  pow->Init(strategy, nullptr);
   MirrorOps mirror_ops = pow->mirror_ops();
 
   size_t size = mirror_ops.size();
@@ -142,7 +142,7 @@ TEST_F(TestPowInfo, CheckStrategy1) {
   Strategys inputs = {{2, 2, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = pow->Init(strategy);
+  Status ret = pow->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -150,7 +150,7 @@ TEST_F(TestPowInfo, CheckStrategy2) {
   Strategys inputs = {{2, 4, 8, 16}, {2, 4, 8, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = pow->Init(strategy);
+  Status ret = pow->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -158,7 +158,7 @@ TEST_F(TestPowInfo, CheckStrategy3) {
   Strategys inputs = {{2, 4, 8}, {2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = pow->Init(strategy);
+  Status ret = pow->Init(strategy, nullptr);
   ASSERT_EQ(ret, SUCCESS);
 }
 

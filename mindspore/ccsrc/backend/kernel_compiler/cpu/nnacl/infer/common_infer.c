@@ -273,6 +273,9 @@ int GetChannel(const TensorC *tensor) {
 }
 
 int GetElementNum(const TensorC *tensor) {
+  if (tensor == NULL) {
+    return -1;
+  }
   if (tensor->shape_size_ == 0) {
     return 1;  // scalar mode
   }
@@ -458,7 +461,6 @@ REG_INFER(Erf, PrimType_Erf, CommonInferShape)
 REG_INFER(Exp, PrimType_ExpFusion, CommonInferShape)
 REG_INFER(FakeQuantWithMinMaxVars, PrimType_FakeQuantWithMinMaxVars, CommonInferShape)
 REG_INFER(Floor, PrimType_Floor, CommonInferShape)
-REG_INFER(InstanceNorm, PrimType_InstanceNorm, CommonInferShape)
 REG_INFER(IsFinite, PrimType_IsFinite, CommonInferShape)
 REG_INFER(LeakyRelu, PrimType_LeakyRelu, CommonInferShape)
 REG_INFER(Log, PrimType_Log, CommonInferShape)

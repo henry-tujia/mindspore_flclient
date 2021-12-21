@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/crop_ir.h"
 
 #include "minddata/dataset/kernels/image/crop_op.h"
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -38,9 +37,8 @@ Status CropOperation::ValidateParams() {
 
   constexpr size_t size_two = 2;
   if (coordinates_.size() != size_two) {
-    std::string err_msg = "Crop: coordinates must be a vector of two values";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Crop: 'coordinates' must be a vector of two values.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   RETURN_IF_NOT_OK(ValidateVectorNonNegative("Crop", "coordinates", coordinates_));
   return Status::OK();
@@ -71,8 +69,8 @@ Status CropOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status CropOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("coordinates") != op_params.end(), "Failed to find coordinates");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Failed to find size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "coordinates", kCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kCropOperation));
   std::vector<int32_t> coordinates = op_params["coordinates"];
   std::vector<int32_t> size = op_params["size"];
   *operation = std::make_shared<CropOperation>(coordinates, size);

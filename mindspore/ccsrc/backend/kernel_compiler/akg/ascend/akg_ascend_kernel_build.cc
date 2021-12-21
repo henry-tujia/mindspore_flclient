@@ -15,13 +15,12 @@
  */
 
 #include "backend/kernel_compiler/akg/ascend/akg_ascend_kernel_build.h"
-
+#include <memory>
 #include "ir/dtype.h"
 #include "ir/func_graph.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "backend/kernel_compiler/tbe/tbe_utils.h"
 #include "backend/kernel_compiler/akg/ascend/akg_ascend_kernel_mod.h"
-#include "backend/kernel_compiler/akg/akg_kernel_attrs_process.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
@@ -45,7 +44,7 @@ void AkgAscendKernelBuilder::AkgSetKernelMod(const KernelPackPtr &kernel_pack,
 }
 
 void AkgAscendKernelBuilder::AkgSaveJsonInfo(const string &kernel_name, const string &kernel_json) {
-  kernel::SaveJsonInfo(kernel_name, kernel_json);
+  kernel::SaveJsonInfo(kernel_name, kernel_json, GetCompilerCachePath().append(kAkgKernelMeta));
 }
 }  // namespace kernel
 }  // namespace mindspore

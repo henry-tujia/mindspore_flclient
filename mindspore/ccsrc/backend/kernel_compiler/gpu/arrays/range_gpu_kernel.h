@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ namespace kernel {
 template <typename T>
 class RangeGPUKernel : public GpuKernel {
  public:
-  RangeGPUKernel() : input_size_(0), output_size_(0), start_(0.), limit_(1.), delta_(1.) {}
+  RangeGPUKernel() : input_size_(0), output_size_(0), start_(0.), limit_(1.), delta_(1.), is_null_input_(false) {}
   ~RangeGPUKernel() = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -34,6 +34,9 @@ class RangeGPUKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *output = GetDeviceAddress<T>(outputs, 0);
     int size = SizeToInt(input_size_ / sizeof(T));
@@ -42,17 +45,21 @@ class RangeGPUKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but Range needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 1, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but Range needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
     auto input_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     auto shape_size = input_shape.size();
     input_size_ = 1;
     for (size_t i = 0; i < shape_size; i++) {
@@ -83,6 +90,7 @@ class RangeGPUKernel : public GpuKernel {
   float start_;
   float limit_;
   float delta_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

@@ -19,6 +19,7 @@
 #include "minddata/dataset/include/dataset/transforms.h"
 
 #include "minddata/dataset/kernels/ir/vision/adjust_gamma_ir.h"
+#include "minddata/dataset/kernels/ir/vision/auto_augment_ir.h"
 #include "minddata/dataset/kernels/ir/vision/auto_contrast_ir.h"
 #include "minddata/dataset/kernels/ir/vision/bounding_box_augment_ir.h"
 #include "minddata/dataset/kernels/ir/vision/center_crop_ir.h"
@@ -36,14 +37,19 @@
 #include "minddata/dataset/kernels/ir/vision/normalize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/normalize_pad_ir.h"
 #include "minddata/dataset/kernels/ir/vision/pad_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_adjust_sharpness_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_affine_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_auto_contrast_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_color_adjust_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_color_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_decode_resize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_with_bbox_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_equalize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_horizontal_flip_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_horizontal_flip_with_bbox_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_invert_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_lighting_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_posterize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_resized_crop_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_resized_crop_with_bbox_ir.h"
@@ -68,7 +74,6 @@
 
 namespace mindspore {
 namespace dataset {
-
 PYBIND_REGISTER(
   AdjustGammaOperation, 1, ([](const py::module *m) {
     (void)py::class_<vision::AdjustGammaOperation, TensorOperation, std::shared_ptr<vision::AdjustGammaOperation>>(
@@ -78,6 +83,18 @@ PYBIND_REGISTER(
         THROW_IF_ERROR(ajust_gamma->ValidateParams());
         return ajust_gamma;
       }));
+  }));
+
+PYBIND_REGISTER(
+  AutoAugmentOperation, 1, ([](const py::module *m) {
+    (void)py::class_<vision::AutoAugmentOperation, TensorOperation, std::shared_ptr<vision::AutoAugmentOperation>>(
+      *m, "AutoAugmentOperation")
+      .def(
+        py::init([](AutoAugmentPolicy policy, InterpolationMode interpolation, const std::vector<uint8_t> &fill_value) {
+          auto auto_augment = std::make_shared<vision::AutoAugmentOperation>(policy, interpolation, fill_value);
+          THROW_IF_ERROR(auto_augment->ValidateParams());
+          return auto_augment;
+        }));
   }));
 
 PYBIND_REGISTER(
@@ -272,6 +289,18 @@ PYBIND_REGISTER(PadOperation, 1, ([](const py::module *m) {
                     }));
                 }));
 
+PYBIND_REGISTER(RandomAdjustSharpnessOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<vision::RandomAdjustSharpnessOperation, TensorOperation,
+                                   std::shared_ptr<vision::RandomAdjustSharpnessOperation>>(
+                    *m, "RandomAdjustSharpnessOperation")
+                    .def(py::init([](float degree, float prob) {
+                      auto random_adjust_sharpness =
+                        std::make_shared<vision::RandomAdjustSharpnessOperation>(degree, prob);
+                      THROW_IF_ERROR(random_adjust_sharpness->ValidateParams());
+                      return random_adjust_sharpness;
+                    }));
+                }));
+
 PYBIND_REGISTER(
   RandomAffineOperation, 1, ([](const py::module *m) {
     (void)py::class_<vision::RandomAffineOperation, TensorOperation, std::shared_ptr<vision::RandomAffineOperation>>(
@@ -285,6 +314,18 @@ PYBIND_REGISTER(
         return random_affine;
       }));
   }));
+
+PYBIND_REGISTER(RandomAutoContrastOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<vision::RandomAutoContrastOperation, TensorOperation,
+                                   std::shared_ptr<vision::RandomAutoContrastOperation>>(*m,
+                                                                                         "RandomAutoContrastOperation")
+                    .def(py::init([](float cutoff, const std::vector<uint32_t> &ignore, float prob) {
+                      auto random_auto_contrast =
+                        std::make_shared<vision::RandomAutoContrastOperation>(cutoff, ignore, prob);
+                      THROW_IF_ERROR(random_auto_contrast->ValidateParams());
+                      return random_auto_contrast;
+                    }));
+                }));
 
 PYBIND_REGISTER(RandomColorAdjustOperation, 1, ([](const py::module *m) {
                   (void)py::class_<vision::RandomColorAdjustOperation, TensorOperation,
@@ -350,6 +391,16 @@ PYBIND_REGISTER(RandomCropWithBBoxOperation, 1, ([](const py::module *m) {
                       }));
                 }));
 
+PYBIND_REGISTER(RandomEqualizeOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<vision::RandomEqualizeOperation, TensorOperation,
+                                   std::shared_ptr<vision::RandomEqualizeOperation>>(*m, "RandomEqualizeOperation")
+                    .def(py::init([](float prob) {
+                      auto random_equalize = std::make_shared<vision::RandomEqualizeOperation>(prob);
+                      THROW_IF_ERROR(random_equalize->ValidateParams());
+                      return random_equalize;
+                    }));
+                }));
+
 PYBIND_REGISTER(RandomHorizontalFlipOperation, 1, ([](const py::module *m) {
                   (void)py::class_<vision::RandomHorizontalFlipOperation, TensorOperation,
                                    std::shared_ptr<vision::RandomHorizontalFlipOperation>>(
@@ -370,6 +421,27 @@ PYBIND_REGISTER(RandomHorizontalFlipWithBBoxOperation, 1, ([](const py::module *
                         std::make_shared<vision::RandomHorizontalFlipWithBBoxOperation>(prob);
                       THROW_IF_ERROR(random_horizontal_flip_with_bbox->ValidateParams());
                       return random_horizontal_flip_with_bbox;
+                    }));
+                }));
+
+PYBIND_REGISTER(
+  RandomInvertOperation, 1, ([](const py::module *m) {
+    (void)py::class_<vision::RandomInvertOperation, TensorOperation, std::shared_ptr<vision::RandomInvertOperation>>(
+      *m, "RandomInvertOperation")
+      .def(py::init([](float prob) {
+        auto random_invert = std::make_shared<vision::RandomInvertOperation>(prob);
+        THROW_IF_ERROR(random_invert->ValidateParams());
+        return random_invert;
+      }));
+  }));
+
+PYBIND_REGISTER(RandomLightingOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<vision::RandomLightingOperation, TensorOperation,
+                                   std::shared_ptr<vision::RandomLightingOperation>>(*m, "RandomLightingOperation")
+                    .def(py::init([](float alpha) {
+                      auto random_lighting = std::make_shared<vision::RandomLightingOperation>(alpha);
+                      THROW_IF_ERROR(random_lighting->ValidateParams());
+                      return random_lighting;
                     }));
                 }));
 

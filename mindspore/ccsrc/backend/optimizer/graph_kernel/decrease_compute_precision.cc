@@ -29,21 +29,18 @@
 #include "backend/kernel_compiler/common_utils.h"
 #include "backend/optimizer/graph_kernel/decrease_compute_precision.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 // Add CastCNode
 CNodePtr AddCastCNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const std::string &format,
                       const TypeId &input_type, const TypeId &output_type, const std::vector<size_t> &origin_shape,
                       const TypeId &origin_type) {
   MS_EXCEPTION_IF_NULL(func_graph);
-  std::string input_format = format;
-  std::string output_format = format;
   CNodePtr cast = func_graph->NewCNode({NewValueNode(std::make_shared<Primitive>(prim::kPrimCast->name())), input});
   MS_EXCEPTION_IF_NULL(cast);
   // set kernel build info
   kernel::KernelBuildInfo::KernelBuildInfoBuilder builder;
-  builder.SetInputsFormat({input_format});
-  builder.SetOutputsFormat({output_format});
+  builder.SetInputsFormat({format});
+  builder.SetOutputsFormat({format});
   builder.SetInputsDeviceType({input_type});
   builder.SetOutputsDeviceType({output_type});
   builder.SetFusionType(kernel::FusionType::OPAQUE);
@@ -55,6 +52,7 @@ CNodePtr AddCastCNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, c
   }
   AnfAlgo::SetSelectKernelBuildInfo(builder.Build(), cast.get());
   AnfAlgo::SetOutputInferTypeAndShape({origin_type}, {origin_shape}, cast.get());
+  AnfAlgo::SetNodeAttr(kAttrDstType, TypeIdToType(output_type), cast);
   AnfAlgo::SetNodeAttr(kIsBackendCast, MakeValue(true), cast);
   AnfAlgo::SetNodeAttr(kAttrDatadumpOriginalNames, MakeValue<std::vector<std::string>>({}), cast);
   return cast;
@@ -173,7 +171,7 @@ bool DecreaseComputePrecision::Process(const FuncGraphPtr &func_graph) {
     auto new_abstract = std::make_shared<abstract::AbstractTensor>(TypeIdToType(TypeId::kNumberTypeFloat32), shape_ptr);
     cnode1->set_abstract(new_abstract);
     cnode1->set_scope(old_cnode->scope());
-    SetNodeAttrSafely("dst_type", MakeValue(kernel::TypeId2String(kFloat32->type_id())), cnode1);
+    SetNodeAttrSafely(kAttrDstType, kFloat32, cnode1);
     MS_EXCEPTION_IF_NULL(cnode1);
     cnode1->set_kernel_info(std::make_shared<device::KernelInfo>());
     std::vector<std::string> cnode_input_format = {GetFormat(old_cnode)};
@@ -261,10 +259,8 @@ bool DecreaseComputePrecision::Run(const FuncGraphPtr &func_graph) {
     }
   }
   if (changed) {
-    mng->RemoveRoots();
-    mng->KeepRoots({func_graph});
+    UpdateMng(mng, func_graph);
   }
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

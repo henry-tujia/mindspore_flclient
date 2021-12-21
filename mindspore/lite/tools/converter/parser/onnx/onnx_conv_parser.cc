@@ -27,7 +27,8 @@ STATUS GetConvChannel(const onnx::GraphProto &onnx_graph, const onnx::NodeProto 
                       int64_t *channel_out, int64_t *channel_in) {
   MS_ASSERT(channel_out != nullptr);
   MS_ASSERT(channel_in != nullptr);
-  const auto &onnx_conv_weight = onnx_node.input(1);
+  MS_CHECK_GE(onnx_node.input_size(), kInputSize1, RET_ERROR);
+  const auto &onnx_conv_weight = onnx_node.input(kWeightIndex);
   if (onnx_node.op_type() == "Conv") {
     auto node_iter =
       std::find_if(onnx_graph.initializer().begin(), onnx_graph.initializer().end(),
@@ -42,16 +43,17 @@ STATUS GetConvChannel(const onnx::GraphProto &onnx_graph, const onnx::NodeProto 
       for (int i = 0; i < size; ++i) {
         weight_shape.emplace_back((*node_iter).dims(i));
       }
-      if (size < 2) {
+      // filter of conv should have at lease two dims
+      if (size < DIMENSION_2D) {
         MS_LOG(ERROR) << "index out of dims range";
         return RET_ERROR;
       }
-      *channel_out = weight_shape[0];
-      if (INT_MUL_OVERFLOW_THRESHOLD(weight_shape[1], group, INT64_MAX)) {
+      *channel_out = weight_shape.at(0);
+      if (INT_MUL_OVERFLOW_THRESHOLD(weight_shape.at(1), group, INT64_MAX)) {
         MS_LOG(ERROR) << "channel in overflow";
         return RET_ERROR;
       }
-      *channel_in = weight_shape[1] * group;
+      *channel_in = weight_shape.at(1) * group;
     }
   } else {
     auto node_iter =
@@ -73,16 +75,43 @@ STATUS GetConvChannel(const onnx::GraphProto &onnx_graph, const onnx::NodeProto 
     } else {
       return RET_NO_CHANGE;
     }
-    if (dims.size() < 4) {
+    // filter of conv should have at lease four dims
+    if (dims.size() < DIMENSION_4D) {
       MS_LOG(ERROR) << "index out of dims range";
       return RET_ERROR;
     }
-    *channel_out = dims.at(0);
-    if (INT_MUL_OVERFLOW_THRESHOLD(dims.at(3), group, INT64_MAX)) {
+    *channel_out = dims.at(kNHWC_N);
+    // the fourth dim of filter of conv is channel dim
+    if (INT_MUL_OVERFLOW_THRESHOLD(dims.at(kNHWC_C), group, INT64_MAX)) {
       MS_LOG(ERROR) << "channel in overflow";
       return RET_ERROR;
     }
-    *channel_in = dims.at(3) * group;
+    *channel_in = dims.at(kNHWC_C) * group;
+  }
+  return RET_OK;
+}
+
+STATUS OnnxConvParser::ParseOnnxAttr(const onnx::NodeProto &onnx_node, int64_t *group, mindspore::Format *format,
+                                     mindspore::PadMode *pad_mode) {
+  MS_ASSERT(group != nullptr);
+  MS_ASSERT(format != nullptr);
+  MS_ASSERT(pad_mode != nullptr);
+  for (const auto &onnx_node_attr : onnx_node.attribute()) {
+    if (onnx_node_attr.name() == "group") {
+      *group = onnx_node_attr.i();
+    } else if (onnx_node_attr.name() == "auto_pad") {
+      *pad_mode = GetOnnxPadMode(onnx_node_attr);
+    } else if (onnx_node_attr.name() == "order" && onnx_node_attr.s() != "NHWC") {
+      MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s();
+      return RET_ERROR;
+    } else if (onnx_node_attr.name() == "order") {
+      if (onnx_node_attr.s() == "NHWC") {
+        *format = mindspore::Format::NHWC;
+      } else {
+        MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s();
+        return RET_ERROR;
+      }
+    }
   }
   return RET_OK;
 }
@@ -93,25 +122,14 @@ ops::PrimitiveC *OnnxConvParser::Parse(const onnx::GraphProto &onnx_graph, const
   prim->set_pad({0, 0, 0, 0});
   mindspore::Format format = mindspore::Format::NCHW;
   mindspore::PadMode pad_mode = mindspore::PadMode::PAD;
-  int64_t channel_out = 1, channel_in = 1, group = 1;
+  int64_t channel_out = 1;
+  int64_t channel_in = 1;
+  int64_t group = 1;
   std::vector<int64_t> kernels, strides, dilation, pads;
-
-  for (const auto &onnx_node_attr : onnx_node.attribute()) {
-    if (onnx_node_attr.name() == "group") {
-      group = onnx_node_attr.i();
-    } else if (onnx_node_attr.name() == "auto_pad") {
-      pad_mode = GetOnnxPadMode(onnx_node_attr);
-    } else if (onnx_node_attr.name() == "order" && onnx_node_attr.s() != "NHWC") {
-      MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s();
-      return nullptr;
-    } else if (onnx_node_attr.name() == "order") {
-      if (onnx_node_attr.s() == "NHWC") {
-        format = mindspore::Format::NHWC;
-      } else {
-        MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s();
-        return nullptr;
-      }
-    }
+  auto status = ParseOnnxAttr(onnx_node, &group, &format, &pad_mode);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "Parse onnx attribute failed.";
+    return nullptr;
   }
   prim->AddAttr(mindspore::ops::kOriginalFormat, MakeValue<int64_t>(format));
   prim->set_pad_mode(pad_mode);
@@ -140,7 +158,7 @@ ops::PrimitiveC *OnnxConvParser::Parse(const onnx::GraphProto &onnx_graph, const
   }
 
   // get channel_out and channel_in
-  auto status = GetConvChannel(onnx_graph, onnx_node, group, &channel_out, &channel_in);
+  status = GetConvChannel(onnx_graph, onnx_node, group, &channel_out, &channel_in);
   if (status == RET_OK) {
     prim->set_in_channel(channel_in);
     prim->set_out_channel(channel_out);

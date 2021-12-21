@@ -28,17 +28,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameTile = prim::kTile;
+/// \brief Replicates a tensor with given multiples times. Refer to Python API @ref mindspore.ops.Tile for more details.
 class MS_CORE_API Tile : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Tile() : PrimitiveC(kNameTile) { InitIOName({"x", "multiples"}, {"output"}); }
   explicit Tile(const std::string k_name) : PrimitiveC(k_name) { InitIOName({"x", "multiples"}, {"output"}); }
+  /// \brief Destructor.
   ~Tile() = default;
   MS_DECLARE_PARENT(Tile, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr TileInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimTilePtr = std::shared_ptr<Tile>;
 }  // namespace ops
 }  // namespace mindspore
 

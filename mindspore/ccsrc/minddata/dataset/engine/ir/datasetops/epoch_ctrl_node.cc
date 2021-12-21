@@ -46,8 +46,8 @@ void EpochCtrlNode::Print(std::ostream &out) const {
 // Function to build the EpochCtrlOp
 Status EpochCtrlNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto new_op_ = std::make_shared<EpochCtrlOp>(repeat_count_);
-  new_op_->set_total_repeats(GetTotalRepeats());
-  new_op_->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  new_op_->SetTotalRepeats(GetTotalRepeats());
+  new_op_->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(new_op_);
   op_ = new_op_;
   return Status::OK();
@@ -59,13 +59,11 @@ Status EpochCtrlNode::ValidateParams() {
   if (repeat_count_ <= 0 && repeat_count_ != -1) {
     std::string err_msg =
       "EpochCtrlNode: num_epochs should be either -1 or positive integer, num_epochs: " + std::to_string(repeat_count_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (children_.size() != 1 || children_[0] == nullptr) {
     std::string err_msg = "Internal error: epoch control node should have one child node";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }

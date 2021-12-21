@@ -18,7 +18,6 @@
 #include <iostream>
 
 #include "minddata/dataset/core/config_manager.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/util/log_adapter.h"
 
 namespace mindspore {
@@ -44,12 +43,13 @@ void SkipOp::Print(std::ostream &out, bool show_all) const {
   }
 }
 
-Status SkipOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. SkipOp is an inlined operator."); }
+Status SkipOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] SkipOp is an inlined operator."); }
 
-Status SkipOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
+Status SkipOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   bool eoe_received = false;
   while (skip_count_ < max_skips_) {
-    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
     if (row->eoe()) {
       eoe_received = true;
       break;
@@ -57,7 +57,7 @@ Status SkipOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) 
     skip_count_++;
   }
   if (!eoe_received) {
-    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
   }
   if (row->eoe()) {
     UpdateRepeatAndEpochCounter();
@@ -65,27 +65,5 @@ Status SkipOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) 
   }
   return Status::OK();
 }
-
-int32_t SkipOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Return operator, no parent node, assuming it's the root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
-}
-
-int32_t SkipOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
-  }
-}
-
 }  // namespace dataset
 }  // namespace mindspore

@@ -19,7 +19,6 @@
 
 #include <vector>
 #include "src/inner_kernel.h"
-#include "nnacl/fp32/range_fp32.h"
 
 namespace mindspore::kernel {
 class RangeCPUKernel : public InnerKernel {
@@ -29,12 +28,9 @@ class RangeCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~RangeCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-
- private:
-  LiteDataType data_type_ = kDataTypeFloat;
 };
 }  // namespace mindspore::kernel
 

@@ -21,8 +21,14 @@
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kLayerNormGradInputsNum = 5;
+constexpr size_t kLayerNormGradOutputsNum = 3;
+}  // namespace
+
 void LayerNormGradCPUKernel::InitKernel(const CNodePtr &kernel_node) {
-  CheckParam(kernel_node);
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
   std::vector<size_t> x_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   auto begin_norm_axis = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, "begin_norm_axis");
@@ -46,19 +52,23 @@ void LayerNormGradCPUKernel::InitKernel(const CNodePtr &kernel_node) {
     param_num_ *= x_shape[i];
   }
   if (block_num_ == 0 || block_size_ == 0) {
-    MS_LOG(EXCEPTION) << "LayerNormGradCPUKernel input shape error, input shape: " << x_shape;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of 'input_x' should be at least 1, but got "
+                      << Vector2Str(x_shape);
   }
 }
 
 bool LayerNormGradCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                     const std::vector<kernel::AddressPtr> &,
                                     const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kLayerNormGradInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kLayerNormGradOutputsNum, kernel_name_);
   if (dtype_ == kNumberTypeFloat16) {
     LaunchKernel<float16>(inputs, outputs);
   } else if (dtype_ == kNumberTypeFloat32 || dtype_ == kNumberTypeFloat64) {
     LaunchKernel<float>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "input dtype only support float16, float32, float64";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be float16, float32, or float64, but got " << dtype_;
   }
   return true;
 }
@@ -66,14 +76,14 @@ bool LayerNormGradCPUKernel::Launch(const std::vector<kernel::AddressPtr> &input
 template <typename T>
 void LayerNormGradCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs,
                                           const std::vector<AddressPtr> &outputs) {
-  auto x = reinterpret_cast<T *>(inputs[0]->addr);
-  auto dy = reinterpret_cast<T *>(inputs[1]->addr);
-  auto var = reinterpret_cast<T *>(inputs[2]->addr);
-  auto mean = reinterpret_cast<T *>(inputs[3]->addr);
-  auto gamma = reinterpret_cast<T *>(inputs[4]->addr);
-  auto dx = reinterpret_cast<T *>(outputs[0]->addr);
-  auto dg = reinterpret_cast<T *>(outputs[1]->addr);
-  auto db = reinterpret_cast<T *>(outputs[2]->addr);
+  auto *x = reinterpret_cast<T *>(inputs[0]->addr);
+  auto *dy = reinterpret_cast<T *>(inputs[1]->addr);
+  auto *var = reinterpret_cast<T *>(inputs[2]->addr);
+  auto *mean = reinterpret_cast<T *>(inputs[3]->addr);
+  auto *gamma = reinterpret_cast<T *>(inputs[4]->addr);
+  auto *dx = reinterpret_cast<T *>(outputs[0]->addr);
+  auto *dg = reinterpret_cast<T *>(outputs[1]->addr);
+  auto *db = reinterpret_cast<T *>(outputs[2]->addr);
   size_t thread_num = common::ThreadPool::GetInstance().GetSyncRunThreadNum();
   auto thread_num1 = param_num_ < thread_num ? param_num_ : thread_num;
   std::vector<common::Task> tasks1;
@@ -121,7 +131,7 @@ void LayerNormGradCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs,
         auto norm_shift = static_cast<int>(j / block_size_);
         auto var_sqrt = (T)std::pow(static_cast<double>(var[norm_shift]) + eps_, -0.5);
         auto dx1 = dy[j] * gamma[param_shift] * var_sqrt;
-        auto dx2 = sum1 * (T)2.0 / block_size_ * (x[j] - mean[norm_shift]);
+        auto dx2 = sum1 * (T)2.0 / (T)(block_size_) * (x[j] - mean[norm_shift]);
         auto dx3 = ((T)(-1.0) * var_sqrt * sum2 + ((T)1.0 / (T)block_size_) * sum1 * sum3) * ((T)1.0 / (T)block_size_);
         dx[j] = dx1 + dx2 + dx3;
       }
@@ -143,17 +153,6 @@ void LayerNormGradCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs,
     tasks2.emplace_back(block);
   }
   (void)common::ThreadPool::GetInstance().SyncRun(tasks2);
-}
-
-void LayerNormGradCPUKernel::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 5) {
-    MS_LOG(EXCEPTION) << "LayerNormGradCPUKernel needs 5 inputs, but gets " << input_num;
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 3) {
-    MS_LOG(EXCEPTION) << "LayerNormGradCPUKernel expects 3 output, but gets" << output_num;
-  }
 }
 }  // namespace kernel
 }  // namespace mindspore

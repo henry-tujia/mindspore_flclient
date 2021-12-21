@@ -26,16 +26,18 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameRoll = "Roll";
+/// \brief Rolls the elements of a tensor along an axis.
 class Roll : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Roll() : PrimitiveC(kNameRoll) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~Roll() = default;
   MS_DECLARE_PARENT(Roll, PrimitiveC);
 };
 
 AbstractBasePtr RollInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimRollPtr = std::shared_ptr<Roll>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_ROLL_H_

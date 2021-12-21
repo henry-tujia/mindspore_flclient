@@ -31,8 +31,8 @@ namespace mindspore {
 namespace prim {
 using mindspore::abstract::AbstractBase;
 using mindspore::abstract::AbstractList;
-using mindspore::abstract::AbstractSequeue;
-using mindspore::abstract::AbstractSequeuePtr;
+using mindspore::abstract::AbstractSequence;
+using mindspore::abstract::AbstractSequencePtr;
 using mindspore::abstract::AbstractTuple;
 
 FuncGraphPtr ZipOperation::GenerateFuncGraph(const AbstractBasePtrList &args_spec_list) {
@@ -40,21 +40,26 @@ FuncGraphPtr ZipOperation::GenerateFuncGraph(const AbstractBasePtrList &args_spe
   // input: tuple arguments
   // output: tuple of items of input iterated on every input
   if (args_spec_list.empty()) {
-    MS_LOG(EXCEPTION) << "For 'zip', there is at least one input.";
+    MS_LOG(EXCEPTION) << "The zip operator must have at least 1 argument, but the size of arguments is 0.";
   }
 
-  auto is_all_sequeue =
+  auto all_is_sequence =
     std::all_of(args_spec_list.begin(), args_spec_list.end(), [](const AbstractBasePtr &abs) -> bool {
       MS_EXCEPTION_IF_NULL(abs);
-      return abs->isa<AbstractSequeue>();
+      return abs->isa<AbstractSequence>();
     });
-  if (!is_all_sequeue) {
-    MS_LOG(EXCEPTION) << "For 'zip', all inputs must be sequence.";
+  if (!all_is_sequence) {
+    std::ostringstream oss;
+    int64_t idx = 0;
+    for (auto &item : args_spec_list) {
+      oss << "the " << ++idx << " argument is: " << item->ToString() << "\n";
+    }
+    MS_LOG(EXCEPTION) << "The all inputs of zip operator must be sequence. But " << oss.str();
   }
 
   auto min_abs = std::min_element(
     args_spec_list.begin(), args_spec_list.end(), [](const AbstractBasePtr &x, const AbstractBasePtr &y) {
-      return (x->cast<AbstractSequeuePtr>()->size() < y->cast<AbstractSequeuePtr>()->size());
+      return (x->cast<AbstractSequencePtr>()->size() < y->cast<AbstractSequencePtr>()->size());
     });
   FuncGraphPtr ret_graph = std::make_shared<FuncGraph>();
   ret_graph->set_flag(FUNC_GRAPH_FLAG_CORE, true);
@@ -62,10 +67,10 @@ FuncGraphPtr ZipOperation::GenerateFuncGraph(const AbstractBasePtrList &args_spe
     (void)ret_graph->add_parameter();
   }
 
-  // generate tuple output of ziped arguments input
+  // generate tuple output of zipped arguments input
   std::vector<AnfNodePtr> make_tuple_nodes;
   make_tuple_nodes.push_back(NewValueNode(prim::kPrimMakeTuple));
-  for (size_t idx = 0; idx < (*min_abs)->cast<AbstractSequeuePtr>()->size(); idx++) {
+  for (size_t idx = 0; idx < (*min_abs)->cast<AbstractSequencePtr>()->size(); idx++) {
     std::vector<AnfNodePtr> make_tuple_zip_nodes;
     make_tuple_zip_nodes.push_back(NewValueNode(prim::kPrimMakeTuple));
     std::string module_name = "mindspore.ops.composite.multitype_ops.getitem_impl";

@@ -26,17 +26,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameEqual = prim::kEqual;
+/// \brief Computes the equivalence between two tensors element-wise.
+/// Refer to Python API @ref mindspore.ops.Equal for more details.
 class MS_CORE_API Equal : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Equal() : PrimitiveC(prim::kPrimEqual->name()) { InitIOName({"x", "y"}, {"output"}); }
+  /// \brief Destructor.
   ~Equal() = default;
   MS_DECLARE_PARENT(Equal, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Equal for the inputs.
   void Init() {}
 };
 
 AbstractBasePtr EqualInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimEqualPtr = std::shared_ptr<Equal>;
 }  // namespace ops
 }  // namespace mindspore
 

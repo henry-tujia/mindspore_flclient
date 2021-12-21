@@ -34,16 +34,14 @@ class MindIRControlFlowAdjust {
   bool Run(const FuncGraphPtr &graph);
 
  private:
-  FuncGraphPtr GetPartialFg(const CNodePtr &partial_node);
   std::vector<AnfNodePtr> GetFgOutput(const FuncGraphPtr &fg);
   int ModifyFgToCallAfterFg(const FuncGraphPtr &fg, const FuncGraphPtr &after_fg);
   bool HasCallAfter(const FuncGraphPtr &partial_fg);
-  FuncGraphPtr AddAfterFuncGraph(const FuncGraphPtr &fg, const std::vector<AnfNodePtr> &one_of_inline_fg_output,
-                                 const string &switch_node_name);
+  FuncGraphPtr AddAfterFuncGraph(const FuncGraphPtr &fg, const std::vector<AnfNodePtr> &one_of_inline_fg_output);
   int AddAfterFgForInlinedFg(const std::set<FuncGraphPtr> &all_func_graphs, const FuncGraphPtr &main_fg);
   int InsertPartialFusionForRawCall(const std::set<FuncGraphPtr> &all_func_graphs);
-  CNodePtr GetMainFgSwitchNode(const FuncGraphPtr &fg);
   int ResetFuncGraph(const FuncGraphPtr &fg, std::set<FuncGraphPtr> all_func_graphs);
+  int MoveCallInputsToPartialFusionInputs(const std::set<FuncGraphPtr> &all_func_graphs);
 
  private:
   FmkType fmk_type_ = FmkType::kFmkTypeMs;

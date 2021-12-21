@@ -90,7 +90,7 @@ int BiasAddCPUFp16Kernel::GetBiasData() {
   bias_data_type_ = bias_tensor_->data_type();
   if (bias_data_type_ == kNumberTypeFloat || bias_data_type_ == kNumberTypeFloat32) {
     if (bias_data_ == nullptr) {
-      MS_CHECK_INT_MUL_NOT_OVERFLOW(bias_tensor_->ElementsNum(), sizeof(float16_t), RET_ERROR);
+      MS_CHECK_INT_MUL_NOT_OVERFLOW(bias_tensor_->ElementsNum(), static_cast<int>(sizeof(float16_t)), RET_ERROR);
       bias_data_ = reinterpret_cast<float16_t *>(malloc(bias_tensor_->ElementsNum() * sizeof(float16_t)));
       if (bias_data_ == nullptr) {
         MS_LOG(ERROR) << "bias_data_ is nullptr";
@@ -115,7 +115,7 @@ int BiasAddCPUFp16Kernel::GetBiasData() {
   return RET_OK;
 }
 
-int BiasAddCPUFp16Kernel::Init() {
+int BiasAddCPUFp16Kernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   bias_tensor_ = in_tensors_.at(1);

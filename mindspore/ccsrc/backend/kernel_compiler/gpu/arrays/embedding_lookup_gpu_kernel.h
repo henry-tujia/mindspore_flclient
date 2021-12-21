@@ -37,6 +37,9 @@ class EmbeddingLookupKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     S *indices_addr = GetDeviceAddress<S>(inputs, 1);
@@ -56,6 +59,7 @@ class EmbeddingLookupKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num == 3) {
@@ -64,11 +68,22 @@ class EmbeddingLookupKernel : public GpuKernel {
     } else if (input_num == 2) {
       MS_LOG(INFO) << " EmbeddingLookup running in Normal Mode.";
     } else {
-      MS_LOG(EXCEPTION) << "Argument number is " << input_num << ", but EmbeddingLookup needs 2 or 3.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2 or 3, but got " << input_num;
     }
     input_shapes_ = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
     indices_shapes_ = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
     output_shapes_ = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shapes_, kernel_name, "input") ||
+                     CHECK_SHAPE_NULL(indices_shapes_, kernel_name, "input_indices") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
+    if (input_shapes_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of input cannot be less than 1, but got "
+                        << input_shapes_.size();
+    }
     if (!is_dynamic_shape_) {
       offset_ = GetAttr<int64_t>(kernel_node, "offset");
     }
@@ -78,6 +93,7 @@ class EmbeddingLookupKernel : public GpuKernel {
   }
   void ResetResource() noexcept override {
     is_dynamic_shape_ = false;
+    is_null_input_ = false;
     input_shapes_.clear();
     indices_shapes_.clear();
     output_shapes_.clear();
@@ -138,6 +154,7 @@ class EmbeddingLookupKernel : public GpuKernel {
   size_t dims_[3] = {};
   int64_t offset_;
   bool is_dynamic_shape_;
+  bool is_null_input_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

@@ -22,11 +22,12 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
-#include <unordered_set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "ir/anf.h"
 #include "ir/func_graph_cloner.h"
 #include "pipeline/jit/static_analysis/evaluator.h"
@@ -35,8 +36,8 @@ namespace mindspore {
 namespace abstract {
 enum SpecializeStatusCode {
   kSpecializeSuccess = 0,
-  kSpecializeFindUniqueArgvalDead = 1,  // Dead Node
-  kSpecializeFindUniqueArgvalPoly = 2,  // Poly Node
+  kSpecializeDead = 1,  // Dead Node
+  kSpecializePoly = 2,  // Poly Node
   kSpecializeFailure = 0xFF
 };
 
@@ -52,7 +53,7 @@ class ProgramSpecializer {
   ~ProgramSpecializer() = default;
   // Run the program specializer on the topmost graph in the given context.
   FuncGraphPtr Run(const FuncGraphPtr &fg, const AnalysisContextPtr &context);
-  const std::unordered_set<AnfNodePtr> &seen() const { return seen_; }
+  const mindspore::HashSet<AnfNodePtr> &seen() const { return seen_; }
   void AddSeen(const AnfNodePtr &node) { (void)seen_.insert(node); }
 
   std::shared_ptr<FuncGraphSpecializer> GetFuncGraphSpecializer(const AnalysisContextPtr &context);
@@ -61,11 +62,11 @@ class ProgramSpecializer {
 
   std::shared_ptr<AnalysisEngine> engine() { return engine_; }
 
-  AnalysisContextPtr top_context() { return top_context_; }
+  const AnalysisContextPtr &top_context() { return top_context_; }
 
  private:
   std::shared_ptr<AnalysisEngine> engine_;
-  std::unordered_set<AnfNodePtr> seen_;
+  mindspore::HashSet<AnfNodePtr> seen_;
   FuncGraphManagerPtr mng_;
   std::unordered_map<AnalysisContextPtr, std::shared_ptr<FuncGraphSpecializer>, ContextHasher, ContextEqual>
     specializations_;
@@ -75,10 +76,7 @@ class ProgramSpecializer {
 class FuncGraphSpecializer : public std::enable_shared_from_this<FuncGraphSpecializer> {
  public:
   FuncGraphSpecializer(ProgramSpecializer *const s, const FuncGraphPtr &fg, const AnalysisContextPtr &context);
-  virtual ~FuncGraphSpecializer() {
-    specializer_ = nullptr;
-    repl_node_ = nullptr;
-  }
+  virtual ~FuncGraphSpecializer() { specializer_ = nullptr; }
   void Run();
   FuncGraphPtr specialized_func_graph() { return specialized_func_graph_; }
 
@@ -92,23 +90,25 @@ class FuncGraphSpecializer : public std::enable_shared_from_this<FuncGraphSpecia
   std::shared_ptr<FuncGraphSpecializer> parent_;
   std::shared_ptr<AnalysisEngine> engine_;
   ClonerPtr cloner_;
-  // ProcessNode-> [cloner_->CloneDisconnected] will clone AnfNode again.
-  // So, repl_node_ should pointer to GraphCloner->repl_node_ other than a copy of that.
-  std::unordered_map<AnfNodePtr, AnfNodePtr> *repl_node_;
   std::vector<AnfNodePtr> todo_;
-  std::unordered_set<AnfNodePtr> marked_;
-  std::unordered_map<EvaluatorPtr, EvaluatorCacheMgrPtr> evalcaches_;
+  mindspore::HashSet<AnfNodePtr> marked_;
+  mindspore::HashMap<EvaluatorPtr, EvaluatorCacheMgrPtr> evalcaches_;
 
   void FirstPass();
   void SecondPass();
   void ProcessNode(const AnfNodePtr &node);
-  void ProcessCNode(const CNodePtr &new_node);
+  void ProcessCNode(const CNodePtr &node);
+
+  const NodeToNodeMap &cloned_nodes() const { return cloner_->cloned_nodes(); }
 
   inline AnfNodeConfigPtr MakeConfig(const AnfNodePtr &node);
   inline AnalysisContextPtr MakeContext(const AnalysisEnginePtr &engine, const BaseFuncGraphEvaluatorPtr &evaluator,
                                         const AbstractBasePtrList &args_spec_list);
 
   inline void AddTodoItem(const AnfNodePtr &node) { todo_.push_back(node); }
+  inline void AddTodoItem(const std::vector<AnfNodePtr> &nodes) {
+    (void)todo_.insert(todo_.end(), nodes.cbegin(), nodes.cend());
+  }
   // Get node replicated by Cloner.
   AnfNodePtr GetReplicatedNode(const AnfNodePtr &node);
   // Replicated node which is not used directly by a func graph, so it's not searchable from it's return node
@@ -116,7 +116,7 @@ class FuncGraphSpecializer : public std::enable_shared_from_this<FuncGraphSpecia
   AnfNodePtr ReplicateDisconnectedNode(const AnfNodePtr &node);
 
   // Build a value node from parameter if the function graph has special flag to hint it can be done.
-  AnfNodePtr BuildSpecializedParameterNode(const CNodePtr &new_node);
+  AnfNodePtr BuildSpecializedParameterNode(const CNodePtr &node);
 
   // Build a value node if ival is constant and not any-value
   AnfNodePtr BuildPossibleValueNode(const AnfNodePtr &origin_node, const AbstractBasePtr &ival,
@@ -132,9 +132,9 @@ class FuncGraphSpecializer : public std::enable_shared_from_this<FuncGraphSpecia
                                        SpecializeStatusCode *errcode);
 
   // Find the unique argument values which can be used to specialize a primitive or graph function.
-  SpecializeStatusCode FindUniqueArgvals(const AbstractFunctionPtr &fn, const EvaluatorPtr &eval,
-                                         const AbstractBasePtrList &argvals,
-                                         std::pair<AbstractBasePtrList, AbstractBasePtr> *result);
+  SpecializeStatusCode AcquireUniqueEvalVal(const AbstractFunctionPtr &fn, const EvaluatorPtr &eval,
+                                            const AbstractBasePtrList &argvals,
+                                            std::pair<AbstractBasePtrList, AbstractBasePtr> *result);
   // Get cache, it may be eval's cache or cache built from broaded argument values.
   const EvaluatorCacheMgrPtr GetEvalCache(const EvaluatorPtr &eval);
   // Try to build unique argvals from the broaded arg vals if it is unique.

@@ -18,20 +18,22 @@
 #define MINDSPORE_MONITOR_H
 
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
-#include "minddata/dataset/util/status.h"
 #include "minddata/dataset/engine/perf/profiling.h"
+#include "minddata/dataset/util/cond_var.h"
+#include "minddata/dataset/util/status.h"
 
 namespace mindspore {
 namespace dataset {
 class ExecutionTree;
+class ProfilingManager;
+
 class Monitor {
  public:
   // Monitor object constructor
-  explicit Monitor(ExecutionTree *tree);
-
-  Monitor() = default;
+  explicit Monitor(ProfilingManager *profiler_manager);
 
   ~Monitor() = default;
 
@@ -39,9 +41,15 @@ class Monitor {
   // This function will be the entry point of mindspore::Dataset::Task
   Status operator()();
 
+  // Setter for execution tree pointer
+  void SetTree(ExecutionTree *tree) { tree_ = tree; }
+
  private:
+  ProfilingManager *profiling_manager_;
   int64_t sampling_interval_;
   ExecutionTree *tree_;
+  std::mutex mux_;
+  CondVar cv_;
 };
 }  // namespace dataset
 }  // namespace mindspore

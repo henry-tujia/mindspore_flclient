@@ -30,7 +30,7 @@ class GruCPUKernel : public InnerKernel {
 
   ~GruCPUKernel() override { FreeTmpBuffer(); }
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 
@@ -50,7 +50,7 @@ class GruCPUKernel : public InnerKernel {
   const int weight_r_index = 2;
   const int bias_index = 3;
 
-  float *buffer_[4];
+  float *buffer_[4] = {nullptr};
   const int gate_num = 3;
   const int packed_input_index = 0;
   const int input_gate_index = 1;

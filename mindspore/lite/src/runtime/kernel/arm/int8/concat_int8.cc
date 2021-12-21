@@ -25,7 +25,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Concat;
 
 namespace mindspore::kernel {
-int ConcatInt8CPUKernel::Init() {
+int ConcatInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_.front());
   MS_CHECK_TRUE_RET(out_tensors_.size() == 1, RET_ERROR);
@@ -48,12 +48,14 @@ int ConcatInt8CPUKernel::Init() {
   for (size_t i = 0; i < input_num; i++) {
     auto *input_tensor = in_tensors_.at(i);
     auto in_quant_args = input_tensor->quant_params();
+    MS_CHECK_TRUE_RET(!in_quant_args.empty(), RET_ERROR);
     concat_param_->quant_arg_.in_args_[i].scale_ = in_quant_args.front().scale;
     concat_param_->quant_arg_.in_args_[i].zp_ = in_quant_args.front().zeroPoint;
   }
 
   auto output_tensor = out_tensors_.at(kOutputIndex);
   auto quant_params = output_tensor->quant_params();
+  MS_CHECK_TRUE_RET(!quant_params.empty(), RET_ERROR);
   concat_param_->quant_arg_.out_args_.scale_ = quant_params.front().scale;
   concat_param_->quant_arg_.out_args_.zp_ = quant_params.front().zeroPoint;
 
@@ -123,8 +125,9 @@ int ConcatInt8CPUKernel::Run() {
   concat_param_->count_unit_ = count_unit_;
 
   for (int i = 0; i < input_num; i++) {
-    input_data_[i] = static_cast<int8_t *>(in_tensors_.at(i)->MutableData());
-    CHECK_NULL_RETURN(input_data_[i]);
+    auto in_tensor = in_tensors_.at(i);
+    input_data_[i] = static_cast<int8_t *>(in_tensor->MutableData());
+    MS_CHECK_TRUE_RET(in_tensor->ElementsNum() == 0 || input_data_[i] != nullptr, RET_ERROR);
   }
   output_data_ = reinterpret_cast<int8_t *>(out_tensors_.at(0)->MutableData());
   CHECK_NULL_RETURN(output_data_);

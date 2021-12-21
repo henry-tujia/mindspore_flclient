@@ -23,6 +23,7 @@
 #include "src/runtime/gpu/opencl/opencl_executor.h"
 #include "src/runtime/kernel/opencl/utils.h"
 #include "src/runtime/kernel/opencl/kernel/to_format.h"
+#include "src/runtime/kernel/opencl/kernel/gl_to_cl.h"
 #include "include/errorcode.h"
 #include "src/common/utils.h"
 #include "src/common/prim_inner.h"
@@ -88,7 +89,7 @@ int OpenCLSubGraph::GenToFormatOp(const std::vector<lite::Tensor *> &in_tensors,
   for (size_t i = 0; i < in_tensors.size(); ++i) {
     auto *in_tensor = in_tensors.at(i);
     auto *new_tensor = new (std::nothrow)
-      lite::Tensor(in_tensor->data_type(), in_tensor->shape(), in_tensor->format(), lite::Tensor::VAR);
+      lite::Tensor(in_tensor->data_type(), in_tensor->shape(), in_tensor->format(), lite::Category::VAR);
     MS_ASSERT(new_tensor);
     if (new_tensor == nullptr) {
       MS_LOG(ERROR) << "OpenCLSubGraph new tensor failed!";
@@ -108,6 +109,8 @@ int OpenCLSubGraph::GenToFormatOp(const std::vector<lite::Tensor *> &in_tensors,
       new_tensor = nullptr;
       return RET_ERROR;
     }
+
+    parameter->op_parameter.is_zero_shape_ = false;
     parameter->op_parameter.type_ = PRIM_TO_FORMAT;
     parameter->out_mem_type = mem_type;
     out_parameters->emplace_back(parameter);
@@ -162,13 +165,119 @@ int OpenCLSubGraph::GenToFormatOp(const std::vector<lite::Tensor *> &in_tensors,
   return RET_OK;
 }
 
+#ifdef ENABLE_OPENGL_TEXTURE
+int OpenCLSubGraph::GenGLToCLOp(const std::vector<lite::Tensor *> &in_tensors,
+                                const std::vector<std::vector<kernel::LiteKernel *>> &in_kernels,
+                                std::vector<lite::Tensor *> *out_tensors,
+                                std::vector<OpenGLTexture2DToOpenCLParameter *> *out_parameters,
+                                std::vector<LiteKernel *> *out_convert_ops, MemType mem_type) {
+  MS_ASSERT(out_tensors);
+  MS_ASSERT(out_parameters);
+  MS_ASSERT(out_convert_ops);
+  out_tensors->clear();
+  out_parameters->clear();
+  out_convert_ops->clear();
+  std::vector<std::vector<kernel::LiteKernel *>> loop_kernels;
+  if (mem_type == MemType::GLTexture) {
+    GetKernelFromToTensor(in_tensors, nodes_, &loop_kernels, true);
+  }
+
+  for (size_t i = 0; i < in_tensors.size(); ++i) {
+    auto *in_tensor = in_tensors.at(i);
+    auto *new_tensor = new (std::nothrow)
+      lite::Tensor(in_tensor->data_type(), in_tensor->shape(), in_tensor->format(), lite::Category::VAR);
+    MS_ASSERT(new_tensor);
+    if (new_tensor == nullptr) {
+      MS_LOG(ERROR) << "OpenCLSubGraph new tensor failed!";
+      return RET_ERROR;
+    }
+    for (const auto &param : in_tensor->quant_params()) {
+      new_tensor->AddQuantParam(param);
+    }
+
+    out_tensors->emplace_back(new_tensor);
+    KernelKey desc{kGPU, kNumberTypeGLUInt, lite::PRIM_GLTEXTURE_TO_OPENCL};
+    auto *parameter = static_cast<OpenGLTexture2DToOpenCLParameter *>(malloc(sizeof(OpenGLTexture2DToOpenCLParameter)));
+    MS_ASSERT(parameter);
+    if (parameter == nullptr) {
+      MS_LOG(ERROR) << "OpenCLSubGraph new parameter failed!";
+      delete new_tensor;
+      new_tensor = nullptr;
+      return RET_ERROR;
+    }
+
+    parameter->op_parameter.is_zero_shape_ = false;
+    parameter->op_parameter.type_ = lite::PRIM_GLTEXTURE_TO_OPENCL;
+    parameter->out_mem_type = mem_type;
+    out_parameters->emplace_back(parameter);
+    InnerKernel *in_convert_op_inner = nullptr;
+    if (mem_type == MemType::IMG) {
+      in_convert_op_inner = OpenCLKernelCreator<GLToCLOpenCLKernel>(
+        {in_tensor}, {new_tensor}, reinterpret_cast<OpParameter *>(parameter), this->Context(), desc);
+    } else {
+      in_convert_op_inner = OpenCLKernelCreator<GLToCLOpenCLKernel>(
+        {new_tensor}, {in_tensor}, reinterpret_cast<OpParameter *>(parameter), this->Context(), desc);
+    }
+    MS_ASSERT(in_convert_op_inner);
+    if (in_convert_op_inner == nullptr ||
+        reinterpret_cast<GLToCLOpenCLKernel *>(in_convert_op_inner)->CheckSpecs() != RET_OK) {
+      MS_LOG(ERROR) << "OpenCLSubGraph create op failed!";
+      delete new_tensor;
+      new_tensor = nullptr;
+      free(parameter);
+      parameter = nullptr;
+      return RET_ERROR;
+    }
+    std::shared_ptr<kernel::Kernel> inner_convert_op(in_convert_op_inner);
+    auto *in_convert_op = new (std::nothrow) kernel::LiteKernel(inner_convert_op);
+    if (in_convert_op == nullptr) {
+      MS_LOG(ERROR) << "OpenCLSubGraph create op failed!";
+      delete new_tensor;
+      new_tensor = nullptr;
+      free(parameter);
+      parameter = nullptr;
+      return RET_ERROR;
+    }
+    static int index = 0;
+    in_convert_op->set_name("GLToCL_" + std::to_string(index++));
+    ReplaceOutTensorAndKernelToConvert(in_tensor, in_kernels.at(i), new_tensor, in_convert_op, mem_type);
+    // replace in_tensor of inner kernel which use out tensor
+    if (mem_type == MemType::GLTexture) {
+      for (auto &iv : loop_kernels[i]) {
+        MS_ASSERT(iv);
+        auto tensors = iv->in_tensors();
+        auto jv = std::find(tensors.begin(), tensors.end(), in_tensors.at(i));
+        if (jv != tensors.end()) {
+          *jv = new_tensor;
+          iv->set_in_tensors(tensors);
+        }
+      }
+    }
+
+    out_convert_ops->emplace_back(in_convert_op);
+  }
+  return RET_OK;
+}
+#endif
+
 int OpenCLSubGraph::InsertOpsPass() {
   GetInOutNodes();
 
   std::vector<std::vector<kernel::LiteKernel *>> from_kernels_;
   GetKernelFromToTensor(in_tensors(), in_nodes_, &from_kernels_, true);
-  int ret =
+  int ret = 0;
+#ifdef ENABLE_OPENGL_TEXTURE
+  if (this->GetOpenGLTextureEnable() == true) {
+    ret = GenGLToCLOp(in_tensors(), from_kernels_, &in_convert_tensors_, &gl_in_parameters_, &in_convert_ops_,
+                      MemType::IMG);
+  } else {
+    ret =
+      GenToFormatOp(in_tensors(), from_kernels_, &in_convert_tensors_, &in_parameters_, &in_convert_ops_, MemType::IMG);
+  }
+#else
+  ret =
     GenToFormatOp(in_tensors(), from_kernels_, &in_convert_tensors_, &in_parameters_, &in_convert_ops_, MemType::IMG);
+#endif
   if (ret != RET_OK) {
     return ret;
   }
@@ -176,8 +285,18 @@ int OpenCLSubGraph::InsertOpsPass() {
 
   std::vector<std::vector<kernel::LiteKernel *>> to_kernels_;
   GetKernelFromToTensor(out_tensors(), out_nodes_, &to_kernels_, false);
+#if defined(ENABLE_OPENGL_TEXTURE)
+  if (this->GetOpenGLTextureEnable()) {
+    ret = GenGLToCLOp(out_tensors(), to_kernels_, &out_convert_tensors_, &gl_out_parameters_, &out_convert_ops_,
+                      MemType::GLTexture);
+  } else {
+    ret = GenToFormatOp(out_tensors(), to_kernels_, &out_convert_tensors_, &out_parameters_, &out_convert_ops_,
+                        MemType::BUF);
+  }
+#else
   ret =
     GenToFormatOp(out_tensors(), to_kernels_, &out_convert_tensors_, &out_parameters_, &out_convert_ops_, MemType::BUF);
+#endif
   if (ret != RET_OK) {
     return ret;
   }
@@ -186,10 +305,12 @@ int OpenCLSubGraph::InsertOpsPass() {
   return RET_OK;
 }
 
-int OpenCLSubGraph::Init() {
+int OpenCLSubGraph::RunPass() {
   // The fp16 operator in heterogeneous scenes needs to be set to fp32
   // to prevent the frame from being converted to fp16 in advance.
-  if (in_tensors()[0]->data_type() == kNumberTypeFloat32 || in_tensors()[0]->data_type() == kNumberTypeFloat16) {
+  auto in_first_tensor = in_tensors().front();
+  if (in_first_tensor->IsGraphInput() &&
+      (in_first_tensor->data_type() == kNumberTypeFloat32 || in_first_tensor->data_type() == kNumberTypeFloat16)) {
     desc_.data_type = in_tensors()[0]->data_type();
   }
   allocator_ = ocl_runtime_->GetAllocator();
@@ -219,12 +340,9 @@ int OpenCLSubGraph::Init() {
 
 int OpenCLSubGraph::UpdateTensorDataTypePass() {
   bool is_fp16 = ocl_runtime_->GetFp16Enable();
-  if (is_fp16) {
-    std::set<lite::Tensor *> out_set;
+  if (is_fp16 && subgraph_type() == kGpuFp16SubGraph) {
     auto in_tensors = this->in_tensors();
     auto out_tensors = this->out_tensors();
-    out_set.insert(in_tensors.begin(), in_tensors.end());
-    out_set.insert(out_tensors.begin(), out_tensors.end());
     for (auto iv : nodes_) {
       MS_ASSERT(iv);
       auto cur_outs = iv->out_tensors();
@@ -241,12 +359,10 @@ int OpenCLSubGraph::UpdateTensorDataTypePass() {
         if (last_kernel) continue;
       }
       for (auto jv : cur_outs) {
-        if (out_set.count(jv) == 0) {
-          MS_ASSERT(jv);
-          // if Fp16Enable, only change fp32 to fp16, other dtype is reserved
-          if (jv->data_type() == kNumberTypeFloat32) {
-            jv->set_data_type(kNumberTypeFloat16);
-          }
+        MS_ASSERT(jv);
+        // if Fp16Enable, only change fp32 to fp16, other dtype is reserved
+        if (jv->data_type() == kNumberTypeFloat32 && !jv->IsGraphOutput()) {
+          jv->set_data_type(kNumberTypeFloat16);
         }
       }
     }
@@ -299,6 +415,8 @@ void OpenCLSubGraph::GetInOutNodes() {
 }
 
 int OpenCLSubGraph::Prepare() {
+  ocl_runtime_->SetFp16Enable(subgraph_type() == kGpuFp16SubGraph);
+
   for (const auto tensor : in_tensors()) {
     MS_ASSERT(tensor);
     tensor->set_allocator(allocator_);

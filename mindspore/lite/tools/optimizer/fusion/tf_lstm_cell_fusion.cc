@@ -191,7 +191,7 @@ STATUS TfLstmCellFusion::SetWeightAbstractAndDefault(const ParameterPtr &weight,
     return RET_ERROR;
   }
   const auto param_num = shape[0] * shape[1] * shape[kInputIndexTwo];
-  auto tensor_data = new (std::nothrow) float[param_num * sizeof(float)];
+  auto tensor_data = new (std::nothrow) float[static_cast<size_t>(param_num) * sizeof(float)];
   std::vector<int> data_diff{0, 3, 2, 1};
   if (tensor_data == nullptr) {
     MS_LOG(DEBUG) << "new data failed";
@@ -204,7 +204,8 @@ STATUS TfLstmCellFusion::SetWeightAbstractAndDefault(const ParameterPtr &weight,
       }
     }
   }
-  auto tensor_info = lite::CreateTensorInfo(tensor_data, param_num * sizeof(float), shape, kNumberTypeFloat32);
+  auto tensor_info =
+    lite::CreateTensorInfo(tensor_data, static_cast<size_t>(param_num) * sizeof(float), shape, kNumberTypeFloat32);
   delete[] tensor_data;
   if (tensor_info == nullptr) {
     MS_LOG(ERROR) << "create tensor info failed.";
@@ -223,13 +224,13 @@ STATUS TfLstmCellFusion::SplitWeights(const AnfNodePtr &weight, const ParameterP
   // split input_size and hidden_size at dim 0
   // transform i,c,f,o to i,o,f,c at dim 1
   MS_ASSERT(weight != nullptr);
-  MS_ASSERT(wiehgt_i != nullptr);
-  MS_ASSERT(wiehgt_c != nullptr);
+  MS_ASSERT(weight_i != nullptr);
+  MS_ASSERT(weight_c != nullptr);
   if (!utils::isa<ParameterPtr>(weight)) {
     return RET_ERROR;
   }
   auto weight_param = utils::cast<ParameterPtr>(weight);
-  if (!weight_param->has_default()) {
+  if (!weight_param->has_default() || weight_param->default_param() == nullptr) {
     MS_LOG(DEBUG) << "weight not have default value";
     return RET_ERROR;
   }
@@ -244,7 +245,7 @@ STATUS TfLstmCellFusion::SplitWeights(const AnfNodePtr &weight, const ParameterP
   }
   auto data_ptr = reinterpret_cast<float *>(origin_tensor->data_c());
   auto data_shape = origin_tensor->shape();
-  if (data_shape.size() != 2) {
+  if (data_shape.size() != kInputSizeTwo) {
     MS_LOG(ERROR) << "weight data shape invalid";
     return RET_ERROR;
   }
@@ -282,7 +283,7 @@ STATUS TfLstmCellFusion::PopulateBiasNode(const EquivPtr &body_equiv, const Para
     return RET_ERROR;
   }
   auto old_bias_param = utils::cast<ParameterPtr>(old_bias);
-  if (!old_bias_param->has_default()) {
+  if (!old_bias_param->has_default() || old_bias_param->default_param() == nullptr) {
     MS_LOG(DEBUG) << "bias not have default value";
     return RET_ERROR;
   }
@@ -291,20 +292,23 @@ STATUS TfLstmCellFusion::PopulateBiasNode(const EquivPtr &body_equiv, const Para
     return RET_FAILED;
   }
   auto origin_tensor = std::dynamic_pointer_cast<tensor::Tensor>(old_bias_param->default_param());
+  MS_CHECK_TRUE_RET(origin_tensor != nullptr, RET_ERROR);
   if (origin_tensor->data_type() != kNumberTypeFloat32 && origin_tensor->data_type() != kNumberTypeFloat) {
     MS_LOG(DEBUG) << "origin_tensor is not float32 type";
     return RET_ERROR;
   }
   auto data_ptr = reinterpret_cast<float *>(origin_tensor->data_c());
+  MS_CHECK_TRUE_RET(data_ptr != nullptr, RET_ERROR);
   auto data_shape = origin_tensor->shape();
+  MS_CHECK_GE(hidden_size, 0, RET_ERROR);
   if (data_shape.size() != 1 || data_shape[0] != 4 * hidden_size) {
     MS_LOG(DEBUG) << "bias data shape illegal";
     return RET_ERROR;
   }
 
   std::vector<int64_t> shape{1, kBidirectionalGateNum * hidden_size};
-  std::unique_ptr<float[]> tensor_data(new (std::nothrow) float[hidden_size * 8]);
-
+  auto tensor_data = std::make_unique<float[]>(static_cast<size_t>(hidden_size) * 8);
+  MS_CHECK_TRUE_RET(tensor_data != nullptr, lite::RET_ERROR);
   auto forget_bias_node = utils::cast<AnfNodePtr>((*body_equiv)[forget_bias_]);
   if (forget_bias_node == nullptr) {
     MS_LOG(ERROR) << "forget bias node is nullptr";
@@ -329,8 +333,9 @@ STATUS TfLstmCellFusion::PopulateBiasNode(const EquivPtr &body_equiv, const Para
     }
   }
 
-  auto tensor_info = lite::CreateTensorInfo(tensor_data.get(), hidden_size * kBidirectionalGateNum * sizeof(float),
-                                            shape, kNumberTypeFloat32);
+  auto tensor_info =
+    lite::CreateTensorInfo(tensor_data.get(), static_cast<size_t>(hidden_size) * kBidirectionalGateNum * sizeof(float),
+                           shape, kNumberTypeFloat32);
   if (tensor_info == nullptr) {
     MS_LOG(ERROR) << "create tensor info failed.";
     return RET_ERROR;
@@ -359,11 +364,6 @@ CNodePtr TfLstmCellFusion::CreateLSTMNode(const FuncGraphPtr &func_graph, const 
   MS_CHECK_TRUE_RET(value_node != nullptr, nullptr);
 
   auto &vars = while_input_vars_;
-
-  auto limit1 = utils::cast<AnfNodePtr>((*equiv)[vars[3]]);
-  MS_ASSERT(limit1);
-  auto limit2 = utils::cast<AnfNodePtr>((*equiv)[vars[7]]);
-  MS_ASSERT(limit2);
   auto weight = utils::cast<AnfNodePtr>((*equiv)[vars[9]]);
   MS_ASSERT(weight);
   auto bias = utils::cast<AnfNodePtr>((*equiv)[vars[10]]);
@@ -405,7 +405,7 @@ CNodePtr TfLstmCellFusion::CreateLSTMNode(const FuncGraphPtr &func_graph, const 
     c_weight->set_abstract(weight->abstract()->Clone());
   }
 
-  if (SplitWeights(weight, i_weight, c_weight, hidden_shape.back()) != RET_OK) {
+  if (SplitWeights(weight, i_weight, c_weight, static_cast<int>(hidden_shape.back())) != RET_OK) {
     MS_LOG(DEBUG) << "split weight to i_weight and c_weight failed";
     return nullptr;
   }
@@ -418,7 +418,7 @@ CNodePtr TfLstmCellFusion::CreateLSTMNode(const FuncGraphPtr &func_graph, const 
     bias_node->set_abstract(bias->abstract()->Clone());
   }
 
-  if (PopulateBiasNode(body_equiv, bias_node, bias, hidden_shape.back()) != RET_OK) {
+  if (PopulateBiasNode(body_equiv, bias_node, bias, static_cast<int>(hidden_shape.back())) != RET_OK) {
     MS_LOG(DEBUG) << "reorder bias failed";
     return nullptr;
   }

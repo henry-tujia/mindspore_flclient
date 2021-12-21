@@ -39,7 +39,7 @@ void Convolution1x1CPUKernel::FreeTmpBuffer() {
 
 int Convolution1x1CPUKernel::ReSize() {
   FreeTmpBuffer();
-  auto error_code = ConvolutionBaseCPUKernel::Init();
+  auto error_code = ConvolutionBaseCPUKernel::Prepare();
   if (error_code != RET_OK) {
     MS_LOG(ERROR) << "conv base init failed.";
     return error_code;
@@ -95,7 +95,7 @@ int Convolution1x1CPUKernel::InitConv1x1Param() {
   return RET_OK;
 }
 
-int Convolution1x1CPUKernel::Init() {
+int Convolution1x1CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
 #ifdef ENABLE_AVX
@@ -111,10 +111,12 @@ int Convolution1x1CPUKernel::Init() {
   row_tile_ = C12NUM;
   col_tile_ = C8NUM;
 #endif
-  matmul_param_ = new (std::nothrow) MatMulParameter;
   if (matmul_param_ == nullptr) {
-    MS_LOG(ERROR) << "Memory allocation failed";
-    return RET_ERROR;
+    matmul_param_ = new (std::nothrow) MatMulParameter;
+    if (matmul_param_ == nullptr) {
+      MS_LOG(ERROR) << "Memory allocation failed";
+      return RET_ERROR;
+    }
   }
   if (op_parameter_->is_train_session_) {
     auto filter_tensor = in_tensors_.at(kWeightIndex);
@@ -299,8 +301,10 @@ int Convolution1x1CPUKernel::MallocWeightBiasData() {
   auto filter_tensor = in_tensors_.at(kWeightIndex);
   auto input_channel = filter_tensor->Channel();
   auto output_channel = filter_tensor->Batch();
+  MS_CHECK_TRUE_RET(input_channel > 0 && output_channel > 0, RET_ERROR);
   int size = input_channel * UP_ROUND(output_channel, col_tile_) * sizeof(float);
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, size);
     packed_weight_ = malloc(size);
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "Conv1x1 Malloc packed_weight_ error!";
@@ -310,6 +314,7 @@ int Convolution1x1CPUKernel::MallocWeightBiasData() {
 
   if (in_tensors_.size() == kInputSize2) {
     size = UP_ROUND(output_channel, col_tile_) * sizeof(float);
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, size);
     bias_data_ = malloc(size);
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "Conv1x1 Malloc bias_ptr_ error!";

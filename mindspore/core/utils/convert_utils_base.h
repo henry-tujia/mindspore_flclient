@@ -23,6 +23,9 @@
 #include "utils/log_adapter.h"
 
 namespace mindspore {
+const size_t kGBToByte = 1024 << 20;
+const size_t kMBToByte = 1024 << 10;
+
 inline int SizeToInt(size_t u) {
   if (u > static_cast<size_t>((std::numeric_limits<int>::max)())) {
     MS_LOG(EXCEPTION) << "The size_t value(" << u << ") exceeds the maximum value of int.";
@@ -78,6 +81,13 @@ inline int FloatToInt(float u) {
     MS_LOG(EXCEPTION) << "The float value(" << u << ") exceeds the maximum value of int.";
   }
   return static_cast<int>(u);
+}
+
+inline int FloatToLong(float u) {
+  if (u > static_cast<float>((std::numeric_limits<int64_t>::max)())) {
+    MS_LOG(EXCEPTION) << "The float value(" << u << ") exceeds the maximum value of int64_t.";
+  }
+  return static_cast<int64_t>(u);
 }
 
 inline int64_t DoubleToLong(double u) {
@@ -167,6 +177,32 @@ inline size_t SizetMulWithOverflowCheck(size_t a, size_t b) {
     }
   }
   return out;
+}
+
+inline uint32_t Uint32tMulWithOverflowCheck(uint32_t a, uint32_t b) {
+  uint32_t out = a * b;
+  if (a != 0) {
+    if ((out / a) != b) {
+      MS_LOG(EXCEPTION) << "Mul: a(" << a << ") * b(" << b << ") result is overflow";
+    }
+  }
+  return out;
+}
+
+inline size_t SizetAddWithOverflowCheck(size_t x, size_t y) {
+  size_t sum = x + y;
+  if (sum < x || sum < y) {
+    MS_LOG(EXCEPTION) << "Add: a(" << x << ") + b(" << y << ") result is overflow";
+  }
+  return sum;
+}
+
+inline uint32_t Uint32tAddWithOverflowCheck(uint32_t x, uint32_t y) {
+  uint32_t sum = x + y;
+  if (sum < x || sum < y) {
+    MS_LOG(EXCEPTION) << "Add: a(" << x << ") + b(" << y << ") result is overflow";
+  }
+  return sum;
 }
 
 inline uint8_t *AddressOffset(void *address, size_t offset) {

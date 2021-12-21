@@ -21,18 +21,20 @@
 #include <list>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
 #include "ir/manager.h"
+#include "utils/hashing.h"
 
 namespace mindspore {
 class Cloner;
 using ClonerPtr = std::shared_ptr<Cloner>;
+using NodeToNodeMap = mindspore::HashMap<AnfNodePtr, AnfNodePtr, PointerHash<AnfNodePtr>>;
 
 enum CloneType { kBasic = 0, kInline = 1, kLifting = 2, kDropping = 3 };
 
@@ -41,6 +43,16 @@ struct CloneInfo {
   FuncGraphPtr target;
   AnfNodePtrList params;
 };
+
+struct UpdateInfo {
+  UpdateInfo(const ScopePtr &scope, const NodeDebugInfoPtr &debug_info) : scope_(scope), debug_info_(debug_info) {}
+  ~UpdateInfo() = default;
+
+  ScopePtr scope_;
+  NodeDebugInfoPtr debug_info_;
+};
+
+using UpdateInfoPtr = std::shared_ptr<UpdateInfo>;
 
 class Cloner {
  public:
@@ -59,15 +71,16 @@ class Cloner {
   FuncGraphPtr operator[](const FuncGraphPtr &func_graph);
 
   // Map of replicate nodes and graphs
-  std::unordered_map<AnfNodePtr, AnfNodePtr> *cloned_node() { return &repl_node_; }
-  std::unordered_map<FuncGraphPtr, FuncGraphPtr> &cloned_func_graph() { return repl_func_graph_; }
+  const NodeToNodeMap &cloned_nodes() const { return repl_node_; }
+  const mindspore::HashMap<FuncGraphPtr, FuncGraphPtr> &cloned_func_graphs() const { return repl_func_graph_; }
 
   // Scope of cloned graphs
   void set_scope(const ScopePtr &scope) { scope_ = scope; }
   const ScopePtr scope() const { return scope_; }
 
-  std::unordered_map<AnfNodePtr, AnfNodePtr> repl_node_;
-  std::unordered_map<FuncGraphPtr, FuncGraphPtr> repl_func_graph_;
+  // When clone nodes, the same debug info and scope.
+  void set_update_info(const UpdateInfoPtr &update_info) { update_info_ = update_info; }
+  const UpdateInfoPtr update_info() const { return update_info_; }
 
  private:
   void CloneNodes();
@@ -87,7 +100,7 @@ class Cloner {
   void CloneFuncGraphValueNodes(const FuncGraphPtr &func_graph, const FuncGraphPtr &target_func_graph);
   void CloneFuncGraphDefaultValues(const FuncGraphPtr &func_graph, const FuncGraphPtr &target_func_graph);
   void InlineCloneParameters(const FuncGraphPtr &func_graph, const AnfNodePtrList &params);
-  void SetFuncGraphInfo(const FuncGraphPtr &func_graph, FuncGraphPtr *const target_func_graph);
+  void SetFuncGraphInfo(const FuncGraphPtr &func_graph, const FuncGraphPtr &target_func_graph);
   void CloneParameters(const FuncGraphPtr &func_graph, const FuncGraphPtr &target_func_graph);
   void GenParameters(const FuncGraphPtr &func_graph);
   void CloneParameter(const ParameterPtr &param, const AnfNodePtr &node);
@@ -107,16 +120,18 @@ class Cloner {
   bool clone_all_used_graphs_;
   TraceInfoPtr relation_;
   TraceInfoPtr target_relation_;
+  NodeToNodeMap repl_node_;
+  mindspore::HashMap<FuncGraphPtr, FuncGraphPtr> repl_func_graph_;
   FuncGraphManagerPtr manager_;
   FuncGraphSet graph_set_;
   ScopePtr scope_;
+  UpdateInfoPtr update_info_;
   CloneType type_;
-  std::list<CloneInfo> todo_;
-  std::list<std::pair<CNodePtr, CNodePtr>> nodes_;
-  std::unordered_map<FuncGraphPtr, bool> status_;
-  std::unordered_map<FuncGraphPtr, std::unordered_map<AnfNodePtr, AnfNodePtr>> repl_map_node_;
-  std::unordered_map<FuncGraphPtr, std::unordered_map<FuncGraphPtr, AnfNodePtr>> repl_map_func_graph_;
-  std::unordered_map<FuncGraphPtr, AnfNodePtrList> repl_func_graph_params_;
+  std::vector<CloneInfo> todo_;
+  mindspore::HashMap<FuncGraphPtr, bool> status_;
+  mindspore::HashMap<FuncGraphPtr, NodeToNodeMap> repl_map_node_;
+  mindspore::HashMap<FuncGraphPtr, mindspore::HashMap<FuncGraphPtr, AnfNodePtr>> repl_map_func_graph_;
+  mindspore::HashMap<FuncGraphPtr, AnfNodePtrList> repl_func_graph_params_;
 };
 
 AnfNodePtr InlineClone(const FuncGraphPtr &func_graph, const FuncGraphPtr &target_func_graph,
@@ -128,7 +143,8 @@ ClonerPtr SpecializerClone(const FuncGraphPtr &func_graph, const TraceInfoPtr &r
 
 FuncGraphPtr TransformableClone(const FuncGraphPtr &func_graph,
                                 const TraceInfoPtr &relation = std::make_shared<TraceTransform>());
-FuncGraphPtr BasicClone(const FuncGraphPtr &func_graph, bool clone_value_nodes = false);
+FuncGraphPtr BasicClone(const FuncGraphPtr &func_graph, bool clone_value_nodes = false,
+                        const UpdateInfoPtr update_info = nullptr);
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CORE_IR_FUNC_GRAPH_CLONER_H_

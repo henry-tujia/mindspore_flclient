@@ -19,7 +19,7 @@
 
 #include <vector>
 #include "runtime/device/memory_manager.h"
-#include "graphengine/inc/external/runtime/rt_error_codes.h"
+
 namespace mindspore {
 namespace device {
 namespace ascend {
@@ -32,28 +32,24 @@ class AscendMemoryManager : public MemoryManager {
   void FreeDeviceMemory() override;
   void ResetDynamicMemory() override;
   void ClearGlobalIdleMem() override;
-  void *MallocMemFromMemPool(size_t size) override;
+  void *MallocMemFromMemPool(size_t size, bool from_persistent_mem) override;
+  void *MallocDevice(size_t size) override;
   void FreeMemFromMemPool(void *device_ptr) override;
-  uint64_t GetDeviceMemSize();
-  void MallocSomasDynamicMem(const session::KernelGraph *graph) override;
+  uint64_t GetMsMaxMemSize();
+  void MallocSomasDynamicMem(const session::KernelGraph &graph) override;
   uint8_t *MallocCommunicationMemFromMemPool(size_t size) override;
   std::vector<void *> MallocContinuousMemFromMemPool(size_t total_size, std::vector<size_t> size_list) override {
     return AscendMemoryPool::GetInstance().AllocContinuousTensorMem(total_size, size_list);
   }
 
-  void SwapIn(void *host_ptr, void *device_ptr, size_t mem_size, void *stream) override;
-  void SwapOut(void *device_ptr, void *host_ptr, size_t mem_size, void *stream) override;
+  void SwapIn(const void *host_ptr, void *device_ptr, size_t mem_size, void *stream) override;
+  void SwapOut(const void *device_ptr, void *host_ptr, size_t mem_size, void *stream) override;
   size_t GetAvailableMemSize() override;
+  uint64_t GetMsUsedHbmSize();
 
  protected:
   uint8_t *MallocStaticMem(size_t size, bool communication_mem, uint32_t graph_id = kInvalidGraphId) override;
   uint8_t *MallocDynamicMem(size_t size, bool communication_mem) override;
-
- private:
-  uint8_t *device_mem_pool_base_{nullptr};
-  uint64_t device_mem_pool_size_{0};
-
-  uint64_t GetDeviceMemSizeFromContext();
 };
 }  // namespace ascend
 }  // namespace device

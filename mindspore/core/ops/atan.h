@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,16 +27,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameAtan = "Atan";
+/// \brief Computes the trigonometric inverse tangent of the input element-wise.
+/// Refer to Python API @ref mindspore.ops.Atan for more details.
 class MS_CORE_API Atan : public PrimitiveC {
  public:
-  Atan() : PrimitiveC(kNameAtan) {}
+  /// \brief Constructor.
+  Atan() : PrimitiveC(kNameAtan) { InitIOName({"x"}, {"output"}); }
+  /// \brief Destructor.
   ~Atan() = default;
   MS_DECLARE_PARENT(Atan, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Atan for the inputs.
   void Init() {}
 };
-AbstractBasePtr ATanInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
+AbstractBasePtr AtanInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimAtanPtr = std::shared_ptr<Atan>;
 }  // namespace ops
 }  // namespace mindspore
 

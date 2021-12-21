@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,16 +27,23 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSoftmaxCrossEntropyWithLogits = "SoftmaxCrossEntropyWithLogits";
+/// \brief Gets the softmax cross-entropy value between logits and labels with one-hot encoding.
+/// Refer to Python API @ref mindspore.ops.SoftmaxCrossEntropyWithLogits for more details.
 class MS_CORE_API SoftmaxCrossEntropyWithLogits : public PrimitiveC {
  public:
-  SoftmaxCrossEntropyWithLogits() : PrimitiveC(kNameSoftmaxCrossEntropyWithLogits) {}
+  /// \brief Constructor.
+  SoftmaxCrossEntropyWithLogits() : PrimitiveC(kNameSoftmaxCrossEntropyWithLogits) {
+    InitIOName({"features", "labels"}, {"loss", "backprop"});
+  }
+  /// \brief Destructor.
   ~SoftmaxCrossEntropyWithLogits() = default;
   MS_DECLARE_PARENT(SoftmaxCrossEntropyWithLogits, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr SoftmaxCrossEntropyWithLogitsInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                                    const std::vector<AbstractBasePtr> &input_args);
-using PrimSoftmaxCrossEntropyWithLogitsPtr = std::shared_ptr<SoftmaxCrossEntropyWithLogits>;
+using kPrimSoftmaxCrossEntropyWithLogitsPtr = std::shared_ptr<SoftmaxCrossEntropyWithLogits>;
 }  // namespace ops
 }  // namespace mindspore
 

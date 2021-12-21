@@ -33,12 +33,15 @@ class BiasAddGradGpuKernel : public GpuKernel {
  public:
   BiasAddGradGpuKernel()
       : same_dims_(true),
+        is_null_input_(false),
+        kernel_name_("BiasAddGrad"),
         use_cudnn_(false),
         dy_num_(1),
         db_num_(1),
         bias_size_(0),
         cudnn_handle_(nullptr),
         cudnn_data_type_(CUDNN_DATA_FLOAT),
+        cudnn_compute_format_(CUDNN_TENSOR_NCHW),
         dy_desc_(nullptr),
         db_desc_(nullptr),
         op_desc_(nullptr) {}
@@ -49,6 +52,9 @@ class BiasAddGradGpuKernel : public GpuKernel {
   const std::vector<size_t> &GetWorkspaceSizeList() const override { return workspace_size_list_; }
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *dy_addr = GetDeviceAddress<T>(inputs, 0);
     T *db_addr = GetDeviceAddress<T>(outputs, 0);
     if (same_dims_) {
@@ -79,19 +85,26 @@ class BiasAddGradGpuKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     auto dy_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(dy_shape, kernel_name_, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     cudnn_data_type_ = GetCudnnDataType(TypeIdLabel(AnfAlgo::GetInputDeviceDataType(kernel_node, 0)));
     auto input_device_format = AnfAlgo::GetInputFormat(kernel_node, 0);
     cudnn_compute_format_ = (input_device_format == kOpFormat_NHWC) ? CUDNN_TENSOR_NHWC : CUDNN_TENSOR_NCHW;
     num_dims_ = dy_shape.size();
     if (num_dims_ < 2) {
-      MS_LOG(EXCEPTION) << "input dims must be at least 2, but got " << num_dims_;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input cannot be less than 2, but got "
+                        << num_dims_;
     }
     std::string format = GetAttr<std::string>(kernel_node, "format");
     string::size_type pos = format.find("C");
     if (pos == std::string::npos || pos >= num_dims_) {
-      MS_LOG(EXCEPTION) << "format '" << format << "' invalid";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', 'C' character should be in 'format', but got " << format;
     }
     bias_size_ = dy_shape[pos];
     auto num_dims_fix = std::max(num_dims_, 4UL);
@@ -138,7 +151,7 @@ class BiasAddGradGpuKernel : public GpuKernel {
       return;
     }
     if (data_format_ == kOpFormat_NHWC) {
-      size_t required_sharedmem_size = 32 * 33 * sizeof(float);
+      const size_t required_sharedmem_size = 32 * 33 * sizeof(float);
       // nhwc opt implementation performs not so well when bias_size_ <= 6
       if (required_sharedmem_size > SHARED_MEM_PER_BLOCK || bias_size_ <= 6) {
         use_cudnn_ = true;
@@ -204,6 +217,8 @@ class BiasAddGradGpuKernel : public GpuKernel {
 
  private:
   bool same_dims_;
+  bool is_null_input_;
+  std::string kernel_name_;
   bool use_cudnn_;
   size_t dy_num_;  // for own implementation
   size_t db_num_;

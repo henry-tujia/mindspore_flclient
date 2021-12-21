@@ -23,6 +23,7 @@
 #include "backend/optimizer/common/common_backend_optimization.h"
 #include "backend/optimizer/gpu/adam_weight_decay_fusion.h"
 #include "backend/optimizer/gpu/adam_fusion.h"
+#include "backend/optimizer/gpu/alltoall_fusion.h"
 #include "backend/optimizer/gpu/apply_momentum_weight_scale_fusion.h"
 #include "backend/optimizer/gpu/apply_momentum_scale_fusion.h"
 #include "backend/optimizer/gpu/apply_momentum_weight_fusion.h"
@@ -47,7 +48,7 @@
 #include "backend/optimizer/gpu/add_relu_v2_fusion.h"
 #include "backend/optimizer/gpu/add_relu_grad_v2_fusion.h"
 #include "backend/optimizer/gpu/matmul_biasadd_fusion.h"
-#if ENABLE_GPU_INFER
+#ifdef ENABLE_GPU_INFER
 #include "backend/optimizer/trt_pass/graph_converter.h"
 #endif
 #include "backend/optimizer/graph_kernel/graph_kernel_optimization.h"
@@ -55,6 +56,7 @@
 #include "backend/optimizer/gpu/concat_outputs_for_all_gather.h"
 #include "backend/optimizer/pass/getitem_tuple.h"
 #include "backend/optimizer/pass/optimize_updatestate.h"
+#include "backend/optimizer/gpu/adjust_depend_for_parallel_optimizer_recompute_all_gather_fusion.h"
 #include "common/trans.h"
 #include "debug/anf_ir_dump.h"
 #include "debug/dump_proto.h"
@@ -99,13 +101,8 @@ using GetLocalRankId = device::gpu::GetLocalRankId;
 using InitNCCLComm = device::gpu::InitNCCLComm;
 
 void GPUSession::Init(uint32_t device_id) {
-  const void *collective_handle_ = CollectiveInitializer::instance().collective_handle();
-  bool collective_inited = CollectiveInitializer::instance().collective_inited();
-  if (collective_inited && collective_handle_ != nullptr) {
-    auto get_local_rank_funcptr =
-      reinterpret_cast<GetLocalRankId>(dlsym(const_cast<void *>(collective_handle_), "local_rank_id"));
-    MS_EXCEPTION_IF_NULL(get_local_rank_funcptr);
-    device_id = IntToUint((*get_local_rank_funcptr)());
+  if (CollectiveInitializer::instance().collective_inited()) {
+    device_id = CollectiveInitializer::instance().local_rank_id();
   }
   bool ret = device::gpu::CudaDriver::SetDevice(UintToInt(device_id));
   if (!ret) {
@@ -114,19 +111,22 @@ void GPUSession::Init(uint32_t device_id) {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   ms_context->set_param<uint32_t>(MS_CTX_DEVICE_ID, device_id);
-  if (collective_inited) {
-    if (collective_handle_ != nullptr) {
+  if (CollectiveInitializer::instance().collective_inited()) {
+    auto collective_handle = CollectiveInitializer::instance().collective_handle();
+    if (collective_handle != nullptr) {
+      MS_LOG(INFO) << "Start initializing NCCL communicator for device " << device_id;
       auto init_nccl_comm_funcptr =
-        reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle_), "InitNCCLComm"));
+        reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle), "InitNCCLComm"));
       MS_EXCEPTION_IF_NULL(init_nccl_comm_funcptr);
       (*init_nccl_comm_funcptr)();
+      MS_LOG(INFO) << "End initializing NCCL communicator.";
       rank_id_ = GetRankId();
     }
   }
 #ifndef ENABLE_SECURITY
   auto &json_parser = DumpJsonParser::GetInstance();
   // Dump json config file if dump is enabled
-  json_parser.CopyJsonToDir(rank_id_);
+  json_parser.CopyDumpJsonToDir(rank_id_);
   json_parser.CopyMSCfgJsonToDir(rank_id_);
 #endif
   MS_LOG(INFO) << "Set device id " << device_id << " for gpu session.";
@@ -154,16 +154,17 @@ void GPUSession::Optimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto optimizer = std::make_shared<opt::GraphOptimizer>();
   auto pm = std::make_shared<opt::PassManager>();
-#if ENABLE_GPU_INFER
+#ifdef ENABLE_GPU_INFER
   pm->AddPass(std::make_shared<opt::GraphConverter>());
 #endif
   pm->AddPass(std::make_shared<opt::MatMulBiasAddFusion>());
   pm->AddPass(std::make_shared<opt::AdamWeightDecayFusion>());
   pm->AddPass(std::make_shared<opt::AdamFusion>());
+  pm->AddPass(std::make_shared<opt::AllToAllFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumWeightDecayScaleFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumScaleFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumWeightDecayFusion>());
-  if (!context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+  if (!graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
     pm->AddPass(std::make_shared<opt::CastAllFusion>("cast_all"));
   }
   pm->AddPass(std::make_shared<opt::CombineMomentumFusion>("combine_momentum"));
@@ -196,6 +197,8 @@ void GPUSession::HardwareOptimize(const std::shared_ptr<KernelGraph> &kernel_gra
   pm->AddPass(std::make_shared<opt::AddReluV2Fusion>());
   pm->AddPass(std::make_shared<opt::AddReluGradV2Fusion>());
   pm->AddPass(std::make_shared<opt::AllReduceFusion>());
+  pm->AddPass(std::make_shared<opt::AdjustDependForParallelOptimizerRecomputeAllGatherFusion>(
+    "adjust_depend_for_parallel_optimizer_recompute_all_gather_fusion"));
   pm->AddPass(std::make_shared<opt::AllGatherFusion>());
   pm->AddPass(std::make_shared<opt::ConcatOutputsForAllGather>());
   pm->AddPass(std::make_shared<opt::GetitemTuple>());
@@ -227,10 +230,10 @@ void GPUSession::RunOpHardwareOptimize(const std::shared_ptr<KernelGraph> &kerne
 }
 
 void GPUSession::GraphKernelOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
-  if (!context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+  if (!graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
     return;
   }
-  opt::GraphKernelOptimize(kernel_graph);
+  graphkernel::GraphKernelOptimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
 }
 
@@ -244,33 +247,33 @@ void GPUSession::BuildKernel(const std::shared_ptr<KernelGraph> &kernel_graph) c
   device::gpu::CreateGPUKernel(kernels);
 }
 
-void GPUSession::AllocateMemory(KernelGraph *kernel_graph) const {
+void GPUSession::AllocateMemory(const KernelGraph *kernel_graph) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->AssignMemory(kernel_graph);
+  runtime_instance->AssignMemory(*kernel_graph);
 }
 
 void GPUSession::RunOpAllocateMemory(const std::vector<tensor::TensorPtr> &input_tensors,
-                                     KernelGraph *kernel_graph) const {
+                                     const KernelGraph *kernel_graph, bool is_gradient_out) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->RunOpAssignMemory(input_tensors, kernel_graph);
+  runtime_instance->RunOpAssignMemory(input_tensors, *kernel_graph, is_gradient_out);
 }
 
 void GPUSession::RunOpGenKernelEvent(const KernelGraph *graph) const {
   MS_EXCEPTION_IF_NULL(graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->GenKernelEvents(graph);
+  runtime_instance->GenKernelEvents(*graph);
 }
 
-void GPUSession::RunOpClearMemory(KernelGraph *kernel_graph) const {
+void GPUSession::RunOpClearMemory(const KernelGraph *kernel_graph) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->RunOpClearMemory(kernel_graph);
+  runtime_instance->RunOpClearMemory(*kernel_graph);
 }
 
 namespace {
@@ -314,6 +317,30 @@ size_t UpdateGraphInputAbstract(const AnfNodePtr input_node, const tensor::Tenso
   }
   return size;
 }
+
+bool CheckIfNeedSync(const tensor::TensorPtr &tensor, const DeviceAddressPtr &device_address,
+                     const ParameterPtr &pk_node) {
+  MS_EXCEPTION_IF_NULL(tensor);
+  MS_EXCEPTION_IF_NULL(pk_node);
+  auto tensor_address = std::dynamic_pointer_cast<device::DeviceAddress>(tensor->device_address());
+  bool need_sync = false;
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  if (ms_context->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER)) {
+    if (tensor_address == nullptr || tensor_address != device_address) {
+      need_sync = true;
+    }
+  } else if (tensor->NeedSyncHostToDevice() || tensor_address == nullptr) {
+    need_sync = true;
+  } else if (tensor_address != device_address) {
+    if (tensor_address->DeviceType() == device_address->DeviceType()) {
+      AnfAlgo::SetOutputAddr(tensor_address, 0, pk_node.get());
+    } else {
+      need_sync = true;
+    }
+  }
+  return need_sync;
+}
 }  // namespace
 
 void GPUSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_graph,
@@ -341,21 +368,7 @@ void GPUSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_graph,
       auto pk_node = input_node->cast<ParameterPtr>();
       auto device_address = AnfAlgo::GetMutableOutputAddr(pk_node, 0);
       MS_EXCEPTION_IF_NULL(device_address);
-      auto tensor_address = std::dynamic_pointer_cast<device::DeviceAddress>(tensor->device_address());
-      bool need_sync = false;
-      if (ms_context->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER)) {
-        if (tensor_address == nullptr || tensor_address != device_address) {
-          need_sync = true;
-        }
-      } else if (tensor->NeedSyncHostToDevice() || tensor_address == nullptr) {
-        need_sync = true;
-      } else if (tensor_address != device_address) {
-        if (tensor_address->DeviceType() == device_address->DeviceType()) {
-          AnfAlgo::SetOutputAddr(tensor_address, 0, pk_node.get());
-        } else {
-          need_sync = true;
-        }
-      }
+      bool need_sync = CheckIfNeedSync(tensor, device_address, pk_node);
       if (need_sync) {
         if (AnfAlgo::IsParameterWeight(pk_node) || UpdatedByAssign(kernel_graph, input_node) ||
             ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
@@ -396,7 +409,7 @@ GraphId GPUSession::CompileGraphImpl(NotNull<FuncGraphPtr> func_graph) {
   return CompileGraphImpl(root_graph);
 }
 
-GraphId GPUSession::CompileGraphImpl(KernelGraphPtr graph) {
+GraphId GPUSession::CompileGraphImpl(const KernelGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(graph);
   // Prepare ms context info for dump .pb graph
   auto context_ptr = MsContext::GetInstance();
@@ -437,9 +450,7 @@ GraphId GPUSession::CompileGraphImpl(KernelGraphPtr graph) {
     DumpIRProto(graph, "before_removeNop_" + std::to_string(graph->graph_id()));
   }
 #endif
-  // Update Graph Dynamic Shape Attr.
-  UpdateGraphDynamicShapeAttr(NOT_NULL(graph));
-  graph->UpdateGraphDynamicAttr();
+  opt::AddDynamicShapeAttrPass(graph);
   const bool pynative_mode = context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode;
   // Hide NopOp from execution graph in graph mode
   if (!pynative_mode) {
@@ -455,8 +466,10 @@ GraphId GPUSession::CompileGraphImpl(KernelGraphPtr graph) {
   std::string exec_order_name = "graph_exec_order." + std::to_string(graph->graph_id());
   (void)mindspore::RDR::RecordGraphExecOrder(SubModuleId::SM_SESSION, exec_order_name, kernels);
 #endif
+#ifndef ENABLE_SECURITY
   // Get summary nodes.
   SetSummaryNodes(graph.get());
+#endif
   // Dump .pb graph after graph optimization
 #ifdef ENABLE_DUMP_IR
   if (save_graphs) {
@@ -523,9 +536,11 @@ void GPUSession::PostExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_gra
   // Summary
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
+#ifndef ENABLE_SECURITY
   if (context_ptr->get_param<bool>(MS_CTX_ENABLE_GPU_SUMMARY)) {
     Summary(kernel_graph.get());
   }
+#endif
 #ifdef ENABLE_DEBUGGER
   if (debugger_ && debugger_->DebuggerBackendEnabled()) {
     debugger_->LoadParametersAndConst(kernel_graph);
@@ -572,6 +587,11 @@ void GPUSession::UpdateOutputTensors(const VectorRef *outputs,
         const auto &node = iter->second.first;
         const auto &output_index = iter->second.second;
         MS_EXCEPTION_IF_NULL(node);
+        // When the parameter does not have a user in the graph and is used as an output, the device address is null,
+        // and there is no need to set the device address for tensor.
+        if (!AnfAlgo::OutputAddrExist(node, output_index, true)) {
+          continue;
+        }
         auto address = AnfAlgo::GetMutableOutputAddr(node, output_index);
         // The outputs may have the same tensor, so need skip when the tensor has been set to device address.
         if ((address == nullptr) || (address->GetPtr() == nullptr)) {
@@ -596,9 +616,17 @@ void GPUSession::UpdateOutputTensors(const VectorRef *outputs,
 #endif
         if (node->isa<CNode>() && !AnfAlgo::IsCommunicationOp(node) && !ps_mode) {
           auto new_address = std::make_shared<device::gpu::GPUDeviceAddress>(nullptr, address->GetSize());
-          AnfAlgo::SetOutputAddr(new_address, output_index, node.get());
+          // If a nop node is output, its previous node should be set.
+          if (opt::IsNopNode(node)) {
+            auto pre_node = AnfAlgo::GetPrevNodeOutput(node, 0, true);
+            if (!pre_node.first->isa<Parameter>()) {
+              AnfAlgo::SetOutputAddr(new_address, pre_node.second, pre_node.first.get());
+            }
+          } else {
+            AnfAlgo::SetOutputAddr(new_address, output_index, node.get());
+          }
           (*new_to_old_device_address)[new_address] = address;
-          if (context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+          if (graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
             auto runtime_instance =
               device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
             MS_EXCEPTION_IF_NULL(runtime_instance);
@@ -626,7 +654,7 @@ void GPUSession::UpdateOutputTensors(const VectorRef *outputs,
 void GPUSession::Execute(const std::shared_ptr<KernelGraph> &kernel_graph) const {
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetSingleKernelRuntime(kGPUDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  if (!runtime_instance->Run(kernel_graph.get(), false)) {
+  if (!runtime_instance->Run(*kernel_graph, false)) {
     MS_LOG(EXCEPTION) << "GPU execute graph failed!";
   }
 }
@@ -667,6 +695,7 @@ void GPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
                            const std::vector<int64_t> &tensors_mask) {
   MS_EXCEPTION_IF_NULL(input_tensors);
   MS_EXCEPTION_IF_NULL(op_run_info);
+  ProcessInputTensorsForHeterogeneous("GPU", *input_tensors);
   const auto &kernel_graph = BuildOpImpl(*op_run_info, graph_info, *input_tensors, tensors_mask);
   EraseValueNodeTensor(tensors_mask, input_tensors);
   // wait for allreduce
@@ -676,10 +705,11 @@ void GPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
       tensor->WaitDevice();
     }
   }
+
   // run op
   MS_EXCEPTION_IF_NULL(kernel_graph);
   RunOpRemoveNopNode(kernel_graph);
-  RunOpAllocateMemory(*input_tensors, kernel_graph.get());
+  RunOpAllocateMemory(*input_tensors, kernel_graph.get(), op_run_info->is_gradient_out);
   RunOpGenKernelEvent(kernel_graph.get());
   // Execute the computation
   LoadInputData(kernel_graph, *input_tensors);
@@ -701,13 +731,14 @@ void GPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
 void GPUSession::DumpSetup(const std::shared_ptr<KernelGraph> &kernel_graph) const {
   MS_LOG(INFO) << "Start!";
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  E2eDump::DumpSetup(kernel_graph.get(), rank_id_);
+  E2eDump::DumpSetup(kernel_graph.get());
   MS_LOG(INFO) << "Finish!";
 }
 
 void GPUSession::Dump(const std::shared_ptr<KernelGraph> &kernel_graph) const {
   if (debugger_->DebuggerBackendEnabled()) {
     MS_EXCEPTION_IF_NULL(kernel_graph);
+    E2eDump::DumpRunIter(kernel_graph, rank_id_);
     E2eDump::DumpData(kernel_graph.get(), rank_id_, debugger_.get());
   } else {
     DumpJsonParser::GetInstance().UpdateDumpIter();

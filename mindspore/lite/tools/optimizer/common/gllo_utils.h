@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include "ops/primitive_c.h"
 #include "ir/anf.h"
@@ -35,6 +36,10 @@ using mindspore::lite::RET_OK;
 using mindspore::lite::STATUS;
 namespace mindspore {
 namespace opt {
+// used for common op, which corresponding value is a boolean.
+constexpr auto kInferDone = "infer_done";
+// used for control_flow op(while and if), which corresponding value is a boolean vec.
+constexpr auto kInferFlags = "infer_flags";
 inline constexpr int kInputIndexTwo = 2;
 inline constexpr int kInputIndexThree = 3;
 inline constexpr int kInputIndexFour = 4;
@@ -64,7 +69,7 @@ bool IsGraphKernel(const AnfNodePtr &node);
 
 bool CheckInputs(const CNodePtr &cnode);
 
-ParameterPtr AddNewBiasNode(float *bias_data, const FuncGraphPtr &func_graph, int kernel_num, TypeId type_id);
+ParameterPtr AddNewBiasNode(const float *bias_data, const FuncGraphPtr &func_graph, int kernel_num, TypeId type_id);
 
 bool IsParamNode(const BaseRef &n);
 
@@ -120,6 +125,20 @@ STATUS FetchShapeFromAbstract(const abstract::AbstractBasePtr &abstract, ShapeVe
 
 STATUS GetTensorInfoFromAbstract(tensor::TensorPtr *tensor_info, const CNodePtr &cnode, size_t index);
 
+bool IsTrainOp(const CNodePtr &cnode);
+
+bool IsMarkedTrainOp(const CNodePtr &cnode);
+
+int GetDataTypeFromAnfNode(const AnfNodePtr &anf_node, TypeId *type_id);
+
+bool IsQuantParameterNode(const PrimitiveCPtr &prim);
+
+void UpdateManager(const FuncGraphPtr &func_graph);
+
+std::pair<CNodePtr, int> GetRealCertainVarInput(const CNodePtr &cnode, size_t index);
+
+int DetermineCertainVarInputHasInferred(const CNodePtr &cnode, size_t index, bool *infer_succ);
+
 template <const PrimitivePtr *prim = nullptr>
 inline bool IsSpecifiedNode(const BaseRef &n) {
   if (utils::isa<AnfNodePtr>(n)) {
@@ -128,12 +147,6 @@ inline bool IsSpecifiedNode(const BaseRef &n) {
   }
   return false;
 }
-
-bool IsTrainOp(const CNodePtr &cnode);
-
-bool IsMarkedTrainOp(const CNodePtr &cnode);
-
-int GetDataTypeFromAnfNode(const AnfNodePtr &anf_node, TypeId *type_id);
 }  // namespace opt
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_TOOLS_OPTIMIZER_COMMON_GLLO_UTILS_H_

@@ -19,23 +19,20 @@
 #include <limits>
 #include "minddata/dataset/engine/datasetops/dataset_op.h"
 #include "minddata/dataset/engine/datasetops/device_queue_op.h"
-#ifndef ENABLE_SECURITY
-#include "minddata/dataset/engine/perf/profiling.h"
-#include "minddata/dataset/engine/perf/monitor.h"
-#endif
 #if defined(ENABLE_GPUQUE) || defined(ENABLE_TDTQUE)
 #include "minddata/dataset/util/numa_interface.h"
 #endif
 #include "minddata/dataset/util/task_manager.h"
+#include "minddata/dataset/util/service.h"
 
 namespace mindspore {
 namespace dataset {
 // Constructor
 ExecutionTree::ExecutionTree() : id_count_(0), tree_state_(kDeTStateInit) {
   tg_ = std::make_unique<TaskGroup>();
-#ifndef ENABLE_SECURITY
-  profiling_manager_ = std::make_unique<ProfilingManager>(this);
-#endif
+  root_ = nullptr;
+  prepare_flags_ = 0;
+  unique_id_ = Services::GetUniqueID();
 #if defined(ENABLE_GPUQUE) || defined(ENABLE_TDTQUE)
   std::shared_ptr<ConfigManager> cfg = GlobalContext::config_manager();
   rank_id_ = cfg->rank_id();
@@ -83,7 +80,7 @@ Status ExecutionTree::AssociateNode(const std::shared_ptr<DatasetOp> &op) {
   tree_state_ = kDeTStateBuilding;
 
   // Assign an id to the operator
-  op->set_id(id_count_);
+  op->SetId(id_count_);
   id_count_++;
 
   // Assign our tree into the op so that each op has a link back to the tree
@@ -186,16 +183,6 @@ Status ExecutionTree::Launch() {
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
 
-  // Profiling infrastructures need to be initialized before Op launching
-#ifndef ENABLE_SECURITY
-  if (profiling_manager_->IsProfilingEnable()) {
-    // Setup profiling manager
-    RETURN_IF_NOT_OK(profiling_manager_->Initialize());
-    // Launch Monitor Thread
-    RETURN_IF_NOT_OK(profiling_manager_->LaunchMonitor());
-  }
-#endif
-
   std::ostringstream ss;
   ss << *this;
   MS_LOG(DEBUG) << "Printing the tree before launch tasks:\n" << ss.str();
@@ -230,13 +217,13 @@ void ExecutionTree::Iterator::PostOrderTraverse(const std::shared_ptr<DatasetOp>
 ExecutionTree::Iterator::Iterator(const std::shared_ptr<DatasetOp> &root) : ind_(0) {
   // post-order traverse the tree, if root is null, it return
   PostOrderTraverse(root);
-  nodes_.emplace_back(nullptr);
+  (void)nodes_.emplace_back(nullptr);
 }
 
-// Given the number of workers, launches the worker entry function for each. Essentially a
+// Given the number of workers, launch the worker entry function for each worker. This is essentially a
 // wrapper for the TaskGroup handling that is stored inside the execution tree.
-Status ExecutionTree::LaunchWorkers(int32_t num_workers, std::function<Status(uint32_t)> func, std::string name,
-                                    int32_t operator_id) {
+Status ExecutionTree::LaunchWorkers(int32_t num_workers, std::function<Status(uint32_t)> func,
+                                    std::vector<Task *> *worker_tasks, std::string name, int32_t operator_id) {
   int32_t num_cpu_threads = GlobalContext::Instance()->config_manager()->num_cpu_threads();
   // this performs check that num_workers is positive and not unreasonably large which could happen
   // for example, un-initialized variable. uint16 max is 65536 which is large enough to cover everything
@@ -247,10 +234,22 @@ Status ExecutionTree::LaunchWorkers(int32_t num_workers, std::function<Status(ui
     MS_LOG(WARNING) << name + " is launched with " << std::to_string(num_workers) << " worker threads which exceeds "
                     << std::to_string(num_cpu_threads) << ", the maximum number of threads on this CPU.";
   }
+  worker_tasks->resize(num_workers);
   for (int32_t i = 0; i < num_workers; ++i) {
-    RETURN_IF_NOT_OK(tg_->CreateAsyncTask(name, std::bind(func, i), nullptr, operator_id));
+    Task *task = nullptr;
+    RETURN_IF_NOT_OK(tg_->CreateAsyncTask(name, std::bind(func, i), &task, operator_id));
+    CHECK_FAIL_RETURN_UNEXPECTED(task != nullptr, "Failed to create a new worker");
+    (*worker_tasks)[i] = task;
   }
   return Status::OK();
+}
+
+// Given the number of workers, launches the worker entry function for each. Essentially a
+// wrapper for the TaskGroup handling that is stored inside the execution tree.
+Status ExecutionTree::LaunchWorkers(int32_t num_workers, std::function<Status(uint32_t)> func, std::string name,
+                                    int32_t operator_id) {
+  std::vector<Task *> tasks;
+  return LaunchWorkers(num_workers, func, &tasks, name, operator_id);
 }
 
 // Walks the tree to perform modifications to the tree in post-order to get it ready for execution.

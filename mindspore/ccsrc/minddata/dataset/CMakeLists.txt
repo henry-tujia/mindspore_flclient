@@ -3,9 +3,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-reorder")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch")
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-uninitialized -Wno-deprecated-declarations
-                                            -Wno-delete-non-abstract-non-virtual-dtor
-                                            -Wno-constant-conversion -Wno-unknown-warning-option")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-uninitialized -Wno-deprecated-declarations \
+                                            -Wno-delete-non-abstract-non-virtual-dtor       \
+                                            -Wno-unused-comparison -Wno-constant-conversion \
+                                            -Wno-unknown-warning-option -Wno-macro-redefined")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-maybe-uninitialized")
 endif()
@@ -172,7 +173,6 @@ set(submodules
         $<TARGET_OBJECTS:md_plugin>
         )
 
-
 if(ENABLE_ACL)
     set(submodules
             ${submodules}
@@ -211,67 +211,6 @@ endif()
 
 ################# Link with external libraries ########################
 target_link_libraries(_c_dataengine PRIVATE mindspore mindspore_gvar)
-
-if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    set(CMAKE_MACOSX_RPATH 1)
-    set(CMAKE_INSTALL_RPATH "@loader_path/lib;@loader_path")
-    set_target_properties(_c_dataengine PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_RPATH}")
-endif()
-
-set(targetso $<TARGET_FILE:_c_dataengine>)
-set(target_tiny "libtinyxml")
-set(target_icuuc "libicuuc")
-set(target_icudata "libicudata")
-set(target_icui18n "libicui18n")
-function(changerpath targetso linkso)
-    set(some-file "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset/${linkso}.txt")
-    set(some-file1 "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset/${linkso}1.txt")
-    set(some-file2 "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset/${linkso}2.txt")
-    add_custom_command(
-            OUTPUT
-            ${some-file}
-            COMMAND
-            otool -L ${targetso} | grep ${linkso} > ${some-file}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset"
-            VERBATIM
-    )
-    add_custom_command(
-            OUTPUT
-            ${some-file1}
-            COMMAND
-            cat ${some-file} | cut -d " " -f 1 | sed -E "s/^.//g" > ${some-file1}
-            DEPENDS
-            ${some-file}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset"
-            VERBATIM
-    )
-    add_custom_command(
-            OUTPUT
-            ${some-file2}
-            COMMAND
-            awk -F "/"  "{print $NF}"  ${some-file1} > ${some-file2}
-            DEPENDS
-            ${some-file1}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset"
-            VERBATIM
-    )
-    add_custom_target(
-            link_${linkso} ALL
-            COMMAND install_name_tool -change `cat ${some-file1}` @rpath/`cat ${some-file2}` ${targetso}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/mindspore/ccsrc/minddata/dataset"
-            DEPENDS ${targetso} ${some-file1} ${some-file2}
-            COMMENT "install tool name")
-endfunction()
-
-if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    changerpath(${targetso} ${target_tiny})
-    changerpath(${targetso} ${target_icuuc})
-    add_dependencies(link_${target_icuuc} link_${target_tiny})
-    changerpath(${targetso} ${target_icudata})
-    add_dependencies(link_${target_icudata} link_${target_icuuc})
-    changerpath(${targetso} ${target_icui18n})
-    add_dependencies(link_${target_icui18n} link_${target_icudata})
-endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     if(ENABLE_PYTHON)
@@ -332,7 +271,19 @@ else()
 endif()
 
 if(MS_BUILD_GRPC)
-    target_link_libraries(_c_dataengine PRIVATE -Wl,--no-as-needed mindspore::grpc++)
+    if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
+        target_link_libraries(_c_dataengine PRIVATE -Wl,--no-as-needed mindspore::grpc++)
+    else()
+        target_link_libraries(_c_dataengine PRIVATE mindspore::grpc++)
+    endif()
 endif()
 
-set_target_properties(_c_dataengine PROPERTIES INSTALL_RPATH ${MINDSPORE_RPATH})
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    set_target_properties(_c_dataengine PROPERTIES INSTALL_RPATH ${MINDSPORE_RPATH})
+endif()
+
+if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    include(${CMAKE_SOURCE_DIR}/cmake/change_rpath.cmake)
+    set(LINK_SOS libtinyxml libicuuc libicudata libicui18n)
+    changerpath($<TARGET_FILE:_c_dataengine> _c_dataengine "${LINK_SOS}")
+endif()

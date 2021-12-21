@@ -41,8 +41,9 @@ class ConvolutionDelegateFP16CPUKernel : public InnerKernel {
   }
   void *CopyData(const lite::Tensor *tensor);
   void FreeCopiedData();
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
+  bool CheckInputsValid() const override;
   int Run() override {
     fp16_conv_kernel_->set_workspace(workspace());
     return fp16_conv_kernel_->Run();

@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_NN_ADAM_WEIGHT_DECAY_GPU_KERNEL_H_
 
 #include <vector>
+#include <string>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/adam_impl.cuh"
@@ -36,7 +37,9 @@ class AdamWeightDecayGpuKernel : public GpuKernel {
         beta2_size_(0),
         epsilon_size_(0),
         decay_size_(0),
-        gradient_size_(0) {}
+        gradient_size_(0),
+        is_null_input_(false),
+        kernel_name_("AdamWeightDecay") {}
 
   ~AdamWeightDecayGpuKernel() override = default;
 
@@ -46,6 +49,9 @@ class AdamWeightDecayGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
               void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *variable = GetDeviceAddress<T>(inputs, 0);
     T *m = GetDeviceAddress<T>(inputs, 1);
     T *v = GetDeviceAddress<T>(inputs, 2);
@@ -61,10 +67,11 @@ class AdamWeightDecayGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != INPUT_NUM) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but adam needs " << INPUT_NUM << " inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be " << INPUT_NUM << ", but got "
+                        << input_num;
     }
 
     variable_size_ = sizeof(T);
@@ -78,21 +85,28 @@ class AdamWeightDecayGpuKernel : public GpuKernel {
     gradient_size_ = sizeof(T);
 
     auto variable_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto m_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
+    auto v_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 8);
+    is_null_input_ = CHECK_SHAPE_NULL(variable_shape, kernel_name_, "var") ||
+                     CHECK_SHAPE_NULL(m_shape, kernel_name_, "m") || CHECK_SHAPE_NULL(v_shape, kernel_name_, "v") ||
+                     CHECK_SHAPE_NULL(gradient_shape, kernel_name_, "gradient");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < variable_shape.size(); i++) {
       variable_size_ *= variable_shape[i];
     }
 
-    auto m_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     for (size_t i = 0; i < m_shape.size(); i++) {
       m_size_ *= m_shape[i];
     }
 
-    auto v_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     for (size_t i = 0; i < v_shape.size(); i++) {
       v_size_ *= v_shape[i];
     }
 
-    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 8);
     for (size_t i = 0; i < gradient_shape.size(); i++) {
       gradient_size_ *= gradient_shape[i];
     }
@@ -127,6 +141,8 @@ class AdamWeightDecayGpuKernel : public GpuKernel {
   size_t epsilon_size_;
   size_t decay_size_;
   size_t gradient_size_;
+  bool is_null_input_;
+  std::string kernel_name_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

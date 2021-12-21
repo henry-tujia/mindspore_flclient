@@ -16,11 +16,8 @@
 
 #include "minddata/dataset/engine/ir/datasetops/source/minddata_node.h"
 
-#include <map>
-#include <memory>
 #include <stack>
-#include <string>
-#include <vector>
+#include <utility>
 
 #include "minddata/dataset/engine/datasetops/source/mindrecord_op.h"
 #include "minddata/dataset/engine/datasetops/source/sampler/mind_record_sampler.h"
@@ -83,47 +80,48 @@ Status MindDataNode::ValidateParams() {
   constexpr size_t max_len = 4096;
   if (!search_for_pattern_ && dataset_files_.size() > max_len) {
     std::string err_msg =
-      "MindDataNode: length of dataset_file must be less than or equal to 4096, dataset_file length: " +
+      "MindDataset: length of dataset_file must be less than or equal to 4096, dataset_file length: " +
       std::to_string(dataset_file_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
+
+  RETURN_IF_NOT_OK(
+    ValidateEnum("MindDataset", "ShuffleMode", shuffle_mode_,
+                 {ShuffleMode::kFalse, ShuffleMode::kFiles, ShuffleMode::kGlobal, ShuffleMode::kInfile}));
 
   std::vector<std::string> dataset_file_vec =
     search_for_pattern_ ? std::vector<std::string>{dataset_file_} : dataset_files_;
-  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("MindDataNode", dataset_file_vec));
+  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("MindDataset", dataset_file_vec));
 
-  RETURN_IF_NOT_OK(ValidateDatasetSampler("MindDataNode", input_sampler_));
+  RETURN_IF_NOT_OK(ValidateDatasetSampler("MindDataset", input_sampler_));
 
   if (!columns_list_.empty()) {
-    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("MindDataNode", "columns_list", columns_list_));
+    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("MindDataset", "columns_list", columns_list_));
   }
 
   if (padded_sample_ != nullptr) {
     if (num_padded_ < 0 || num_padded_ > INT_MAX) {
       std::string err_msg =
-        "MindDataNode: num_padded must to be between 0 and INT32_MAX, but got: " + std::to_string(num_padded_);
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        "MindDataset: 'num_padded' must to be between 0 and INT32_MAX, but got: " + std::to_string(num_padded_);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
     if (columns_list_.empty()) {
-      std::string err_msg = "MindDataNode: padded_sample is specified and requires columns_list as well";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = "MindDataset: 'padded_sample' is specified and requires 'columns_list' as well";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
     for (std::string &column : columns_list_) {
       if (padded_sample_.find(column) == padded_sample_.end()) {
-        std::string err_msg = "MindDataNode: " + column + " in columns_list does not match any column in padded_sample";
+        std::string err_msg =
+          "MindDataset: " + column + " in 'columns_list' does not match any column in 'padded_sample'";
         MS_LOG(ERROR) << err_msg << ", padded_sample: " << padded_sample_;
-        RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        return Status(StatusCode::kMDSyntaxError, err_msg);
       }
     }
   }
   if (num_padded_ > 0) {
     if (padded_sample_ == nullptr) {
-      std::string err_msg = "MindDataNode: num_padded is specified but padded_sample is not";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = "MindDataset: num_padded is specified but padded_sample is not";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
 
@@ -137,16 +135,21 @@ Status MindDataNode::BuildMindDatasetSamplerChain(const std::shared_ptr<SamplerO
   std::shared_ptr<mindrecord::ShardOperator> op = sampler->BuildForMindDataset();
   if (op == nullptr) {
     std::string err_msg =
-      "MindDataNode: Unsupported sampler is supplied for MindDataset. Supported sampler list: "
+      "MindDataset: Unsupported sampler is supplied for MindDataset. Supported sampler list: "
       "SubsetRandomSampler, PkSampler, RandomSampler, SequentialSampler and DistributedSampler";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   std::stack<std::shared_ptr<mindrecord::ShardOperator>> stack_ops;
   while (op != nullptr) {
     // update the shuffle mode for sampler op or shuffle op
     if (shuffle_mode != ShuffleMode::kFalse) {
       op->UpdateShuffleMode(shuffle_mode);
+    }
+    if (op->GetNumSamples() != 0 &&
+        (op->GetShuffleMode() == ShuffleMode::kFiles || op->GetShuffleMode() == ShuffleMode::kInfile)) {
+      std::string err_msg =
+        "MindDataset: Shuffle.kFiles or Shuffle.kInfile and num_samples cannot be specified at the same time.";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
 
     auto distributed_sampler_op = std::dynamic_pointer_cast<mindrecord::ShardDistributedSample>(op);
@@ -212,8 +215,8 @@ Status MindDataNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_o
   }
 
   RETURN_IF_NOT_OK(mindrecord_op->Init());
-  mindrecord_op->set_total_repeats(GetTotalRepeats());
-  mindrecord_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  mindrecord_op->SetTotalRepeats(GetTotalRepeats());
+  mindrecord_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(mindrecord_op);
 
   return Status::OK();

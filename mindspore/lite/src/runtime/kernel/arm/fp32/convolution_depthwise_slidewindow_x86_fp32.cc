@@ -57,7 +57,7 @@ int ConvolutionDepthwiseSWCPUKernelX86::InitPackedInputOutput() {
   return RET_OK;
 }
 
-int ConvolutionDepthwiseSWCPUKernelX86::Init() {
+int ConvolutionDepthwiseSWCPUKernelX86::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
 #ifdef ENABLE_AVX
@@ -87,7 +87,7 @@ int ConvolutionDepthwiseSWCPUKernelX86::Init() {
 }
 
 int ConvolutionDepthwiseSWCPUKernelX86::ReSize() {
-  ConvolutionBaseCPUKernel::Init();
+  ConvolutionBaseCPUKernel::Prepare();
   InitSlidingParamConvDw(sliding_, conv_param_, oc_tile_);
   return RET_OK;
 }
@@ -179,6 +179,7 @@ int ConvolutionDepthwiseSWCPUKernelX86::MallocWeightBiasData() {
   int oc_algin = UP_DIV(weight_tensor->Batch(), oc_tile_);
   int pack_weight_size = oc_algin * oc_tile_ * weight_tensor->Height() * weight_tensor->Width();
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, pack_weight_size * sizeof(float));
     packed_weight_ = malloc(pack_weight_size * sizeof(float));
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "Malloc packed_weight_ is failed!";
@@ -188,6 +189,7 @@ int ConvolutionDepthwiseSWCPUKernelX86::MallocWeightBiasData() {
 
   if (in_tensors_.size() == kInputSize2) {
     auto bias_size = oc_algin * oc_tile_;
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, bias_size * sizeof(float));
     bias_data_ = malloc(bias_size * sizeof(float));
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "Malloc bias_data buffer failed.";

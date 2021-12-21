@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,15 @@
 #include <memory>
 #include <utility>
 #include <stack>
+#include <string>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "utils/convert_utils_base.h"
 #include "utils/any.h"
 #include "base/base_ref.h"
+#include "base/core_ops.h"
 #include "base/base.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
@@ -54,8 +56,8 @@ struct PairHasher {
 
 enum EquivState { kNotEquiv = 0, kEquiv = 1, kPending = 2 };
 
-using FuncGraphPairMapEquiv = std::unordered_map<std::pair<FuncGraphPtr, FuncGraphPtr>, EquivState, PairHasher>;
-using NodeMapEquiv = std::unordered_map<AnfNodePtr, AnfNodePtr>;
+using FuncGraphPairMapEquiv = mindspore::HashMap<std::pair<FuncGraphPtr, FuncGraphPtr>, EquivState, PairHasher>;
+using NodeMapEquiv = mindspore::HashMap<AnfNodePtr, AnfNodePtr>;
 
 bool Isomorphic(const FuncGraphPtr &g1, const FuncGraphPtr &g2, FuncGraphPairMapEquiv *equiv_func_graph,
                 NodeMapEquiv *equiv_node);
@@ -77,6 +79,28 @@ std::vector<T> TensorValueToVector(const tensor::TensorPtr &tensor) {
 void TensorValueToTensor(const ValuePtr &value, std::vector<tensor::TensorPtr> *tensors);
 
 size_t CountValueNum(const ValueTuplePtr &value_tuple);
+
+// sparse_attr_map converts CNode{kPrimSparseGetAttr, SparseTensor}
+// to CNode{kPrimTupleGetItem, SparseTensor, int64_t(index)}, used
+// in backend common optimization pass: sparse_process.cc
+const mindspore::HashMap<std::string, int64_t> sparse_attr_map = {{prim::kPrimCSRTensorGetIndptr->name(), 0},
+                                                                  {prim::kPrimCSRTensorGetIndices->name(), 1},
+                                                                  {prim::kPrimCSRTensorGetValues->name(), 2},
+                                                                  {prim::kPrimCSRTensorGetDenseShape->name(), 3}};
+// make_sparse_set records all make_sparse primitives, and tries to replace
+// make_sparse to make_tuple, used in backend common optimization pass:
+// sparse_process.cc
+const mindspore::HashSet<std::string> make_sparse_set = {{prim::kPrimMakeCSRTensor->name()}};
+// sparse_op_set records all sparse_compute operators, which takes sparsetensor
+// and (possibly) dense tensors, used in backend common optimization pass:
+// sparse_process.cc
+const mindspore::HashSet<std::string> sparse_op_set = {{prim::kPrimSparseTensorDenseMatmul->name()},
+                                                       {prim::kPrimCSRDenseMul->name()},
+                                                       {prim::kPrimCSRReduceSum->name()},
+                                                       {prim::kPrimCSRMV->name()},
+                                                       {prim::kPrimCSRMul->name()}};
+
+bool IsCustomCSROP(const AnfNodePtr &cnode);
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CCSRC_UTILS_CONVERT_UTILS_H_

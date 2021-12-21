@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,13 +27,27 @@
   ClassType(const ClassType &) = delete;   \
   ClassType &operator=(const ClassType &) = delete;
 
+#define TRY_AND_CATCH_WITH_EXCEPTION(expr, error_msg)                               \
+  do {                                                                              \
+    try {                                                                           \
+      (expr);                                                                       \
+    } catch (const std::exception &e) {                                             \
+      MS_LOG(EXCEPTION) << "Caught exception of " << e.what() << ". " << error_msg; \
+    }                                                                               \
+  } while (0)
+
 namespace mindspore {
 namespace common {
+// TODO(jiaorui): delete
+constexpr auto kEnableAscendMindRT = false;
+// TODO(liangzelang): delete
+constexpr auto kEnableAscendSubGraphMindRT = false;
+
 inline const char *SafeCStr(const std::string &str) { return str.c_str(); }
 const char *SafeCStr(const std::string &&str);
 
 static inline std::string GetEnv(const std::string &envvar) {
-  const char *value = ::getenv(envvar.c_str());
+  const char *value = std::getenv(envvar.c_str());
 
   if (value == nullptr) {
     return std::string();
@@ -51,16 +65,75 @@ static inline int SetEnv(const char *envname, const char *envvar, int overwrite 
 }
 
 static inline void SetOMPThreadNum() {
-  size_t cpu_core_num = std::thread::hardware_concurrency();
-  size_t cpu_core_num_half = cpu_core_num / 2;
   const size_t kOMPThreadMaxNum = 16;
   const size_t kOMPThreadMinNum = 1;
+  // The actor concurrent execution max num.
+  const size_t kActorConcurrentMaxNum = 4;
 
-  size_t OMP_thread_num = cpu_core_num_half < kOMPThreadMinNum ? kOMPThreadMinNum : cpu_core_num_half;
+  size_t cpu_core_num = std::thread::hardware_concurrency();
+  size_t cpu_core_num_half = cpu_core_num / 2;
+  // Ensure that the calculated number of OMP threads is at most half the number of CPU cores.
+  size_t OMP_thread_num = cpu_core_num_half / kActorConcurrentMaxNum;
+
+  OMP_thread_num = OMP_thread_num < kOMPThreadMinNum ? kOMPThreadMinNum : OMP_thread_num;
   OMP_thread_num = OMP_thread_num > kOMPThreadMaxNum ? kOMPThreadMaxNum : OMP_thread_num;
 
   std::string OMP_env = std::to_string(OMP_thread_num);
   (void)SetEnv("OMP_NUM_THREADS", OMP_env.c_str(), 0);
+}
+
+static inline bool IsLittleByteOrder() {
+  uint32_t check_code = 0x12345678;
+  auto check_pointer = reinterpret_cast<uint8_t *>(&check_code);
+  uint8_t head_code = 0x78;
+  if (check_pointer[0] == head_code) {
+    return true;
+  }
+  return false;
+}
+
+static inline bool CheckUseMPI() {
+  // If these OpenMPI environment variables are set, we consider this process is launched by OpenMPI.
+  std::string ompi_command_env = GetEnv("OMPI_COMMAND");
+  std::string pmix_rank_env = GetEnv("PMIX_RANK");
+  if (!ompi_command_env.empty() && !pmix_rank_env.empty()) {
+    return true;
+  }
+  return false;
+}
+
+template <typename T>
+inline bool IsEqual(const std::shared_ptr<T> &a, const std::shared_ptr<T> &b) {
+  if (a == b) {
+    return true;
+  }
+  if (a == nullptr || b == nullptr) {
+    return false;
+  }
+  return *a == *b;
+}
+
+template <typename T>
+inline bool IsAttrsEqual(const T &a, const T &b) {
+  if (&a == &b) {
+    return true;
+  }
+  if (a.size() != b.size()) {
+    return false;
+  }
+  auto iter1 = a.begin();
+  auto iter2 = b.begin();
+  while (iter1 != a.end()) {
+    if (iter1->first != iter2->first) {
+      return false;
+    }
+    if (!IsEqual(iter1->second, iter2->second)) {
+      return false;
+    }
+    ++iter1;
+    ++iter2;
+  }
+  return true;
 }
 }  // namespace common
 }  // namespace mindspore

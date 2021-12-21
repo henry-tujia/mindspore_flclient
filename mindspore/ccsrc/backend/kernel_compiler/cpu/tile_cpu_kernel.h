@@ -36,6 +36,7 @@ class TileCPUKernel : public CPUKernel {
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs) override;
 
+ private:
   template <typename T>
   void LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs);
 
@@ -43,8 +44,6 @@ class TileCPUKernel : public CPUKernel {
 
   void TileMultipleCompute(void);
 
- private:
-  void CheckParam(const CNodePtr &kernel_node);
   std::vector<size_t> x_shape_;
   std::vector<size_t> y_shape_;
   std::vector<int> multiples_;
@@ -54,11 +53,23 @@ class TileCPUKernel : public CPUKernel {
   std::unordered_map<TypeId, TypeKernel> launch_map_;
   TypeKernel launch_func_;
   TileParameter tile_parameter_;
-  bool one_dim_tile_;
-  size_t input_size_;
+  bool one_dim_tile_{false};
+  size_t input_size_{0};
 };
 
-MS_REG_CPU_KERNEL(Tile, KernelAttr(), TileCPUKernel);
+MS_REG_CPU_KERNEL(
+  Tile, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeFloat32),
+  TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeInt8).AddOutputAttr(kNumberTypeInt8), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeInt16).AddOutputAttr(kNumberTypeInt16), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeInt32), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeInt64).AddOutputAttr(kNumberTypeInt64), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutputAttr(kNumberTypeBool), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeUInt16).AddOutputAttr(kNumberTypeUInt16), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeUInt32).AddOutputAttr(kNumberTypeUInt32), TileCPUKernel);
+MS_REG_CPU_KERNEL(Tile, KernelAttr().AddInputAttr(kNumberTypeUInt64).AddOutputAttr(kNumberTypeUInt64), TileCPUKernel);
 }  // namespace kernel
 }  // namespace mindspore
 #endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_TILE_CPU_KERNEL_H_

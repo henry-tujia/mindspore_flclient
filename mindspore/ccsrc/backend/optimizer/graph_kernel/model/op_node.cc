@@ -22,15 +22,13 @@
 #include <string>
 #include <vector>
 #include <functional>
-#include <unordered_map>
-#include <unordered_set>
 #include <numeric>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 std::vector<int64_t> GetListInt(const ValuePtr &attr_value) {
   bool is_int64 = true;
   auto get_int_value = [&is_int64](const ValuePtr &value) -> int64_t {
@@ -41,7 +39,7 @@ std::vector<int64_t> GetListInt(const ValuePtr &attr_value) {
     return static_cast<int64_t>(GetValue<int>(value));
   };
   std::vector<int64_t> list_int;
-  const auto &vals = attr_value->cast<ValueSequeuePtr>()->value();
+  const auto &vals = attr_value->cast<ValueSequencePtr>()->value();
   (void)std::transform(vals.begin(), vals.end(), std::back_inserter(list_int), get_int_value);
   if (!is_int64) {
     MS_LOG(WARNING) << "Vector type should be 'int64_t' but got 'int'";
@@ -121,23 +119,26 @@ template <typename TM, typename TD>
 tensor::TensorPtr CalcByOperator(const NodePtrList &inputs, const std::string &op, TypeId tid) {
   std::vector<TM> inputs_tm;
   std::transform(inputs.begin(), inputs.end(), std::back_inserter(inputs_tm), [](const NodePtr &i) {
-    return *static_cast<TM *>(std::static_pointer_cast<graphkernel::ConstTensorNode>(i)->data()->data_c());
+    return *static_cast<TM *>(std::static_pointer_cast<inner::ConstTensorNode>(i)->data()->data_c());
   });
 
-  std::unordered_map<std::string, std::function<TM(const std::vector<TM> &)>> func_map;
-  func_map["Add"] = [](const std::vector<TM> &n) { return n[0] + n[1]; };
-  func_map["Sub"] = [](const std::vector<TM> &n) { return n[0] - n[1]; };
-  func_map["Mul"] = [](const std::vector<TM> &n) { return n[0] * n[1]; };
-  func_map["RealDiv"] = [](const std::vector<TM> &n) { return n[0] / n[1]; };
-  func_map["Neg"] = [](const std::vector<TM> &n) { return -n[0]; };
-  func_map["Reciprocal"] = [](const std::vector<TM> &n) { return TM(1) / n[0]; };
-  func_map["Log"] = [](const std::vector<TM> &n) { return log(n[0]); };
-  func_map["Exp"] = [](const std::vector<TM> &n) { return exp(n[0]); };
-  func_map["Abs"] = [](const std::vector<TM> &n) { return n[0] < TM(0) ? (-n[0]) : n[0]; };
-  func_map["Sqrt"] = [](const std::vector<TM> &n) { return sqrt(n[0]); };
-  func_map["Rsqrt"] = [](const std::vector<TM> &n) { return TM(1) / sqrt(n[0]); };
+  mindspore::HashMap<std::string, std::function<TM(const std::vector<TM> &)>> func_map = {
+    {"Add", [](const std::vector<TM> &n) { return n[0] + n[1]; }},
+    {"Sub", [](const std::vector<TM> &n) { return n[0] - n[1]; }},
+    {"Mul", [](const std::vector<TM> &n) { return n[0] * n[1]; }},
+    {"RealDiv", [](const std::vector<TM> &n) { return n[0] / n[1]; }},
+    {"Neg", [](const std::vector<TM> &n) { return TM(0) - n[0]; }},
+    {"Reciprocal", [](const std::vector<TM> &n) { return TM(1) / n[0]; }},
+    {"Log", [](const std::vector<TM> &n) { return log(n[0]); }},
+    {"Exp", [](const std::vector<TM> &n) { return exp(n[0]); }},
+    {"Abs", [](const std::vector<TM> &n) { return n[0] < TM(0) ? (TM(0) - n[0]) : n[0]; }},
+    {"Sqrt", [](const std::vector<TM> &n) { return sqrt(n[0]); }},
+    {"Rsqrt", [](const std::vector<TM> &n) { return TM(1) / sqrt(n[0]); }},
+  };
 
-  if (func_map.find(op) == func_map.end()) return nullptr;
+  if (func_map.find(op) == func_map.end()) {
+    return nullptr;
+  }
   return std::make_shared<tensor::Tensor>(static_cast<TD>(func_map[op](inputs_tm)), TypeIdToType(tid));
 }
 
@@ -204,6 +205,10 @@ DShape ToNz(const DShape &default_shape) {
   auto len = default_shape.size();
   DShape leading_shape;
   DShape tail_shape;
+  if (default_shape.size() == 1 && default_shape[0] == 1) {
+    // # As shape (1,) can broadcast to any shape, it can be regarded as a special FractalNZ shape
+    return default_shape;
+  }
   if (default_shape.size() > nz_size) {
     (void)leading_shape.insert(leading_shape.end(), default_shape.begin(), default_shape.end() - SizeToLong(nz_size));
   }
@@ -307,7 +312,7 @@ TypeId CastOp::InferType(const NodePtrList &inputs, const DAttrs &attrs) {
   if (dst_type->isa<Type>()) {
     return dst_type->cast<TypePtr>()->type_id();
   }
-  return kernel::DtypeToTypeId(GetValue<std::string>(dst_type));
+  return StringToTypeId(GetValue<std::string>(dst_type));
 }
 
 void SelectOp::CheckType(const NodePtrList &inputs, const DAttrs &) {
@@ -409,10 +414,12 @@ DShape Conv2dOp::InferShape(const NodePtrList &inputs, const DAttrs &attrs) {
   auto kernel_size = GetListInt(attrs.find("kernel_size")->second);
   auto stride = GetListInt(attrs.find("stride")->second);
   auto dilation = GetListInt(attrs.find("dilation")->second);
-  check_nd(pad_list, 4);
-  check_nd(kernel_size, 2);
-  check_nd(stride, 4);
-  check_nd(dilation, 4);
+  constexpr auto dim_len = 4;
+  check_nd(pad_list, dim_len);
+  constexpr auto kernel_len = 2;
+  check_nd(kernel_size, kernel_len);
+  check_nd(stride, dim_len);
+  check_nd(dilation, dim_len);
   bool has_pad = false;
   if (pad_list[0] != pad_list[1] || pad_list[2] != pad_list[3]) {
     has_pad = true;
@@ -440,7 +447,7 @@ TypeId Conv2dOp::InferType(const NodePtrList &inputs, const DAttrs &attrs) {
   if (dst_type->isa<Type>()) {
     return dst_type->cast<TypePtr>()->type_id();
   }
-  return kernel::DtypeToTypeId(GetValue<std::string>(dst_type));
+  return StringToTypeId(GetValue<std::string>(dst_type));
 }
 
 DShape TransposeOp::InferShape(const NodePtrList &inputs, const DAttrs &attrs) {
@@ -493,13 +500,12 @@ DShape MatMulOp::InferShape(const NodePtrList &inputs, const DAttrs &attrs) {
 }
 
 TypeId MatMulOp::InferType(const NodePtrList &inputs, const DAttrs &attrs) {
-  CHECK_ATTR(attrs, "dst_type");
   if (attrs.find("dst_type") == attrs.end()) return inputs[0]->type;
   auto dst_type = attrs.find("dst_type")->second;
   if (dst_type->isa<Type>()) {
     return dst_type->cast<TypePtr>()->type_id();
   }
-  return kernel::DtypeToTypeId(GetValue<std::string>(dst_type));
+  return StringToTypeId(GetValue<std::string>(dst_type));
 }
 
 DShape PadAkgOp::InferShape(const NodePtrList &inputs, const DAttrs &attrs) {
@@ -544,10 +550,8 @@ void ComplexOp::CheckType(const NodePtrList &inputs, const DAttrs &attrs) {
   }
 }
 
-DShape StandardNormalOp::InferShape(const NodePtrList &inputs, const DAttrs &attrs) {
+DShape StandardNormalOp::InferShape(const NodePtrList &, const DAttrs &attrs) {
   CHECK_ATTR(attrs, "shape");
   return GetListInt(attrs.find("shape")->second);
 }
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner

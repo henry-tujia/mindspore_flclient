@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ class MaxPoolWithArgmaxGradGpuKernel : public GpuKernel {
         x_width_(0),
         dy_height_(0),
         dy_width_(0),
+        is_null_input_(false),
         x_size_(0),
         dy_size_(0),
         index_size_(0),
@@ -48,6 +49,9 @@ class MaxPoolWithArgmaxGradGpuKernel : public GpuKernel {
   const std::vector<size_t> &GetWorkspaceSizeList() const override { return workspace_size_list_; }
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) {
+    if (is_null_input_) {
+      return true;
+    }
     T *dy_addr = GetDeviceAddress<T>(inputs, 1);
     S *index_addr = GetDeviceAddress<S>(inputs, 2);
     T *dx_addr = GetDeviceAddress<T>(outputs, 0);
@@ -57,20 +61,26 @@ class MaxPoolWithArgmaxGradGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 3) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but MaxPoolGradWithArgmax needs 3 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 3, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but MaxPoolGradWithArgmax needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
     auto x_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     auto dy_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     auto index_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     auto dx_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(x_shape, kernel_name, "x") || CHECK_SHAPE_NULL(dy_shape, kernel_name, "dy") ||
+                     CHECK_SHAPE_NULL(index_shape, kernel_name, "index") ||
+                     CHECK_SHAPE_NULL(dx_shape, kernel_name, "dx");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     x_size_ = sizeof(T);
     for (auto x : x_shape) {
       x_size_ *= x;
@@ -86,6 +96,10 @@ class MaxPoolWithArgmaxGradGpuKernel : public GpuKernel {
     dx_size_ = sizeof(T);
     for (auto x : dx_shape) {
       dx_size_ *= x;
+    }
+    if (x_shape.size() < 4 || dy_shape.size() < 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of x and dy cannot be less than 4, but got "
+                        << "the dimension of x: " << x_shape.size() << ", the dimension of dy: " << dy_shape.size();
     }
     n_ = SizeToInt(x_shape[0]);
     c_ = SizeToInt(x_shape[1]);
@@ -116,6 +130,7 @@ class MaxPoolWithArgmaxGradGpuKernel : public GpuKernel {
   int x_width_;
   int dy_height_;
   int dy_width_;
+  bool is_null_input_;
 
   size_t x_size_;
   size_t dy_size_;

@@ -17,6 +17,10 @@
 #include "src/cxx_api/model/model_impl.h"
 #include <memory>
 #include <algorithm>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 #include "include/api/types.h"
 #include "include/api/context.h"
 #include "include/lite_session.h"
@@ -32,6 +36,11 @@
 #include "src/common/config_file.h"
 
 namespace mindspore {
+namespace {
+const char *const kExecutionPlan = "execution_plan";
+constexpr size_t kMaxSectionNum = 100;
+constexpr size_t kMaxConfigNumPerSection = 1000;
+}  // namespace
 using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_OK;
 
@@ -45,22 +54,22 @@ CreateTrainSessionProto *CreateTrainSessionCallbackHolder(CreateTrainSessionProt
 
 Status ModelImpl::Build(const void *model_data, size_t data_size, ModelType model_type,
                         const std::shared_ptr<Context> &ms_context) {
-  context_ = ms_context;
-
-  auto *lite_context = new (std::nothrow) lite::InnerContext();
-  MS_CHECK_TRUE_MSG(lite_context != nullptr, kLiteNullptr, "inner context failed");
-  auto status = A2L_ConvertContext(ms_context.get(), lite_context);
-  if (status != kSuccess) {
-    return status;
+  if (model_data == nullptr) {
+    MS_LOG(ERROR) << "The input model buffer is nullptr.";
+    return kLiteNullptr;
   }
-
-  auto session = std::shared_ptr<session::LiteSession>(CreateLiteSession(lite_context));
+  if (data_size == 0) {
+    MS_LOG(ERROR) << "The input model buffer size is 0.";
+    return kLiteInputParamInvalid;
+  }
+  context_ = ms_context;
+  auto session = std::shared_ptr<lite::LiteSession>(CreateLiteSession(ContextUtils::Convert(ms_context.get())));
   if (session == nullptr) {
     MS_LOG(ERROR) << "Allocate session failed.";
     return kLiteNullptr;
   }
 
-  auto ret = lite::LiteSession::CreateSessionByBuf(static_cast<const char *>(model_data), data_size, session.get());
+  auto ret = session->LoadModelAndCompileByBuf(static_cast<const char *>(model_data), model_type, data_size);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Init session failed";
     return kLiteError;
@@ -73,20 +82,13 @@ Status ModelImpl::Build(const void *model_data, size_t data_size, ModelType mode
 
 Status ModelImpl::Build(const std::string &model_path, ModelType model_type,
                         const std::shared_ptr<Context> &ms_context) {
-  auto *lite_context = new (std::nothrow) lite::InnerContext();
-  MS_CHECK_TRUE_MSG(lite_context != nullptr, kLiteNullptr, "inner context failed");
-  auto status = A2L_ConvertContext(ms_context.get(), lite_context);
-  if (status != kSuccess) {
-    return status;
-  }
-
-  auto session = std::shared_ptr<session::LiteSession>(CreateLiteSession(lite_context));
+  auto session = std::shared_ptr<lite::LiteSession>(CreateLiteSession(ContextUtils::Convert(ms_context.get())));
   if (session == nullptr) {
     MS_LOG(ERROR) << "Allocate session failed.";
     return kLiteNullptr;
   }
 
-  auto ret = lite::LiteSession::CreateSessionByPath(model_path, session.get());
+  auto ret = session->LoadModelAndCompileByPath(model_path, model_type);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Init session failed";
     return kLiteError;
@@ -109,17 +111,15 @@ Status ModelImpl::Build() {
     return kLiteNullptr;
   }
 
-  auto *lite_context = new (std::nothrow) lite::InnerContext();
-  MS_CHECK_TRUE_MSG(lite_context != nullptr, kLiteNullptr, "inner context failed");
-  auto status = A2L_ConvertContext(context_.get(), lite_context);
-  if (status != kSuccess) {
+  auto *inner_context = ContextUtils::Convert(context_.get());
+  if (inner_context == nullptr) {
     MS_LOG(ERROR) << "Failed to convert Context to Lite Context";
-    return status;
+    return kLiteNullptr;
   }
 
   auto create_callback = CreateTrainSessionCallbackHolder();
   if (create_callback != nullptr) {
-    auto session = create_callback(graph_->graph_data_, cfg_, lite_context);
+    auto session = create_callback(graph_->graph_data_, cfg_, inner_context);
     if (session != nullptr) {
       session_ = session;
       MS_LOG(DEBUG) << "Build model success.";
@@ -129,11 +129,12 @@ Status ModelImpl::Build() {
 
   auto model = graph_->graph_data_->lite_model();
   if (model == nullptr || model->buf == nullptr) {
+    delete inner_context;
     MS_LOG(ERROR) << "Lite model has been freed.";
     return kLiteError;
   }
 
-  auto session = std::shared_ptr<session::LiteSession>(CreateLiteSession(lite_context));
+  auto session = std::shared_ptr<lite::LiteSession>(CreateLiteSession(inner_context));
   if (session == nullptr) {
     MS_LOG(ERROR) << "Allocate session failed.";
     return kLiteNullptr;
@@ -149,7 +150,7 @@ Status ModelImpl::Build() {
   return kSuccess;
 }
 
-static void ResetTensorData(std::vector<void *> old_data, std::vector<tensor::MSTensor *> tensors) {
+static void ResetTensorData(std::vector<void *> old_data, const std::vector<tensor::MSTensor *> &tensors) {
   for (size_t j = 0; j < old_data.size(); j++) {
     tensors.at(j)->set_data(old_data.at(j));
   }
@@ -188,19 +189,38 @@ Status ModelImpl::RunGraph(const MSKernelCallBack &before, const MSKernelCallBac
 bool ModelImpl::IsTrainModel() { return (graph_ && graph_->graph_data_ && graph_->graph_data_->IsTrainModel()); }
 
 Status ModelImpl::LoadConfig(const std::string &config_path) {
-  std::map<std::string, std::string> config_info;
-  int ret = lite::GetSectionInfoFromConfigFile(config_path, CONFIG_FILE_EXECUTION_PLAN, &config_info);
+  std::map<std::string, std::map<std::string, std::string>> all_config_info;
+  int ret = lite::GetAllSectionInfoFromConfigFile(config_path, &all_config_info);
   if (ret != RET_OK) {
-    MS_LOG(ERROR) << "GetSectionInfoFromConfigFile failed.";
+    MS_LOG(ERROR) << "GetAllSectionInfoFromConfigFile fail!ret: " << ret;
     return kLiteFileError;
   }
-
+  config_info_ = all_config_info;
+  std::map<std::string, std::string> config_info = all_config_info[kExecutionPlan];
   if (config_info.empty()) {
-    MS_LOG(WARNING) << "No valid info in config file.";
+    MS_LOG(WARNING) << "No valid execution plan info in config file.";
     return kSuccess;
   }
 
   lite::ParserExecutionPlan(&config_info, &execution_plan_);
+  return kSuccess;
+}
+
+Status ModelImpl::UpdateConfig(const std::string &section, const std::pair<std::string, std::string> &config) {
+  auto iter = config_info_.find(section);
+  if (iter == config_info_.end()) {
+    if (config_info_.size() >= kMaxSectionNum) {
+      MS_LOG(ERROR) << "config too many sections!";
+      return kLiteError;
+    }
+    config_info_[section][config.first] = config.second;
+    return kSuccess;
+  }
+  if (iter->second.size() >= kMaxConfigNumPerSection) {
+    MS_LOG(ERROR) << "config too many items!";
+    return kLiteError;
+  }
+  iter->second[config.first] = config.second;
   return kSuccess;
 }
 
@@ -328,7 +348,7 @@ std::vector<MSTensor> ModelImpl::GetOutputs() {
   }
   auto outputs = session_->GetOutputs();
   if (outputs.empty()) {
-    MS_LOG(ERROR) << "The outputs of model is null.";
+    MS_LOG(ERROR) << "The output tensor name of this model is null.";
     return empty;
   }
   if (names.size() != outputs.size()) {
@@ -387,6 +407,44 @@ Status ModelImpl::ApplyGradients(const std::vector<MSTensor> &gradients) {
     inner_gradients[i] = gradient.impl_->lite_tensor();
   }
   auto ret = session_->ApplyGradients(inner_gradients);
+  return static_cast<StatusCode>(ret);
+}
+
+std::vector<MSTensor> ModelImpl::GetFeatureMaps() const {
+  std::vector<MSTensor> empty;
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return empty;
+  }
+  auto params = session_->GetFeatureMaps();
+  if (params.empty()) {
+    MS_LOG(ERROR) << "No optimizer parameters avelibale.";
+    return empty;
+  }
+  std::vector<MSTensor> res = LiteTensorsToMSTensors(params, false);
+  return res;
+}
+
+Status ModelImpl::UpdateFeatureMaps(const std::vector<MSTensor> &new_weights) {
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return kLiteNullptr;
+  }
+  if (new_weights.empty()) {
+    MS_LOG(ERROR) << "gradients is null.";
+    return kLiteInputParamInvalid;
+  }
+  std::vector<tensor::MSTensor *> inner_weights;
+  inner_weights.resize(new_weights.size());
+  for (size_t i = 0; i < new_weights.size(); i++) {
+    auto new_weight = new_weights[i];
+    if (new_weight.impl_ == nullptr || new_weight.impl_->lite_tensor() == nullptr) {
+      MS_LOG(ERROR) << "gradient tensor " << new_weight.Name() << " is null.";
+      return kLiteInputTensorError;
+    }
+    inner_weights[i] = new_weight.impl_->lite_tensor();
+  }
+  auto ret = session_->UpdateFeatureMaps(inner_weights);
   return static_cast<StatusCode>(ret);
 }
 
@@ -504,6 +562,23 @@ std::vector<MSTensor> ModelImpl::GetOutputsByNodeName(const std::string &name) {
   return res;
 }
 
+#ifdef ENABLE_OPENGL_TEXTURE
+Status ModelImpl::BindGLTexture2DMemory(const std::map<std::string, GLuint> &inputGLTexture,
+                                        std::map<std::string, GLuint> *outputGLTexture) {
+  MS_LOG(INFO) << "Bind GLTexture2D to Input MsTensors and Output MsTensors";
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return kLiteError;
+  }
+  auto status = session_->BindGLTexture2DMemory(inputGLTexture, outputGLTexture);
+  if (status != kSuccess) {
+    MS_LOG(ERROR) << "Bing OpenGL Texture to OpenCl Memory failed";
+    return kLiteError;
+  }
+  return kSuccess;
+}
+#endif
+
 Status ModelImpl::Resize(const std::vector<MSTensor> &inputs, const std::vector<std::vector<int64_t>> &dims) {
   if (session_ == nullptr) {
     MS_LOG(ERROR) << "Session is null.";
@@ -552,14 +627,39 @@ Status ModelImpl::Resize(const std::vector<MSTensor> &inputs, const std::vector<
   return static_cast<StatusCode>(ret);
 }
 
-session::LiteSession *ModelImpl::CreateLiteSession(lite::InnerContext *context) {
+Status ModelImpl::UpdateWeights(const std::vector<MSTensor> &new_weights) {
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return kLiteNullptr;
+  }
+  if (new_weights.empty()) {
+    MS_LOG(ERROR) << "New weights are empty.";
+    return kLiteInputParamInvalid;
+  }
+  std::vector<tensor::MSTensor *> inner_weights;
+  inner_weights.resize(new_weights.size());
+  for (size_t i = 0; i < new_weights.size(); i++) {
+    auto weight = new_weights[i];
+    if (weight.impl_ == nullptr || weight.impl_->lite_tensor() == nullptr) {
+      MS_LOG(ERROR) << "Input tensor " << weight.Name() << " is null.";
+      return kLiteInputTensorError;
+    }
+    inner_weights[i] = weight.impl_->lite_tensor();
+  }
+  auto ret = session_->UpdateWeights(inner_weights);
+  return static_cast<StatusCode>(ret);
+}
+
+lite::LiteSession *ModelImpl::CreateLiteSession(lite::InnerContext *context) {
   auto session = new (std::nothrow) lite::LiteSession();
   if (session == nullptr) {
     MS_LOG(ERROR) << "create session failed";
+    delete context;
     return nullptr;
   }
 
   session->InitExecutionConfig(&execution_plan_);
+  session->SetConfigInfo(&config_info_);
 
   auto ret = session->Init(context);
   if (ret != mindspore::lite::RET_OK) {

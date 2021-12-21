@@ -34,6 +34,12 @@
 #include <asm/unistd.h>
 #include <unistd.h>
 #endif
+#ifdef SUPPORT_NNIE
+#include "include/hi_common.h"
+#include "include/hi_comm_vb.h"
+#include "include/mpi_sys.h"
+#include "include/mpi_vb.h"
+#endif
 
 namespace mindspore {
 namespace lite {
@@ -57,6 +63,10 @@ constexpr int16_t kInputDataInt8Min = -127;
 constexpr int16_t kInputDataInt8Max = 127;
 constexpr int16_t kInputDataUint8Min = 0;
 constexpr int16_t kInputDataUint8Max = 254;
+#ifdef SUPPORT_NNIE
+constexpr int kNNIEMaxPoolCnt = 2;
+constexpr int kNNIEBlkSize = 768 * 576 * 2;
+#endif
 
 const std::unordered_map<int, std::string> kTypeIdMap{
   {kNumberTypeFloat16, "Float16"}, {kNumberTypeFloat, "Float32"},    {kNumberTypeFloat32, "Float32"},
@@ -64,15 +74,17 @@ const std::unordered_map<int, std::string> kTypeIdMap{
   {kNumberTypeInt32, "Int32"},     {kNumberTypeUInt8, "UInt8"},      {kNumberTypeUInt16, "UInt16"},
   {kNumberTypeUInt, "UInt32"},     {kNumberTypeUInt32, "UInt32"},    {kObjectTypeString, "String"},
   {kNumberTypeBool, "Bool"},       {kObjectTypeTensorType, "Tensor"}};
-const std::unordered_map<schema::Format, std::string> kTensorFormatMap{
-  {schema::Format_NCHW, "NCHW"}, {schema::Format_NHWC, "NHWC"},     {schema::Format_NHWC4, "NHWC4"},
-  {schema::Format_HWKC, "HWKC"}, {schema::Format_HWCK, "HWCK"},     {schema::Format_KCHW, "KCHW"},
-  {schema::Format_CKHW, "CKHW"}, {schema::Format_KHWC, "KHWC"},     {schema::Format_CHWK, "CHWK"},
-  {schema::Format_HW, "HW"},     {schema::Format_HW4, "HW4"},       {schema::Format_NC, "NC"},
-  {schema::Format_NC4, "NC4"},   {schema::Format_NC4HW4, "NC4HW4"}, {schema::Format_NCDHW, "NCDHW"}};
+
+const std::unordered_map<mindspore::Format, std::string> kTensorFormatMap{
+  {mindspore::NCHW, "NCHW"}, {mindspore::NHWC, "NHWC"},     {mindspore::NHWC4, "NHWC4"}, {mindspore::HWKC, "HWKC"},
+  {mindspore::HWCK, "HWCK"}, {mindspore::KCHW, "KCHW"},     {mindspore::CKHW, "CKHW"},   {mindspore::KHWC, "KHWC"},
+  {mindspore::CHWK, "CHWK"}, {mindspore::HW, "HW"},         {mindspore::HW4, "HW4"},     {mindspore::NC, "NC"},
+  {mindspore::NC4, "NC4"},   {mindspore::NC4HW4, "NC4HW4"}, {mindspore::NCDHW, "NCDHW"}};
 
 int BenchmarkBase::GenerateRandomData(size_t size, void *data, int data_type) {
-  MS_ASSERT(data != nullptr);
+  if (data == nullptr && size > 0) {
+    data = malloc(size);
+  }
   switch (data_type) {
     case kNumberTypeFloat32:
     case kNumberTypeFloat:
@@ -107,25 +119,6 @@ int BenchmarkBase::GenerateRandomData(size_t size, void *data, int data_type) {
       for (size_t i = 0; i < size; i++) {
         casted_data[i] = static_cast<char>(i);
       }
-  }
-  return RET_OK;
-}
-
-int BenchmarkBase::LoadInput() {
-  if (flags_->in_data_file_.empty()) {
-    auto status = GenerateInputData();
-    if (status != 0) {
-      std::cerr << "Generate input data error " << status << std::endl;
-      MS_LOG(ERROR) << "Generate input data error " << status;
-      return status;
-    }
-  } else {
-    auto status = ReadInputFile();
-    if (status != 0) {
-      std::cerr << "ReadInputFile error, " << status << std::endl;
-      MS_LOG(ERROR) << "ReadInputFile error, " << status;
-      return status;
-    }
   }
   return RET_OK;
 }
@@ -170,6 +163,40 @@ int BenchmarkBase::ReadCalibData() {
   }
   in_file.close();
   MS_LOG(INFO) << "Finish reading calibData file";
+  return RET_OK;
+}
+
+int BenchmarkBase::ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name,
+                                  const std::vector<size_t> &dims) {
+  std::string line;
+  getline(in_file_stream, line);
+  std::stringstream line_stream(line);
+  if (this->benchmark_data_.find(tensor_name) != this->benchmark_data_.end()) {
+    return RET_OK;
+  }
+  std::vector<float> data;
+  std::vector<std::string> strings_data;
+  size_t shape_size = std::accumulate(dims.begin(), dims.end(), 1, std::multiplies<size_t>());
+  if (GetDataTypeByTensorName(tensor_name) == static_cast<int>(kObjectTypeString)) {
+    strings_data.push_back(line);
+    for (size_t i = 1; i < shape_size; i++) {
+      getline(in_file_stream, line);
+      strings_data.push_back(line);
+    }
+  } else {
+    for (size_t i = 0; i < shape_size; i++) {
+      float tmp_data;
+      line_stream >> tmp_data;
+      data.push_back(tmp_data);
+    }
+  }
+  auto *check_tensor = new (std::nothrow) CheckTensor(dims, data, strings_data);
+  if (check_tensor == nullptr) {
+    MS_LOG(ERROR) << "New CheckTensor failed, tensor name: " << tensor_name;
+    return RET_ERROR;
+  }
+  this->benchmark_tensor_names_.push_back(tensor_name);
+  this->benchmark_data_.insert(std::make_pair(tensor_name, check_tensor));
   return RET_OK;
 }
 
@@ -222,6 +249,33 @@ void BenchmarkFlags::InitResizeDimsList() {
   }
 }
 
+int BenchmarkBase::CheckModelValid() {
+  this->flags_->in_data_type_ = this->flags_->in_data_type_in_ == "img" ? kImage : kBinary;
+
+  if (!flags_->benchmark_data_type_.empty()) {
+    if (data_type_map_.find(flags_->benchmark_data_type_) == data_type_map_.end()) {
+      MS_LOG(ERROR) << "CalibDataType not supported: " << flags_->benchmark_data_type_.c_str();
+      return RET_ERROR;
+    }
+    msCalibDataType = data_type_map_.at(flags_->benchmark_data_type_);
+    MS_LOG(INFO) << "CalibDataType = " << flags_->benchmark_data_type_.c_str();
+    std::cout << "CalibDataType = " << flags_->benchmark_data_type_.c_str() << std::endl;
+  }
+
+  if (flags_->model_file_.empty()) {
+    MS_LOG(ERROR) << "modelPath is required";
+    std::cerr << "modelPath is required" << std::endl;
+    return RET_ERROR;
+  }
+
+  if (ModelTypeMap.find(flags_->model_type_) == ModelTypeMap.end()) {
+    MS_LOG(ERROR) << "Invalid model type: " << flags_->model_type_;
+    std::cerr << "Invalid model type: " << flags_->model_type_ << std::endl;
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
 int BenchmarkBase::CheckThreadNumValid() {
   if (this->flags_->num_threads_ < kThreadNumMin) {
     MS_LOG(ERROR) << "numThreads:" << this->flags_->num_threads_ << " must be greater than 0";
@@ -241,7 +295,7 @@ int BenchmarkBase::CheckThreadNumValid() {
 
 int BenchmarkBase::CheckDeviceTypeValid() {
   if (flags_->device_ != "CPU" && flags_->device_ != "GPU" && flags_->device_ != "NPU" &&
-      flags_->device_ != "Ascend310") {
+      flags_->device_ != "Ascend310" && flags_->device_ != "Ascend710") {
     MS_LOG(ERROR) << "Device type:" << flags_->device_ << " is not supported.";
     std::cerr << "Device type:" << flags_->device_ << " is not supported." << std::endl;
     return RET_ERROR;
@@ -250,6 +304,7 @@ int BenchmarkBase::CheckDeviceTypeValid() {
 }
 
 int BenchmarkBase::InitDumpConfigFromJson(char *path) {
+#ifndef BENCHMARK_CLIP_JSON
   auto real_path = RealPath(path);
   std::ifstream ifs(real_path);
   if (!ifs.good()) {
@@ -310,7 +365,7 @@ int BenchmarkBase::InitDumpConfigFromJson(char *path) {
     MS_LOG(ERROR) << "create data output directory failed.";
     return RET_ERROR;
   }
-
+#endif
   return RET_OK;
 }
 
@@ -329,38 +384,53 @@ int BenchmarkBase::InitCallbackParameter() {
 }
 
 int BenchmarkBase::Init() {
-  if (this->flags_ == nullptr) {
-    return 1;
-  }
+  MS_CHECK_FALSE(this->flags_ == nullptr, RET_ERROR);
   MS_LOG(INFO) << "ModelPath = " << this->flags_->model_file_;
+  MS_LOG(INFO) << "ModelType = " << this->flags_->model_type_;
   MS_LOG(INFO) << "InDataPath = " << this->flags_->in_data_file_;
   MS_LOG(INFO) << "ConfigFilePath = " << this->flags_->config_file_;
   MS_LOG(INFO) << "InDataType = " << this->flags_->in_data_type_in_;
   MS_LOG(INFO) << "LoopCount = " << this->flags_->loop_count_;
   MS_LOG(INFO) << "DeviceType = " << this->flags_->device_;
   MS_LOG(INFO) << "AccuracyThreshold = " << this->flags_->accuracy_threshold_;
+  MS_LOG(INFO) << "CosineDistanceThreshold = " << this->flags_->cosine_distance_threshold_;
   MS_LOG(INFO) << "WarmUpLoopCount = " << this->flags_->warm_up_loop_count_;
   MS_LOG(INFO) << "NumThreads = " << this->flags_->num_threads_;
   MS_LOG(INFO) << "Fp16Priority = " << this->flags_->enable_fp16_;
   MS_LOG(INFO) << "EnableParallel = " << this->flags_->enable_parallel_;
   MS_LOG(INFO) << "calibDataPath = " << this->flags_->benchmark_data_file_;
+#ifdef ENABLE_OPENGL_TEXTURE
+  MS_LOG(INFO) << "EnableGLTexture = " << this->flags_->enable_gl_texture_;
+#endif
   std::cout << "ModelPath = " << this->flags_->model_file_ << std::endl;
+  std::cout << "ModelType = " << this->flags_->model_type_ << std::endl;
   std::cout << "InDataPath = " << this->flags_->in_data_file_ << std::endl;
   std::cout << "ConfigFilePath = " << this->flags_->config_file_ << std::endl;
   std::cout << "InDataType = " << this->flags_->in_data_type_in_ << std::endl;
   std::cout << "LoopCount = " << this->flags_->loop_count_ << std::endl;
   std::cout << "DeviceType = " << this->flags_->device_ << std::endl;
   std::cout << "AccuracyThreshold = " << this->flags_->accuracy_threshold_ << std::endl;
+  std::cout << "CosineDistanceThreshold = " << this->flags_->cosine_distance_threshold_ << std::endl;
   std::cout << "WarmUpLoopCount = " << this->flags_->warm_up_loop_count_ << std::endl;
   std::cout << "NumThreads = " << this->flags_->num_threads_ << std::endl;
   std::cout << "Fp16Priority = " << this->flags_->enable_fp16_ << std::endl;
   std::cout << "EnableParallel = " << this->flags_->enable_parallel_ << std::endl;
   std::cout << "calibDataPath = " << this->flags_->benchmark_data_file_ << std::endl;
+#ifdef ENABLE_OPENGL_TEXTURE
+  std::cout << "EnableGLTexture = " << this->flags_->enable_gl_texture_ << std::endl;
+#endif
   if (this->flags_->loop_count_ < 1) {
     MS_LOG(ERROR) << "LoopCount:" << this->flags_->loop_count_ << " must be greater than 0";
     std::cerr << "LoopCount:" << this->flags_->loop_count_ << " must be greater than 0" << std::endl;
     return RET_ERROR;
   }
+#ifdef ENABLE_OPENGL_TEXTURE
+  if (this->flags_->enable_gl_texture_ == true && this->flags_->device_ != "GPU") {
+    MS_LOG(ERROR) << "device must be GPU if you want to enable GLTexture";
+    std::cerr << "ERROR: device must be GPU if you want to enable GLTexture" << std::endl;
+    return RET_ERROR;
+  }
+#endif
 
   auto thread_ret = CheckThreadNumValid();
   if (thread_ret != RET_OK) {
@@ -368,6 +438,7 @@ int BenchmarkBase::Init() {
     std::cerr << "Invalid numThreads." << std::endl;
     return RET_ERROR;
   }
+
   static std::vector<std::string> CPU_BIND_MODE_MAP = {"NO_BIND", "HIGHER_CPU", "MID_CPU"};
   if (this->flags_->cpu_bind_mode_ >= 1) {
     MS_LOG(INFO) << "cpuBindMode = " << CPU_BIND_MODE_MAP[this->flags_->cpu_bind_mode_];
@@ -377,23 +448,13 @@ int BenchmarkBase::Init() {
     std::cout << "cpuBindMode = NO_BIND" << std::endl;
   }
 
-  this->flags_->in_data_type_ = this->flags_->in_data_type_in_ == "img" ? kImage : kBinary;
-
-  if (!flags_->benchmark_data_type_.empty()) {
-    if (data_type_map_.find(flags_->benchmark_data_type_) == data_type_map_.end()) {
-      MS_LOG(ERROR) << "CalibDataType not supported: " << flags_->benchmark_data_type_.c_str();
-      return RET_ERROR;
-    }
-    msCalibDataType = data_type_map_.at(flags_->benchmark_data_type_);
-    MS_LOG(INFO) << "CalibDataType = " << flags_->benchmark_data_type_.c_str();
-    std::cout << "CalibDataType = " << flags_->benchmark_data_type_.c_str() << std::endl;
+  auto model_ret = CheckModelValid();
+  if (model_ret != RET_OK) {
+    MS_LOG(ERROR) << "Invalid Model File.";
+    std::cerr << "Invalid Model File." << std::endl;
+    return RET_ERROR;
   }
 
-  if (flags_->model_file_.empty()) {
-    MS_LOG(ERROR) << "modelPath is required";
-    std::cerr << "modelPath is required" << std::endl;
-    return 1;
-  }
   flags_->InitInputDataList();
   flags_->InitResizeDimsList();
   if (!flags_->resize_dims_.empty() && !flags_->input_data_list_.empty() &&
@@ -573,11 +634,83 @@ int BenchmarkBase::PrintPerfResult(const std::vector<std::string> &title,
 }
 #endif
 
+#ifdef SUPPORT_NNIE
+int SvpSysInit() {
+  HI_S32 ret = HI_SUCCESS;
+  VB_CONFIG_S struVbConf;
+  ret = HI_MPI_SYS_Exit();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(ERROR) << "HI_MPI_SYS_Exit failed!";
+    return RET_ERROR;
+  }
+
+  ret = HI_MPI_VB_Exit();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(WARNING) << "HI_MPI_VB_Exit failed!";
+    ret = HI_MPI_SYS_Init();
+    if (HI_SUCCESS != ret) {
+      MS_LOG(ERROR) << "Error:HI_MPI_SYS_Init failed!";
+      return RET_ERROR;
+    }
+    return RET_OK;
+  }
+
+  memset(&struVbConf, 0, sizeof(VB_CONFIG_S));
+  struVbConf.u32MaxPoolCnt = kNNIEMaxPoolCnt;
+  struVbConf.astCommPool[1].u64BlkSize = kNNIEBlkSize;
+  struVbConf.astCommPool[1].u32BlkCnt = 1;
+
+  ret = HI_MPI_VB_SetConfig((const VB_CONFIG_S *)&struVbConf);
+  if (HI_SUCCESS != ret) {
+    MS_LOG(ERROR) << "Error:HI_MPI_VB_SetConf failed!";
+    return RET_ERROR;
+  }
+
+  ret = HI_MPI_VB_Init();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(ERROR) << "Error:HI_MPI_VB_Init failed!";
+    return RET_ERROR;
+  }
+
+  ret = HI_MPI_SYS_Init();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(ERROR) << "Error:HI_MPI_SYS_Init failed!";
+    return RET_ERROR;
+  }
+
+  return RET_OK;
+}
+
+int SvpSysExit() {
+  HI_S32 ret = HI_SUCCESS;
+
+  ret = HI_MPI_SYS_Exit();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(ERROR) << "HI_MPI_SYS_Exit failed!";
+    return RET_ERROR;
+  }
+
+  ret = HI_MPI_VB_Exit();
+  if (HI_SUCCESS != ret) {
+    MS_LOG(WARNING) << "HI_MPI_VB_Exit failed!";
+    return RET_OK;
+  }
+
+  return RET_OK;
+}
+#endif
+
 BenchmarkBase::~BenchmarkBase() {
-  for (const auto &iter : this->benchmark_data_) {
-    delete (iter.second);
+  for (auto &iter : this->benchmark_data_) {
+    iter.second->shape.clear();
+    iter.second->data.clear();
+    delete iter.second;
+    iter.second = nullptr;
   }
   this->benchmark_data_.clear();
+#ifdef SUPPORT_NNIE
+  SvpSysExit();
+#endif
 }
 }  // namespace lite
 }  // namespace mindspore

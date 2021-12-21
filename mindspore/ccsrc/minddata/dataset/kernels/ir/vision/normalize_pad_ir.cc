@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -40,8 +41,7 @@ Status NormalizePadOperation::ValidateParams() {
   RETURN_IF_NOT_OK(ValidateVectorMeanStd("NormalizePad", mean_, std_));
   if (dtype_ != "float32" && dtype_ != "float16") {
     std::string err_msg = "NormalizePad: dtype must be float32 or float16, but got: " + dtype_;
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -64,9 +64,9 @@ Status NormalizePadOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status NormalizePadOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("mean") != op_params.end(), "Failed to find mean");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("std") != op_params.end(), "Failed to find std");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("dtype") != op_params.end(), "Failed to find dtype");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "mean", kNormalizePadOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "std", kNormalizePadOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "dtype", kNormalizePadOperation));
   std::vector<float> mean = op_params["mean"];
   std::vector<float> std = op_params["std"];
   std::string dtype = op_params["dtype"];

@@ -29,8 +29,8 @@ namespace mindspore::kernel {
 namespace {
 constexpr int kSecondInput = 2;
 }
-int GatherCPUKernel::Init() {
-  CHECK_LESS_RETURN(in_tensors_.size(), 3);
+int GatherCPUKernel::Prepare() {
+  CHECK_LESS_RETURN(in_tensors_.size(), kInputSize2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_.at(kSecondInput)->data());
   axis_ = *(reinterpret_cast<int *>(in_tensors_.at(kSecondInput)->data()));
@@ -42,7 +42,7 @@ int GatherCPUKernel::Init() {
 
 int GatherCPUKernel::ReSize() { return RET_OK; }
 
-int GatherCPUKernel::DoGather(int task_id) {
+int GatherCPUKernel::DoGather(int task_id) const {
   auto input_tensor = in_tensors_.at(0);
   auto indices_tensor = in_tensors_.at(1);
   auto out_tensor = out_tensors_.at(0);
@@ -81,8 +81,8 @@ int GatherCPUKernel::DoGather(int task_id) {
   return error_code;
 }
 
-int GatherRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
-  auto gather_kernel = reinterpret_cast<GatherCPUKernel *>(cdata);
+int GatherRun(const void *cdata, int task_id, float, float) {
+  auto gather_kernel = reinterpret_cast<const GatherCPUKernel *>(cdata);
   auto error_code = gather_kernel->DoGather(task_id);
   if (error_code != RET_OK) {
     MS_LOG(ERROR) << "GatherRun error task_id[" << task_id << "] error_code[" << error_code << "]";
@@ -122,14 +122,21 @@ int GatherCPUKernel::AssignIndicesData(bool isIndicesInt32, int indices_num, lit
       MS_LOG(ERROR) << "Memory allocation failed";
       return RET_ERROR;
     }
-    if (indices_tensor->data_type() == kNumberTypeInt64) {
-      for (int i = 0; i < indices_num; i++) {
-        indices_data_[i] = reinterpret_cast<int64_t *>(indices_tensor->MutableData())[i];
-      }
-    } else {
-      for (int i = 0; i < indices_num; i++) {
-        indices_data_[i] = static_cast<int>(reinterpret_cast<float *>(indices_tensor->MutableData())[i]);
-      }
+    switch (indices_tensor->data_type()) {
+      case kNumberTypeInt64:
+        for (int i = 0; i < indices_num; i++) {
+          indices_data_[i] = static_cast<int>(reinterpret_cast<int64_t *>(indices_tensor->MutableData())[i]);
+        }
+        break;
+      case kNumberTypeFloat:
+      case kNumberTypeFloat32:
+        for (int i = 0; i < indices_num; i++) {
+          indices_data_[i] = static_cast<int>(reinterpret_cast<float *>(indices_tensor->MutableData())[i]);
+        }
+        break;
+      default:
+        MS_LOG(ERROR) << "Does not support data type: " << indices_tensor->data_type();
+        return RET_ERROR;
     }
   } else {
     indices_data_ = reinterpret_cast<int32_t *>(indices_tensor->MutableData());

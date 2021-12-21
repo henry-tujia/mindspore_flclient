@@ -89,7 +89,7 @@ DatasetIterator::DatasetIterator(std::shared_ptr<ExecutionTree> exe_tree)
       eof_handled_(false) {
   std::shared_ptr<Tracing> node;
 #ifndef ENABLE_SECURITY
-  Status s = exe_tree->GetProfilingManager()->GetTracingNode(kDatasetIteratorTracingName, &node);
+  Status s = GlobalContext::profiling_manager()->GetTracingNode(kDatasetIteratorTracingName, &node);
   if (s.IsOk()) {
     tracing_ = std::dynamic_pointer_cast<DatasetIteratorTracing>(node);
   }
@@ -107,7 +107,7 @@ Status DatasetIterator::FetchNextTensorRow(TensorRow *out_row) {
   // clear the old tensor row
   out_row->clear();
 #ifndef ENABLE_SECURITY
-  bool isProfilingEnable = root_->Tree()->GetProfilingManager()->IsProfilingEnable();
+  bool is_profiling_enable = GlobalContext::profiling_manager()->IsProfilingEnable(root_->Tree());
 #endif
   // Once eof is handled, always return empty row.  Class must be destroyed and recreated if you
   // want to iterate again.
@@ -129,10 +129,11 @@ Status DatasetIterator::FetchNextTensorRow(TensorRow *out_row) {
   // An eoe row means we have iterated an epoch.
   // The next row in the pipeline might be an EOF or a TensorRow for next epoch
   if (out_row->eoe()) {
-    MS_LOG(INFO) << "End of data iteration.";
+    MS_LOG(INFO) << "End of data iteration.  cur_batch_num_: " << cur_batch_num_;
 #ifndef ENABLE_SECURITY
-    if (isProfilingEnable) {
+    if (is_profiling_enable) {
       root_->Tree()->SetEpochEnd();
+      GlobalContext::profiling_manager()->RecordEndOfEpoch(cur_batch_num_);
     }
 #endif
     return Status::OK();
@@ -150,8 +151,8 @@ Status DatasetIterator::FetchNextTensorRow(TensorRow *out_row) {
 #ifndef ENABLE_SECURITY
   if (tracing_ != nullptr) {
     cur_batch_num_++;
-    RETURN_IF_NOT_OK(tracing_->Record(static_cast<int32_t>(CONNECTOR_DEPTH), cur_connector_capacity_, cur_batch_num_,
-                                      cur_connector_size_, ProfilingTime::GetCurMilliSecond()));
+    tracing_->Record(static_cast<int32_t>(CONNECTOR_DEPTH), cur_connector_capacity_, cur_batch_num_,
+                     cur_connector_size_, ProfilingTime::GetCurMilliSecond());
   }
 #endif
   return Status::OK();
@@ -182,7 +183,7 @@ Status ChildIterator::FetchNextTensorRow(TensorRow *out_row) {
     RETURN_STATUS_UNEXPECTED(err);
   }
 
-  RETURN_IF_NOT_OK(current_op_->child(child_idx_)->GetNextRow(out_row, worker_id_));
+  RETURN_IF_NOT_OK(current_op_->child(child_idx_)->GetNextRow(out_row));
   // If an eoe is picked up here, we simply return an empty vector and it's up to the
   // caller to decide what it wants to do next.TensorRow
   if (out_row->eoe()) {
@@ -219,7 +220,7 @@ Status ChildIterator::Drain() {
   TensorRow row;
   // else we drain until eoe or eof, eof here is for sanity check
   while (!row.eoe() && !row.eof()) {
-    RETURN_IF_NOT_OK(current_op_->child(child_idx_)->GetNextRow(&row, worker_id_));
+    RETURN_IF_NOT_OK(current_op_->child(child_idx_)->GetNextRow(&row));
   }
   if (row.eof()) {
     return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "Child iterator picked up EOF in drain.");

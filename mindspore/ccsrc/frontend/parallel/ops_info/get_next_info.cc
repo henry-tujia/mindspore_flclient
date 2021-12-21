@@ -30,19 +30,24 @@
 namespace mindspore {
 namespace parallel {
 Status GetNextInfo::InferTensorMap() {
-  auto slice_dim_iter = std::find(dev_matrix_shape_.begin(), dev_matrix_shape_.end(), shard_num_);
-  if (slice_dim_iter == dev_matrix_shape_.end()) {
+  auto slice_dim_iter = std::find(dev_matrix_shape_origin_.begin(), dev_matrix_shape_origin_.end(), shard_num_);
+  if (slice_dim_iter == dev_matrix_shape_origin_.end()) {
     MS_LOG(ERROR) << name_ << ": The dataset shard strategy only support shard in one dim.";
     return FAILED;
   }
-  size_t slice_dim = size_t(slice_dim_iter - dev_matrix_shape_.begin());
+  size_t slice_dim = size_t(slice_dim_iter - dev_matrix_shape_origin_.begin());
   for (size_t i = 0; i < dataset_strategy_.size(); i++) {
     Shape tensor_map_index;
     for (auto dim : dataset_strategy_[i]) {
       if (dim == 1) {
         tensor_map_index.push_back(MAP_NONE);
       } else if (dim == shard_num_) {
-        tensor_map_index.push_back(dev_matrix_shape_.size() - 1 - slice_dim);
+        if (repeated_num_in_dev_matrix_right_ && dev_matrix_shape_origin_.size() != dev_matrix_shape_.size() &&
+            is_auto_parallel_) {
+          tensor_map_index.push_back(dev_matrix_shape_origin_.size() - slice_dim);
+        } else {
+          tensor_map_index.push_back(dev_matrix_shape_origin_.size() - 1 - slice_dim);
+        }
       } else {
         MS_LOG(ERROR) << name_ << ": The dataset shard strategy only support fully shard in one dim.";
         return FAILED;
@@ -95,18 +100,7 @@ Status GetNextInfo::InferDevMatrixShape() {
   if (shard_num_iter != dev_matrix_shape_.end()) {
     shard_num_ = *shard_num_iter;
   }
-  return SUCCESS;
-}
-
-Status GetNextInfo::Init(const StrategyPtr &strategy) {
-  repeated_num_in_dev_matrix_right_ = false;
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init failed";
-    return FAILED;
-  }
-  InferReplaceOps(strategy);
-
-  MS_LOG(INFO) << name_ << " : Init success";
+  dev_matrix_shape_origin_ = dev_matrix_shape_;
   return SUCCESS;
 }
 
@@ -192,6 +186,11 @@ Status GetNextInfo::GetAttrOutPutNum() {
 }
 
 Status GetNextInfo::GetAttrs() {
+  repeated_num_in_dev_matrix_right_ = false;
+  if (ParallelContext::GetInstance()->dataset_repeat_dim_right()) {
+    repeated_num_in_dev_matrix_right_ = true;
+  }
+
   if (GetAttrTypes() == FAILED || GetAttrShapes() == FAILED || GetAttrOutPutNum() == FAILED) {
     return FAILED;
   }
@@ -202,7 +201,7 @@ Status GetNextInfo::GetAttrs() {
   return SUCCESS;
 }
 
-void GetNextInfo::InferReplaceOps(const StrategyPtr &) {
+void GetNextInfo::InferReplaceOps() {
   Shapes out_shapes;
   (void)std::transform(outputs_tensor_info_.begin(), outputs_tensor_info_.end(), std::back_inserter(out_shapes),
                        [](auto tensor_info) { return tensor_info.slice_shape(); });
@@ -215,15 +214,6 @@ void GetNextInfo::InferReplaceOps(const StrategyPtr &) {
   OperatorParams params;
   OperatorArgs args = std::make_pair(attrs, params);
   replace_op_ = {std::make_pair(GET_NEXT, args)};
-}
-
-Status GetNextInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init for cost model failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << " : Init for cost model success.";
-  return SUCCESS;
 }
 
 Status GetNextInfo::SetCostUnderStrategy(const StrategyPtr &strategy) { return SetCostUnderStrategyBase(strategy); }

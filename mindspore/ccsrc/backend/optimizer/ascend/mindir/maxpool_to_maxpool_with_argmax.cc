@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 
 #include "utils/utils.h"
 #include "utils/ms_context.h"
+#include "utils/trace_base.h"
 #include "backend/optimizer/common/helper.h"
 #include "runtime/device/kernel_info.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -37,23 +38,24 @@ CNodePtr GetMaxPool(const CNodePtr &maxpool_grad) {
   MS_EXCEPTION_IF_NULL(maxpool_grad);
   if (maxpool_grad->inputs().size() != kMaxPoolGradInputNum) {
     MS_LOG(EXCEPTION) << "MaxPoolGrad's input number should be " << (kMaxPoolGradInputNum - 1) << ", but got "
-                      << (maxpool_grad->inputs().size() - 1);
+                      << (maxpool_grad->inputs().size() - 1) << trace::DumpSourceLines(maxpool_grad);
   }
   auto maxpool_anf = maxpool_grad->input(kIndex2);
   MS_EXCEPTION_IF_NULL(maxpool_anf);
   return maxpool_anf->cast<CNodePtr>();
 }
+}  // namespace
 
-CNodePtr CreateMaxPoolWithArgmax(const FuncGraphPtr &graph, const CNodePtr &maxpool) {
+CNodePtr MaxPool2MaxPoolWithArgmax::CreateMaxPoolWithArgmax(const FuncGraphPtr &graph, const CNodePtr &maxpool) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(maxpool);
   if (maxpool->inputs().size() != kMaxPoolInputNum) {
     MS_LOG(EXCEPTION) << "MaxPool's input number should be " << (kMaxPoolInputNum - 1) << ", but got "
-                      << (maxpool->inputs().size() - 1);
+                      << (maxpool->inputs().size() - 1) << trace::DumpSourceLines(maxpool);
   }
   std::vector<AnfNodePtr> maxpool_argmax_inputs = {NewValueNode(std::make_shared<Primitive>(kMaxPoolWithArgmaxOpName)),
                                                    maxpool->input(kIndex1)};
-  auto maxpool_argmax = graph->NewCNode(maxpool_argmax_inputs);
+  auto maxpool_argmax = opt::NewCNode(maxpool_argmax_inputs, graph, {maxpool});
   MS_EXCEPTION_IF_NULL(maxpool_argmax);
   maxpool_argmax->set_scope(maxpool->scope());
 
@@ -66,37 +68,39 @@ CNodePtr CreateMaxPoolWithArgmax(const FuncGraphPtr &graph, const CNodePtr &maxp
   return maxpool_argmax;
 }
 
-CNodePtr CreateMaxPoolGradWithArgmax(const FuncGraphPtr &graph, const CNodePtr &maxpool_grad,
-                                     const std::vector<AnfNodePtr> &maxpool_argmax_outputs) {
+CNodePtr MaxPool2MaxPoolWithArgmax::CreateMaxPoolGradWithArgmax(
+  const FuncGraphPtr &graph, const CNodePtr &maxpool_grad,
+  const std::vector<AnfNodePtr> &maxpool_argmax_outputs) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(maxpool_grad);
   if (maxpool_grad->inputs().size() != kMaxPoolGradInputNum) {
     MS_LOG(EXCEPTION) << "MaxPoolGrad's input number should be " << (kMaxPoolGradInputNum - 1) << ", but got "
-                      << (maxpool_grad->inputs().size() - 1);
+                      << (maxpool_grad->inputs().size() - 1) << trace::DumpSourceLines(maxpool_grad);
   }
   // MaxPoolGrad's inputs are {input, output, grad_input}, MaxPoolGradWithArgmax's inputs are
   // {input, grad_input, argmax_output}
   std::vector<AnfNodePtr> maxpool_grad_argmax_inputs = {
     NewValueNode(std::make_shared<Primitive>(kMaxPoolGradWithArgmaxOpName)), maxpool_grad->input(kIndex1),
     maxpool_grad->input(kIndex3), maxpool_argmax_outputs[kIndex1]};
-  auto maxpool_grad_argmax = graph->NewCNode(maxpool_grad_argmax_inputs);
+  auto maxpool_grad_argmax = opt::NewCNode(maxpool_grad_argmax_inputs, graph, {maxpool_grad});
   MS_EXCEPTION_IF_NULL(maxpool_grad_argmax);
   maxpool_grad_argmax->set_scope(maxpool_grad->scope());
   maxpool_grad_argmax->set_abstract(maxpool_grad->abstract());
   return maxpool_grad_argmax;
 }
 
-void SetNodeAttrs(const CNodePtr &maxpool, const CNodePtr &maxpool_grad, const CNodePtr &maxpool_argmax,
-                  const CNodePtr &maxpool_grad_argmax) {
+void MaxPool2MaxPoolWithArgmax::SetNodeAttrs(const CNodePtr &maxpool, const CNodePtr &maxpool_grad,
+                                             const CNodePtr &maxpool_argmax,
+                                             const CNodePtr &maxpool_grad_argmax) const {
   auto strides = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(maxpool, kAttrStrides);
   auto ksize = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(maxpool, kAttrKernelSize);
   if (strides.size() != kMaxPoolAttrAxisNum) {
     MS_LOG(EXCEPTION) << "MaxPool's attr strides has wrong axis number, should be " << kMaxPoolAttrAxisNum
-                      << ", but got " << strides.size();
+                      << ", but got " << strides.size() << trace::DumpSourceLines(maxpool);
   }
   if (ksize.size() != kMaxPoolAttrAxisNum) {
     MS_LOG(EXCEPTION) << "MaxPool's attr ksize has wrong axis number, should be " << kMaxPoolAttrAxisNum << ", but got "
-                      << ksize.size();
+                      << ksize.size() << trace::DumpSourceLines(maxpool);
   }
   // note that strides and ksize change from (1, 1, x, y) to (1, x, y, 1)
   strides[kIndex1] = strides[kIndex2];
@@ -114,7 +118,6 @@ void SetNodeAttrs(const CNodePtr &maxpool, const CNodePtr &maxpool_grad, const C
   AnfAlgo::SetNodeAttr(kAttrKernelSize, MakeValue(ksize), maxpool_argmax);
   AnfAlgo::SetNodeAttr(kAttrKernelSize, MakeValue(ksize), maxpool_grad_argmax);
 }
-}  // namespace
 
 const BaseRef MaxPool2MaxPoolWithArgmax::DefinePattern() const {
   VarPtr X = std::make_shared<Var>();

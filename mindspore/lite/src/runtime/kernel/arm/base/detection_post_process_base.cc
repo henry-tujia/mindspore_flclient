@@ -38,7 +38,7 @@ void PartialArgSort(const float *scores, int *indexes, int num_to_sort, int num_
   });
 }
 
-int DetectionPostProcessBaseCPUKernel::Init() {
+int DetectionPostProcessBaseCPUKernel::Prepare() {
   params_->decoded_boxes_ = nullptr;
   params_->nms_candidate_ = nullptr;
   params_->indexes_ = nullptr;
@@ -49,8 +49,18 @@ int DetectionPostProcessBaseCPUKernel::Init() {
   params_->selected_ = nullptr;
   params_->anchors_ = nullptr;
   auto anchor_tensor = in_tensors_.at(2);
+  MS_CHECK_GT(anchor_tensor->ElementsNum(), 0, RET_ERROR);
   CHECK_NULL_RETURN(anchor_tensor->data());
-  if (anchor_tensor->data_type() == kNumberTypeInt8) {
+  if (anchor_tensor->data_type() == kNumberTypeFloat32 || anchor_tensor->data_type() == kNumberTypeFloat) {
+    params_->anchors_ = new (std::nothrow) float[anchor_tensor->ElementsNum()];
+    if (params_->anchors_ == nullptr) {
+      MS_LOG(ERROR) << "Malloc anchor failed";
+      return RET_ERROR;
+    }
+    MS_CHECK_FALSE(anchor_tensor->Size() == 0, RET_ERROR);
+    memcpy(params_->anchors_, anchor_tensor->data(), anchor_tensor->Size());
+#ifndef OP_INT8_CLIP
+  } else if (anchor_tensor->data_type() == kNumberTypeInt8) {
     auto quant_param = anchor_tensor->quant_params().front();
     auto anchor_int8 = reinterpret_cast<int8_t *>(anchor_tensor->data());
     auto anchor_fp32 = new (std::nothrow) float[anchor_tensor->ElementsNum()];
@@ -72,13 +82,7 @@ int DetectionPostProcessBaseCPUKernel::Init() {
     DoDequantizeUInt8ToFp32(anchor_uint8, anchor_fp32, quant_param.scale, quant_param.zeroPoint,
                             anchor_tensor->ElementsNum());
     params_->anchors_ = anchor_fp32;
-  } else if (anchor_tensor->data_type() == kNumberTypeFloat32 || anchor_tensor->data_type() == kNumberTypeFloat) {
-    params_->anchors_ = new (std::nothrow) float[anchor_tensor->ElementsNum()];
-    if (params_->anchors_ == nullptr) {
-      MS_LOG(ERROR) << "Malloc anchor failed";
-      return RET_ERROR;
-    }
-    memcpy(params_->anchors_, anchor_tensor->data(), anchor_tensor->Size());
+#endif
   } else {
     MS_LOG(ERROR) << "unsupported anchor data type " << anchor_tensor->data_type();
     return RET_ERROR;

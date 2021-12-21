@@ -41,13 +41,13 @@ namespace mindspore::kernel {
 int ArithmeticOpenCLKernel::CheckSpecs() {
   for (auto &tensor : in_tensors_) {
     if (tensor->data_type() != kNumberTypeFloat32 && tensor->data_type() != kNumberTypeFloat16) {
-      MS_LOG(ERROR) << "ArithmeticOpenCLKernel only support fp32/fp16 input";
+      MS_LOG(WARNING) << "ArithmeticOpenCLKernel only support fp32/fp16 input";
       return RET_ERROR;
     }
   }
   for (auto &tensor : out_tensors_) {
     if (tensor->data_type() != kNumberTypeFloat32 && tensor->data_type() != kNumberTypeFloat16) {
-      MS_LOG(ERROR) << "ArithmeticOpenCLKernel only support fp32/fp16 output";
+      MS_LOG(WARNING) << "ArithmeticOpenCLKernel only support fp32/fp16 output";
       return RET_ERROR;
     }
   }
@@ -88,7 +88,7 @@ void ArithmeticOpenCLKernel::SetGlobalLocal() {
 int ArithmeticOpenCLKernel::InitWeights() {
   auto allocator = ocl_runtime_->GetAllocator();
   auto fp16_enable = ocl_runtime_->GetFp16Enable();
-  for (int i = 0; i < in_tensors_.size(); ++i) {
+  for (size_t i = 0; i < in_tensors_.size(); ++i) {
     const auto &in_tensor = in_tensors_.at(i);
     GpuTensorInfo in_shape = GpuTensorInfo(in_tensor);
     if (in_tensor->IsConst()) {

@@ -41,23 +41,21 @@ class DecreaseTransposeAlgo : public Pass {
 
  private:
   STATUS InsertPostTransNode(const FuncGraphPtr &func_graph, const CNodePtr &cnode, const std::vector<int> &perm);
-  STATUS InsertPreTransNode(const FuncGraphPtr &func_graph, const CNodePtr &cnode, const std::vector<int> &perm);
-  STATUS GenNewInput(const FuncGraphPtr &func_graph, const CNodePtr &cnode, std::vector<int> perm, bool before,
+  STATUS GenNewInput(const FuncGraphPtr &func_graph, const CNodePtr &cnode, const std::vector<int> perm, bool before,
                      size_t index = 0);
-  bool RunDoFixFormat(const FuncGraphPtr &func_graph, const CNodePtr &cnode);
-  bool DoFixFormat(const FuncGraphPtr &func_graph);
   bool DecreaseTransposeForSingleOp(const FuncGraphPtr &func_graph);
   bool DecreaseTransposeForMultiOp(const FuncGraphPtr &func_graph);
   STATUS PostTransposeFusion(const FuncGraphPtr &func_graph, const CNodePtr &cnode);
 
+  STATUS HandleGraphSingleNode(const FuncGraphPtr &func_graph, const TransTypePair &trans_info, const CNodePtr &cnode);
   STATUS HandleGraphMultiNode(const FuncGraphPtr &func_graph, const CNodePtr &cnode,
                               std::set<CNodePtr> *visit_transposes);
   STATUS InsertPreTransNode(const FuncGraphPtr &func_graph, const CNodePtr &cnode, TransTypePair *trans_insert_info);
-  void SetSubGraphInput(const CNodePtr &cnode, const FuncGraphPtr &sub_graph);
-  void ResetSubGraphInput();
-  void SetSubGraphOutput(const CNodePtr &cnode, const FuncGraphPtr &sub_graph);
-  void SetSubGraphAbstract(const CNodePtr &cnode, const FuncGraphPtr &sub_graph);
-  void ModifyCNodeFormat(const CNodePtr &cnode, FormatTransNodeType pre_trans_type);
+  STATUS DoPreInsert(const FuncGraphPtr &func_graph, const CNodePtr &cnode, FormatTransNodeType trans_type);
+  int SetSubGraphInput(const CNodePtr &cnode, const FuncGraphPtr &sub_graph);
+  int ResetSubGraphInput();
+  int SetSubGraphOutput(const FuncGraphPtr &sub_graph);
+  int ModifyCNodeFormat(const CNodePtr &cnode, FormatTransNodeType pre_trans_type);
   FmkType fmk_type_{converter::kFmkTypeMs};
   bool train_flag_{false};
   NodeInferShape node_infer_shape_;

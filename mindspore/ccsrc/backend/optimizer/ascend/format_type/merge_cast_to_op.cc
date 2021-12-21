@@ -23,6 +23,7 @@
 
 #include "backend/session/anf_runtime_algorithm.h"
 #include "utils/utils.h"
+#include "utils/trace_base.h"
 #include "base/core_ops.h"
 
 namespace mindspore {
@@ -120,10 +121,11 @@ bool CheckIndexOutput(const CNodePtr &node, const std::shared_ptr<kernel::Kernel
 }
 
 void ChangeNodeInferInfo(const CNodePtr &cnode, const CNodePtr &cast, const size_t cast_index) {
-  using Shape = std::vector<size_t>;
+  MS_EXCEPTION_IF_NULL(cnode);
+  MS_EXCEPTION_IF_NULL(cast);
   auto cast_dtype = AnfAlgo::GetOutputInferDataType(cast, 0);
-  auto cast_shape = AnfAlgo::GetOutputInferShape(cast, 0);
-  std::vector<Shape> shapes;
+  auto cast_shape = AnfAlgo::GetOutputDetailShape(cast, 0);
+  std::vector<abstract::BaseShapePtr> shapes;
   std::vector<TypeId> types;
   size_t output_num = AnfAlgo::GetOutputTensorNum(cnode);
   for (size_t index = 0; index < output_num; ++index) {
@@ -132,13 +134,13 @@ void ChangeNodeInferInfo(const CNodePtr &cnode, const CNodePtr &cast, const size
       (void)types.emplace_back(cast_dtype);
       continue;
     }
-    (void)shapes.emplace_back(AnfAlgo::GetOutputInferShape(cnode, index));
+    (void)shapes.emplace_back(AnfAlgo::GetOutputDetailShape(cnode, index));
     (void)types.emplace_back(AnfAlgo::GetOutputInferDataType(cnode, index));
   }
-  AnfAlgo::SetOutputInferTypeAndShape(types, shapes, cnode.get());
+  AnfAlgo::SetOutputTypeAndDetailShape(types, shapes, cnode.get());
   auto prim_op = AnfAlgo::GetCNodePrimitive(cnode);
   if (prim_op != nullptr) {
-    prim_op->AddAttr("cast_type", TypeIdToType(cast_dtype));
+    (void)prim_op->AddAttr("cast_type", TypeIdToType(cast_dtype));
   }
 }
 
@@ -151,7 +153,7 @@ AnfNodePtr MergeCastToNextOp(const FuncGraphPtr &graph, const CNodePtr &node, co
     return nullptr;
   }
   MS_EXCEPTION_IF_NULL(next_node);
-  if (!next_node->isa<CNode>() || !AnfAlgo::IsRealKernel(next_node)) {
+  if (!next_node->isa<CNode>() || !AnfUtils::IsRealKernel(next_node)) {
     return nullptr;
   }
   auto next_cnode = next_node->cast<CNodePtr>();
@@ -172,13 +174,14 @@ AnfNodePtr MergeCastToNextOp(const FuncGraphPtr &graph, const CNodePtr &node, co
     return nullptr;
   }
   auto ori_kernel_info = AnfAlgo::GetSelectKernelBuildInfo(next_node);
+  MS_EXCEPTION_IF_NULL(ori_kernel_info);
   MS_LOG(INFO) << "Found alternative kernel info for current anf kernel " << next_cnode->DebugString()
                << "ori kernel info" << ori_kernel_info->ToString() << "alternative kernel info"
                << (*alternative_kernel_info)->ToString();
   AnfAlgo::SetSelectKernelBuildInfo(*alternative_kernel_info, next_cnode.get());
   if (AnfAlgo::GetInputTensorNum(node) < kCastInputTensorNum) {
     MS_LOG(EXCEPTION) << "Op[" << node->DebugString() << "] has wrong input num:" << AnfAlgo::GetInputTensorNum(node)
-                      << ", should be not less than " << kCastInputTensorNum;
+                      << ", should be not less than " << kCastInputTensorNum << trace::DumpSourceLines(node);
   }
   return node->input(1);
 }
@@ -206,7 +209,7 @@ bool GetPriorOp(const AnfNodePtr &x_node, CNodePtr *prior_op, bool *single_outpu
       *output_idx = LongToSize(GetValue<int64_t>(value_ptr->value()));
       *single_output = false;
     }
-    return AnfAlgo::IsRealKernel(*prior_op);
+    return AnfUtils::IsRealKernel(*prior_op);
   }
   return false;
 }
@@ -244,6 +247,7 @@ AnfNodePtr MergeCastToPriorOp(const FuncGraphPtr &graph, const CNodePtr &cur_nod
     return nullptr;
   }
   auto ori_kernel_info = AnfAlgo::GetSelectKernelBuildInfo(prior_op);
+  MS_EXCEPTION_IF_NULL(ori_kernel_info);
   MS_LOG(INFO) << "Found alternative kernel info for current anf kernel " << prior_op->DebugString()
                << "ori kernel info" << ori_kernel_info->ToString() << "alternative kernel info"
                << (*kernel_info_it)->ToString();

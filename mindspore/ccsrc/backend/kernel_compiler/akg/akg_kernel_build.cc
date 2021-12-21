@@ -16,6 +16,7 @@
 
 #include "backend/kernel_compiler/akg/akg_kernel_build.h"
 
+#include <sys/shm.h>
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -35,22 +36,27 @@
 #include "utils/context/graph_kernel_flags.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "backend/kernel_compiler/akg/akg_kernel_json_generator.h"
-#include "backend/kernel_compiler/akg/akg_kernel_attrs_process.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
 namespace kernel {
-#define INIT_SET_FROM_2D_ARRAY(set_var, list_idx) \
-  std::set<size_t> set_var(kernel_lists_[list_idx], kernel_lists_[list_idx] + kernel_lists_[list_idx][kMaxKernelNum_])
-
-#define LIST_BEGIN(list_idx) kernel_lists_[list_idx]
-#define LIST_END(list_idx) (kernel_lists_[list_idx] + kernel_lists_[list_idx][kMaxKernelNum_])
-#define RESET_LIST_SIZE(list_idx, val) kernel_lists_[list_idx][kMaxKernelNum_] = val
-
-#define INCREASE_LIST_SIZE(list_idx, val) kernel_lists_[list_idx][kMaxKernelNum_] += val
-
+constexpr int32_t MAX_ERROR_LEN = 1024;
 constexpr int32_t PROCESS_NUM = 16;
 constexpr int32_t TIME_OUT = 300;
+
+inline std::string GetErrorInfo() {
+  char buf[MAX_ERROR_LEN + 1] = {0};
+  auto ret = strerror_r(errno, buf, MAX_ERROR_LEN);
+#if (_POSIX_C_SOURCE >= 200112L) && !_GNU_SOURCE
+  if (ret != 0 || strlen(buf) == 0) {
+    return "Call strerror_r failed";
+  }
+
+  return std::string(buf);
+#else
+  return ret != nullptr ? std::string(ret) : "Failed to get error info";
+#endif
+}
 
 bool AkgKernelPool::LockMng::TryLock() const {
   // Try to lock 100 times. Return errno if lock unsuccessfully
@@ -68,7 +74,7 @@ bool AkgKernelPool::LockMng::TryLock() const {
   }
 
   if (ret == -1) {
-    MS_LOG(ERROR) << "Failed to acquire the lock, errno:" << strerror(errno) << ".";
+    MS_LOG(ERROR) << "Failed to acquire the lock, error msg:" << GetErrorInfo() << ".";
     return false;
   }
 
@@ -78,7 +84,7 @@ bool AkgKernelPool::LockMng::TryLock() const {
 void AkgKernelPool::LockMng::Unlock() const {
   auto ret = lockf(fd_, F_ULOCK, 0);
   if (ret == -1) {
-    MS_LOG(ERROR) << "Failed to release the lock, errno:" << strerror(errno);
+    MS_LOG(ERROR) << "Failed to release the lock, error msg:" << GetErrorInfo();
   }
 }
 
@@ -86,14 +92,14 @@ std::string AkgKernelPool::GetCurrentPath() const {
   char cwd[PATH_MAX];
   char *ret = getcwd(cwd, sizeof(cwd));
   if (ret == nullptr) {
-    MS_LOG(ERROR) << "Get current work directory failed, errno:" << strerror(errno);
+    MS_LOG(ERROR) << "Get current work directory failed, error msg:" << GetErrorInfo();
     return "";
   }
 
   char abspath[PATH_MAX];
   char *res = realpath(cwd, abspath);
   if (res == nullptr) {
-    MS_LOG(ERROR) << "Change to realpath failed, errno:" << strerror(errno);
+    MS_LOG(ERROR) << "Change to realpath failed, error msg:" << GetErrorInfo();
     return "";
   }
 
@@ -121,14 +127,14 @@ void *AkgKernelPool::CreateSharedMem(const std::string &path) {
     if (id != -1) {
       auto ret = shmctl(id, IPC_STAT, &buf);
       if (ret == -1) {
-        MS_LOG(ERROR) << "Failed to get the info of shared memory, errno:" << strerror(errno);
+        MS_LOG(ERROR) << "Failed to get the info of shared memory, error msg:" << GetErrorInfo();
         return nullptr;
       }
 
       if (buf.shm_nattch == 0) {
         ret = shmctl(id, IPC_RMID, nullptr);
         if (ret < 0) {
-          MS_LOG(EXCEPTION) << "Realse shared_mem failed, errno:" << strerror(errno);
+          MS_LOG(EXCEPTION) << "Realse shared_mem failed, error msg:" << GetErrorInfo();
         }
       }
     }
@@ -147,7 +153,7 @@ void *AkgKernelPool::CreateSharedMem(const std::string &path) {
     }
 
     if (shm_id_ == -1) {
-      MS_LOG(ERROR) << "Create shared_mem failed, error no:" << strerror(errno);
+      MS_LOG(ERROR) << "Create shared_mem failed, error msg:" << GetErrorInfo();
       return nullptr;
     }
   } else {
@@ -156,7 +162,7 @@ void *AkgKernelPool::CreateSharedMem(const std::string &path) {
 
   auto local_addr = shmat(shm_id_, nullptr, 0);
   if (local_addr == reinterpret_cast<void *>(-1)) {
-    MS_LOG(ERROR) << "Attach to shared_mem failed, error no:" << strerror(errno);
+    MS_LOG(ERROR) << "Attach to shared_mem failed, error msg:" << GetErrorInfo();
     return nullptr;
   }
 
@@ -175,7 +181,7 @@ int32_t AkgKernelPool::Init(const std::vector<JsonNodePair> &build_args) {
 
   fd_ = open(kKeyName_, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
   if (fd_ == -1) {
-    MS_LOG(ERROR) << "open file <" << kKeyName_ << "> failed, errno:" << strerror(errno);
+    MS_LOG(ERROR) << "open file <" << kKeyName_ << "> failed, error msg:" << GetErrorInfo();
     return -1;
   }
 
@@ -195,17 +201,19 @@ int32_t AkgKernelPool::Init(const std::vector<JsonNodePair> &build_args) {
   return 0;
 }
 
-AkgKernelPool::~AkgKernelPool() {
+int32_t AkgKernelPool::Release() const {
   {
     LockMng lock(fd_);
     if (!lock.locked_) {
-      MS_LOG(EXCEPTION) << "Failed to acquire lock.";
+      MS_LOG(ERROR) << "Failed to acquire lock.";
+      return -1;
     }
 
     struct shmid_ds buf;
     auto ret = shmctl(shm_id_, IPC_STAT, &buf);
     if (ret == -1) {
-      MS_LOG(EXCEPTION) << "Failed to get the info of shared memory, errno:" << strerror(errno);
+      MS_LOG(ERROR) << "Failed to get the info of shared memory, error msg:" << GetErrorInfo();
+      return -1;
     }
 
     bool need_delete_by_last = false;
@@ -218,22 +226,21 @@ AkgKernelPool::~AkgKernelPool() {
     // Detach shared memory
     ret = shmdt(reinterpret_cast<void *>(kernel_lists_[0]));
     if (ret < 0) {
-      MS_LOG(EXCEPTION) << "Shared_mem detach failed, errno:" << strerror(errno);
+      MS_LOG(ERROR) << "Shared_mem detach failed, error msg:" << GetErrorInfo();
+      return -1;
     }
 
     // Realse shared_memroy
     if (is_creator_ || need_delete_by_last) {
       ret = shmctl(shm_id_, IPC_RMID, nullptr);
       if (ret < 0) {
-        MS_LOG(EXCEPTION) << "Realse shared_mem failed, errno:" << strerror(errno);
+        MS_LOG(ERROR) << "Realse shared_mem failed, error msg:" << GetErrorInfo();
+        return -1;
       }
     }
   }
 
-  // Close key file
-  if (fd_ != -1) {
-    (void)close(fd_);
-  }
+  return 0;
 }
 
 int32_t AkgKernelPool::AddKernels(const std::vector<JsonNodePair> &build_args) {
@@ -243,9 +250,9 @@ int32_t AkgKernelPool::AddKernels(const std::vector<JsonNodePair> &build_args) {
     return -1;
   }
 
-  INIT_SET_FROM_2D_ARRAY(todo_list, kToDoIdx_);
-  INIT_SET_FROM_2D_ARRAY(doing_list, kDoingIdx_);
-  INIT_SET_FROM_2D_ARRAY(done_list, kDoneIdx_);
+  std::set<size_t> todo_list(ListBegin(kToDoIdx_), ListEnd(kToDoIdx_));
+  std::set<size_t> doing_list(ListBegin(kDoingIdx_), ListEnd(kDoingIdx_));
+  std::set<size_t> done_list(ListBegin(kDoneIdx_), ListEnd(kDoneIdx_));
 
   for (const auto &[json_generator, anf_node] : build_args) {
     MS_EXCEPTION_IF_NULL(anf_node);
@@ -279,8 +286,8 @@ int32_t AkgKernelPool::AddKernels(const std::vector<JsonNodePair> &build_args) {
     return -1;
   }
 
-  (void)std::copy(diff_from_done.begin(), diff_from_done.end(), LIST_END(kToDoIdx_));
-  INCREASE_LIST_SIZE(kToDoIdx_, new_kernel_size);
+  (void)std::copy(diff_from_done.begin(), diff_from_done.end(), ListEnd(kToDoIdx_));
+  IncListSize(kToDoIdx_, new_kernel_size);
 
   return 0;
 }
@@ -303,13 +310,13 @@ int32_t AkgKernelPool::FetchKernels(std::set<size_t> *out) {
     }
   };
 
-  (void)std::for_each(LIST_BEGIN(kToDoIdx_), LIST_END(kToDoIdx_), FilterBySelfList);
+  (void)std::for_each(ListBegin(kToDoIdx_), ListEnd(kToDoIdx_), FilterBySelfList);
 
-  (void)std::copy(out->begin(), out->end(), LIST_END(kDoingIdx_));
-  INCREASE_LIST_SIZE(kDoingIdx_, out->size());
+  (void)std::copy(out->begin(), out->end(), ListEnd(kDoingIdx_));
+  IncListSize(kDoingIdx_, out->size());
 
-  (void)std::copy(left_in_todo_list.begin(), left_in_todo_list.end(), LIST_BEGIN(kToDoIdx_));
-  RESET_LIST_SIZE(kToDoIdx_, left_in_todo_list.size());
+  (void)std::copy(left_in_todo_list.begin(), left_in_todo_list.end(), ListBegin(kToDoIdx_));
+  ResetListSize(kToDoIdx_, left_in_todo_list.size());
 
   return 0;
 }
@@ -323,17 +330,17 @@ int32_t AkgKernelPool::UpdateAndWait(const std::set<size_t> &ids) {
     }
 
     // update the state of finished kernels to `done`
-    (void)std::copy(ids.begin(), ids.end(), LIST_END(kDoneIdx_));
-    INCREASE_LIST_SIZE(kDoneIdx_, ids.size());
+    (void)std::copy(ids.begin(), ids.end(), ListEnd(kDoneIdx_));
+    IncListSize(kDoneIdx_, ids.size());
 
     // delete the finished kernels from doing_list
     std::vector<size_t> left_in_doing_list;
-    INIT_SET_FROM_2D_ARRAY(doing_list, kDoingIdx_);
+    std::set<size_t> doing_list(ListBegin(kDoingIdx_), ListEnd(kDoingIdx_));
     (void)std::set_difference(doing_list.begin(), doing_list.end(), ids.begin(), ids.end(),
                               std::inserter(left_in_doing_list, left_in_doing_list.begin()));
 
-    (void)std::copy(left_in_doing_list.begin(), left_in_doing_list.end(), LIST_BEGIN(kDoingIdx_));
-    RESET_LIST_SIZE(kDoingIdx_, left_in_doing_list.size());
+    (void)std::copy(left_in_doing_list.begin(), left_in_doing_list.end(), ListBegin(kDoingIdx_));
+    ResetListSize(kDoingIdx_, left_in_doing_list.size());
   }
 
   auto ret = Wait();
@@ -357,7 +364,7 @@ int32_t AkgKernelPool::Wait() const {
         return -1;
       }
 
-      INIT_SET_FROM_2D_ARRAY(done_list, kDoneIdx_);
+      std::set<size_t> done_list(ListBegin(kDoneIdx_), ListEnd(kDoneIdx_));
 
       if (std::all_of(self_kernel_ids_.begin(), self_kernel_ids_.end(),
                       [&done_list](size_t id) { return done_list.count(id) != 0; })) {
@@ -373,7 +380,18 @@ int32_t AkgKernelPool::Wait() const {
   return -1;
 }
 
+KernelPackPtr AkgKernelBuilder::AkgSearchCache(const std::string &kernel_name) {
+  auto processor = GetStrProcessorFromContext();
+  return SearchCache(kernel_name, processor);
+}
+
+KernelPackPtr AkgKernelBuilder::AkgInsertCache(const std::string &kernel_name) {
+  auto processor = GetStrProcessorFromContext();
+  return InsertCache(kernel_name, processor);
+}
+
 std::vector<JsonNodePair> AkgKernelBuilder::GetNotCachedKernels(const std::vector<JsonNodePair> &build_args) {
+  LoadCache();
   std::unordered_set<std::string> kernel_name_set;
   std::vector<JsonNodePair> new_build_args;
   for (const auto &[json_generator, anf_node] : build_args) {
@@ -497,6 +515,11 @@ bool AkgKernelBuilder::AkgOpParallelBuild(const std::vector<JsonNodePair> &build
     return false;
   }
 
+  if (kp.Release() != 0) {
+    MS_LOG(ERROR) << "AkgKernelPool release failed.";
+    return false;
+  }
+
   // All unique done here, cache them and set kernel.
   if (!InsertToCache(build_args)) {
     MS_LOG(ERROR) << "Insert cache failed.";
@@ -511,27 +534,73 @@ bool AkgKernelBuilder::AkgOpParallelBuild(const std::vector<JsonNodePair> &build
   return true;
 }
 
+void AkgKernelBuilder::LoadCache() {
+  static bool has_load = false;
+  if (has_load) {
+    return;
+  }
+  auto bin_map = KernelMeta::GetInstance();
+  auto kernel_dir = bin_map->kernel_meta_path();
+  DIR *dir = opendir(kernel_dir.c_str());
+  if (dir == nullptr) {
+    MS_LOG(DEBUG) << "kernel dir [" << kernel_dir << "] not exist";
+    return;
+  }
+  struct dirent *entry;
+  constexpr size_t SUFFIX_LENS = 5;
+  while ((entry = readdir(dir)) != nullptr) {
+    std::string kernel_json = entry->d_name;
+    if (kernel_json.length() <= SUFFIX_LENS) {
+      continue;
+    }
+    auto suffix = kernel_json.substr(kernel_json.length() - SUFFIX_LENS);
+    if (suffix != kJsonSuffix) {
+      continue;
+    }
+    auto sp = kernel_json.rfind('/');
+    if (sp != std::string::npos) {
+      continue;
+    }
+    auto kernel_name = kernel_json.substr(0, kernel_json.length() - SUFFIX_LENS);
+    bin_map->Insert(kernel_name, kernel_dir + kernel_json);
+  }
+  has_load = true;
+  return;
+}
+
 bool AkgKernelBuilder::AkgKernelParallelBuild(const std::vector<AnfNodePtr> &anf_nodes) {
   std::vector<JsonNodePair> json_and_node;
   for (const auto &anf_node : anf_nodes) {
     MS_EXCEPTION_IF_NULL(anf_node);
-    DumpOption option;
+    graphkernel::DumpOption option;
     option.get_compute_capability = true;
     AkgKernelJsonGenerator akg_kernel_json_generator(option);
     auto cnode = anf_node->cast<CNodePtr>();
     MS_EXCEPTION_IF_NULL(cnode);
-    if (AnfAlgo::IsGraphKernel(cnode)) {
-      auto func_graph = AnfAlgo::GetCNodeFuncGraphPtr(cnode);
+    bool is_custom_node = IsPrimitiveCNode(cnode, prim::kPrimCustom) || IsCustomCSROP(cnode);
+    // Graph kernel node and Custom node need to generate composite json
+    if (AnfAlgo::IsGraphKernel(cnode) || is_custom_node) {
+      FuncGraphPtr func_graph = is_custom_node ? cnode->func_graph() : AnfAlgo::GetCNodeFuncGraphPtr(cnode);
       MS_EXCEPTION_IF_NULL(func_graph);
       auto mng = func_graph->manager();
       if (mng == nullptr) {
         mng = Manage(func_graph, true);
         func_graph->set_manager(mng);
       }
-      std::vector<AnfNodePtr> node_list, input_list, output_list;
-      GetValidKernelNodes(func_graph, &node_list, &input_list, &output_list);
-      if (!akg_kernel_json_generator.CollectFusedJson(node_list, input_list, output_list)) {
-        MS_EXCEPTION(UnknownError) << "Collect op info failed. op[" << anf_node->fullname_with_scope() << "].";
+      if (is_custom_node) {
+        // in this case, the cnode is a CustomOp (no matter whether graph kernel mode is enabled or not)
+        // generate the fused json for the single kernel cnode
+        if (!akg_kernel_json_generator.CollectFusedJsonWithSingleKernel(cnode)) {
+          MS_EXCEPTION(UnknownError) << "Collect op info failed. op[" << anf_node->fullname_with_scope() << "].";
+        }
+      } else {
+        // in this case, the cnode is a IsGraphKernel when graph kernel mode is enabled
+        // generate the fused json for the graph kernel subgraph
+        std::vector<AnfNodePtr> node_list, input_list, output_list;
+        GetValidKernelNodes(func_graph, &node_list, &input_list, &output_list);
+        if (!akg_kernel_json_generator.CollectFusedJson(node_list, input_list, output_list)) {
+          MS_EXCEPTION(UnknownError) << "Collect op info failed. op[" << anf_node->fullname_with_scope() << "].";
+        }
       }
     } else {
       if (!akg_kernel_json_generator.CollectJson(anf_node)) {
@@ -564,7 +633,7 @@ bool AkgKernelBuilder::AkgKernelParallelBuild(const std::vector<AnfNodePtr> &anf
 }
 
 std::string AkgKernelBuilder::CollectBuildAttrs() {
-  auto &flags = context::GraphKernelFlags::GetInstance();
+  auto &flags = graphkernel::GraphKernelFlags::GetInstance();
   nlohmann::json attrs;
   if (flags.online_tuning > 0) {
     attrs["online_tuning"] = flags.online_tuning;

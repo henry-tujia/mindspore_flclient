@@ -16,12 +16,12 @@
 
 #include "backend/optimizer/graph_kernel/parallel_cost_model.h"
 
+#include <algorithm>
 #include "backend/kernel_compiler/akg/akg_kernel_json_generator.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
 #include "pipeline/jit/parse/python_adapter.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 std::string CommonDimInfo::ToString() {
   std::ostringstream buffer;
   buffer << "Dim(" << dim_info_ << ")";
@@ -112,10 +112,9 @@ FusionInfoPtr ParallelCostModel::ProcessFusionInfo(const py::object &fusion_type
 }
 
 ParallelCostModelPtr ParellelCostModelWarehouse::GetParallelCostModel(const std::string &target) const {
-  if (target != kGPUDevice) {
-    MS_LOG(EXCEPTION) << "Parallel cost model only support " << kGPUDevice << " now.";
+  if (target != kGPUDevice && target != kAscendDevice) {
+    MS_LOG(EXCEPTION) << "Parallel cost model do not support " << target << " now.";
   }
   return cost_model_;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

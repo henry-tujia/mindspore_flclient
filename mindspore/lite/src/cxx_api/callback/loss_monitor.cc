@@ -33,11 +33,14 @@ LossMonitor::LossMonitor(int print_every_n_steps) {
 LossMonitor::~LossMonitor() {
   if (callback_impl_ == nullptr) {
     MS_LOG(ERROR) << "Callback implement is null.";
+    return;
   }
   auto internal_call_back = callback_impl_->GetInternalCallback();
   if (internal_call_back != nullptr) {
     delete internal_call_back;
   }
+  delete callback_impl_;
+  callback_impl_ = nullptr;
 }
 
 const std::vector<GraphPoint> &LossMonitor::GetLossPoints() {

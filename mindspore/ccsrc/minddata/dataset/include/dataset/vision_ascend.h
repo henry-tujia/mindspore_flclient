@@ -36,10 +36,19 @@ namespace vision {
 
 /// \brief Decode and resize JPEG image using the hardware algorithm of
 ///     Ascend series chip DVPP module.
-class DvppDecodeResizeJpeg final : public TensorTransform {
+class MS_API DvppDecodeResizeJpeg final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] resize Parameter vector of two integers for each dimension, with respect to H,W order.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto dvpp_op = vision::DvppDecodeResizeJpeg({255, 255});
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({dvpp_op},   // operations
+  ///                            {"image"});  // input columns
+  /// \endcode
   explicit DvppDecodeResizeJpeg(std::vector<uint32_t> resize);
 
   /// \brief Destructor.
@@ -59,12 +68,21 @@ class DvppDecodeResizeJpeg final : public TensorTransform {
 
 /// \brief Decode, resize and crop JPEG image using the hardware algorithm of
 ///     Ascend series chip DVPP module.
-class DvppDecodeResizeCropJpeg final : public TensorTransform {
+class MS_API DvppDecodeResizeCropJpeg final : public TensorTransform {
  public:
   /// \brief Constructor.
   /// \param[in] crop Parameter vector of two integers for each dimension after final crop, with respect to H,W order.
   /// \param[in] resize Parameter vector of two integers for each dimension after resize, with respect to H,W order.
-  explicit DvppDecodeResizeCropJpeg(std::vector<uint32_t> crop, std::vector<uint32_t> resize);
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto dvpp_op = vision::DvppDecodeResizeCropJpeg({50, 50}, {100, 100});
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({dvpp_op},   // operations
+  ///                            {"image"});  // input columns
+  /// \endcode
+  DvppDecodeResizeCropJpeg(std::vector<uint32_t> crop, std::vector<uint32_t> resize);
 
   /// \brief Destructor.
   ~DvppDecodeResizeCropJpeg() = default;
@@ -83,9 +101,18 @@ class DvppDecodeResizeCropJpeg final : public TensorTransform {
 
 /// \brief Decode PNG image using the hardware algorithm of
 ///     Ascend series chip DVPP module.
-class DvppDecodePng final : public TensorTransform {
+class MS_API DvppDecodePng final : public TensorTransform {
  public:
   /// \brief Constructor.
+  /// \par Example
+  /// \code
+  ///     /* Define operations */
+  ///     auto dvpp_op = vision::DvppDecodePng();
+  ///
+  ///     /* dataset is an instance of Dataset object */
+  ///     dataset = dataset->Map({dvpp_op},   // operations
+  ///                            {"image"});  // input columns
+  /// \endcode
   DvppDecodePng();
 
   /// \brief Destructor.

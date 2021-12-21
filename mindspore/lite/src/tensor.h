@@ -28,14 +28,15 @@
 #include "include/api/format.h"
 #include "src/runtime/inner_allocator.h"
 #include "src/common/log_adapter.h"
-#include "schema/model_generated.h"
 #include "src/common/utils.h"
+#include "src/tensor_category.h"
 
 namespace mindspore {
 namespace lite {
-
 #define STATIC_ALLOCATION -271964
+#define RUNTIME_REFCOUNT 0x9999
 #define IS_STATIC_ALLOCATOR(allocator) ((allocator != nullptr) && (allocator->RefCount(nullptr) == STATIC_ALLOCATION))
+#define IS_RUNTIME_ALLOCATOR(allocator) ((allocator != nullptr) && (allocator->RefCount(nullptr) == RUNTIME_REFCOUNT))
 struct LiteQuantParam {
   double scale;
   int32_t zeroPoint;
@@ -51,13 +52,6 @@ struct LiteQuantParam {
 
 class Tensor : public mindspore::tensor::MSTensor {
  public:
-  enum Category {
-    CONST_TENSOR,  // weight tensor
-    CONST_SCALAR,  // weight scalar
-    VAR,           // activation tensor
-    GRAPH_INPUT,
-    GRAPH_OUTPUT,
-  };
   Tensor() = default;
 
   Tensor(TypeId data_type, std::vector<int> shape, const mindspore::Format &format = mindspore::NHWC,
@@ -93,7 +87,7 @@ class Tensor : public mindspore::tensor::MSTensor {
 
   int DimensionSize(size_t index) const;
 
-  int ElementsNum() const override;
+  int64_t ElementsNum() const override;
 
   int32_t Batch() const;
 
@@ -103,7 +97,7 @@ class Tensor : public mindspore::tensor::MSTensor {
 
   int32_t Width() const;
 
-  int32_t ElementsC4Num() const;
+  int64_t ElementsC4Num() const;
 
   size_t Size() const override;
 
@@ -123,6 +117,7 @@ class Tensor : public mindspore::tensor::MSTensor {
 
   virtual void *data() const { return data_; }
 
+  // tensor will hold this data, and free this data in destructor
   void set_data(void *data) override {
     this->data_ = data;
     this->own_data_ = true;
@@ -137,7 +132,7 @@ class Tensor : public mindspore::tensor::MSTensor {
   mindspore::Format format() const override { return this->format_; }
   virtual int ref_count() const { return ref_count_; }
 
-  virtual int init_ref_count() const { return this->init_ref_count_; }
+  virtual int init_ref_count() const { return static_cast<int>(this->init_ref_count_); }
 
   virtual void set_ref_count(int ref_count) {
     ref_count_ = ref_count;
@@ -150,7 +145,7 @@ class Tensor : public mindspore::tensor::MSTensor {
 
   void set_init_ref_count(int ref_count) { this->init_ref_count_ = ref_count; }
 
-  virtual void ResetRefCount() { set_ref_count(this->init_ref_count_); }
+  virtual void ResetRefCount() { set_ref_count(static_cast<int>(this->init_ref_count_)); }
 
   virtual void IncRefCount();
 
@@ -242,60 +237,6 @@ class Tensor : public mindspore::tensor::MSTensor {
   bool own_data_{false};
   float scale_ = 1.0f;
 };
-
-inline size_t DataTypeSize(const TypeId type) {
-  switch (type) {
-    case kNumberTypeFloat64:
-      return sizeof(double);
-    case kNumberTypeFloat:
-    case kNumberTypeFloat32:
-      return sizeof(float);
-    case kNumberTypeInt8:
-      return sizeof(int8_t);
-    case kNumberTypeUInt8:
-      return sizeof(uint8_t);
-    case kNumberTypeFloat16:
-    case kNumberTypeInt16:
-      return sizeof(int16_t);
-    case kNumberTypeInt32:
-      return sizeof(int32_t);
-    case kNumberTypeInt64:
-      return sizeof(int64_t);
-    case kNumberTypeUInt16:
-      return sizeof(uint16_t);
-    case kNumberTypeUInt32:
-      return sizeof(uint32_t);
-    case kNumberTypeUInt64:
-      return sizeof(uint64_t);
-    case kNumberTypeBool:
-      return sizeof(bool);
-    case kObjectTypeString:
-      return sizeof(char);
-    case kObjectTypeTensorType:
-      return 0;
-    default:
-      MS_LOG(ERROR) << "Not support the type: " << type;
-      return 0;
-  }
-}
-
-inline Tensor::Category TensorCategory(const int node_type, const size_t shape_num, const TypeId data_type,
-                                       const size_t data_size) {
-  return (node_type == NodeType_ValueNode)
-           ? (shape_num == 0 && data_size == DataTypeSize(data_type) ? Tensor::Category::CONST_SCALAR
-                                                                     : Tensor::Category::CONST_TENSOR)
-           : Tensor::Category::VAR;
-}
-
-inline Tensor::Category TensorCategory(const schema::Tensor *tensor) {
-  if (tensor == nullptr) {
-    MS_LOG(ERROR) << "tensor is nullptr";
-    return Tensor::VAR;
-  }
-  auto shape_num = tensor->dims() == nullptr ? 0 : tensor->dims()->size();
-  auto data_size = tensor->data() == nullptr ? 0 : tensor->data()->size();
-  return TensorCategory(tensor->nodeType(), shape_num, TypeId(tensor->dataType()), data_size);
-}
 
 std::vector<tensor::MSTensor *> TensorVectorCast(const std::vector<Tensor *> &src);
 }  // namespace lite

@@ -94,6 +94,8 @@ class KernelBuildInfo {
 
   size_t GetOutputNum() const;
 
+  size_t GetOutputNumWithoutMonad() const;
+
   std::string ToString() const;
 
   bool IsSimilarityKernelBuildInfo(const KernelBuildInfo &other) const;
@@ -125,7 +127,7 @@ class KernelBuildInfo::KernelBuildInfoBuilder {
  public:
   KernelBuildInfoBuilder() { kernel_build_info_ = std::make_shared<KernelBuildInfo>(); }
 
-  explicit KernelBuildInfoBuilder(std::shared_ptr<KernelBuildInfo> kernel_build_info)
+  explicit KernelBuildInfoBuilder(const KernelBuildInfoPtr &kernel_build_info)
       : kernel_build_info_(std::make_shared<KernelBuildInfo>()) {
     SetKernelType(kernel_build_info->kernel_type());
     SetFusionType(kernel_build_info->fusion_type());

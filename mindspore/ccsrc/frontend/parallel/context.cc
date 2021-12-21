@@ -27,14 +27,16 @@
 
 namespace mindspore {
 namespace parallel {
-static std::map<std::string, Shape> param_shapes;
+std::map<std::string, Shape> param_shapes;
 
 std::vector<std::string> PARALLEL_MODE_LIST = {STAND_ALONE, DATA_PARALLEL, HYBRID_PARALLEL, SEMI_AUTO_PARALLEL,
                                                AUTO_PARALLEL};
-std::vector<std::string> STRATEGY_SEARCH_MODE_LIST = {DYNAMIC_PROGRAMMING, RECURSIVE_PROGRAMMING};
+std::vector<std::string> STRATEGY_SEARCH_MODE_LIST = {DYNAMIC_PROGRAMMING, RECURSIVE_PROGRAMMING, SHARDING_PROPAGATION};
 
 std::vector<std::string> COMMUNI_PARALLEL_MODE_LIST = {ALL_GROUP_PARALLEL, SAME_SERVER_GROUP_PARALLEL,
                                                        NO_GROUP_PARALLEL};
+
+std::vector<std::string> FUSION_MODE_LIST = {FUSION_AUTO, FUSION_SIZE, FUSION_INDEX};
 
 std::shared_ptr<ParallelContext> ParallelContext::inst_context_ = nullptr;
 
@@ -48,6 +50,7 @@ std::shared_ptr<ParallelContext> ParallelContext::GetInstance() {
 ParallelContext::ParallelContext() { Reset(); }
 
 void ParallelContext::Reset() {
+  init_param_shape_ = true;
   gradients_mean_ = false;
   full_batch_ = false;
   gradient_fp32_sync_ = true;
@@ -59,7 +62,7 @@ void ParallelContext::Reset() {
   parallel_mode_ = STAND_ALONE;
   parameter_broadcast_ = false;
   parameter_broadcast_is_set_ = false;
-  enable_all_reduce_fusion_ = false;
+  enable_all_reduce_fusion_ = true;
   strategy_ckpt_load_file_ = "";
   strategy_ckpt_save_file_ = "";
   enable_parallel_optimizer_ = false;
@@ -71,14 +74,34 @@ void ParallelContext::Reset() {
   communi_parallel_mode_ = ALL_GROUP_PARALLEL;
   optimizer_weight_shard_size_ = -1;
   optimizer_weight_shard_aggregated_save_ = false;
-  sharding_propagation_ = false;
   enable_all2all_ = false;
+  grad_accumulation_shard_ = true;
+  sharding_propagation_ = false;
   dataset_strategy_.clear();
+  fusion_threshold_mb_ = FUSUION_THRESHOLD;
+  fusion_threshold_is_set_ = true;
+  fusion_mode_ = FUSION_AUTO;
 }
 
 void ParallelContext::set_device_num(int64_t device_num) {
   device_num_ = device_num;
   device_num_is_set_ = true;
+}
+
+void ParallelContext::set_fusion_threshold_mb(int64_t fusion_threshold) {
+  fusion_threshold_mb_ = fusion_threshold;
+  fusion_threshold_is_set_ = true;
+  enable_all_reduce_fusion_ = true;
+}
+
+bool ParallelContext::set_fusion_mode(const std::string &fusion_mode) {
+  auto iter = std::find(FUSION_MODE_LIST.begin(), FUSION_MODE_LIST.end(), fusion_mode);
+  if (iter == FUSION_MODE_LIST.end()) {
+    MS_LOG(INFO) << "Invalid fusion mode:" << fusion_mode;
+    return false;
+  }
+  fusion_mode_ = fusion_mode;
+  return true;
 }
 
 void ParallelContext::set_global_rank(int64_t global_rank) {
@@ -228,7 +251,7 @@ void ParallelContext::ParallelParameterContextInitShape(const FuncGraphPtr &func
 
 // Restore the parameters' shape for evaluation/prediction in auto-parallel or semi-auto-parallel mode
 void ParallelContext::ParallelParameterContextRestoreShape(const FuncGraphPtr &func_graph,
-                                                           const ParameterPtr &param_node, AbstractBasePtr ptr) {
+                                                           const ParameterPtr &param_node, const AbstractBasePtr &ptr) {
   MS_EXCEPTION_IF_NULL(func_graph);
   MS_EXCEPTION_IF_NULL(param_node);
   MS_EXCEPTION_IF_NULL(ptr);
@@ -274,8 +297,8 @@ void ParallelContext::ParallelParameterContextCkptShape(const FuncGraphPtr &func
   MS_LOG(DEBUG) << "The parameter name is " << param_node->name() << ", the shape is " << shape;
 }
 
-void ParallelContext::set_sharding_propagation(const bool stra_pto) { sharding_propagation_ = stra_pto; }
-
 void ParallelContext::set_enable_all2all(const bool enable) { enable_all2all_ = enable; }
+
+void ParallelContext::set_sharding_propagation(const bool stra_pto) { sharding_propagation_ = stra_pto; }
 }  // namespace parallel
 }  // namespace mindspore

@@ -13,20 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <thread>
+
+#include "backend/kernel_compiler/cpu/adam_delta_cpu_kernel.h"
+
 #include <vector>
 #include <string>
 #include <memory>
+
 #include "backend/kernel_compiler/common_utils.h"
+#include "backend/kernel_compiler/cpu/nnacl/fp32/adam_fp32.h"
 #include "runtime/device/cpu/cpu_device_address.h"
-#include "backend/kernel_compiler/cpu/adam_delta_cpu_kernel.h"
-#include "nnacl/errorcode.h"
-#include "nnacl/fp32/adam_fp32.h"
-#include "utils/ms_utils.h"
 
 namespace mindspore {
 namespace kernel {
-constexpr size_t kAdamDeltaInputSize = 9;
+namespace {
+constexpr size_t kAdamDeltaInputsNum = 9;
+constexpr size_t kAdamDeltaOutputsNum = 1;
+}  // namespace
+
 template <typename T>
 void AdamDeltaCPUKernel::LaunchAdamDelta(T *delta, T *m, T *v, float lr, float beta1, float beta2, float epsilon,
                                          const T *gradient, size_t size) {
@@ -50,34 +54,42 @@ void AdamDeltaCPUKernel::LaunchAdamDelta(T *delta, T *m, T *v, float lr, float b
       }
     };
   }
-  CPUKernelUtils::ParallelFor(task, size);
+  ParallelLaunchAutoSearch(task, size, this, &parallel_search_info_);
 }
 
 void AdamDeltaCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   std::vector<size_t> delta_shape = AnfAlgo::GetOutputDeviceShape(kernel_node, 0);
   std::vector<size_t> m_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
   std::vector<size_t> v_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
   std::vector<size_t> grad_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 8);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
   if (!IsSameShape(delta_shape, m_shape)) {
-    MS_LOG(EXCEPTION) << "Delta and m should have the same shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape of 'delta' should be same with the shape of 'm', but got the shape of 'delta': "
+                      << Vector2Str(delta_shape) << " and 'm': " << Vector2Str(m_shape);
   }
   if (!IsSameShape(delta_shape, v_shape)) {
-    MS_LOG(EXCEPTION) << "Delta and v should have the same shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape of 'delta' should be same with the shape of 'v', but got the shape of 'delta': "
+                      << Vector2Str(delta_shape) << " and 'v': " << Vector2Str(v_shape);
   }
   if (!IsSameShape(delta_shape, grad_shape)) {
-    MS_LOG(EXCEPTION) << "Delta and grad should have the same shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape of 'delta' should be same with the shape of 'grad', "
+                         "but got the shape of 'delta': "
+                      << Vector2Str(delta_shape) << " and 'grad': " << Vector2Str(grad_shape);
   }
   if (delta_shape.empty()) {
-    MS_LOG(EXCEPTION) << "Delta must be at least 1D";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'delta' should be at least 1-D, but got empty shape!";
   }
   elem_num_ = 1;
   for (size_t i = 0; i < delta_shape.size(); ++i) {
     elem_num_ *= delta_shape[i];
   }
   if (elem_num_ < 1) {
-    MS_LOG(EXCEPTION) << "Invalid delta shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'delta' should be at least 1-D, but got empty shape!";
   }
   if (AnfAlgo::HasNodeAttr(USE_NESTEROV, kernel_node)) {
     use_nesterov_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, "use_nesterov");
@@ -86,20 +98,26 @@ void AdamDeltaCPUKernel::InitKernel(const CNodePtr &kernel_node) {
 
 void AdamDeltaCPUKernel::CheckParams(const std::vector<kernel::AddressPtr> &inputs,
                                      const std::vector<kernel::AddressPtr> &outputs) const {
-  if (inputs.size() != kAdamDeltaInputSize) {
-    MS_LOG(EXCEPTION) << "Error input size!";
-  }
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kAdamDeltaInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kAdamDeltaOutputsNum, kernel_name_);
+
   size_t elem_size = elem_num_ * 4;
   std::vector<size_t> expect_sizes = {elem_size, elem_size, 4, 4, 4, 4, 4, 4, elem_size};
   std::vector<std::string> input_names = {"m",     "v",     "beta1_power", "beta2_power", "lr",
                                           "beta1", "beta2", "epsilon",     "grad"};
-  for (size_t i = 0; i < kAdamDeltaInputSize; ++i) {
+  for (size_t i = 0; i < kAdamDeltaInputsNum; ++i) {
     if (inputs[i]->size != expect_sizes[i]) {
-      MS_LOG(EXCEPTION) << "Error input " << input_names[i] << " size!";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of input '" << input_names[i]
+                        << "' should be equal to " << expect_sizes[i] << ", but got address size: " << inputs[i]->size;
     }
   }
-  if (outputs.size() < 1 || outputs[0]->size != elem_size) {
-    MS_LOG(EXCEPTION) << "Error output delta size!";
+  if (outputs.size() < 1) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the size of outputs should be at least 1, but got "
+                      << outputs.size();
+  }
+  if (outputs[0]->size != elem_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'outputs[0]' should be equal to "
+                      << elem_size << ", but got " << outputs[0]->size;
   }
 }
 
@@ -110,7 +128,7 @@ bool AdamDeltaCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, c
   auto v = reinterpret_cast<float *>(inputs[1]->addr);
   auto beta1_power = reinterpret_cast<float *>(inputs[2]->addr)[0];
   if (beta1_power == 1) {
-    MS_LOG(EXCEPTION) << "The beta1_power should not be 1";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'beta1_power' should not be 1.";
   }
   auto beta2_power = reinterpret_cast<float *>(inputs[3]->addr)[0];
   auto lr = reinterpret_cast<float *>(inputs[4]->addr)[0];

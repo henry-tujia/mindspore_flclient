@@ -40,8 +40,12 @@ class MatMulGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
+    CHECK_CUBLAS_RET_WITH_ERROR(cublasSetStream(handle_, reinterpret_cast<cudaStream_t>(stream_ptr)),
+                                "cublasSetStream failed");
     VARIABLE_NOT_USED(workspace);
-    VARIABLE_NOT_USED(stream_ptr);
     if (is_null_input_) {
       return true;
     }
@@ -108,9 +112,10 @@ class MatMulGpuKernel : public GpuKernel {
       algo_ = CUBLAS_GEMM_DEFAULT_TENSOR_OP;
     }
     auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(output_shape);
+    auto input1_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(output_shape) || CHECK_NULL_INPUT(input1_shape);
     if (is_null_input_) {
-      MS_LOG(WARNING) << "input is null";
+      MS_LOG(WARNING) << "For 'MatmulGpuKernel', input or output is null";
       InitSizeLists();
       return true;
     }
@@ -128,7 +133,7 @@ class MatMulGpuKernel : public GpuKernel {
 
     bool transpose = GetAttr<bool>(kernel_node, "transpose_x1");
     transpose_x1_ = transpose ? CUBLAS_OP_T : CUBLAS_OP_N;
-    auto input1_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+
     if (transpose && input1_shape.size() > (dims - 2)) {
       k_ = input1_shape[dims - 2];
     } else if (!transpose && input1_shape.size() > (dims - 1)) {

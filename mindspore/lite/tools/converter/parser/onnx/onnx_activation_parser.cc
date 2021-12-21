@@ -51,6 +51,7 @@ ops::PrimitiveC *OnnxLeakyReluParser::Parse(const onnx::GraphProto &onnx_graph, 
 ops::PrimitiveC *OnnxPReluParser::Parse(const onnx::GraphProto &onnx_graph, const onnx::NodeProto &onnx_node) {
   auto prim = std::make_unique<ops::PReLUFusion>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
+  MS_CHECK_GE(onnx_node.input_size(), kInputSize1, nullptr);
   std::vector<onnx::TensorProto> params;
   const auto &input_name = onnx_node.input(1);
   auto node_iter = std::find_if(onnx_graph.initializer().begin(), onnx_graph.initializer().end(),
@@ -86,6 +87,10 @@ ops::PrimitiveC *OnnxPReluParser::Parse(const onnx::GraphProto &onnx_graph, cons
         slope.push_back(*slope_raw_data);
         channel_shared = true;
       } else {
+        if (INT_MUL_OVERFLOW_THRESHOLD(slope_size, sizeof(float), SIZE_MAX)) {
+          MS_LOG(ERROR) << "data_size overflow";
+          return nullptr;
+        }
         if (memcpy_s(slope.data(), slope_size * sizeof(float), slope_raw_data, slope_data->raw_data().size()) != EOK) {
           MS_LOG(ERROR) << "memcpy_s failed";
           return nullptr;
@@ -131,11 +136,20 @@ ops::PrimitiveC *OnnxSigmoidParser::Parse(const onnx::GraphProto &onnx_graph, co
   return prim.release();
 }
 
+ops::PrimitiveC *OnnxHardSigmoidParser::Parse(const onnx::GraphProto &onnx_graph, const onnx::NodeProto &onnx_node) {
+  auto prim = std::make_unique<ops::Activation>();
+  MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
+  prim->set_activation_type(mindspore::ActivationType::HSIGMOID);
+
+  return prim.release();
+}
+
 OnnxNodeRegistrar g_onnxReluParser("Relu", new OnnxReluParser());
 OnnxNodeRegistrar g_onnxLeakyReluParser("LeakyRelu", new OnnxLeakyReluParser());
 OnnxNodeRegistrar g_onnxPReluParser("PRelu", new OnnxPReluParser());
 OnnxNodeRegistrar g_onnxEluParser("Elu", new OnnxEluParser());
 OnnxNodeRegistrar g_onnxTanhParser("Tanh", new OnnxTanhParser());
-OnnxNodeRegistrar g_onnxSigmoodParser("Sigmoid", new OnnxSigmoidParser());
+OnnxNodeRegistrar g_onnxSigmoidParser("Sigmoid", new OnnxSigmoidParser());
+OnnxNodeRegistrar g_onnxHardSigmoidParser("HardSigmoid", new OnnxHardSigmoidParser());
 }  // namespace lite
 }  // namespace mindspore

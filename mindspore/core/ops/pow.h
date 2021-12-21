@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,16 +28,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNamePow = "Pow";
+/// \brief Computes a tensor to the power of the second input.
+/// Refer to Python API @ref mindspore.ops.Pow for more details.
 class MS_CORE_API Pow : public PrimitiveC {
  public:
+  /// \brief Constructor.
   explicit Pow(const std::string &k_name = kNamePow) : PrimitiveC(k_name) { InitIOName({"x", "y"}, {"output"}); }
+  /// \brief Destructor.
   ~Pow() = default;
   MS_DECLARE_PARENT(Pow, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Pow for the inputs.
   void Init();
 };
 AbstractBasePtr PowInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                          const std::vector<AbstractBasePtr> &input_args);
-using PrimPowPtr = std::shared_ptr<Pow>;
+using kPrimPowPtr = std::shared_ptr<Pow>;
 }  // namespace ops
 }  // namespace mindspore
 

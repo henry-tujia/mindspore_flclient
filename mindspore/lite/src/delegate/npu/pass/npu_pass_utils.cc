@@ -23,7 +23,7 @@
 namespace mindspore {
 std::unordered_map<schema::PrimitiveType, std::set<int>> nodes2const_index{
   {schema::PrimitiveType_Split, {1}},
-  {schema::PrimitiveType_PadFusion, {1}},
+  {schema::PrimitiveType_PadFusion, {1, 2}},
   {schema::PrimitiveType_StridedSlice, {1, 2, 3}}};
 
 NPUOp *NPUPassUtils::CreateNchw2NhwcOp(const std::vector<mindspore::MSTensor> &in_tensors,
@@ -60,13 +60,14 @@ void NPUPassUtils::UpdateOp(NPUOp *op, const std::vector<NPUOp *> &in_ops, const
 void NPUPassUtils::UpdateNH2NCTransNodePreOp(NPUOp *pre_op, NPUOp *trans_op, NPUOp *op) {
   // For op before trans, update the out_ops; the output tensor of op is the input tensor of trans.
   std::vector<NPUOp *> out_ops = pre_op->out_ops();
-  for (size_t i = 0; i < out_ops.size(); i++) {
+  size_t i = 0;
+  for (; i < out_ops.size(); i++) {
     if (out_ops[i] == op) {
       out_ops[i] = trans_op;
       break;
     }
   }
-  if (out_ops.empty()) {
+  if (i == out_ops.size()) {
     out_ops.push_back(trans_op);
   }
   pre_op->set_out_ops(out_ops);
@@ -220,32 +221,5 @@ bool NPUPassUtils::Scale4dCase(NPUOp *op) {
   auto scale_tensor = op->inputs().at(1);
   return in_tensor.Shape().size() == NPU_SHAPE_SIZE && scale_tensor.Shape().size() == 1 &&
          (axis == NHWC_C || axis == -1);
-}
-
-void NPUPassUtils::AssistDataNHWC2NCHW(int *data, size_t unit_size) {
-  MS_ASSERT(data != nullptr);
-  for (size_t i = 0; i < unit_size; ++i) {
-    int c = data[3 * unit_size + i];
-    // n h w c
-    // n c h w
-    data[3 * unit_size + i] = data[2 * unit_size + i];
-    data[2 * unit_size + i] = data[unit_size + i];
-    data[unit_size + i] = c;
-  }
-}
-
-int NPUPassUtils::MaskDataNHWC2NCHW(int mask) {
-  int mask_vec[4];
-  for (int i = 0; i < 4; ++i) {
-    mask_vec[i] = (uint32_t)(mask) & (1 << i);
-  }
-  AssistDataNHWC2NCHW(mask_vec, 1);
-  int ret = 0;
-  for (int i = 0; i < 4; ++i) {
-    if (mask_vec[i]) {
-      ret += 1 << i;
-    }
-  }
-  return ret;
 }
 }  // namespace mindspore

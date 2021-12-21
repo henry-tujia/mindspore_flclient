@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "utils/ms_utils.h"
 #include "ir/value.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
@@ -43,9 +43,6 @@ class TensorDotInfo : public OperatorInfo {
                 const PrimitiveAttrs &attrs)
       : OperatorInfo(name, inputs_shape, outputs_shape, attrs, std::make_shared<TensorDotCost>()) {}
   ~TensorDotInfo() override = default;
-
-  Status Init(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
 
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
   Status SetCostUnderStrategy(const StrategyPtr &strategy) override;

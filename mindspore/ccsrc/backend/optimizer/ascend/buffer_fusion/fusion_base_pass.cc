@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/fusion_base_pass.h"
-#include <unordered_set>
 #include <memory>
-#include "debug/anf_ir_dump.h"
 #include "utils/ms_context.h"
 #include "backend/optimizer/common/fusion_id_allocator.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -27,7 +25,7 @@ bool FusionBasePass::CheckEltWiseNode(const session::KernelGraph &kernel_graph, 
   auto manager = kernel_graph.manager();
   MS_EXCEPTION_IF_NULL(manager);
   MS_EXCEPTION_IF_NULL(node);
-  if (!node->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
+  if (!node->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
     return false;
   }
   auto cnode = node->cast<CNodePtr>();
@@ -42,7 +40,7 @@ bool FusionBasePass::CheckDoubleInEltWiseNode(const session::KernelGraph &kernel
   auto manager = kernel_graph.manager();
   MS_EXCEPTION_IF_NULL(manager);
   MS_EXCEPTION_IF_NULL(node);
-  if (!node->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
+  if (!node->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
     return false;
   }
   auto cnode = node->cast<CNodePtr>();
@@ -57,7 +55,7 @@ bool FusionBasePass::CheckMultiOutputEltWiseNode(const session::KernelGraph &ker
   auto manager = kernel_graph.manager();
   MS_EXCEPTION_IF_NULL(manager);
   MS_EXCEPTION_IF_NULL(node);
-  if (!node->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
+  if (!node->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node)) {
     return false;
   }
   auto cnode = node->cast<CNodePtr>();
@@ -83,7 +81,7 @@ size_t FusionBasePass::GetNotUpdateStateUserNums(const session::KernelGraph &ker
   return not_updatestate_users;
 }
 
-void FusionBasePass::SetRecordFusionId(const std::unordered_set<AnfNodePtr> &record) {
+void FusionBasePass::SetRecordFusionId(const mindspore::HashSet<AnfNodePtr> &record) {
   auto id = fusion_id_allocator->AllocateFusionId();
   for (auto node : record) {
     fusion_id_allocator->SetFusionId(node, id);
@@ -108,7 +106,7 @@ bool FusionBasePass::MatchUBFusionPattern(const session::KernelGraph &kernel_gra
   return true;
 }
 
-bool FusionBasePass::Run(const FuncGraphPtr &graph) {
+bool FusionBasePass::RunPass(const FuncGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(graph);
   auto kernel_graph = graph->cast<std::shared_ptr<session::KernelGraph>>();
   MS_EXCEPTION_IF_NULL(kernel_graph);

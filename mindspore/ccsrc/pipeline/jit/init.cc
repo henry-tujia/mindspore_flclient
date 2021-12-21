@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,9 @@
 #include "utils/symbolic.h"
 #include "pybind_api/api_register.h"
 #include "pipeline/jit/parse/python_adapter.h"
+#ifndef ENABLE_SECURITY
 #include "utils/summary/event_writer.h"
+#endif
 #include "utils/config_manager.h"
 #include "utils/mpi/mpi_config.h"
 #include "utils/ms_utils.h"
@@ -48,7 +50,9 @@ using GraphExecutorPy = mindspore::pipeline::GraphExecutorPy;
 using Pipeline = mindspore::pipeline::Pipeline;
 using PrimitivePy = mindspore::PrimitivePy;
 using MetaFuncGraph = mindspore::MetaFuncGraph;
+#ifndef ENABLE_SECURITY
 using EventWriter = mindspore::summary::EventWriter;
+#endif  // ENABLE_SECURITY
 using OpLib = mindspore::kernel::OpLib;
 using ParallelContext = mindspore::parallel::ParallelContext;
 using CostModelContext = mindspore::parallel::CostModelContext;
@@ -73,12 +77,12 @@ PYBIND11_MODULE(_c_expression, m) {
   (void)py::class_<GraphExecutorPy, std::shared_ptr<GraphExecutorPy>>(m, "GraphExecutor_")
     .def_static("get_instance", &GraphExecutorPy::GetInstance, "Executor get_instance.")
     .def("__call__", &GraphExecutorPy::Run, py::arg("args"), py::arg("phase") = py::str(""), "Executor run function.")
-    .def("del_net_res", &GraphExecutorPy::DelNetRes, py::arg("network_id") = py::str(""), "Delete network resource.")
+    .def("del_net_res", &GraphExecutorPy::DelNetRes, py::arg("network_id") = py::set(), "Delete network resource.")
     .def("get_func_graph", &GraphExecutorPy::GetFuncGraph, py::arg("phase") = py::str(""), "Get graph pointer.")
     .def("get_func_graph_proto", &GraphExecutorPy::GetFuncGraphProto, py::arg("phase") = py::str(""),
          py::arg("type") = py::str("onnx_ir"), "Get graph proto string by specifying ir type.")
     .def("compile", &GraphExecutorPy::Compile, py::arg("obj"), py::arg("args"), py::arg("phase") = py::str(""),
-         py::arg("use_vm") = py::bool_(false), py::arg("queue_name"), "Compile obj by executor.")
+         py::arg("use_vm") = py::bool_(false), "Compile obj by executor.")
     .def("updata_param_node_default_input", &GraphExecutorPy::UpdataParamNodeDefaultInput, py::arg("phase"),
          py::arg("params"), "Fetch the inputs of Conv or Matmul for quant export.")
     .def("get_parameter_layout", &GraphExecutorPy::GetParameterLayout, py::arg("phase") = py::str("train"),
@@ -100,7 +104,18 @@ PYBIND11_MODULE(_c_expression, m) {
     .def("set_py_exe_path", &GraphExecutorPy::PyExePath, py::arg("py_exe_path") = py::str(""),
          "Set python executable path.")
     .def("set_kernel_build_server_dir", &GraphExecutorPy::KernelBuildServerDir,
-         py::arg("kernel_build_server_dir") = py::str(""), "Set kernel build server directory path.");
+         py::arg("kernel_build_server_dir") = py::str(""), "Set kernel build server directory path.")
+    .def("set_queue_name", &GraphExecutorPy::set_queue_name, py::arg("queue_name") = py::str(""),
+         "Set queue name for the graph loaded from compile cache.")
+    .def("set_enable_tuple_broaden", &GraphExecutorPy::set_enable_tuple_broaden,
+         py::arg("enable_tuple_broaden") = py::bool_(false), "Set tuple broaden enable.")
+    .def("set_compile_cache_dep_files", &GraphExecutorPy::set_compile_cache_dep_files,
+         py::arg("compile_cache_dep_files") = py::list(), "Set the compilation cache dependent files.")
+    .def("set_weights_values", &GraphExecutorPy::set_weights_values, py::arg("weights") = py::dict(),
+         "Set values of weights.")
+    .def("get_optimize_graph_proto", &GraphExecutorPy::GetOptimizeGraphProto, py::arg("phase") = py::str(""),
+         "Get the optimize graph proto string.")
+    .def("set_jit_config", &GraphExecutorPy::SetJitConfig, py::arg("jit_config") = py::dict(), "Set the jit config.");
 
   (void)py::class_<EnvInstance, std::shared_ptr<EnvInstance>>(m, "EnvInstance_").def(py::init());
 
@@ -119,9 +134,8 @@ PYBIND11_MODULE(_c_expression, m) {
   (void)m.def("init_pipeline", &mindspore::pipeline::InitPipeline, "Init Pipeline.");
 
   (void)m.def("export_graph", &mindspore::pipeline::ExportGraph, "Export Graph.");
-  (py::object)
-    m.def("load_mindir", &mindspore::pipeline::LoadMindIR, py::arg("file_name"), py::arg("dec_key") = nullptr,
-          py::arg("key_len") = py::int_(0), py::arg("dec_mode") = py::str("AES-GCM"), "Load model as Graph.");
+  (void)m.def("load_mindir", &mindspore::pipeline::LoadMindIR, py::arg("file_name"), py::arg("dec_key") = nullptr,
+              py::arg("key_len") = py::int_(0), py::arg("dec_mode") = py::str("AES-GCM"), "Load model as Graph.");
 
   (void)py::class_<mindspore::MpiConfig, std::shared_ptr<mindspore::MpiConfig>>(m, "MpiConfig")
     .def_static("get_instance", &mindspore::MpiConfig::GetInstance, "Get mpi config instance.")
@@ -131,10 +145,17 @@ PYBIND11_MODULE(_c_expression, m) {
   (void)py::class_<ParallelContext, std::shared_ptr<ParallelContext>>(m, "AutoParallelContext")
     .def_static("get_instance", &ParallelContext::GetInstance, "Get auto parallel context instance.")
     .def("get_device_num", &ParallelContext::device_num, "Get device num.")
+    .def("set_hccl_test_avaible", &ParallelContext::set_hccl_test_available, "Set hccl test available.")
     .def("set_device_num", &ParallelContext::set_device_num, "Set device num.")
     .def("get_device_num_is_set", &ParallelContext::device_num_is_set, "Get device num is set.")
+    .def("set_fusion_threshold_mb", &ParallelContext::set_fusion_threshold_mb, "Set fusion threshold.")
+    .def("fusion_threshold_mb", &ParallelContext::fusion_threshold_mb, "Get fusion threshold.")
+    .def("set_fusion_mode", &ParallelContext::set_fusion_mode, "Get fusion mode.")
+    .def("get_fusion_mode", &ParallelContext::get_fusion_mode, "Get fusion mode.")
     .def("get_global_rank", &ParallelContext::global_rank, "Get global rank.")
     .def("set_global_rank", &ParallelContext::set_global_rank, "Set global rank.")
+    .def("get_grad_accumulation_shard", &ParallelContext::grad_accumulation_shard, "Get grad_accumulation_shard.")
+    .def("set_grad_accumulation_shard", &ParallelContext::set_grad_accumulation_shard, "Set grad_accumulation_shard.")
     .def("get_global_rank_is_set", &ParallelContext::global_rank_is_set, "Get global rank is set.")
     .def("get_gradients_mean", &ParallelContext::gradients_mean, "Get mirror mean.")
     .def("set_gradients_mean", &ParallelContext::set_gradients_mean, "Set mirror mean.")
@@ -192,11 +213,11 @@ PYBIND11_MODULE(_c_expression, m) {
          "Set whether to integrated save weight shard when enable parallel optimizer.")
     .def("get_optimizer_weight_shard_aggregated_save", &ParallelContext::optimizer_weight_shard_aggregated_save,
          "Get whether to integrated save weight shard when enable parallel optimizer.")
+    .def("set_enable_alltoall", &ParallelContext::set_enable_all2all, "Set the enabling AllToAll value.")
+    .def("get_enable_alltoall", &ParallelContext::enable_all2all, "Get the enabling AllToAll value.")
     .def("set_sharding_propagation", &ParallelContext::set_sharding_propagation,
          "Set sharding strategy propagation value.")
     .def("get_sharding_propagation", &ParallelContext::sharding_propagation, "Get sharding strategy propagation value.")
-    .def("set_enable_alltoall", &ParallelContext::set_enable_all2all, "Set the enabling AllToAll value.")
-    .def("get_enable_alltoall", &ParallelContext::enable_all2all, "Get the enabling AllToAll value.")
     .def("reset", &ParallelContext::Reset, "Reset auto parallel context.");
 
   (void)py::class_<CostModelContext, std::shared_ptr<CostModelContext>>(m, "CostModelContext")
@@ -298,19 +319,19 @@ PYBIND11_MODULE(_c_expression, m) {
     .def("reset_algo_parameters", &CostModelContext::ResetAlgoParameters, "Reset the AlgoParameters.");
 
   (void)py::module::import("atexit").attr("register")(py::cpp_function{[&]() -> void {
+#ifdef ENABLE_MINDDATA
+    MS_LOG(INFO) << "Start releasing dataset handles...";
+    py::module iterators = py::module::import("mindspore.dataset.engine.iterators");
+    (void)iterators.attr("_cleanup")();
+    MS_LOG(INFO) << "End release dataset handles.";
+#endif
     // only in case that c++ calling python interface, ClearResAtexit should be called.
     if (mindspore::parse::python_adapter::IsPythonEnv()) {
       mindspore::pipeline::ClearResAtexit();
-
-#ifdef ENABLE_MINDDATA
-      MS_LOG(WARNING) << "Start releasing dataset handles...";
-      py::module iterators = py::module::import("mindspore.dataset.engine.iterators");
-      (void)iterators.attr("_cleanup")();
-      MS_LOG(WARNING) << "End release dataset handles.";
-#endif
     }
   }});
 
+#ifndef ENABLE_SECURITY
   (void)py::class_<EventWriter, std::shared_ptr<EventWriter>>(m, "EventWriter_")
     .def(py::init<const std::string &>())
     .def("GetFileName", &EventWriter::GetFileName, "Get the file name.")
@@ -320,6 +341,7 @@ PYBIND11_MODULE(_c_expression, m) {
     .def("Flush", &EventWriter::Flush, "Flush the event.")
     .def("Close", &EventWriter::Close, "Close the write.")
     .def("Shut", &EventWriter::Shut, "Final close the write.");
+#endif  // ENABLE_SECURITY
 
   (void)py::class_<OpLib, std::shared_ptr<OpLib>>(m, "Oplib")
     .def(py::init())
@@ -329,10 +351,18 @@ PYBIND11_MODULE(_c_expression, m) {
               "Init gpu collective communication mode.");
   (void)m.def("finalize_gpu_collective", &mindspore::device::gpu::CollectiveInitializer::FinalizeCollective,
               "Finalize gpu collective communication mode.");
+  (void)m.def("get_rank_id", &mindspore::device::gpu::CollectiveInitializer::GetRankID,
+              "Finalize gpu collective communication mode.");
+  (void)m.def("get_rank_size", &mindspore::device::gpu::CollectiveInitializer::GetRankSize,
+              "Finalize gpu collective communication mode.");
 #else
   (void)m.def("init_gpu_collective", &mindspore::device::gpu::CollectiveFakeInitializer::InitCollective,
               "Init gpu collective communication mode.");
   (void)m.def("finalize_gpu_collective", &mindspore::device::gpu::CollectiveFakeInitializer::FinalizeCollective,
+              "Finalize gpu collective communication mode.");
+  (void)m.def("get_rank_id", &mindspore::device::gpu::CollectiveFakeInitializer::GetRankID,
+              "Finalize gpu collective communication mode.");
+  (void)m.def("get_rank_size", &mindspore::device::gpu::CollectiveFakeInitializer::GetRankSize,
               "Finalize gpu collective communication mode.");
 #endif
 
@@ -385,6 +415,7 @@ PYBIND11_MODULE(_c_expression, m) {
          "Set threshold count ratio for share secrets round.")
     .def("share_secrets_ratio", &PSContext::share_secrets_ratio, "Get threshold count ratio for share secrets round.")
     .def("set_cipher_time_window", &PSContext::set_cipher_time_window, "Set time window for each cipher round.")
+    .def("cipher_time_window", &PSContext::cipher_time_window, "Get time window for cipher rounds.")
     .def("set_reconstruct_secrets_threshold", &PSContext::set_reconstruct_secrets_threshold,
          "Set threshold count for reconstruct secrets round.")
     .def("reconstruct_secrets_threshold", &PSContext::reconstruct_secrets_threshold,
@@ -398,16 +429,38 @@ PYBIND11_MODULE(_c_expression, m) {
     .def("set_client_batch_size", &PSContext::set_client_batch_size, "Set federated learning client batch size.")
     .def("client_batch_size", &PSContext::client_batch_size, "Get federated learning client batch size.")
     .def("set_client_learning_rate", &PSContext::set_client_learning_rate,
-         "Set worker's standalone training step number before communicating with server.")
+         "Set federated learning client learning rate.")
     .def("client_learning_rate", &PSContext::client_learning_rate,
          "Get worker's standalone training step number before communicating with server.")
     .def("set_worker_step_num_per_iteration", &PSContext::set_worker_step_num_per_iteration,
-         "Set federated learning client learning rate.")
+         "Set worker's standalone training step number before communicating with server..")
     .def("worker_step_num_per_iteration", &PSContext::worker_step_num_per_iteration,
          "Get federated learning client learning rate.")
+    .def("set_secure_aggregation", &PSContext::set_secure_aggregation,
+         "Set federated learning client using secure aggregation.")
+    .def("set_dp_eps", &PSContext::set_dp_eps, "Set dp epsilon for federated learning secure aggregation.")
+    .def("dp_eps", &PSContext::dp_eps, "Get dp epsilon for federated learning secure aggregation.")
+    .def("set_dp_delta", &PSContext::set_dp_delta, "Set dp delta for federated learning secure aggregation.")
+    .def("dp_delta", &PSContext::dp_delta, "Get dp delta for federated learning secure aggregation.")
+    .def("set_dp_norm_clip", &PSContext::set_dp_norm_clip,
+         "Set dp norm clip for federated learning secure aggregation.")
+    .def("dp_norm_clip", &PSContext::dp_norm_clip, "Get dp norm clip for federated learning secure aggregation.")
+    .def("set_encrypt_type", &PSContext::set_encrypt_type,
+         "Set encrypt type for federated learning secure aggregation.")
+    .def("encrypt_type", &PSContext::encrypt_type, "Get encrypt type for federated learning secure aggregation.")
+    .def("set_root_first_ca_path", &PSContext::set_root_first_ca_path, "Set root first ca path.")
+    .def("root_first_ca_path", &PSContext::root_first_ca_path, "Get root first ca path.")
+    .def("set_root_second_ca_path", &PSContext::set_root_second_ca_path, "Set root second ca path.")
+    .def("root_second_ca_path", &PSContext::root_second_ca_path, "Get root second ca path.")
+    .def("set_pki_verify", &PSContext::set_pki_verify, "Set pki verify.")
+    .def("pki_verify", &PSContext::pki_verify, "Get pki verify.")
     .def("set_scheduler_manage_port", &PSContext::set_scheduler_manage_port,
          "Set scheduler manage port used to scale out/in.")
     .def("scheduler_manage_port", &PSContext::scheduler_manage_port, "Get scheduler manage port used to scale out/in.")
+    .def("set_equip_crl_path", &PSContext::set_equip_crl_path, "Set root second crl path.")
+    .def("set_replay_attack_time_diff", &PSContext::set_replay_attack_time_diff, "Set replay attack time diff.")
+    .def("equip_crl_path", &PSContext::equip_crl_path, "Get root second crl path.")
+    .def("replay_attack_time_diff", &PSContext::replay_attack_time_diff, "Get replay attack time diff.")
     .def("set_enable_ssl", &PSContext::set_enable_ssl, "Set PS SSL mode enabled or disabled.")
     .def("enable_ssl", &PSContext::enable_ssl, "Get PS SSL mode enabled or disabled.")
     .def("set_client_password", &PSContext::set_client_password, "Set the client password to decode the p12 file.")
@@ -423,7 +476,9 @@ PYBIND11_MODULE(_c_expression, m) {
     .def("set_dp_norm_clip", &PSContext::set_dp_norm_clip,
          "Set dp norm clip for federated learning secure aggregation.")
     .def("set_encrypt_type", &PSContext::set_encrypt_type,
-         "Set encrypt type for federated learning secure aggregation.");
+         "Set encrypt type for federated learning secure aggregation.")
+    .def("set_http_url_prefix", &PSContext::set_http_url_prefix, "Set http url prefix for http communication.")
+    .def("http_url_prefix", &PSContext::http_url_prefix, "http url prefix for http communication.");
 
   (void)m.def("_encrypt", &mindspore::pipeline::PyEncrypt, "Encrypt the data.");
   (void)m.def("_decrypt", &mindspore::pipeline::PyDecrypt, "Decrypt the data.");

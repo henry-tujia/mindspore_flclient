@@ -62,6 +62,7 @@ lite::STATUS ReorderCnodeInputs(CNode *cnode, const std::vector<size_t> &perm) {
     return RET_ERROR;
   }
   auto input_quant_params_holder = input_quant_params->cast<lite::QuantParamHolderPtr>();
+  MS_ASSERT(input_quant_params_holder != nullptr);
   auto old_quant_params = input_quant_params_holder->get_input_quant_params();
   auto new_input_quant_holder =
     std::make_shared<lite::QuantParamHolder>(perm.size(), input_quant_params_holder->get_output_quant_params().size());
@@ -134,6 +135,7 @@ STATUS TfliteInputsAdjust::AdjustSlice(const AnfNodePtr &node, const FuncGraphPt
   MSLITE_CHECK_PTR(node);
   MSLITE_CHECK_PTR(graph);
   auto cnode = node->cast<CNodePtr>();
+  MS_ASSERT(cnode != nullptr);
   if (cnode->inputs().size() < opt::kInputSizeFour) {
     MS_LOG(ERROR) << "Slice should own 3 inputs";
     return RET_ERROR;
@@ -171,7 +173,11 @@ bool TfliteInputsAdjust::Run(const FuncGraphPtr &graph) {
 
     if (opt::CheckPrimitiveType(cnode, prim::kPrimConv2dTransposeFusion)) {
       // output_shape, weights, input => input, weight
-      if (RET_OK != ReorderCnodeInputs(cnode.get(), {3, 2})) {
+      std::vector<size_t> perm = {3, 2};
+      for (size_t i = 4; i < cnode->size(); i++) {
+        perm.push_back(i);  // insert bias
+      }
+      if (RET_OK != ReorderCnodeInputs(cnode.get(), perm)) {
         MS_LOG(ERROR) << "Reorder deconv inputs failed";
         return false;
       }

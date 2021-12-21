@@ -27,14 +27,13 @@ void ImpleSquare(void *origin, void *target, size_t size) {
   MS_EXCEPTION_IF_NULL(target);
   auto origin_data = reinterpret_cast<T *>(origin);
   auto target_data = reinterpret_cast<T *>(target);
-  MS_EXCEPTION_IF_NULL(origin_data);
-  MS_EXCEPTION_IF_NULL(target_data);
   for (size_t i = 0; i < size; ++i) {
     target_data[i] = origin_data[i] * origin_data[i];
   }
 }
 
 abstract::ShapePtr SquareInferShape(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &input_args) {
+  MS_EXCEPTION_IF_NULL(primitive);
   auto shape_map = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[kInputIndex0]->BuildShape());
   auto in_shape = shape_map[kShape];
   auto min_shape = shape_map[kMinShape];

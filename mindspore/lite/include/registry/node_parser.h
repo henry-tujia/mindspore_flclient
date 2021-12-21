@@ -21,11 +21,26 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "include/registry/parser_context.h"
-#include "proto/onnx.pb.h"
-#include "proto/caffe.pb.h"
-#include "proto/graph.pb.h"
-#include "schema/schema_generated.h"
+#include "include/registry/converter_context.h"
+
+namespace onnx {
+class GraphProto;
+class NodeProto;
+}  // namespace onnx
+
+namespace caffe {
+class LayerParameter;
+}  // namespace caffe
+
+namespace tensorflow {
+class NodeDef;
+}  // namespace tensorflow
+
+namespace tflite {
+struct OperatorT;
+struct SubGraphT;
+struct ModelT;
+}  // namespace tflite
 
 namespace mindspore {
 namespace ops {

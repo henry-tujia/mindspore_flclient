@@ -32,7 +32,8 @@ from mindspore.train.summary.summary_record import _DEFAULT_EXPORT_OPTIONS
 from mindspore.nn import Cell
 from mindspore.nn.optim.optimizer import Optimizer
 from mindspore.ops.operations import Add
-
+from mindspore._c_expression import security
+from tests.security_utils import security_off_wrap
 
 
 _VALUE_CACHE = list()
@@ -84,19 +85,20 @@ class TestSummaryCollector:
         """Run after each test function."""
         get_value()
 
+    @security_off_wrap
     @pytest.mark.parametrize("summary_dir", [1234, None, True, ''])
     def test_params_with_summary_dir_value_error(self, summary_dir):
         """Test the exception scenario for summary dir."""
         if isinstance(summary_dir, str):
             with pytest.raises(ValueError) as exc:
                 SummaryCollector(summary_dir=summary_dir)
-            assert str(exc.value) == 'For `summary_dir` the value should be a valid string of path, ' \
-                                     'but got empty string.'
+            assert str(exc.value) == "The summary_dir is invalid, it should be non-blank."
         else:
             with pytest.raises(TypeError) as exc:
                 SummaryCollector(summary_dir=summary_dir)
-            assert 'For `summary_dir` the type should be a valid type' in str(exc.value)
+            assert "The summary_dir is invalid, the type should be string." in str(exc.value)
 
+    @security_off_wrap
     def test_params_with_summary_dir_not_dir(self):
         """Test the given summary dir parameter is not a directory."""
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
@@ -107,6 +109,7 @@ class TestSummaryCollector:
         with pytest.raises(NotADirectoryError):
             SummaryCollector(summary_dir=summary_file)
 
+    @security_off_wrap
     @pytest.mark.parametrize("collect_freq", [None, 0, 0.01])
     def test_params_with_collect_freq_exception(self, collect_freq):
         """Test the exception scenario for collect freq."""
@@ -123,6 +126,7 @@ class TestSummaryCollector:
                            f'but got {type(collect_freq).__name__}.'
             assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("action", [None, 123, '', '123'])
     def test_params_with_action_exception(self, action):
         """Test the exception scenario for action."""
@@ -133,6 +137,7 @@ class TestSummaryCollector:
                        f"but got {type(action).__name__}."
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("collect_specified_data", [123])
     def test_params_with_collect_specified_data_type_error(self, collect_specified_data):
         """Test type error scenario for collect specified data param."""
@@ -145,6 +150,7 @@ class TestSummaryCollector:
 
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("export_options", [
         {
             "tensor_format": "npz"
@@ -163,6 +169,7 @@ class TestSummaryCollector:
 
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("export_options", [123])
     def test_params_with_export_options_type_error(self, export_options):
         """Test type error scenario for collect specified data param."""
@@ -175,6 +182,7 @@ class TestSummaryCollector:
 
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("collect_specified_data", [
         {
             123: 123
@@ -194,6 +202,7 @@ class TestSummaryCollector:
                        f"but got {type(param_name).__name__}."
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("collect_specified_data", [
         {
             'collect_metric': None
@@ -219,6 +228,7 @@ class TestSummaryCollector:
 
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     def test_params_with_histogram_regular_value_error(self):
         """Test histogram regular."""
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
@@ -227,6 +237,7 @@ class TestSummaryCollector:
 
         assert 'For `collect_specified_data`, the value of `histogram_regular`' in str(exc.value)
 
+    @security_off_wrap
     def test_params_with_collect_specified_data_unexpected_key(self):
         """Test the collect_specified_data parameter with unexpected key."""
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
@@ -236,6 +247,7 @@ class TestSummaryCollector:
         expected_msg = f"For `collect_specified_data` the keys {set(data)} are unsupported"
         assert expected_msg in str(exc.value)
 
+    @security_off_wrap
     def test_params_with_export_options_unexpected_key(self):
         """Test the export_options parameter with unexpected key."""
         summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
@@ -245,6 +257,7 @@ class TestSummaryCollector:
         expected_msg = f"For `export_options` the keys {set(data)} are unsupported"
         assert expected_msg in str(exc.value)
 
+    @security_off_wrap
     @pytest.mark.parametrize("custom_lineage_data", [
         123,
         {
@@ -280,6 +293,7 @@ class TestSummaryCollector:
 
         assert expected_msg == str(exc.value)
 
+    @security_off_wrap
     def test_check_callback_with_multi_instances(self):
         """Use multi SummaryCollector instances to test check_callback function."""
         cb_params = _InternalCallbackParam()
@@ -291,6 +305,7 @@ class TestSummaryCollector:
             SummaryCollector((tempfile.mkdtemp(dir=self.base_summary_dir)))._check_callbacks(cb_params)
         assert f"more than one SummaryCollector instance in callback list" in str(exc.value)
 
+    @security_off_wrap
     def test_collect_input_data_with_train_dataset_element_invalid(self):
         """Test the param 'train_dataset_element' in cb_params is invalid."""
         cb_params = _InternalCallbackParam()
@@ -300,6 +315,7 @@ class TestSummaryCollector:
             summary_collector._collect_input_data(cb_params)
             assert not summary_collector._collect_specified_data['collect_input_data']
 
+    @security_off_wrap
     @mock.patch.object(SummaryRecord, 'add_value')
     def test_collect_input_data_success(self, mock_add_value):
         """Mock a image data, and collect image data success."""
@@ -311,6 +327,7 @@ class TestSummaryCollector:
             summary_collector._collect_input_data(cb_params)
             # Note Here need to assert the result and expected data
 
+    @security_off_wrap
     @mock.patch.object(SummaryRecord, 'add_value')
     def test_collect_dataset_graph_success(self, mock_add_value):
         """Test collect dataset graph."""
@@ -325,6 +342,7 @@ class TestSummaryCollector:
         assert plugin == 'dataset_graph'
         assert name == 'train_dataset'
 
+    @security_off_wrap
     @pytest.mark.parametrize("net_output, expected_loss", [
         (None, None),
         (1, Tensor(1)),
@@ -349,6 +367,7 @@ class TestSummaryCollector:
         else:
             assert summary_collector._is_parse_loss_success
 
+    @security_off_wrap
     def test_get_optimizer_from_cb_params_success(self):
         """Test get optimizer success from cb params."""
         cb_params = _InternalCallbackParam()
@@ -360,6 +379,7 @@ class TestSummaryCollector:
         # Test get optimizer again
         assert summary_collector._get_optimizer(cb_params) == cb_params.optimizer
 
+    @security_off_wrap
     @pytest.mark.parametrize('mode', [ModeEnum.TRAIN.value, ModeEnum.EVAL.value])
     def test_get_optimizer_from_network(self, mode):
         """Get optimizer from train network"""
@@ -374,6 +394,7 @@ class TestSummaryCollector:
         optimizer = summary_collector._get_optimizer(cb_params)
         assert isinstance(optimizer, Optimizer)
 
+    @security_off_wrap
     def test_get_optimizer_failed(self):
         """Test get optimizer failed."""
         class Net(Cell):
@@ -399,6 +420,7 @@ class TestSummaryCollector:
         assert optimizer is None
         assert summary_collector._temp_optimizer == 'Failed'
 
+    @security_off_wrap
     @pytest.mark.parametrize("histogram_regular, expected_names", [
         (
             'conv1|conv2',
@@ -430,6 +452,7 @@ class TestSummaryCollector:
         assert PluginEnum.HISTOGRAM.value == result[0][0]
         assert expected_names == [data[1] for data in result]
 
+    @security_off_wrap
     @pytest.mark.parametrize("specified_data, action, expected_result", [
         (None, True, SummaryCollector._DEFAULT_SPECIFIED_DATA),
         (None, False, {}),
@@ -446,3 +469,103 @@ class TestSummaryCollector:
                                              keep_default_action=action)
 
         assert summary_collector._collect_specified_data == expected_result
+
+    @pytest.mark.parametrize("summary_dir", './')
+    def test_summary_collector_security_on(self, summary_dir):
+        """Test the summary collector when set security on."""
+        if security.enable_security():
+            with pytest.raises(ValueError) as exc:
+                SummaryCollector(summary_dir=summary_dir)
+            assert str(exc.value) == 'The Summary is not supported, please without `-s on` and recompile source.'
+
+    @security_off_wrap
+    @pytest.mark.parametrize("collect_specified_data", [
+        {
+            'collect_landscape': 123
+        }
+    ])
+    def test_params_collect_specified_data_value_type_error(self, collect_specified_data):
+        """Test the value of collect_specified_data_param."""
+        summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
+        with pytest.raises(TypeError) as exc:
+            SummaryCollector(summary_dir, collect_specified_data=collect_specified_data)
+
+        param_name = list(collect_specified_data)[0]
+        param_value = collect_specified_data[param_name]
+        expected_type = "['dict', 'NoneType']"
+        expected_msg = f'For `{param_name}` the type should be a valid type of {expected_type}, ' \
+                       f'but got {type(param_value).__name__}.'
+
+        assert expected_msg == str(exc.value)
+
+    @security_off_wrap
+    def test_params_with_collect_landscape_unexpected_key(self):
+        """Test the collect landscape parameter with unexpected key."""
+        summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
+        data = {'unexpected_key': "value"}
+        with pytest.raises(ValueError) as exc:
+            SummaryCollector(summary_dir, collect_specified_data={'collect_landscape': data})
+        expected_msg = f"For `collect_landscape` the keys {set(data)} are unsupported"
+        assert expected_msg in str(exc.value)
+
+    @security_off_wrap
+    @pytest.mark.parametrize("collect_specified_data", [
+        {
+            'collect_landscape': {'landscape_size': None}
+        },
+        {
+            'collect_landscape': {'unit': 123}
+        },
+        {
+            'collect_landscape': {'create_landscape': 123}
+        },
+        {
+            'collect_landscape': {'num_samples': None}
+        },
+        {
+            'collect_landscape': {'intervals': None}
+        },
+    ])
+    def test_params_collect_landscape_value_type_error(self, collect_specified_data):
+        """Test the value of collect_landscape_param."""
+        summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
+        with pytest.raises(TypeError) as exc:
+            SummaryCollector(summary_dir, collect_specified_data=collect_specified_data)
+
+        param_name = list(collect_specified_data["collect_landscape"])[0]
+        param_value = collect_specified_data["collect_landscape"][param_name]
+        if param_name in ['landscape_size', 'num_samples']:
+            expected_type = "['int']"
+        elif param_name == 'unit':
+            expected_type = "['str']"
+        elif param_name == 'create_landscape':
+            expected_type = "['dict']"
+        else:
+            expected_type = "['list']"
+
+        expected_msg = f'For `{param_name}` the type should be a valid type of {expected_type}, ' \
+                       f'but got {type(param_value).__name__}.'
+        assert expected_msg == str(exc.value)
+
+    @security_off_wrap
+    @pytest.mark.parametrize("collect_specified_data", [
+        {
+            'collect_landscape': {'create_landscape': {'train': None}}
+        },
+        {
+            'collect_landscape': {'create_landscape': {'result': 123}}
+        }
+    ])
+    def test_params_create_landscape_value_type_error(self, collect_specified_data):
+        """Test the value of create_landscape_param."""
+        summary_dir = tempfile.mkdtemp(dir=self.base_summary_dir)
+        with pytest.raises(TypeError) as exc:
+            SummaryCollector(summary_dir, collect_specified_data=collect_specified_data)
+
+        param_name = list(collect_specified_data["collect_landscape"]["create_landscape"])[0]
+        param_value = collect_specified_data["collect_landscape"]["create_landscape"][param_name]
+
+        expected_type = "['bool']"
+        expected_msg = f'For `{param_name}` the type should be a valid type of {expected_type}, ' \
+                       f'but got {type(param_value).__name__}.'
+        assert expected_msg == str(exc.value)

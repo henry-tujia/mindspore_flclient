@@ -29,10 +29,11 @@ def test_log_stdout():
     # print the logs without raising an exception.
     from mindspore import log as logger
     log_str = 'print informations'
-    logger.error("1 test log message error :%s", log_str)
-    logger.info("2 test log message info :%s", log_str)
-    logger.warning("3 test log message warning :%s", log_str)
-    logger.debug("4 test log message debug:%s", log_str)
+    logger.debug("test log message debug:%s", log_str)
+    logger.info("test log message info :%s", log_str)
+    logger.warning("test log message warning :%s", log_str)
+    logger.error("test log message error :%s", log_str)
+    logger.critical("test log message critical :%s", log_str)
     # Clean up _global_logger to avoid affecting for next usecase
     _clear_logger(logger)
 
@@ -53,6 +54,7 @@ def test_log_setlevel():
     from mindspore import log as logger
     # logger_instance = logger._get_logger()
     # del logger_instance
+    _clear_logger(logger)
     loglevel = logger.get_level()
     log_str = 'print debug informations'
     logger.debug("5 test log message debug:%s", log_str)
@@ -209,6 +211,8 @@ def test_log_verify_envconfig():
             logger._verify_config(verify_dict)
         except ValueError as ve:
             print(ve)
+            # avoid c++ glog error causing ut failed
+            os.environ['GLOG_log_dir'] = '/tmp/log/'
             assert True
         except TypeError as te:
             print(te)

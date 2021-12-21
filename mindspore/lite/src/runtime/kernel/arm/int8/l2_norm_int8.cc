@@ -30,7 +30,7 @@ L2NormInt8CPUKernel::~L2NormInt8CPUKernel() {
   }
 }
 
-int L2NormInt8CPUKernel::Init() {
+int L2NormInt8CPUKernel::Prepare() {
   lite::Tensor *input = in_tensors_.at(0);
   lite::Tensor *output = out_tensors_.at(0);
   MS_ASSERT(input);
@@ -72,6 +72,8 @@ int L2NormInt8CPUKernel::Run() {
 
 int L2NormInt8CPUKernel::DoExecute(int task_id) {
   auto input_tensor = static_cast<lite::Tensor *>(in_tensors().front());
+  MS_CHECK_GT(input_tensor->shape().back(), 0, RET_ERROR);
+  MS_CHECK_GT(input_tensor->ElementsNum(), 0, RET_ERROR);
   int outer_size = input_tensor->ElementsNum() / input_tensor->shape().back();
   int stride = UP_DIV(outer_size, op_parameter_->thread_num_);
   if (INT_MUL_OVERFLOW(task_id, stride)) {

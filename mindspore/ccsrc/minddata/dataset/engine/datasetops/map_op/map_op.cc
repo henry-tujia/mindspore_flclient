@@ -45,12 +45,6 @@ MapOp::MapOp(const std::vector<std::string> &in_col_names, const std::vector<std
   }
 }
 
-// The number of threads consuming data from previous op's output Connector.
-int32_t MapOp::num_consumers() const {
-  // When Performance Mode is on, there is only one thread consuming from the previous Connector.
-  return 1;
-}
-
 // A print method typically used for debugging
 void MapOp::Print(std::ostream &out, bool show_all) const {
   if (!show_all) {
@@ -78,7 +72,7 @@ void MapOp::Print(std::ostream &out, bool show_all) const {
 Status MapOp::FetchNextWork(uint32_t worker_id, TensorRow *row, std::vector<std::shared_ptr<MapJob>> *job_list) {
   std::unique_ptr<MapWorkerJob> worker_job;
   // Fetch the next worker job and TensorRow
-  RETURN_IF_NOT_OK(local_queues_[worker_id]->PopFront(&worker_job));
+  RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&worker_job));
   // Extract the TensorRow and job list from the map worker job.
   *row = std::move(worker_job->tensor_row);
   *job_list = std::move(worker_job->jobs);
@@ -117,25 +111,14 @@ Status MapOp::GenerateWorkerJob(const std::unique_ptr<MapWorkerJob> *worker_job)
 
 // This class functor will provide the master loop that drives the logic for performing the work
 Status MapOp::operator()() {
-  // Create and register the local queues.
-  local_queues_.Init(num_workers_, oc_queue_size_);
+  RETURN_IF_NOT_OK(RegisterAndLaunchThreads());
   // init callback
   RETURN_IF_NOT_OK(callback_manager_.Init(this));
-  Status rc = local_queues_.Register(tree_->AllTasks());
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-  if (rc.IsError()) {
-    TaskManager::FindMe()->Post();
-    return rc;
-  }
 
-  // The operator class just starts off threads by calling the tree_ function
-  rc =
-    tree_->LaunchWorkers(num_workers_, std::bind(&MapOp::WorkerEntry, this, std::placeholders::_1), NameWithID(), id());
   // Synchronize with TaskManager
   TaskManager::FindMe()->Post();
-  RETURN_IF_NOT_OK(rc);
-  // num_rows received, including eoe, num_epoch, num_step of current epoch
-  int64_t num_rows = 0, ep_step = 0, total_step = 0;
+
+  int64_t ep_step = 0, total_step = 0;
 
   RETURN_IF_NOT_OK(callback_manager_.Begin(CallbackParam(0, ep_step, total_step)));
 
@@ -144,7 +127,8 @@ Status MapOp::operator()() {
   RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&new_row));
 
   while (!new_row.eof()) {
-    if (op_current_repeats_ % op_num_repeats_per_epoch() == 0) {
+    if (op_current_repeats_ % GetOpNumRepeatsPerEpoch() == 0) {
+      ep_step = 0;
       RETURN_IF_NOT_OK(callback_manager_.EpochBegin(CallbackParam(op_current_epochs_ + 1, ep_step, total_step)));
     }
     while (!new_row.eoe()) {
@@ -160,35 +144,25 @@ Status MapOp::operator()() {
       RETURN_IF_NOT_OK(GenerateWorkerJob(&worker_job));
 
       // Push map worker job to the corresponding worker's queue
-      RETURN_IF_NOT_OK(local_queues_[num_rows++ % num_workers_]->Add(std::move(worker_job)));
-
-      RETURN_IF_NOT_OK(callback_manager_.StepEnd(CallbackParam(op_current_epochs_ + 1, ep_step, total_step)));
+      RETURN_IF_NOT_OK(worker_in_queues_[NextWorkerID()]->Add(std::move(worker_job)));
 
       RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&new_row));
     }
 
-    // check whether this is the end of a real epoch (not all eoe signals end of epoch)
-    if ((op_current_repeats_ + 1) % op_num_repeats_per_epoch() == 0) {
-      RETURN_IF_NOT_OK(callback_manager_.EpochEnd(CallbackParam(op_current_epochs_ + 1, ep_step, total_step)));
-
-      ep_step = 0;
-    }
     // Propagate the eoe row to worker
     std::unique_ptr<MapWorkerJob> worker_job = std::make_unique<MapWorkerJob>(std::move(new_row));
-    RETURN_IF_NOT_OK(local_queues_[num_rows++ % num_workers_]->Add(std::move(worker_job)));
+    RETURN_IF_NOT_OK(worker_in_queues_[NextWorkerID()]->Add(std::move(worker_job)));
     UpdateRepeatAndEpochCounter();
     RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&new_row));
   }
   // End() is commented out because it might never be called due to the lack of EOF when EpochCtrl is -1
   // Handle eof logic, this code might never be reached if epoch_ctrl = -1.
   std::unique_ptr<MapWorkerJob> worker_job = std::make_unique<MapWorkerJob>(std::move(new_row));
-  RETURN_IF_NOT_OK(local_queues_[num_rows++ % num_workers_]->Add(std::move(worker_job)));
+  RETURN_IF_NOT_OK(worker_in_queues_[NextWorkerID()]->Add(std::move(worker_job)));
 
   // Quit all workers, this code might never be reached if EpochCtrl is -1.
   for (int32_t wkr_id = 0; wkr_id < num_workers_; wkr_id++) {
-    TensorRow quit_flag(TensorRow::kFlagQuit);
-    auto quit = std::make_unique<MapWorkerJob>(quit_flag);
-    RETURN_IF_NOT_OK(local_queues_[num_rows++ % num_workers_]->Add(std::move(quit)));
+    RETURN_IF_NOT_OK(SendQuitFlagToWorker(NextWorkerID()));
   }
 
   return Status::OK();
@@ -213,31 +187,18 @@ Status MapOp::WorkerEntry(int32_t worker_id) {
   while (true) {
     // Handle special logic where row carries a ctrl flag.
     if (in_row.Flags() != TensorRow::kFlagNone) {
-      if (in_row.wait()) {
-        // When worker receives the signal from master thread, it increments a atomic int
-        // The last guy who increments the counter, wakes up master thread
-        if (++num_workers_paused_ == num_workers_) {
-          wait_for_workers_post_.Set();
-        }
-        // This will block the worker until master thread gives it a new work
-      } else if (in_row.eoe()) {
-        // Calling base class EoeReceived to forward eoe row.
-        RETURN_IF_NOT_OK(out_connector_->SendEOE(worker_id));
-      } else if (in_row.eof()) {
-        // Calling base class EofReceived to forward eof row.
-        RETURN_IF_NOT_OK(out_connector_->SendEOF(worker_id));
-      } else if (in_row.quit()) {
+      if (in_row.quit()) {
         break;
       }
-      RETURN_IF_NOT_OK(FetchNextWork(worker_id, &in_row, &job_list));
-      continue;
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(std::move(in_row)));
+    } else {
+      CHECK_FAIL_RETURN_UNEXPECTED(in_row.size() != 0, "[Internal ERROR] MapOp got an empty TensorRow.");
+      TensorRow out_row;
+      // Perform the compute function of TensorOp(s) and store the result in new_tensor_table.
+      RETURN_IF_NOT_OK(WorkerCompute(in_row, &out_row, job_list));
+      // Push the row onto the connector for next operator to consume.
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(std::move(out_row)));
     }
-    CHECK_FAIL_RETURN_UNEXPECTED(in_row.size() != 0, "MapOp got an empty TensorRow.");
-    TensorRow out_row;
-    // Perform the compute function of TensorOp(s) and store the result in new_tensor_table.
-    RETURN_IF_NOT_OK(WorkerCompute(in_row, &out_row, job_list));
-    // Push the row onto the connector for next operator to consume.
-    RETURN_IF_NOT_OK(out_connector_->Add(std::move(out_row), static_cast<int>(worker_id)));
     // Fetch next data row and map job list
     RETURN_IF_NOT_OK(FetchNextWork(worker_id, &in_row, &job_list));
   }
@@ -283,7 +244,11 @@ Status MapOp::WorkerCompute(const TensorRow &in_row, TensorRow *out_row,
 
   // Sanity check a row in result_table
   if (!result_table.empty() && out_columns_.size() != result_table[0].size()) {
-    RETURN_STATUS_UNEXPECTED("Result of a tensorOp doesn't match output column names");
+    RETURN_STATUS_UNEXPECTED(
+      "Invalid columns, the number of columns returned in 'map' operations should match "
+      "the number of 'output_columns', but got the number of columns returned in 'map' operations: " +
+      std::to_string(result_table[0].size()) +
+      ", the number of 'output_columns': " + std::to_string(out_columns_.size()) + ".");
   }
 
   // Merging the data processed by job (result_table) with the data that are not used.
@@ -338,7 +303,8 @@ Status MapOp::InitPrivateVariable(std::unordered_map<std::string, int32_t> *col_
   if (in_columns_.empty()) {
     auto itr =
       std::find_if(col_name_id_map->begin(), col_name_id_map->end(), [](const auto &it) { return it.second == 0; });
-    CHECK_FAIL_RETURN_UNEXPECTED(itr != col_name_id_map->end(), "Column name id map doesn't have id 0");
+    CHECK_FAIL_RETURN_UNEXPECTED(itr != col_name_id_map->end(),
+                                 "[Internal ERROR] Column name id map doesn't have id 0");
     MS_LOG(INFO) << "Input columns empty for map op, will apply to the first column in the current table.";
     in_columns_.push_back(itr->first);
 
@@ -410,18 +376,15 @@ void MapOp::CreateFinalColMap(std::unordered_map<std::string, int32_t> *col_name
   }
 }
 
-Status MapOp::WaitForWorkers() {
-  // reset num_paused workers to 0
-  num_workers_paused_ = 0;
-  for (int32_t wkr_id = 0; wkr_id < num_workers_; wkr_id++) {
-    // a special row (id=-1, empty, none flag) is used to signal that worker needs to pause.
-    TensorRow waitRow(TensorRow::kFlagWait);
-    RETURN_IF_NOT_OK(local_queues_[wkr_id]->Add(std::make_unique<MapWorkerJob>(waitRow)));
-  }
-  // wait until all workers are done processing their work in local_queue_
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Wait());
-  // clear the WaitPost for the next Wait()
-  wait_for_workers_post_.Clear();
+Status MapOp::SendWaitFlagToWorker(int32_t worker_id) {
+  TensorRow wait_row(TensorRow::kFlagWait);
+  RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->Add(std::make_unique<MapWorkerJob>(wait_row)));
+  return Status::OK();
+}
+
+Status MapOp::SendQuitFlagToWorker(int32_t worker_id) {
+  TensorRow quit_flag(TensorRow::kFlagQuit);
+  RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->Add(std::make_unique<MapWorkerJob>(quit_flag)));
   return Status::OK();
 }
 }  // namespace dataset

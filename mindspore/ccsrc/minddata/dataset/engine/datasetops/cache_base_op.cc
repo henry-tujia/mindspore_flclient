@@ -57,7 +57,7 @@ CacheBase::CacheBase(int32_t num_workers, int32_t op_connector_size, std::shared
     prefetch_size_ = prefetch_sz_per_thread;
     MS_LOG(DEBUG) << "Per worker prefetch size : " << prefetch_size_;
   }
-  io_block_queues_.Init(num_workers, op_connector_size);
+  worker_in_queues_.Init(num_workers, op_connector_size);
   prefetch_queues_.Init(num_prefetchers_, op_connector_size);
   // We can cause deadlock if this internal Connector size is too small.
   keys_miss_ = std::make_unique<Connector<std::vector<row_id_type>>>(num_prefetchers_, 1, connector_capacity_);
@@ -68,7 +68,8 @@ Status CacheBase::FetchSamplesToWorkers() {
   int64_t buf_cnt = 0;
   int64_t wait_cnt = 0;
   int64_t prefetch_cnt = 0;
-  // Kick off several threads which will prefetch prefetch_size_ rows in advance.
+  // Kick off several threads which will prefetch cache_prefetch_size_ rows in advance.
+  RETURN_UNEXPECTED_IF_NULL(tree_);
   RETURN_IF_NOT_OK(
     tree_->LaunchWorkers(num_prefetchers_, std::bind(&CacheBase::Prefetcher, this, std::placeholders::_1), Name()));
   auto send_to_que = [](QueueList<std::unique_ptr<IOBlock>> &qList, int32_t worker_id,
@@ -80,7 +81,7 @@ Status CacheBase::FetchSamplesToWorkers() {
   // Instead of sending sampler id to WorkerEntry, we send them to the Prefetcher which will redirect them
   // to the WorkerEntry.
   do {
-    if (AllowCacheMiss() && wait_cnt > 0 && wait_cnt % op_num_repeats_per_epoch() == 0) {
+    if (AllowCacheMiss() && wait_cnt > 0 && wait_cnt % GetOpNumRepeatsPerEpoch() == 0) {
       MS_LOG(INFO) << "Epoch: " << op_current_epochs_ << " Cache Miss : " << num_cache_miss_
                    << " Total number of rows : " << row_cnt_;
     }
@@ -104,7 +105,7 @@ Status CacheBase::FetchSamplesToWorkers() {
           // Now we tell the WorkerEntry to wait for them to come back.
           for (auto row_id : prefetch_keys) {
             keys.push_back(row_id);
-            RETURN_IF_NOT_OK(send_to_que(io_block_queues_, buf_cnt++ % num_workers_, keys));
+            RETURN_IF_NOT_OK(send_to_que(worker_in_queues_, buf_cnt++ % num_workers_, keys));
             keys.clear();
           }
           prefetch_keys.clear();
@@ -117,16 +118,16 @@ Status CacheBase::FetchSamplesToWorkers() {
       RETURN_IF_NOT_OK(send_to_que(prefetch_queues_, prefetch_cnt++ % num_prefetchers_, prefetch_keys));
       for (auto row_id : prefetch_keys) {
         keys.push_back(row_id);
-        RETURN_IF_NOT_OK(send_to_que(io_block_queues_, buf_cnt++ % num_workers_, keys));
+        RETURN_IF_NOT_OK(send_to_que(worker_in_queues_, buf_cnt++ % num_workers_, keys));
         keys.clear();
       }
     }
     if (!keys.empty()) {
-      RETURN_IF_NOT_OK(send_to_que(io_block_queues_, buf_cnt++ % num_workers_, keys));
+      RETURN_IF_NOT_OK(send_to_que(worker_in_queues_, buf_cnt++ % num_workers_, keys));
     }
     // send the eoe
     RETURN_IF_NOT_OK(
-      io_block_queues_[(buf_cnt++) % num_workers_]->Add(std::make_unique<IOBlock>(IOBlock::kDeIoBlockFlagEoe)));
+      worker_in_queues_[(buf_cnt++) % num_workers_]->Add(std::make_unique<IOBlock>(IOBlock::kDeIoBlockFlagEoe)));
     RETURN_IF_NOT_OK(prefetch_queues_[(prefetch_cnt++) % num_prefetchers_]->Add(
       std::make_unique<IOBlock>(IOBlock::kDeIoBlockFlagEoe)));
     // If repeat but the not last repeat, wait for reset.
@@ -147,15 +148,15 @@ Status CacheBase::FetchSamplesToWorkers() {
   } while (true);
   // Flow the eof before exit
   RETURN_IF_NOT_OK(
-    io_block_queues_[(buf_cnt++) % num_workers_]->Add(std::make_unique<IOBlock>(IOBlock::kDeIoBlockFlagEof)));
+    worker_in_queues_[(buf_cnt++) % num_workers_]->Add(std::make_unique<IOBlock>(IOBlock::kDeIoBlockFlagEof)));
   // Shutdown threads
   for (int32_t i = 0; i < num_workers_; i++) {
     RETURN_IF_NOT_OK(
-      io_block_queues_[i]->Add(std::make_unique<IOBlock>(std::vector<int64_t>(), IOBlock::kDeIoBlockNone)));
+      worker_in_queues_[i]->Add(std::make_unique<IOBlock>(std::vector<int64_t>(), IOBlock::kDeIoBlockNone)));
   }
   // Dump the last epoch result (approximately) without waiting for the worker threads to come back.
   if (AllowCacheMiss()) {
-    MS_LOG(INFO) << "Epoch: " << wait_cnt / op_num_repeats_per_epoch() << " Cache Miss : " << num_cache_miss_
+    MS_LOG(INFO) << "Epoch: " << wait_cnt / GetOpNumRepeatsPerEpoch() << " Cache Miss : " << num_cache_miss_
                  << " Total number of rows : " << row_cnt_;
   }
   return Status::OK();
@@ -164,7 +165,7 @@ Status CacheBase::FetchSamplesToWorkers() {
 Status CacheBase::FetchFromCache(int32_t worker_id) {
   std::unique_ptr<IOBlock> blk;
   do {
-    RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&blk));
+    RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&blk));
     if (blk->wait()) {
       // Sync io_block is a signal that master thread wants us to pause and sync with other workers.
       // The last guy who comes to this sync point should reset the counter and wake up the master thread.
@@ -172,9 +173,9 @@ Status CacheBase::FetchFromCache(int32_t worker_id) {
         wait_for_workers_post_.Set();
       }
     } else if (blk->eof()) {
-      RETURN_IF_NOT_OK(out_connector_->SendEOF(worker_id));
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOF)));
     } else if (blk->eoe()) {
-      RETURN_IF_NOT_OK(out_connector_->SendEOE(worker_id));
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOE)));
     } else {
       std::vector<int64_t> keys;
       RETURN_IF_NOT_OK(blk->GetKeys(&keys));
@@ -190,11 +191,11 @@ Status CacheBase::FetchFromCache(int32_t worker_id) {
           if (AllowCacheMiss()) {
             ++num_cache_miss_;
           } else {
-            std::string errMsg = "Row id " + std::to_string(row_id) + " not found.";
+            std::string errMsg = "[Internal ERROR] Row id " + std::to_string(row_id) + " not found.";
             RETURN_STATUS_UNEXPECTED(errMsg);
           }
         }
-        RETURN_IF_NOT_OK(out_connector_->Add(std::move(row), worker_id));
+        RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(std::move(row)));
       }
     }
   } while (true);
@@ -202,8 +203,7 @@ Status CacheBase::FetchFromCache(int32_t worker_id) {
 }
 
 Status CacheBase::RegisterResources() {
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(io_block_queues_.Register(tree_->AllTasks()));
+  RETURN_IF_NOT_OK(RegisterAndLaunchThreads());
   RETURN_IF_NOT_OK(prefetch_queues_.Register(tree_->AllTasks()));
   return Status::OK();
 }
@@ -225,7 +225,8 @@ Status CacheBase::UpdateColumnMapFromCache() {
 
 Status CacheBase::GetPrefetchRow(row_id_type row_id, TensorRow *out) {
   RETURN_UNEXPECTED_IF_NULL(out);
-  CHECK_FAIL_RETURN_UNEXPECTED(row_id >= 0, "Expect positive row id, but got:" + std::to_string(row_id));
+  CHECK_FAIL_RETURN_UNEXPECTED(row_id >= 0,
+                               "[Internal ERROR] Expect positive row id, but got:" + std::to_string(row_id));
   RETURN_IF_NOT_OK(prefetch_.PopFront(row_id, out));
   return Status::OK();
 }
@@ -278,7 +279,7 @@ Status CacheBase::Prefetcher(int32_t worker_id) {
     cache_miss.clear();
     std::unique_ptr<IOBlock> blk;
     RETURN_IF_NOT_OK(prefetch_queues_[worker_id]->PopFront(&blk));
-    CHECK_FAIL_RETURN_UNEXPECTED(!blk->eof(), "Expect eoe or a regular io block.");
+    CHECK_FAIL_RETURN_UNEXPECTED(!blk->eof(), "[Internal ERROR] Expect eoe or a regular io block.");
     if (!blk->eoe()) {
       RETURN_IF_NOT_OK(blk->GetKeys(&prefetch_keys));
       Status rc;

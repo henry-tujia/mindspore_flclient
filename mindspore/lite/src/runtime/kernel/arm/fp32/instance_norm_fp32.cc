@@ -27,7 +27,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_InstanceNorm;
 
 namespace mindspore::kernel {
-int InstanceNormCPUKernel::Init() {
+int InstanceNormCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), DIMENSION_3D);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   if (!InferShapeDone()) {
@@ -45,7 +45,7 @@ int InstanceNormCPUKernel::ReSize() {
   return RET_OK;
 }
 
-int InstanceNormCPUKernel::DoInstanceNorm(int task_id) {
+int InstanceNormCPUKernel::DoInstanceNorm(int task_id) const {
   int ret = 0;
   if (in_tensors_[0]->format() == NC4HW4) {  // arm64 x86-avx x86-sse x86
 #ifdef ENABLE_AVX
@@ -63,8 +63,8 @@ int InstanceNormCPUKernel::DoInstanceNorm(int task_id) {
   return RET_OK;
 }
 
-int InstanceNormRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
-  auto kernel = reinterpret_cast<InstanceNormCPUKernel *>(cdata);
+int InstanceNormRun(const void *cdata, int task_id, float, float) {
+  auto kernel = reinterpret_cast<const InstanceNormCPUKernel *>(cdata);
   auto ret = kernel->DoInstanceNorm(task_id);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "InstanceNormRun error task_id[" << task_id << "] error_code[" << ret << "]";
@@ -88,8 +88,17 @@ int InstanceNormCPUKernel::Run() {
 #else  // other platform is not support nc4hw4 and must be pack to nc4hw4
     tmp_src_data_ = reinterpret_cast<float *>(ms_context_->allocator->Malloc(in_tensors_[0]->Size()));
     CHECK_NULL_RETURN(tmp_src_data_);
-    PackNHWCToNC4HW4Fp32(src_data_, tmp_src_data_, param_->batch_, param_->inner_size_, param_->channel_);
+    PackNHWCToNC4HW4NotAlignedFp32(src_data_, tmp_src_data_, param_->batch_, param_->inner_size_, param_->channel_);
 #endif
+  } else if (in_tensors_[0]->format() == NHWC) {
+    tmp_src_data_ = reinterpret_cast<float *>(ms_context_->allocator->Malloc(in_tensors_[0]->Size()));
+    CHECK_NULL_RETURN(tmp_src_data_);
+#ifdef ENABLE_AVX
+    PackNHWCToNC8HW8NotAlignedFp32(src_data_, tmp_src_data_, param_->batch_, param_->inner_size_, param_->channel_);
+#else
+    PackNHWCToNC4HW4NotAlignedFp32(src_data_, tmp_src_data_, param_->batch_, param_->inner_size_, param_->channel_);
+#endif
+    in_tensors_[0]->set_format(NC4HW4);
   } else {
     tmp_src_data_ = src_data_;
   }
@@ -97,10 +106,8 @@ int InstanceNormCPUKernel::Run() {
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "InstanceNormRun error error_code[" << ret << "]";
   }
-  if (in_tensors_[0]->format() == NC4HW4) {
-#if (!defined(ENABLE_AVX) && !defined(ENABLE_ARM64))
+  if (tmp_src_data_ != src_data_) {
     FreeTmpBuffer();
-#endif
   }
   return ret;
 }

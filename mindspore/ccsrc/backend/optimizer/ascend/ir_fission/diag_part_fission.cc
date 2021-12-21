@@ -38,11 +38,17 @@ const AnfNodePtr DiagPartFission::Process(const FuncGraphPtr &func_graph, const 
     return nullptr;
   }
   auto out_shape = AnfAlgo::GetOutputInferShape(node, 0);
+  auto input_shape = AnfAlgo::GetOutputInferShape(diag_part_cnode->inputs()[kIndex1], 0);
+  constexpr size_t kDiagPartInputMaxDim = 8;
+  if (input_shape.size() > kDiagPartInputMaxDim) {
+    MS_EXCEPTION(ValueError) << "For DiagPart, rank of input should be 2, 4, 6 or 8, but got: " << input_shape.size();
+  }
   std::vector<AnfNodePtr> new_node_inputs{NewValueNode(std::make_shared<Primitive>(prim::kPrimDiagPart->name()))};
   auto assist_node = CreateAssistNode(func_graph, diag_part_cnode, out_shape);
-  new_node_inputs.insert(new_node_inputs.end(), diag_part_cnode->inputs().begin() + 1, diag_part_cnode->inputs().end());
+  (void)new_node_inputs.insert(new_node_inputs.end(), diag_part_cnode->inputs().begin() + 1,
+                               diag_part_cnode->inputs().end());
   new_node_inputs.push_back(assist_node);
-  CNodePtr new_cnode = func_graph->NewCNode(new_node_inputs);
+  CNodePtr new_cnode = NewCNode(new_node_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(new_cnode);
   new_cnode->set_abstract(diag_part_cnode->abstract());
   new_cnode->set_scope(diag_part_cnode->scope());

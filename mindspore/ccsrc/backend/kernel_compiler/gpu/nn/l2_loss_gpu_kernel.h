@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ namespace kernel {
 template <typename T>
 class L2LossGpuKernel : public GpuKernel {
  public:
-  L2LossGpuKernel() : input_size_(1) {}
+  L2LossGpuKernel() : input_size_(1), is_null_input_(false) {}
   ~L2LossGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -35,6 +35,9 @@ class L2LossGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspaces,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *output = GetDeviceAddress<T>(outputs, 0);
 
@@ -43,7 +46,13 @@ class L2LossGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < input_shape.size(); i++) {
       input_size_ *= input_shape[i];
     }
@@ -60,6 +69,7 @@ class L2LossGpuKernel : public GpuKernel {
 
  private:
   size_t input_size_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

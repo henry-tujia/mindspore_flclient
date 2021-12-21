@@ -228,7 +228,13 @@ std::string PartialAbstractClosure::ToString() const {
   buffer << "PartialAbstractClosure(" << fn_->ToString() << "(";
   for (const auto &arg : args_spec_list_) {
     MS_EXCEPTION_IF_NULL(arg);
-    buffer << arg->ToString() << ", ";
+    if (arg->isa<AbstractFuncAtom>()) {
+      // If the arg is a subclass of AbstractFuncAtom, a recursive dead loop may occur.
+      // So in this case, we use type_name() instead of ToString().
+      buffer << arg->type_name() << ", ";
+    } else {
+      buffer << arg->ToString() << ", ";
+    }
   }
   buffer << "))";
   return buffer.str();
@@ -243,6 +249,20 @@ bool JTransformedAbstractClosure::operator==(const AbstractFunction &other) cons
 }
 
 std::size_t JTransformedAbstractClosure::hash() const {
+  MS_EXCEPTION_IF_NULL(fn_);
+  auto hash_value = hash_combine(tid(), fn_->hash());
+  return hash_value;
+}
+
+bool ShardTransformedAbstractClosure::operator==(const AbstractFunction &other) const {
+  if (!other.isa<ShardTransformedAbstractClosure>()) {
+    return false;
+  }
+  auto other_transformed = static_cast<const ShardTransformedAbstractClosure *>(&other);
+  return fn_ == other_transformed->fn_;
+}
+
+std::size_t ShardTransformedAbstractClosure::hash() const {
   MS_EXCEPTION_IF_NULL(fn_);
   auto hash_value = hash_combine(tid(), fn_->hash());
   return hash_value;
@@ -275,7 +295,13 @@ std::string VirtualAbstractClosure::ToString() const {
   int64_t i = 0;
   for (const auto &arg : args_spec_list_) {
     MS_EXCEPTION_IF_NULL(arg);
-    buffer << "[" << i << "]: " << arg->ToString() << ", ";
+    if (arg->isa<AbstractFuncAtom>()) {
+      // If the arg is a subclass of AbstractFuncAtom, a recursive dead loop may occur.
+      // So in this case, we use type_name() instead of ToString().
+      buffer << "[" << i << "]: " << arg->type_name() << ", ";
+    } else {
+      buffer << "[" << i << "]: " << arg->ToString() << ", ";
+    }
     i++;
   }
   MS_EXCEPTION_IF_NULL(output_);
@@ -312,7 +338,13 @@ std::string TypedPrimitiveAbstractClosure::ToString() const {
   int64_t i = 0;
   for (const auto &arg : args_spec_list_) {
     MS_EXCEPTION_IF_NULL(arg);
-    buffer << "[" << i << "]: " << arg->ToString() << ", ";
+    if (arg->isa<AbstractFuncAtom>()) {
+      // If the arg is a subclass of AbstractFuncAtom, a recursive dead loop may occur.
+      // So in this case, we use type_name() instead of ToString().
+      buffer << "[" << i << "]: " << arg->type_name() << ", ";
+    } else {
+      buffer << "[" << i << "]: " << arg->ToString() << ", ";
+    }
     i++;
   }
   MS_EXCEPTION_IF_NULL(output_);
@@ -320,40 +352,5 @@ std::string TypedPrimitiveAbstractClosure::ToString() const {
   return buffer.str();
 }
 
-bool PyInterpretAbstractClosure::operator==(const AbstractFunction &other) const {
-  if (!other.isa<PyInterpretAbstractClosure>()) {
-    return false;
-  }
-  auto other_partial = static_cast<const PyInterpretAbstractClosure *>(&other);
-  if (fn_ != other_partial->fn_) {
-    return false;
-  }
-  if (args_spec_list_.size() != other_partial->args_spec_list_.size()) {
-    return false;
-  }
-  return args_spec_list_ == other_partial->args_spec_list_;
-}
-
-std::size_t PyInterpretAbstractClosure::hash() const {
-  MS_EXCEPTION_IF_NULL(fn_);
-  auto hash_value = hash_combine(tid(), fn_->hash());
-  hash_value = hash_combine(hash_value, AbstractBasePtrListHash(args_spec_list_));
-  return hash_value;
-}
-
-std::string PyInterpretAbstractClosure::ToString() const {
-  std::ostringstream buffer;
-  buffer << "PyInterpretAbstractClosure(" << fn_->ToString() << "(";
-  for (const auto &arg : args_spec_list_) {
-    MS_EXCEPTION_IF_NULL(arg);
-    buffer << arg->ToString() << ", ";
-  }
-  buffer << "))";
-  return buffer.str();
-}
-
-bool DummyAbstractClosure::operator==(const AbstractFunction &other) const {
-  return !other.isa<DummyAbstractClosure>();
-}
 }  // namespace abstract
 }  // namespace mindspore

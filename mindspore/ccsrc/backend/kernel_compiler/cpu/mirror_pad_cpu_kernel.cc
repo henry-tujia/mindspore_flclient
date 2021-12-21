@@ -33,36 +33,36 @@ constexpr int TOP = 0;
 constexpr int BOTTOM = 1;
 constexpr int LEFT = 0;
 constexpr int RIGHT = 1;
+constexpr size_t kMirrorPadInputsNum = 2;
+constexpr size_t kMirrorPadOutputsNum = 1;
+constexpr size_t kPadMaxSupportDim = 4;
 }  // namespace
+
 void MirrorPadCPUKernel::InitKernel(const CNodePtr &kernel_node) {
-  CheckParam(kernel_node);
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   std::string mode = AnfAlgo::GetNodeAttr<std::string>(kernel_node, "mode");
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
+  pad_dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 1);
   if (mode == "REFLECT") {
     mode_ = 0;
   } else if (mode == "SYMMETRIC") {
     mode_ = 1;
   } else {
-    MS_LOG(EXCEPTION) << "For mirror pad, only REFLECT and SYMMETRIC are supported.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'mode' should be 'REFLECT' or 'SYMMETRIC', but got "
+                      << mode;
   }
 
   std::vector<size_t> input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   shape_size_ = input_shape.size();
-  if (shape_size_ == 4) {  // shape adjustment from 2d/3d to 4d
-  } else if (shape_size_ == 3) {
-    auto it = input_shape.begin();
-    input_shape.insert(it, 1);  // batch padding
-    shape_size_ = 4;
-  } else if (shape_size_ == 2) {
-    auto it = input_shape.begin();
-    input_shape.insert(it, 2, 1);  // channel padding
-    shape_size_ = 4;
-  }
+  (void)input_shape.insert(input_shape.begin(), kPadMaxSupportDim - shape_size_, 1);
+  shape_size_ = kPadMaxSupportDim;
 
   for (size_t i = 0; i < shape_size_; ++i) {
     tensor_size_ *= input_shape[i];
     input_shape_.push_back(SizeToLong(input_shape[i]));
   }
+
   std::vector<size_t> padding_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
   num_paddings_ = SizeToLong(padding_shape[0]);
 
@@ -74,6 +74,7 @@ void MirrorPadCPUKernel::InitKernel(const CNodePtr &kernel_node) {
 
   int64_t max_width = input_shape_[3];
   int64_t max_height = input_shape_[2];
+
   if (mode_ == 1) {  // symmetric
     max_width = max_width + (2 * max_width);
     max_height = max_height + (2 * max_height);
@@ -83,39 +84,55 @@ void MirrorPadCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   }
   if (output_shape_[(output_shape_.size() - 2)] > max_height ||
       output_shape_[(output_shape_.size() - 2) + 1] > max_width) {
-    MS_LOG(ERROR) << "ERROR: Padding value too high for input Tensor on 1 or more dims";
+    MS_LOG(ERROR) << "For '" << kernel_name_
+                  << "', the 'paddings' should be not too high for input Tensor on 1 or more dimensions";
   }
 }
 
-void extract_paddings(const int64_t *paddings_arg, int64_t padd_dim, int64_t *extracted_paddings) {
+template <typename T>
+void extract_paddings(const T *paddings_arg, int64_t padd_dim, int64_t *extracted_paddings) {
   const int64_t paddings_offset = MAX_PADDINGS - padd_dim;
   for (int64_t i = 0; i < padd_dim; i++) {
-    extracted_paddings[(paddings_offset + i) * PADDING_SIZE] = paddings_arg[i * PADDING_SIZE];
-    extracted_paddings[(paddings_offset + i) * PADDING_SIZE + 1] = paddings_arg[i * PADDING_SIZE + 1];
+    extracted_paddings[(paddings_offset + i) * PADDING_SIZE] = int64_t(paddings_arg[i * PADDING_SIZE]);
+    extracted_paddings[(paddings_offset + i) * PADDING_SIZE + 1] = int64_t(paddings_arg[i * PADDING_SIZE + 1]);
   }
 }
 
 bool MirrorPadCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &,
                                 const std::vector<kernel::AddressPtr> &outputs) {
-  if (dtype_ == kNumberTypeFloat16) {
-    LaunchKernel<float16>(inputs, outputs);
-  } else if (dtype_ == kNumberTypeFloat32) {
-    LaunchKernel<float>(inputs, outputs);
-  } else if (dtype_ == kNumberTypeFloat64) {
-    LaunchKernel<double>(inputs, outputs);
-  } else if (dtype_ == kNumberTypeInt32) {
-    LaunchKernel<int>(inputs, outputs);
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kMirrorPadInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kMirrorPadOutputsNum, kernel_name_);
+  if (dtype_ == kNumberTypeFloat16 && pad_dtype_ == kNumberTypeInt32) {
+    LaunchKernel<float16, int32_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeFloat32 && pad_dtype_ == kNumberTypeInt32) {
+    LaunchKernel<float, int32_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeFloat64 && pad_dtype_ == kNumberTypeInt32) {
+    LaunchKernel<double, int32_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeInt32 && pad_dtype_ == kNumberTypeInt32) {
+    LaunchKernel<int, int32_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeFloat16 && pad_dtype_ == kNumberTypeInt64) {
+    LaunchKernel<float16, int64_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeFloat32 && pad_dtype_ == kNumberTypeInt64) {
+    LaunchKernel<float, int64_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeFloat64 && pad_dtype_ == kNumberTypeInt64) {
+    LaunchKernel<double, int64_t>(inputs, outputs);
+  } else if (dtype_ == kNumberTypeInt32 && pad_dtype_ == kNumberTypeInt64) {
+    LaunchKernel<int, int64_t>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Data type is " << TypeIdLabel(dtype_) << " which is not supported.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be float16, float32, float64, or int32, and the dtype of "
+                         "'paddings' should be int32 or int64, but got "
+                      << TypeIdLabel(dtype_) << " and " << TypeIdLabel(pad_dtype_);
   }
   return true;
 }
 
-template <typename T>
-void MirrorPadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) {
-  auto inputs_addr = reinterpret_cast<T *>(inputs[0]->addr);
-  int64_t *paddings_arg = reinterpret_cast<int64_t *>(inputs[1]->addr);
-  auto outputs_addr = reinterpret_cast<T *>(outputs[0]->addr);
+template <typename T1, typename T2>
+void MirrorPadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs,
+                                      const std::vector<AddressPtr> &outputs) const {
+  auto inputs_addr = reinterpret_cast<T1 *>(inputs[0]->addr);
+  auto *paddings_arg = reinterpret_cast<T2 *>(inputs[1]->addr);
+  auto outputs_addr = reinterpret_cast<T1 *>(outputs[0]->addr);
 
   const int64_t old_batch = input_shape_[0];
   const int64_t old_channel = input_shape_[1];
@@ -126,6 +143,7 @@ void MirrorPadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, con
   const int64_t padded_height = output_shape_[dim_offset];
   const int64_t padded_width = output_shape_[dim_offset + 1];
   const int64_t padd_dim = num_paddings_;
+
   const int64_t mode = mode_;
 
   int64_t paddings[MAX_PADDINGS * PADDING_SIZE];  // local and fixed size to keep in registers
@@ -188,17 +206,6 @@ void MirrorPadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, con
     auto pos_index = (equiv_block_num * old_height + matchval_y_index - paddings[HEIGHT]) * old_width +
                      matchval_x_index - paddings[WIDTH];
     outputs_addr[pos] = inputs_addr[pos_index];
-  }
-}
-
-void MirrorPadCPUKernel::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 2) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but MirrorPadCPUKernel needs 2 inputs.";
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but MirrorPadCPUKernel needs 1 output.";
   }
 }
 }  // namespace kernel

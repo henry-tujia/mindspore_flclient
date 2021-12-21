@@ -19,19 +19,17 @@
 #include <algorithm>
 #include <functional>
 #include <map>
-#include <unordered_map>
 #include <set>
 #include <utility>
 #include <string>
 #include <iostream>
 
+#include "utils/hash_map.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
 #include "backend/optimizer/graph_kernel/model/op_node.h"
 #include "backend/optimizer/graph_kernel/model/op_register.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 std::string LiteGraph::Dump() const {
   std::ostringstream os;
   os << name_ << "(";
@@ -54,7 +52,7 @@ std::string LiteGraph::Dump() const {
 }
 
 const NodePtrList &LiteGraph::GetOrderedNodes() {
-  std::unordered_map<NodePtr, size_t> outdegrees;
+  mindspore::HashMap<NodePtr, size_t> outdegrees;
   std::function<void(NodePtr)> dfs;
   std::set<NodePtr> visited;
   dfs = [&dfs, &outdegrees, &visited](const NodePtr &node) {
@@ -122,6 +120,4 @@ NodePtr LiteGraph::GraphBuilder::Op(const std::string &op, const NodeBase &basei
 PrimOpPtr LiteGraph::GraphBuilder::CreateOp(const std::string &op, const std::string &node_name) {
   return OpRegistry::Instance().NewOp(op, node_name);
 }
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner

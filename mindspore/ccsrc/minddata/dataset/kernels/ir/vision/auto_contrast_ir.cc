@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -37,18 +38,16 @@ std::string AutoContrastOperation::Name() const { return kAutoContrastOperation;
 
 Status AutoContrastOperation::ValidateParams() {
   if (cutoff_ < 0 || cutoff_ > 100) {
-    std::string err_msg = "AutoContrast: cutoff has to be between 0 and 100, got: " + std::to_string(cutoff_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "AutoContrast: 'cutoff' has to be between 0 and 100, got: " + std::to_string(cutoff_);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   constexpr uint32_t kMaxIgnoreSize = 255;
   for (uint32_t single_ignore : ignore_) {
     if (single_ignore > kMaxIgnoreSize) {
       std::string err_msg =
-        "AutoContrast: invalid size, ignore has to be between 0 and 255, got: " + std::to_string(single_ignore);
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        "AutoContrast: invalid size, 'ignore' has to be between 0 and 255, got: " + std::to_string(single_ignore);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   return Status::OK();
@@ -68,8 +67,8 @@ Status AutoContrastOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status AutoContrastOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("cutoff") != op_params.end(), "Failed to find cutoff");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("ignore") != op_params.end(), "Failed to find ignore");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "cutoff", kAutoContrastOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "ignore", kAutoContrastOperation));
   float cutoff = op_params["cutoff"];
   std::vector<uint32_t> ignore = op_params["ignore"];
   *operation = std::make_shared<vision::AutoContrastOperation>(cutoff, ignore);

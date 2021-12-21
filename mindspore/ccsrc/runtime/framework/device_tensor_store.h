@@ -18,8 +18,8 @@
 #define MINDSPORE_CCSRC_RUNTIME_FRAMEWORK_DEVICE_TENSOR_STORE_H_
 
 #include <memory>
-#include <unordered_map>
 #include <vector>
+#include "utils/hash_map.h"
 #include "utils/ms_utils.h"
 #include "runtime/device/device_address.h"
 
@@ -82,6 +82,7 @@ class DeviceTensorStore {
     const auto &iter = device_tensors_.find(key);
     if (iter != device_tensors_.end()) {
       for (const auto &device_tensor : iter->second) {
+        MS_EXCEPTION_IF_NULL(device_tensor);
         if (device_tensor->DeviceType() == value_type) {
           return device_tensor.get();
         }
@@ -99,7 +100,7 @@ class DeviceTensorStore {
 
   // The data storage of device tensor. Key is the anf node, value is the vector which may contains the device
   // tensors from different devices.
-  std::unordered_map<AnfNode *, std::vector<DeviceTensorPtr>> device_tensors_;
+  mindspore::HashMap<AnfNode *, std::vector<DeviceTensorPtr>> device_tensors_;
 };
 }  // namespace runtime
 }  // namespace mindspore

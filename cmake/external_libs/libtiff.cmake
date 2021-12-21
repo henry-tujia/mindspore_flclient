@@ -17,18 +17,18 @@ set(tiff_LDFLAGS "-Wl,-z,relro,-z,now,-z,noexecstack")
 
 if(ENABLE_GITEE)
     set(REQ_URL "https://gitee.com/mirrors/libtiff/repository/archive/v4.2.0.tar.gz")
-    set(MD5 "38b7bdd622c554b98967ccf2013b6478")
+    set(MD5 "1b8f32e39940ffbdac3638f7081ba9e0")
 else()
     set(REQ_URL "http://download.osgeo.org/libtiff/tiff-4.2.0.tar.gz")
     set(MD5 "2bbf6db1ddc4a59c89d6986b368fc063")
 endif()
 
 mindspore_add_pkg(tiff
-        VER 4.1.0
+        VER 4.2.0
         LIBS tiff
         URL ${REQ_URL}
         MD5 ${MD5}
         CMAKE_OPTION -DCMAKE_BUILD_TYPE=Release -Djbig=OFF -Dlzma=OFF -Djpeg12=OFF -Dzstd=OFF -Dpixarlog=OFF
-        -Dold-jpeg=OFF -Dwebp=OFF -DBUILD_SHARED_LIBS=OFF)
+        -Dold-jpeg=OFF -Dwebp=OFF -DBUILD_SHARED_LIBS=OFF -Dlibdeflate=OFF)
 message("tiff include = ${tiff_INC}")
 message("tiff lib = ${tiff_LIB}")

@@ -20,7 +20,6 @@
 #include <unordered_map>
 
 #include "minddata/dataset/core/config_manager.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/util/log_adapter.h"
 
 namespace mindspore {
@@ -33,15 +32,16 @@ RenameOp::RenameOp(const std::vector<std::string> &in_col_names, const std::vect
 RenameOp::~RenameOp() {}
 
 // Gets a row from the child operator and projects the row.
-Status RenameOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
-  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+Status RenameOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
+  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
   if (row->eoe()) {
     UpdateRepeatAndEpochCounter();
   }
   return Status::OK();
 }
 
-Status RenameOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. RenameOp is an inlined operator."); }
+Status RenameOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] RenameOp is an inlined operator."); }
 
 // Rename core functionality to compute the new column name id map.
 // We need to overwrite the super class ComputeColMap here because we're making a modification of the
@@ -71,8 +71,8 @@ Status RenameOp::ComputeColMap() {
         MS_LOG(DEBUG) << "Rename operator index found " << index << " value " << id << ".";
         if (new_col_name.find(out_columns_[index]) != new_col_name.end()) {
           std::string err_msg(
-            "Invalid parameter, rename operation does not support rename one column name into another already exist "
-            "column name, existed column name is: " +
+            "Invalid column, rename operation does not support rename one column name into another already exist "
+            "column name, existing column name is: " +
             out_columns_[index] + ".");
           RETURN_STATUS_UNEXPECTED(err_msg);
         }
@@ -82,8 +82,8 @@ Status RenameOp::ComputeColMap() {
         // not found
         if (new_col_name.find(name) != new_col_name.end()) {
           std::string err_msg(
-            "Invalid parameter, rename operation does not support rename one column name into another already exist "
-            "column name, existed column name is: " +
+            "Invalid column, rename operation does not support rename one column name into another already exist "
+            "column name, existing column name is: " +
             name + ".");
           RETURN_STATUS_UNEXPECTED(err_msg);
         }
@@ -95,7 +95,7 @@ Status RenameOp::ComputeColMap() {
     // only checks number of renamed columns have been found, this input check doesn't check everything
     if (found != in_columns_.size()) {
       MS_LOG(DEBUG) << "Rename operator column names found: " << found << " out of " << in_columns_.size() << ".";
-      std::string err_msg = "Invalid parameter, column to be renamed does not exist in dataset.";
+      std::string err_msg = "Invalid column, column to be renamed does not exist.";
       RETURN_STATUS_UNEXPECTED(err_msg);
     }
 
@@ -127,27 +127,6 @@ void RenameOp::Print(std::ostream &out,      // In: The output stream to print t
       out << "\n  " << out_columns_[i];
     }
     out << "\n\n";
-  }
-}
-
-int32_t RenameOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Rename operator, no parent node, assuming it's the root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Rename operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
-}
-
-int32_t RenameOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Rename operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
   }
 }
 }  // namespace dataset

@@ -17,12 +17,14 @@
 #include <queue>
 #include <utility>
 #include <memory>
+#include <algorithm>
 #include <vector>
 #include "tools/converter/legacy_optimizer/graph/topological_sort_pass.h"
 #include "tools/common/node_util.h"
 #include "src/common/log_adapter.h"
 #include "src/common/utils.h"
 #include "src/common/log_util.h"
+#include "tools/common/meta_graph_utils.h"
 
 namespace mindspore {
 namespace lite {

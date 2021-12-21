@@ -17,6 +17,7 @@
 #include "src/runtime/inner_allocator.h"
 #include <utility>
 #include "src/common/log_adapter.h"
+#include "src/common/utils.h"
 
 namespace mindspore {
 std::shared_ptr<Allocator> Allocator::Create() { return std::make_shared<DefaultAllocator>(); }
@@ -27,7 +28,7 @@ DefaultAllocator::~DefaultAllocator() { Clear(); }
 
 void DefaultAllocator::SetContext(const AllocatorContext &ctx) {
   lockFlag_ = ctx.lockFlag;
-  shiftFactor_ = ctx.shiftFactor;
+  shiftFactor_ = static_cast<unsigned>(ctx.shiftFactor);
 }
 
 void DefaultAllocator::Lock() {
@@ -42,17 +43,17 @@ void DefaultAllocator::UnLock() {
   }
 }
 
-bool DefaultAllocator::ReuseMemory(size_t free_size, size_t size) {
+bool DefaultAllocator::ReuseMemory(size_t free_size, size_t size) const {
   return free_size >= size &&
          (free_size <= (size >= UINT32_MAX / (1ul << shiftFactor_) ? UINT32_MAX : size << shiftFactor_));
 }
 
 void *DefaultAllocator::Malloc(size_t size) {
-  if (size > MAX_MALLOC_SIZE) {
+  if (size > lite::GetMaxMallocSize()) {
     MS_LOG(ERROR) << "MallocData out of max_size, size: " << size;
     return nullptr;
   }
-  if (this->total_size_ >= MAX_THREAD_POOL_SIZE) {
+  if (this->total_size_ >= lite::GetMaxMallocSize()) {
     MS_LOG(ERROR) << "Memory pool is exhausted";
     return nullptr;
   }
@@ -61,7 +62,7 @@ void *DefaultAllocator::Malloc(size_t size) {
   if (iter != freeList_.end() && ReuseMemory(iter->second->size, size)) {
     auto membuf = iter->second;
     membuf->ref_count_ = 0;
-    freeList_.erase(iter);
+    (void)freeList_.erase(iter);
     allocatedList_[membuf->buf] = membuf;
     UnLock();
     return membuf->buf;
@@ -93,8 +94,8 @@ void DefaultAllocator::Free(void *buf) {
   if (iter != allocatedList_.end()) {
     auto membuf = iter->second;
     membuf->ref_count_ = 0;
-    allocatedList_.erase(iter);
-    freeList_.insert(std::make_pair(membuf->size, membuf));
+    (void)allocatedList_.erase(iter);
+    (void)freeList_.insert(std::make_pair(membuf->size, membuf));
     UnLock();
     return;
   }

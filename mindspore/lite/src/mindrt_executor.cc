@@ -13,13 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "src/mindrt_executor.h"
 #include <queue>
 #include <memory>
-#include "src/mindrt_executor.h"
 #include "src/lite_mindrt.h"
 #include "include/errorcode.h"
 #include "src/common/tensor_util.h"
+#ifdef ENABLE_FP16
 #include "nnacl/base/cast_base.h"
+#endif
+#include "src/lite_kernel_util.h"
 
 namespace mindspore::lite {
 int MindrtExecutor::PrepareInputData(const std::vector<kernel::LiteKernel *> &kernels,
@@ -55,13 +58,13 @@ int MindrtExecutor::PrepareOutputData(const std::vector<kernel::LiteKernel *> &k
       continue;
     }
     auto current_output_map =
-      std::find_if(output_tensor_map_->begin(), output_tensor_map_->end(), [&](const auto output_map_tensor) {
+      std::find_if(isolate_output_map_->begin(), isolate_output_map_->end(), [&](const auto output_map_tensor) {
         if (graph_output_tensor == output_map_tensor.second) {
           return true;
         }
         return false;
       });
-    MS_ASSERT(current_output_map != output_tensor_map_->end());
+    MS_ASSERT(current_output_map != isolate_output_map_->end());
     Tensor *subgraph_output_tensor = current_output_map->first;
 
     for (size_t j = 0; j < kernels.size(); ++j) {
@@ -93,7 +96,7 @@ int MindrtExecutor::Resize(const std::vector<mindspore::tensor::MSTensor *> &inp
 }
 
 int MindrtExecutor::Prepare(const std::vector<kernel::LiteKernel *> &kernels, const std::vector<Tensor *> &inputs,
-                            const std::vector<Tensor *> &outputs, const lite::InnerContext *ctx) {
+                            const std::vector<Tensor *> &outputs, lite::InnerContext *ctx) {
   MS_ASSERT(ctx != nullptr);
   ctx_ = ctx;
   auto ret = MindrtInit();
@@ -120,7 +123,7 @@ int MindrtExecutor::Prepare(const std::vector<kernel::LiteKernel *> &kernels, co
   }
 
   for (auto actor : op_actors_) {
-    ret = actor->LiteActorInit(&op_actors_);
+    ret = actor->LiteActorInit(&op_actors_, isolate_input_map_);
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "LiteActorInit failed, actor aid: " << actor->GetAID();
       return ret;
@@ -131,27 +134,32 @@ int MindrtExecutor::Prepare(const std::vector<kernel::LiteKernel *> &kernels, co
 }
 
 void MindrtExecutor::TransferGraphOutput() {
-  for (auto tensor_map : *output_tensor_map_) {
+  for (auto tensor_map : *isolate_output_map_) {
     auto dst_tensor = tensor_map.second;
     auto src_tensor = tensor_map.first;
     dst_tensor->set_shape(src_tensor->shape());
     /* dst tensor free in FreeOutputTensor */
-
+#ifdef ENABLE_FP16
     if (src_tensor->data_type() == kNumberTypeFloat16) {
       dst_tensor->MallocData();
-      Fp16ToFloat32(reinterpret_cast<uint16_t *>(src_tensor->MutableData()),
+      Fp16ToFloat32(reinterpret_cast<float16_t *>(src_tensor->MutableData()),
                     reinterpret_cast<float *>(dst_tensor->data()), dst_tensor->ElementsNum());
     } else {
+#endif
       dst_tensor->set_data(src_tensor->data());
-      src_tensor->set_data(nullptr);
+      if (IS_RUNTIME_ALLOCATOR(src_tensor->allocator()) == false) {
+        src_tensor->set_data(nullptr);
+      }
+#ifdef ENABLE_FP16
     }
+#endif
     src_tensor->DecRefCount();
   }
   return;
 }
 
 void MindrtExecutor::FreeOutputTensor() {
-  for (auto tensor_map : *output_tensor_map_) {
+  for (auto tensor_map : *isolate_output_map_) {
     auto src_tensor = tensor_map.first;
     auto dst_tensor = tensor_map.second;
     if (dst_tensor->allocator() != nullptr) {

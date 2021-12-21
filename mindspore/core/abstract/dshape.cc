@@ -97,7 +97,15 @@ bool Shape::operator==(const BaseShape &other) const {
   if (tid() != other.tid()) {
     return false;
   }
-  return shape_ == static_cast<const Shape &>(other).shape_;
+  Shape other_shape = static_cast<const Shape &>(other);
+  bool shape_equal = shape_ == other_shape.shape_;
+
+  if (!IsDynamic() || !other_shape.IsDynamic()) {
+    return shape_equal;
+  }
+  bool min_shape_equel = min_shape_ == other_shape.min_shape_;
+  bool max_shape_equel = max_shape_ == other_shape.max_shape_;
+  return shape_equal && min_shape_equel && max_shape_equel;
 }
 
 const int64_t Shape::SHP_ANY;
@@ -107,7 +115,7 @@ void Shape::Broaden() {
   }
 }
 
-std::string SequeueShape::ToString() const {
+std::string SequenceShape::ToString() const {
   std::ostringstream buffer;
   bool f_begin = true;
   for (const auto &p_shp : p_shapes_) {
@@ -122,7 +130,7 @@ std::string SequeueShape::ToString() const {
   return buffer.str();
 }
 
-BaseShapePtrList SequeueShape::ElementsClone() const {
+BaseShapePtrList SequenceShape::ElementsClone() const {
   BaseShapePtrList ele_list;
   for (auto p_shp : p_shapes_) {
     MS_EXCEPTION_IF_NULL(p_shp);
@@ -132,7 +140,7 @@ BaseShapePtrList SequeueShape::ElementsClone() const {
 }
 
 template <typename T>
-bool SequeueShape::SequeueEqual(const BaseShape &other) const {
+bool SequenceShape::SequenceEqual(const BaseShape &other) const {
   if (tid() != other.tid()) {
     return false;
   }
@@ -149,7 +157,7 @@ bool SequeueShape::SequeueEqual(const BaseShape &other) const {
   }
   return true;
 }
-template bool SequeueShape::SequeueEqual<TupleShape>(const BaseShape &) const;
-template bool SequeueShape::SequeueEqual<ListShape>(const BaseShape &) const;
+template bool SequenceShape::SequenceEqual<TupleShape>(const BaseShape &) const;
+template bool SequenceShape::SequenceEqual<ListShape>(const BaseShape &) const;
 }  // namespace abstract
 }  // namespace mindspore

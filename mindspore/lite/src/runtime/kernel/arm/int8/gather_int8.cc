@@ -29,11 +29,23 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Gather;
 
 namespace mindspore::kernel {
-int GatherInt8CPUKernel::Init() {
+int GatherInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
-  axis_ = (reinterpret_cast<GatherParameter *>(op_parameter_))->axis_;
+  CHECK_LESS_RETURN(out_tensors_.size(), 1);
+  if (in_tensors_.size() == kInputSize2) {
+    auto axis_data = reinterpret_cast<int *>(in_tensors_.at(C2NUM)->data());
+    if (axis_data == nullptr) {
+      MS_LOG(ERROR) << "GatherInt8CPUkernel input[2] data nullptr.";
+      return RET_ERROR;
+    }
+    axis_ = *axis_data;
+  } else {
+    axis_ = (reinterpret_cast<GatherParameter *>(op_parameter_))->axis_;
+  }
   auto in_quant_args = in_tensors_.at(0)->quant_params();
+  CHECK_LESS_RETURN(in_quant_args.size(), 1);
   auto out_quant_args = out_tensors_.at(0)->quant_params();
+  CHECK_LESS_RETURN(out_quant_args.size(), 1);
   param_.alpha_ = in_quant_args.front().scale / out_quant_args.front().scale;
   param_.zp_in_ = in_quant_args.front().zeroPoint;
   param_.zp_out_ = out_quant_args.front().zeroPoint;
@@ -61,6 +73,7 @@ int GatherInt8CPUKernel::DoGather(int task_id) {
   auto in_shape = input_tensor->shape();
   int in_rank = in_shape.size();
   int indices_element_size = indices_tensor->ElementsNum();
+  MS_CHECK_GT(indices_element_size, 0, RET_ERROR);
   MS_CHECK_LT(axis_, in_rank, RET_ERROR);
   const int limit = in_shape.at(axis_);
   for (int i = 0; i < indices_element_size; ++i) {

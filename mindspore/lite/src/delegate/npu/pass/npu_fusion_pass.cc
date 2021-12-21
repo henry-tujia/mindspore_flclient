@@ -18,21 +18,16 @@
 #include <vector>
 #include "src/delegate/npu/pass/npu_pass_utils.h"
 #include "src/delegate/npu/npu_converter_utils.h"
-#include "src/delegate/npu/op/concat_npu.h"
-#include "src/delegate/npu/op/split_npu.h"
-#include "src/delegate/npu/op/pad_npu.h"
-#include "src/delegate/npu/op/strided_slice_npu.h"
 
 using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_OK;
 
 namespace {
 constexpr int kNumDims = 4;
-constexpr int kNumInputSize = 4;
 }  // namespace
 
 namespace mindspore {
-bool CheckFusion(NPUOp *cur_op) {
+bool CheckFusion(NPUOp *cur_op, const std::vector<mindspore::MSTensor> &graph_outputs) {
   if (cur_op->in_ops().empty() || cur_op->out_ops().empty()) {
     return false;
   }
@@ -44,7 +39,18 @@ bool CheckFusion(NPUOp *cur_op) {
   }
   auto post_flag = std::all_of(cur_op->out_ops().begin(), cur_op->out_ops().end(),
                                [](NPUOp *out_op) { return NPUPassUtils::IsNhwc2Nchw(out_op); });
-  return post_flag;
+  if (!post_flag) {
+    return false;
+  }
+  for (auto out_op : cur_op->out_ops()) {
+    // If the pattern is "nc2nh->cur_op->nh2nc" while the output tensors of "cur_op" and "nh2nc" are both graph output,
+    // the trans ops can not be fused since it will cause the missing of graph output.
+    if (out_op->out_ops().empty() &&
+        std::find(graph_outputs.begin(), graph_outputs.end(), out_op->inputs().at(0)) != graph_outputs.end()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool CheckFormatFusion(NPUOp *cur_op) {
@@ -157,6 +163,9 @@ int UpdatePreTensors(NPUOp *cur_op) {
     tensors_vec.resize(cur_op->inputs().size());
     auto const_index = nodes2const_index[cur_op->type()];
     for (auto index : const_index) {
+      if (index >= cur_op->inputs().size()) {
+        continue;
+      }
       tensors_vec[index] = cur_op->inputs()[index];
     }
   }
@@ -164,22 +173,34 @@ int UpdatePreTensors(NPUOp *cur_op) {
   return RET_OK;
 }
 
+bool NodeWithNhwc2nchw2nhwcOutput(NPUOp *cur_op) {
+  auto out_ops = cur_op->out_ops();
+  if (out_ops.empty()) {
+    return false;
+  }
+  bool all_out_ops_transpose = std::all_of(out_ops.begin(), out_ops.end(), [](NPUOp *op) {
+    return op->type() == schema::PrimitiveType_Transpose && op->out_ops().size() == 1 &&
+           op->out_ops()[0]->type() == schema::PrimitiveType_Transpose && op->out_ops()[0]->out_ops().empty();
+  });
+  return all_out_ops_transpose;
+}
+
 int UpdatePostTensors(NPUOp *cur_op) {
   auto tensor = cur_op->outputs()[0];
 
-  // in case: node->nh2nc->nc2nh(graph output) --->>> node->nc2nh, node out_tensor should be put to nnc2nh out tensors
+  // in case: node->nh2nc->nc2nh(graph output) --->>> node->nc2nh, node out_tensor should be put to nc2nh out tensors
   auto out_ops = cur_op->out_ops();
-  if (!out_ops.empty() && out_ops.size() == 1 && out_ops[0]->out_ops().size() == 1 &&
-      out_ops[0]->out_ops()[0]->out_ops().empty() &&
-      out_ops[0]->out_ops()[0]->type() == schema::PrimitiveType_Transpose) {
-    auto nc_tensor = out_ops[0]->outputs()[0];  // nh2nc's out tensor
-    cur_op->set_outputs({nc_tensor});
-    auto post_post_op = out_ops[0]->out_ops()[0];
-    // nc2nh op set in_tensor out_tensor
-    auto post_post_k_in_tensors = post_post_op->inputs();
-    post_post_k_in_tensors[0] = nc_tensor;
-    post_post_op->set_inputs(post_post_k_in_tensors);
-    post_post_op->set_outputs({tensor});
+  if (NodeWithNhwc2nchw2nhwcOutput(cur_op)) {
+    std::vector<MSTensor> outputs;
+    for (auto i = 0; i < out_ops.size(); ++i) {
+      auto ori_out_tensor = cur_op->outputs()[i];
+      auto nc_tensor = out_ops[i]->outputs()[0];
+      outputs.push_back(nc_tensor);
+      auto post_post_op = out_ops[i]->out_ops()[0];
+      post_post_op->set_inputs({nc_tensor});
+      post_post_op->set_outputs({ori_out_tensor});
+    }
+    cur_op->set_outputs(outputs);
     return RET_OK;
   }
 
@@ -244,107 +265,7 @@ int NPUFusionPass::CommonFusion(NPUOp *cur_op) {
     MS_LOG(ERROR) << "UpdateOp failed.";
     return RET_ERROR;
   }
-  return RET_OK;
-}
-
-int NPUFusionPass::ConcatFusion(NPUOp *cur_op) {
-  if (cur_op == nullptr) {
-    return RET_ERROR;
-  }
-  int ret = UpdateOp(cur_op);
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "UpdateOp failed.";
-    return ret;
-  }
-  if (cur_op->type() != schema::PrimitiveType_Concat) {
-    return RET_ERROR;
-  }
-  auto concat_op = static_cast<ConcatNPUOp *>(cur_op);
-  ret = concat_op->HandleAxis();
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "HandleAxis failed.";
-    return ret;
-  }
-  return RET_OK;
-}
-
-int NPUFusionPass::SplitFusion(NPUOp *cur_op) {
-  if (cur_op == nullptr) {
-    return RET_ERROR;
-  }
-  int ret = UpdateOp(cur_op);
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "UpdateOp failed.";
-    return RET_ERROR;
-  }
-  if (cur_op->type() != schema::PrimitiveType_Split) {
-    return RET_ERROR;
-  }
-  auto split_op = static_cast<SplitNPUOp *>(cur_op);
-  ret = split_op->HandleAxis();
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "HandleAxis failed.";
-    return ret;
-  }
-  return RET_OK;
-}
-
-int NPUFusionPass::PadFusion(NPUOp *cur_op) {
-  if (cur_op == nullptr) {
-    return RET_ERROR;
-  }
-  int ret = UpdateOp(cur_op);
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "UpdateOp failed.";
-    return ret;
-  }
-  if (cur_op->type() != schema::PrimitiveType_PadFusion) {
-    return RET_ERROR;
-  }
-  auto pad_op = static_cast<PadNPUOp *>(cur_op);
-  ret = pad_op->HandleAxis();
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "HandleAxis failed.";
-    return ret;
-  }
-  return RET_OK;
-}
-
-int NPUFusionPass::StridedSliceFusion(NPUOp *cur_op) {
-  // basic requirement: input is nhwc 4d
-  if (cur_op == nullptr) {
-    return RET_ERROR;
-  }
-  int ret = UpdateOp(cur_op);
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "UpdateOp failed.";
-    return ret;
-  }
-  if (cur_op->inputs().size() < kNumInputSize) {
-    MS_LOG(ERROR) << "in tensors size < " << kNumInputSize;
-    return RET_ERROR;
-  }
-  if (cur_op->type() != schema::PrimitiveType_StridedSlice) {
-    return RET_ERROR;
-  }
-  auto begin_tensor = cur_op->inputs().at(BEGIN_INDEX);
-  int *begin = reinterpret_cast<int *>(begin_tensor.MutableData());
-  MS_ASSERT(begin);
-  (void)NPUPassUtils::AssistDataNHWC2NCHW(begin, 1);
-  auto end_tensor = cur_op->inputs().at(END_INDEX);
-  int *end = reinterpret_cast<int *>(end_tensor.MutableData());
-  MS_ASSERT(end);
-  NPUPassUtils::AssistDataNHWC2NCHW(end, 1);
-  auto stride_tensor = cur_op->inputs().at(STRIDE_INDEX);
-  if (cur_op->inputs().size() == ONNX_INPUT_SIZE) {
-    stride_tensor = cur_op->inputs().at(ONNX_STRIDE_INDEX);
-  }
-  int *stride = reinterpret_cast<int *>(stride_tensor.MutableData());
-  MS_ASSERT(stride);
-  NPUPassUtils::AssistDataNHWC2NCHW(stride, 1);
-
-  auto stride_slice_op = static_cast<StridedSliceNPUOp *>(cur_op);
-  ret = stride_slice_op->HandleAxis();
+  ret = cur_op->HandleAxis();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "HandleAxis failed.";
     return ret;
@@ -431,34 +352,9 @@ int NPUFusionPass::Run(NPUGraph *subgraph) {
   for (size_t i = 0; i < all_ops_->size(); i++) {
     auto cur_op = (*all_ops_)[i];
     auto ret = RET_OK;
-    if (CheckFusion(cur_op)) {
-      switch (cur_op->type()) {
-        case schema::PrimitiveType_Split:
-          i -= cur_op->in_ops().size();
-          ret = SplitFusion(cur_op);
-          continue;
-        case schema::PrimitiveType_Concat:
-          i -= cur_op->in_ops().size();
-          ret = ConcatFusion(cur_op);
-          continue;
-        case schema::PrimitiveType_PadFusion:
-          i -= cur_op->in_ops().size();
-          ret = PadFusion(cur_op);
-          continue;
-        case schema::PrimitiveType_StridedSlice:
-          i -= cur_op->in_ops().size();
-          ret = StridedSliceFusion(cur_op);
-          continue;
-        case schema::PrimitiveType_AddFusion:
-        case schema::PrimitiveType_MulFusion:
-        case schema::PrimitiveType_Activation:
-        case schema::PrimitiveType_Eltwise:
-          i -= cur_op->in_ops().size();
-          ret = CommonFusion(cur_op);
-          continue;
-        default:
-          continue;
-      }
+    if (CheckFusion(cur_op, subgraph->outputs())) {
+      i -= cur_op->in_ops().size();
+      ret = CommonFusion(cur_op);
     }
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "Fusion failed.";

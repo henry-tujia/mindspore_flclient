@@ -3,7 +3,6 @@ include(GoogleTest)
 SET(DE_UT_SRCS
         affine_op_test.cc
         execute_test.cc
-        album_op_test.cc
         arena_test.cc
         auto_contrast_op_test.cc
         batch_op_test.cc
@@ -15,6 +14,7 @@ SET(DE_UT_SRCS
         c_api_audio_a_to_q_test.cc
         c_api_audio_r_to_z_test.cc
         c_api_cache_test.cc
+        c_api_dataset_ag_news_test.cc
         c_api_dataset_album_test.cc
         c_api_dataset_cifar_test.cc
         c_api_dataset_cityscapes_test.cc
@@ -22,26 +22,47 @@ SET(DE_UT_SRCS
         c_api_dataset_coco_test.cc
         c_api_dataset_config_test.cc
         c_api_dataset_csv_test.cc
+        c_api_dataset_dbpedia_test.cc
         c_api_dataset_div2k_test.cc
+        c_api_dataset_emnist_test.cc
+        c_api_dataset_fake_image_test.cc
+        c_api_dataset_fashion_mnist_test.cc
         c_api_dataset_flickr_test.cc
         c_api_dataset_iterator_test.cc
+        c_api_dataset_iwslt_test.cc
+        c_api_dataset_kmnist_test.cc
+        c_api_dataset_lj_speech_test.cc
         c_api_dataset_manifest_test.cc
         c_api_dataset_minddata_test.cc
         c_api_dataset_ops_test.cc
+        c_api_dataset_penn_treebank_test.cc
+        c_api_dataset_photo_tour_test.cc
+        c_api_dataset_places365_test.cc
+        c_api_dataset_qmnist_test.cc
         c_api_dataset_randomdata_test.cc
         c_api_dataset_save.cc
         c_api_dataset_sbu_test.cc
+        c_api_dataset_sogou_news_test.cc
+        c_api_dataset_speech_commands_test.cc
+        c_api_dataset_stl10_test.cc
+        c_api_dataset_tedlium_test.cc
         c_api_dataset_textfile_test.cc
         c_api_dataset_tfrecord_test.cc
+        c_api_dataset_udpos_test.cc
         c_api_dataset_usps_test.cc
         c_api_dataset_voc_test.cc
+        c_api_dataset_yahoo_answers_test.cc
+        c_api_dataset_yelp_review_test.cc
+        c_api_dataset_yes_no_test.cc
         c_api_datasets_test.cc
         c_api_epoch_ctrl_test.cc
         c_api_pull_based_test.cc
         c_api_repeat_test.cc
         c_api_samplers_test.cc
         c_api_text_sentence_piece_vocab_test.cc
+        c_api_text_test.cc
         c_api_text_vocab_test.cc
+        c_api_text_test.cc
         c_api_transforms_test.cc
         c_api_vision_a_to_q_test.cc
         c_api_vision_affine_test.cc
@@ -54,18 +75,13 @@ SET(DE_UT_SRCS
         c_api_vision_soft_dvpp_test.cc
         c_api_vision_uniform_aug_test.cc
         c_api_vision_vertical_flip_test.cc
-        celeba_op_test.cc
         center_crop_op_test.cc
         channel_swap_test.cc
-        cifar_op_test.cc
         circular_pool_test.cc
-        client_config_test.cc
-        clue_op_test.cc
         coco_op_test.cc
         common/bboxop_common.cc
         common/common.cc
         common/cvop_common.cc
-        concat_op_test.cc
         concatenate_op_test.cc
         connector_test.cc
         csv_op_test.cc
@@ -77,12 +93,12 @@ SET(DE_UT_SRCS
         decode_op_test.cc
         distributed_sampler_test.cc
         equalize_op_test.cc
+        execute_test.cc
         execution_tree_test.cc
         fill_op_test.cc
         c_api_vision_gaussian_blur_test.cc
         global_context_test.cc
         gnn_graph_test.cc
-        image_folder_op_test.cc
         image_process_test.cc
         interrupt_test.cc
         ir_callback_test.cc
@@ -98,7 +114,6 @@ SET(DE_UT_SRCS
         memory_pool_test.cc
         mind_record_op_test.cc
         mixup_batch_op_test.cc
-        mnist_op_test.cc
         normalize_op_test.cc
         one_hot_op_test.cc
         optimization_pass_test.cc
@@ -106,7 +121,7 @@ SET(DE_UT_SRCS
         pad_op_test.cc
         path_test.cc
         perf_data_test.cc
-        project_op_test.cc
+        profiler_test.cc
         queue_test.cc
         random_affine_op_test.cc
         random_color_adjust_op_test.cc
@@ -125,16 +140,12 @@ SET(DE_UT_SRCS
         random_solarize_op_test.cc
         random_vertical_flip_op_test.cc
         random_vertical_flip_with_bbox_op_test.cc
-        rename_op_test.cc
         rescale_op_test.cc
         resize_op_test.cc
         resize_with_bbox_op_test.cc
         rgba_to_bgr_op_test.cc
         rgba_to_rgb_op_test.cc
         schema_test.cc
-        sentence_piece_vocab_op_test.cc
-        shuffle_op_test.cc
-        skip_op_test.cc
         slice_op_test.cc
         sliding_window_op_test.cc
         solarize_op_test.cc
@@ -144,13 +155,11 @@ SET(DE_UT_SRCS
         subset_random_sampler_test.cc
         subset_sampler_test.cc
         swap_red_blue_test.cc
-        take_op_test.cc
         task_manager_test.cc
         tensor_row_test.cc
         tensor_string_test.cc
         tensor_test.cc
         tensorshape_test.cc
-        text_file_op_test.cc
         tfReader_op_test.cc
         to_float16_op_test.cc
         tokenizer_op_test.cc
@@ -159,16 +168,12 @@ SET(DE_UT_SRCS
         trucate_pair_test.cc
         type_cast_op_test.cc
         weighted_random_sampler_test.cc
-        zip_op_test.cc
         )
 
 if(ENABLE_PYTHON)
     set(DE_UT_SRCS
             ${DE_UT_SRCS}
-            filter_op_test.cc
             manifest_op_test.cc
-            voc_op_test.cc
-            sentence_piece_vocab_op_test.cc
             )
 endif()
 

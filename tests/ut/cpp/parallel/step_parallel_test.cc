@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -154,7 +154,7 @@ FuncGraphManagerPtr Make_Manager(int64_t condition = 0) {
   prim1->AddAttr("transpose_a", transpose_a);
   prim1->AddAttr("transpose_b", transpose_b);
   prim1->AddAttr("instance_name", MakeValue("matmul1"));
-  prim1->AddAttr("strategy", var);
+  prim1->AddAttr("in_strategy", var);
   inputs.clear();
   Dimensions v3 = {2, 2};
   Dimensions v4 = {2, 4};
@@ -176,16 +176,16 @@ FuncGraphManagerPtr Make_Manager(int64_t condition = 0) {
   prim2->AddAttr("transpose_a", transpose_a);
   prim2->AddAttr("transpose_b", transpose_b);
   prim2->AddAttr("instance_name", MakeValue("matmul2"));
-  prim2->AddAttr("strategy", var2);
+  prim2->AddAttr("in_strategy", var2);
   switch (condition) {
     case 1: {
-      prim1->set_attr("strategy", MakeValue(static_cast<int64_t>(0)));
+      prim1->set_attr("in_strategy", MakeValue(static_cast<int64_t>(0)));
       break;
     }
     case 2: {
       std::vector<ValuePtr> elements_t = {MakeValue(static_cast<int64_t>(0))};
       ValueTuplePtr var_t = std::make_shared<ValueTuple>(elements_t);
-      prim1->set_attr("strategy", var_t);
+      prim1->set_attr("in_strategy", var_t);
       break;
     }
     case 3: {
@@ -193,7 +193,7 @@ FuncGraphManagerPtr Make_Manager(int64_t condition = 0) {
       Dimensions vt2 = {2, 4};
       std::vector<ValuePtr> elements_t2 = {MakeValue(vt1), MakeValue(vt2)};
       ValueTuplePtr var_t2 = std::make_shared<ValueTuple>(elements_t2);
-      prim1->set_attr("strategy", var_t2);
+      prim1->set_attr("in_strategy", var_t2);
       break;
     }
   }
@@ -220,15 +220,15 @@ TEST_F(TestStepParallel, GetPythonPath2) {
 TEST_F(TestStepParallel, ExtractStrategy) {
   Dimensions v1 = {2, 2};
   Dimensions v2 = {4, 4};
-  std::unordered_map<std::string, ValuePtr> attrs;
+  mindspore::HashMap<std::string, ValuePtr> attrs;
   // stage
   ValuePtr val1 = MakeValue(v1);
   ValuePtr val2 = MakeValue(v2);
   std::vector<ValuePtr> elements = {val1, val2};
   ValueTuplePtr strategy_tuple = std::make_shared<ValueTuple>(elements);
-  attrs["strategy"] = strategy_tuple;
+  attrs["in_strategy"] = strategy_tuple;
   Strategys strategy_expect = {v1, v2};
-  StrategyPtr strategy = ExtractStrategy(attrs["strategy"]);
+  StrategyPtr strategy = ExtractStrategy(attrs["in_strategy"]);
   Strategys strategy_test = strategy->GetInputDim();
 
   ASSERT_EQ(strategy_expect, strategy_test);
@@ -273,7 +273,10 @@ TEST_F(TestStepParallel, ExtractShape3) {
   ASSERT_EQ(shape_test, shape_expect);
 }
 
-TEST_F(TestStepParallel, CreatOpInstance) {
+/// Feature: test CreateOpInstance in auto parallel.
+/// Description: net with MicroBatchInterleaved in semi auto parallel.
+/// Expectation: success.
+TEST_F(TestStepParallel, CreateOpInstance) {
   ValuePtr attr0_value = MakeValue(REDUCE_OP_SUM);
   ValuePtr attr1_value = MakeValue("0-1-2");
   Attr attr0 = std::make_pair("op", attr0_value);
@@ -282,7 +285,7 @@ TEST_F(TestStepParallel, CreatOpInstance) {
   OperatorName op_name = "AllReduce";
   OperatorParams operator_param;
   OperatorArgs args = std::make_pair(attrs, operator_param);
-  auto op_instance = CreatOpInstance(args.first, op_name, "test");
+  auto op_instance = CreateOpInstance(args.first, op_name, "test");
   ASSERT_TRUE(op_instance);
   PrimitivePyPtr allreduce_ptr = dyn_cast<PrimitivePy>(op_instance);
   ASSERT_TRUE(allreduce_ptr);
@@ -295,7 +298,7 @@ TEST_F(TestStepParallel, CreatOpInstance) {
     py::object allreduce_pyobj = parse::python_adapter::CallPyFn(
       "mindspore.parallel._utils", "_get_python_op", "AllReduce", "mindspore.ops.operations", "test", arglist);
     py::dict opAttr = py::getattr(allreduce_pyobj, "attrs");
-    std::unordered_map<std::string, ValuePtr> attributes{};
+    mindspore::HashMap<std::string, ValuePtr> attributes{};
     for (auto item : opAttr) {
       if (!py::isinstance<py::str>(item.first)) {
         MS_LOG(EXCEPTION) << "type error in py dict convert";
@@ -320,7 +323,7 @@ TEST_F(TestStepParallel, CreatOpInstance) {
         } else if (name == "index") {
           parse::ConvertData(py::cast<py::object>(item.second), &converted_ret);
           ASSERT_EQ(converted_ret->ToString(), "0");
-        } else if (name == "no_elimilate") {
+        } else if (name == "no_eliminate") {
           parse::ConvertData(py::cast<py::object>(item.second), &converted_ret);
           ASSERT_EQ(converted_ret->ToString(), "true");
         } else {
@@ -332,12 +335,15 @@ TEST_F(TestStepParallel, CreatOpInstance) {
   }
 }
 
-TEST_F(TestStepParallel, CreatOpInstance1) {
+/// Feature: test CreateOpInstance in auto parallel.
+/// Description: net with MicroBatchInterleaved in semi auto parallel.
+/// Expectation: success.
+TEST_F(TestStepParallel, CreateOpInstance1) {
   OperatorAttrs attrs;
   OperatorName op_name = "ABC";
   OperatorParams operator_param;
   OperatorArgs args = std::make_pair(attrs, operator_param);
-  EXPECT_THROW({ CreatOpInstance(args.first, op_name, "test"); }, std::runtime_error);
+  EXPECT_THROW({ CreateOpInstance(args.first, op_name, "test"); }, std::runtime_error);
 }
 
 TEST_F(TestStepParallel, OperatorInstance) {
@@ -357,7 +363,7 @@ TEST_F(TestStepParallel, OperatorInstance) {
   std::vector<Shapes> shape = {inputs_shape, outputs_shape};
   TOTAL_OPS = 0;
   OperatorInfoPtr matmul_info = OperatorInstance(prim, attrs, shape);
-  matmul_info->Init(strategyPtr);
+  matmul_info->Init(strategyPtr, nullptr);
   std::string name_expect = "MatMulInfo00";
   std::string name_test = matmul_info->name();
   ASSERT_EQ(name_expect, name_test);
@@ -511,7 +517,7 @@ TEST_F(TestStepParallel, GetTensorInLayout) {
   Shapes outputs_shape = std::vector<Shape>{{64, 64}};
   std::vector<Shapes> shape = {inputs_shape, outputs_shape};
   OperatorInfoPtr matmul_info = OperatorInstance(prim, attrs, shape);
-  matmul_info->Init(strategyPtr);
+  matmul_info->Init(strategyPtr, nullptr);
   node->set_user_data<OperatorInfo>(matmul_info);
   OperatorInfoPtr distribute_operator_pre = node->user_data<OperatorInfo>();
   TensorLayout tensorlayout_e;

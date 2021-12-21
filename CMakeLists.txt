@@ -19,8 +19,13 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    set(CMAKE_OSX_SYSROOT "")
-    set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -Winconsistent-missing-override -Wuser-defined-warnings \
+    exec_program(sw_vers ARGS -productVersion OUTPUT_VARIABLE MACOSX_SYSTEM_VERSION)
+    if(NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+        set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOSX_SYSTEM_VERSION} CACHE STRING
+            "minimum macosx deployment target version" FORCE)
+    endif()
+    message("macosx deployment target version: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -Winconsistent-missing-override -Wno-user-defined-warnings \
         -Wno-return-std-move -Wno-unused-private-field -Wno-unused-lambda-capture -Wno-sign-compare \
         -Wno-overloaded-virtual -Wno-unneeded-internal-declaration -Wno-unused-variable -Wno-pessimizing-move \
         -Wno-inconsistent-missing-override -DHALF_ENABLE_CPP11_USER_LITERALS=0 -D_FORTIFY_SOURCE=2")
@@ -47,7 +52,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(PYBIND11_CPP_STANDARD -std=c++17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPTION_CXX_FLAGS}")
 
-if(ENABLE_AKG AND (ENABLE_D OR ENABLE_GPU))
+if(ENABLE_AKG AND CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_subdirectory("${CMAKE_SOURCE_DIR}/akg")
 endif()
 
@@ -56,6 +61,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/securec/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flatbuffers/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flatbuffers/include/flatbuffers)
+
+if(ENABLE_FAST_HASH_TABLE)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DENABLE_FAST_HASH_TABLE=1")
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/robin_hood/include)
+endif()
 
 include(${CMAKE_SOURCE_DIR}/cmake/dependency_utils.cmake)
 find_package(Python3 COMPONENTS Interpreter Development)
@@ -97,10 +107,19 @@ if(ENABLE_TESTCASES OR ENABLE_CPP_ST)
     add_subdirectory(tests)
 endif()
 
+# packaging
+file(READ ${CMAKE_SOURCE_DIR}/version.txt VERSION_NUMBER)
+string(REPLACE "\n" "" VERSION_NUMBER ${VERSION_NUMBER})
+if(${VERSION_NUMBER} MATCHES ".*dev.*")
+    message("building dev mode")
+    set(BUILD_DEV_MODE ON)
+endif()
 if(MODE_ASCEND_ACL)
     include(cmake/package_tar.cmake)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     include(cmake/package_win.cmake)
+elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    include(cmake/package_mac.cmake)
 else()
     include(cmake/package.cmake)
 endif()

@@ -37,13 +37,11 @@ int TensorC2Tensor(const TensorC *src, Tensor *dst);
 void FreeTensorListC(TensorListC *tensorListC);
 int TensorList2TensorListC(TensorList *src, TensorListC *dst);
 int TensorListC2TensorList(const TensorListC *src, TensorList *dst);
-int GenerateMergeSwitchOutTensorC(const std::vector<lite::Tensor *> &inputs, int output_size,
-                                  std::vector<TensorC *> *out_tensor_c);
 #endif
 int GenerateInTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &inputs,
-                      const std::vector<lite::Tensor *> &outputs, std::vector<TensorC *> *in_tensor_c);
-int GenerateOutTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &inputs,
-                       const std::vector<lite::Tensor *> &outputs, std::vector<TensorC *> *out_tensor_c);
+                      std::vector<TensorC *> *in_tensor_c);
+int GenerateOutTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &outputs,
+                       std::vector<TensorC *> *out_tensor_c);
 
 int CheckTensorsInvalid(const std::vector<Tensor *> &tensors);
 

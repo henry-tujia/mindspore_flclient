@@ -26,9 +26,7 @@ namespace lite {
 ops::PrimitiveC *TfliteSplitParser::Parse(const std::unique_ptr<tflite::OperatorT> &tflite_op,
                                           const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                           const std::unique_ptr<tflite::ModelT> &tflite_model) {
-  MS_CHECK_TRUE_RET(tflite_op != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_subgraph != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_model != nullptr, nullptr);
+  MS_CHECK_GE(tflite_op->inputs.size(), kInputSize1, nullptr);
   auto prim = std::make_unique<ops::Split>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
 
@@ -64,6 +62,7 @@ ops::PrimitiveC *TfliteSplitParser::Parse(const std::unique_ptr<tflite::Operator
   }
   prim->set_axis(axis);
   MS_CHECK_TRUE_MSG(num_splits != 0, nullptr, "split num should not be 0.");
+  MS_CHECK_GE(static_cast<int>(tensor_shape.size()), axis + 1, nullptr);
   if (tensor_shape.at(axis) % num_splits != 0 && tensor_shape.at(axis) / num_splits != 0) {
     MS_LOG(ERROR) << "num_splits can't divide tensor's length at axis " << axis;
     return nullptr;

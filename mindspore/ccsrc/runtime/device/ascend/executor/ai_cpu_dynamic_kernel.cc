@@ -15,11 +15,8 @@
  */
 
 #include "runtime/device/ascend/executor/ai_cpu_dynamic_kernel.h"
-#include <vector>
-#include <memory>
-#include <set>
-#include <algorithm>
 #include "runtime/mem.h"
+#include "acl/acl_rt.h"
 #include "runtime/kernel.h"
 #include "utils/utils.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -81,7 +78,10 @@ void AiCpuDynamicKernel::Initialize() {
   if (is_dynamic_shape_) {
     ext_info_handler_ =
       std::make_shared<AicpuExtInfoHandler>(cnode->fullname_with_scope(), input_num_, output_num_, shape_type);
-    ext_info_handler_->Parse(ext_info_data_);
+    MS_EXCEPTION_IF_NULL(ext_info_handler_);
+    if (!ext_info_handler_->Parse(ext_info_data_)) {
+      MS_LOG(EXCEPTION) << "Parse AiCpu ext_info_handler failed";
+    }
   }
 
   if (ext_info_data_.empty()) {
@@ -96,13 +96,14 @@ void AiCpuDynamicKernel::Initialize() {
   }
   ext_info_size_ = ext_info_data_.size();
 
-  ret = rtMemcpy(ext_info_addr_dev_, ext_info_size_, ext_info_data_.data(), ext_info_data_.size(),
-                 RT_MEMCPY_HOST_TO_DEVICE);
+  ret = aclrtMemcpy(ext_info_addr_dev_, ext_info_size_, ext_info_data_.data(), ext_info_data_.size(),
+                    ACL_MEMCPY_HOST_TO_DEVICE);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(EXCEPTION) << "Call rtMemcpy ext_info_addr_dev_ failed. Op name: " << cnode->fullname_with_scope();
+    MS_LOG(EXCEPTION) << "Call aclrtMemcpy ext_info_addr_dev_ failed. Op name: " << cnode->fullname_with_scope();
   }
 
   auto aicpu_param_head = reinterpret_cast<kernel::AicpuParamHead *>(args_.data());
+  MS_EXCEPTION_IF_NULL(aicpu_param_head);
   aicpu_param_head->extInfoLength = SizeToUint(ext_info_size_);
   aicpu_param_head->extInfoAddr = reinterpret_cast<uint64_t>(ext_info_addr_dev_);
 }
@@ -114,11 +115,13 @@ bool AiCpuDynamicKernel::UpdateInputOutputAddr() {
   MS_EXCEPTION_IF_NULL(cnode);
   for (size_t i = 0; i < input_num_; ++i) {
     auto input_addr = AnfAlgo::GetPrevNodeOutputAddr(cnode, i);
+    MS_EXCEPTION_IF_NULL(input_addr);
     io_addrs.emplace_back(reinterpret_cast<uintptr_t>(input_addr->GetMutablePtr()));
   }
 
   for (size_t i = 0; i < output_num_; ++i) {
     auto output_addr = AnfAlgo::GetOutputAddr(cnode, i);
+    MS_EXCEPTION_IF_NULL(output_addr);
     io_addrs.emplace_back(reinterpret_cast<uintptr_t>(output_addr->GetMutablePtr()));
   }
 
@@ -128,6 +131,10 @@ bool AiCpuDynamicKernel::UpdateInputOutputAddr() {
   }
 
   auto io_ptr = args_.data() + sizeof(kernel::AicpuParamHead);
+  if (io_addrs.empty()) {
+    MS_LOG(ERROR) << "The io_addrs is empty";
+    return false;
+  }
   auto ret =
     memcpy_s(io_ptr, args_.size() - sizeof(kernel::AicpuParamHead), &io_addrs[0], sizeof(uint64_t) * io_addrs.size());
   if (ret != 0) {
@@ -146,20 +153,27 @@ bool AiCpuDynamicKernel::UpdateExtInfo() {
     return true;
   }
 
+  MS_EXCEPTION_IF_NULL(ext_info_handler_);
   for (size_t i = 0; i < input_num_; ++i) {
-    ext_info_handler_->UpdateInputShapeAndType(i, NOT_NULL(cnode));
+    if (!ext_info_handler_->UpdateInputShapeAndType(i, NOT_NULL(cnode))) {
+      MS_LOG(ERROR) << "Update input shape failed, cnode:" << cnode->fullname_with_scope() << " input:" << i;
+      return false;
+    }
   }
 
   if (AnfAlgo::IsDynamicShape(cnode) && unknow_type_ != DEPEND_COMPUTE) {
     for (size_t i = 0; i < output_num_; ++i) {
-      ext_info_handler_->UpdateOutputShapeAndType(i, NOT_NULL(cnode));
+      if (!ext_info_handler_->UpdateOutputShapeAndType(i, NOT_NULL(cnode))) {
+        MS_LOG(ERROR) << "Update output shape failed, cnode:" << cnode->fullname_with_scope() << " output:" << i;
+        return false;
+      }
     }
   }
 
-  auto ret = rtMemcpy(ext_info_addr_dev_, ext_info_size_, ext_info_handler_->GetExtInfo(),
-                      ext_info_handler_->GetExtInfoLen(), RT_MEMCPY_HOST_TO_DEVICE);
+  auto ret = aclrtMemcpy(ext_info_addr_dev_, ext_info_size_, ext_info_handler_->GetExtInfo(),
+                         ext_info_handler_->GetExtInfoLen(), ACL_MEMCPY_HOST_TO_DEVICE);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "UpdateExtInfo rtMemcpy failed. Node info: " << cnode->fullname_with_scope();
+    MS_LOG(ERROR) << "UpdateExtInfo aclrtMemcpy failed. Node info: " << cnode->fullname_with_scope();
     return false;
   }
 
@@ -171,14 +185,15 @@ bool AiCpuDynamicKernel::UpdateOutputShapeFromExtInfo() {
   auto cnode = cnode_ptr_.lock();
   MS_EXCEPTION_IF_NULL(cnode);
   MS_LOG(INFO) << "UpdateOutputShapeFromExtInfo start. Op name " << cnode->fullname_with_scope();
-  auto ret = rtMemcpy(ext_info_handler_->GetExtInfo(), ext_info_handler_->GetExtInfoLen(), ext_info_addr_dev_,
-                      ext_info_size_, RT_MEMCPY_DEVICE_TO_HOST);
+  MS_EXCEPTION_IF_NULL(ext_info_handler_);
+  auto ret = aclrtMemcpy(ext_info_handler_->GetExtInfo(), ext_info_handler_->GetExtInfoLen(), ext_info_addr_dev_,
+                         ext_info_size_, ACL_MEMCPY_DEVICE_TO_HOST);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "rtMemcpy output shape failed. Op name: " << cnode->fullname_with_scope();
+    MS_LOG(ERROR) << "aclrtMemcpy output shape failed. Op name: " << cnode->fullname_with_scope();
     return false;
   }
 
-  MS_LOG(INFO) << "rtMemcpy from device to host success";
+  MS_LOG(INFO) << "aclrtMemcpy from device to host success";
   std::vector<TypeId> type_ids;
   std::vector<std::vector<size_t>> shapes;
 
@@ -205,10 +220,9 @@ void AiCpuDynamicKernel::PostExecute() {
     return;
   }
   if (RT_ERROR_NONE != rtStreamSynchronize(stream_)) {
-    MS_LOG(ERROR) << "Call runtime rtStreamSynchronize error. Op name: " << cnode->fullname_with_scope();
-    return;
+    MS_LOG(EXCEPTION) << "Call runtime rtStreamSynchronize failed. Op name: " << cnode->fullname_with_scope();
   }
-  if (AnfAlgo::IsDynamicShape(cnode) && unknow_type_ == DEPEND_COMPUTE) {
+  if (AnfAlgo::IsDynamicShape(cnode)) {
     MS_LOG(INFO) << "Update aicpu kernel output shape from ext_info. Op name: " << cnode->fullname_with_scope();
     UpdateOutputShapeFromExtInfo();
   }

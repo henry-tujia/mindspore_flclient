@@ -80,6 +80,7 @@ set(CODER_OPCODERS_SRC
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/convolution_depthwise_fp32_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/full_connection_fp32_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/gather_fp32_coder.cc
+        ${MICRO_DIR}/coder/opcoders/nnacl/fp32/affine_fp32_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/lstm_fp32_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/matmul_fp32_base_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/matmul_fp32_coder.cc
@@ -97,6 +98,7 @@ set(CODER_OPCODERS_SRC
         ${MICRO_DIR}/coder/opcoders/nnacl/fp32/deconv2d_fp32_coder.cc
         #### nnacl int8 coder
         ${MICRO_DIR}/coder/opcoders/nnacl/int8/activation_int8_coder.cc
+        ${MICRO_DIR}/coder/opcoders/nnacl/int8/affine_int8_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/int8/add_int8_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/int8/batchnorm_int8_coder.cc
         ${MICRO_DIR}/coder/opcoders/nnacl/int8/concat_int8_coder.cc
@@ -142,8 +144,10 @@ set(LITE_SRC
         ${LITE_DIR}/src/registry/register_kernel_impl.cc
         ${LITE_DIR}/src/lite_model.cc
         ${LITE_DIR}/src/ms_tensor.cc
+        ${LITE_DIR}/src/schema_tensor_wrapper.cc
         ${LITE_DIR}/src/tensorlist.cc
         ${LITE_DIR}/src/tensor.cc
+        ${LITE_DIR}/src/tensor_category.cc
         ${LITE_DIR}/src/weight_decoder.cc
         ${LITE_DIR}/src/huffman_decode.cc
         ${LITE_DIR}/src/common/log.cc
@@ -151,6 +155,8 @@ set(LITE_SRC
         ${LITE_DIR}/../core/utils/status.cc
         ### tools
         ${LITE_DIR}/tools/common/flag_parser.cc
+        ${LITE_DIR}/tools/converter/quantizer/fse_decoder.cc
+        ${LITE_DIR}/tools/converter/quantizer/fse_bit_stream.cc
         )
 
 set(REGISTRY_SRC

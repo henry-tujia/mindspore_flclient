@@ -28,7 +28,7 @@ class BNGradCPUKernel : public InnerKernel {
                            const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~BNGradCPUKernel() override {}
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int Execute(int task_id);
@@ -36,7 +36,6 @@ class BNGradCPUKernel : public InnerKernel {
  private:
   int thread_num_ = 1;
   int stage_ = 0;
-  size_t ws_size_ = 0;
 };
 }  // namespace mindspore::kernel
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ARM_FP32_GRAD_BN_GRAD_H_

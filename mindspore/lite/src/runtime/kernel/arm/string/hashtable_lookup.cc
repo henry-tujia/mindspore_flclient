@@ -17,7 +17,7 @@
 #include <string>
 #include <algorithm>
 #include "src/kernel_registry.h"
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 
 using mindspore::lite::KernelRegistrar;
 using mindspore::lite::RET_ERROR;
@@ -25,7 +25,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_HashtableLookup;
 
 namespace mindspore::kernel {
-int HashtableLookupCPUKernel::Init() {
+int HashtableLookupCPUKernel::Prepare() {
   if (!InferShapeDone()) {
     return RET_OK;
   }

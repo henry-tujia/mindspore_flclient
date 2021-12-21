@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_MATRIX_CALCULATION_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 #include "ops/matrix_calculation_ops.h"
 
@@ -59,6 +59,9 @@ DECLARE_OP_USE_OUTPUT(ScatterNdSub)
 DECLARE_OP_ADAPTER(BatchMatMul)
 DECLARE_OP_USE_OUTPUT(BatchMatMul)
 
+DECLARE_OP_ADAPTER(BatchMatMulV2)
+DECLARE_OP_USE_OUTPUT(BatchMatMulV2)
+
 DECLARE_OP_ADAPTER(MatMul)
 DECLARE_OP_USE_OUTPUT(MatMul)
 
@@ -79,6 +82,9 @@ DECLARE_OP_USE_OUTPUT(DiagPart)
 
 DECLARE_OP_ADAPTER(L2Loss)
 DECLARE_OP_USE_OUTPUT(L2Loss)
+
+DECLARE_OP_ADAPTER(ScatterElements)
+DECLARE_OP_USE_OUTPUT(ScatterElements)
 
 DECLARE_OP_ADAPTER(FullyConnection)
 DECLARE_OP_USE_OUTPUT(FullyConnection)

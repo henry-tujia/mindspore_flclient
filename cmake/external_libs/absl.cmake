@@ -1,17 +1,25 @@
 if(ENABLE_GITEE)
-    set(REQ_URL "https://gitee.com/mirrors/abseil-cpp/repository/archive/20200225.2.tar.gz")
-    set(MD5 "7e84ac40ee4541f645f5b9c90c9c98e6")
+    set(REQ_URL "https://gitee.com/mirrors/abseil-cpp/repository/archive/20200923.3.tar.gz")
+    set(MD5 "daba6e99c7a84e2242a0107bbd873669")
 else()
-    set(REQ_URL "https://github.com/abseil/abseil-cpp/archive/20200225.2.tar.gz")
-    set(MD5 "73f2b6e72f1599a9139170c29482ddc4")
+    set(REQ_URL "https://github.com/abseil/abseil-cpp/archive/20200923.3.tar.gz")
+    set(MD5 "daba6e99c7a84e2242a0107bbd873669")
+endif()
+
+if(NOT ENABLE_GLIBCXX)
+    set(absl_CXXFLAGS "${absl_CXXFLAGS} -D_GLIBCXX_USE_CXX11_ABI=0")
 endif()
 
 mindspore_add_pkg(absl
-        VER 20200225.2
+        VER 20200923.3
         LIBS absl_strings absl_throw_delegate absl_raw_logging_internal absl_int128 absl_bad_optional_access
         URL ${REQ_URL}
         MD5 ${MD5}
-        CMAKE_OPTION -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=TRUE)
+        CMAKE_OPTION
+        -DCMAKE_BUILD_TYPE:STRING=Release
+        -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=TRUE
+        -DCMAKE_CXX_STANDARD=11
+        )
 
 include_directories(${absl_INC})
 

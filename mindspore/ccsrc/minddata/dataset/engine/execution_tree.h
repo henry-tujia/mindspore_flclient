@@ -145,16 +145,27 @@ class ExecutionTree {
     return out;
   }
 
+  const bool IsPython() {
+    for (auto itr = this->begin(); itr != this->end(); ++itr) {
+      if (itr->IsPython()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// \brief Given the number of workers, launches the worker entry function for each. Essentially a
   ///     wrapper for the TaskGroup handling that is stored inside the execution tree.
   /// \param num_workers - The number of workers to launch
   /// \param func - The function entry point that workers will execute
+  /// \param[out] worker_tasks - output vector to hold generated tasks
   /// \param name - The description of worker to launch
   /// \param op_id - The id of corresponding operator, if not inherit from dataset op then it is -1.
   /// \return Status The status code returned
+  Status LaunchWorkers(int32_t num_workers, std::function<Status(uint32_t)> func, std::vector<Task *> *worker_tasks,
+                       std::string name = "", int32_t operator_id = -1);
   Status LaunchWorkers(int32_t num_workers, std::function<Status(uint32_t)> func, std::string name = "",
                        int32_t operator_id = -1);
-
   /// \brief Getter method
   /// \return shared_ptr to the root operator
   std::shared_ptr<DatasetOp> root() const { return root_; }
@@ -191,10 +202,9 @@ class ExecutionTree {
            tree_state_ == TreeState::kDeTStateFinished;
   }
 
-  /// \brief Getter for profiling manager, no ownership
-#ifndef ENABLE_SECURITY
-  ProfilingManager *GetProfilingManager() { return profiling_manager_.get(); }
-#endif
+  /// \brief Get a unique identifier for the tree
+  /// \return unique ID as a string
+  std::string GetUniqueId() { return unique_id_; }
 
  private:
   /// \brief A helper functions for doing the recursive printing
@@ -210,9 +220,8 @@ class ExecutionTree {
   int32_t id_count_;                 // Counter for generating operator id's
   uint32_t prepare_flags_;           // Flags used during tree prepare
   TreeState tree_state_;             // Tracking the current tree state
-#ifndef ENABLE_SECURITY
-  std::unique_ptr<ProfilingManager> profiling_manager_;  // Profiling manager
-#endif
+  std::string unique_id_;            // A unique identifier for the tree
+
 #if defined(ENABLE_GPUQUE) || defined(ENABLE_TDTQUE)
   // This rank_id is for numa and device_queue, one process work with only one rank_id,
   // for standalone scenario, this rank_id may come from env 'CUDA_VISIBLE_DEVICES',

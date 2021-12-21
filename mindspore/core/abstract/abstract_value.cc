@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,17 @@
 #include <regex>
 #include <algorithm>
 
+#include "utils/hash_map.h"
 #include "utils/symbolic.h"
+#include "utils/ms_utils.h"
 #include "abstract/utils.h"
 #include "utils/ms_context.h"
 #include "utils/trace_base.h"
 
 namespace mindspore {
 namespace abstract {
+using mindspore::common::IsEqual;
+
 AnfNodePtr GetTraceNode(const AbstractBasePtr &abs) {
   AnfNodePtr node = nullptr;
   if (mindspore::abstract::AbstractBase::trace_node_provider_ != nullptr) {
@@ -38,12 +42,12 @@ AnfNodePtr GetTraceNode(const AbstractBasePtr &abs) {
 
 inline void AbstractTypeJoinLogging(const AbstractBasePtr &abstract1, const AbstractBasePtr &abstract2) {
   std::ostringstream oss;
-  oss << "Type Join Failed: abstract type " << abstract1->type_name() << " cannot not join with "
-      << abstract2->type_name() << ". For more details, please refer to the FAQ at https://www.mindspore.cn. "
+  oss << "Type Join Failed: abstract type " << abstract1->type_name() << " cannot join with " << abstract2->type_name()
+      << ". For more details, please refer to the FAQ at https://www.mindspore.cn. "
       << "this: " << abstract1->ToString() << ", other: " << abstract2->ToString();
   auto node = GetTraceNode(abstract1);
   if (node != nullptr) {
-    oss << ". Please check the node " << node->DebugString() << ". trace: " << trace::DumpSourceLines(node);
+    oss << ". Please check the node " << node->DebugString() << trace::DumpSourceLines(node);
   }
   MS_EXCEPTION(TypeError) << oss.str();
 }
@@ -56,7 +60,7 @@ inline void TypeJoinLogging(const TypePtr &type1, const TypePtr &type2, const Ab
       << "this: " << abstract1->ToString() << ", other: " << abstract2->ToString();
   auto node = GetTraceNode(abstract1);
   if (node != nullptr) {
-    oss << ". Please check the node " << node->DebugString() << ". trace: " << trace::DumpSourceLines(node);
+    oss << ". Please check the node " << node->DebugString() << trace::DumpSourceLines(node);
   }
   MS_EXCEPTION(TypeError) << oss.str();
 }
@@ -69,7 +73,7 @@ inline void ShapeJoinLogging(const BaseShapePtr &shape1, const BaseShapePtr &sha
       << "this: " << abstract1->ToString() << ", other: " << abstract2->ToString();
   auto node = GetTraceNode(abstract1);
   if (node != nullptr) {
-    oss << ". Please check the node " << node->DebugString() << ". trace: " << trace::DumpSourceLines(node);
+    oss << ". Please check the node " << node->DebugString() << trace::DumpSourceLines(node);
   }
   MS_EXCEPTION(ValueError) << oss.str();
 }
@@ -85,45 +89,25 @@ std::string ExtractLoggingInfo(const std::string &info) {
   return "";
 }
 
+static inline bool IsUndeterminedType(const TypePtr &type) {
+  return (type != nullptr) && (type->type_id() == kObjectTypeUndeterminedType);
+}
+
 bool AbstractBase::operator==(const AbstractBase &other) const {
+  if (this == &other) {
+    // Same object.
+    return true;
+  }
+  // Check C++ type.
   if (tid() != other.tid()) {
     return false;
   }
-  auto type = BuildType();
-  auto other_type = BuildType();
-  MS_EXCEPTION_IF_NULL(other_type);
-  MS_EXCEPTION_IF_NULL(type);
-  if (type->type_id() == kObjectTypeUndeterminedType && other_type->type_id() == kObjectTypeUndeterminedType) {
+  // If both are "undetermined" type, they are considered equal.
+  if (IsUndeterminedType(BuildType()) && IsUndeterminedType(other.BuildType())) {
     return true;
   }
-  if (value_ == nullptr || other.value_ == nullptr) {
-    MS_LOG(EXCEPTION) << "If value_ is nullptr, AbstractBase::operator== should not be called. this: "
-                      << this->ToString() << ", other: " << other.ToString();
-  }
-
-  bool value_equal = false;
-  if (value_ == other.value_) {
-    value_equal = true;
-  } else if (*value_ == *other.value_) {
-    value_equal = true;
-  }
-  bool type_equal = false;
-  MS_EXCEPTION_IF_NULL(type_);
-  MS_EXCEPTION_IF_NULL(other.type_);
-  if (type_ == other.type_) {
-    type_equal = true;
-  } else if (*type_ == *other.type_) {
-    type_equal = true;
-  }
-  bool shape_equal = false;
-  MS_EXCEPTION_IF_NULL(shape_);
-  MS_EXCEPTION_IF_NULL(other.shape_);
-  if (shape_ == other.shape_) {
-    shape_equal = true;
-  } else if (*shape_ == *other.shape_) {
-    shape_equal = true;
-  }
-  return value_equal && type_equal && shape_equal;
+  // Check data type, shape and value.
+  return IsEqual(type_, other.type_) && IsEqual(shape_, other.shape_) && IsEqual(value_, other.value_);
 }
 
 ValuePtr AbstractBase::BuildValue() const {
@@ -198,23 +182,10 @@ AbstractBasePtr AbstractType::Clone() const {
 }
 
 bool AbstractType::operator==(const AbstractBase &other) const {
-  if (tid() != other.tid()) {
-    return false;
+  if (this == &other) {
+    return true;
   }
-  // Have to compare TypePtr with value;
-  ValuePtr value_self = GetValueTrack();
-  ValuePtr value_other = other.GetValueTrack();
-  if (value_self == nullptr || value_other == nullptr) {
-    MS_LOG(EXCEPTION) << "AbstractType value should not be nullptr. this: " << this->ToString()
-                      << ", other: " << other.ToString();
-  }
-  if (!value_self->isa<Type>() || !value_other->isa<Type>()) {
-    return false;
-  }
-  TypePtr type_self = value_self->cast<TypePtr>();
-  TypePtr type_other = value_other->cast<TypePtr>();
-  bool value_equal = *type_self == *type_other;
-  return value_equal;
+  return tid() == other.tid() && IsEqual(dyn_cast<Type>(GetValueTrack()), dyn_cast<Type>(other.GetValueTrack()));
 }
 
 std::string AbstractType::ToString() const {
@@ -254,22 +225,23 @@ AbstractBasePtr AbstractFunction::Join(const AbstractBasePtr &other) {
 }
 
 bool AbstractFunction::operator==(const AbstractBase &other) const {
+  if (this == &other) {
+    return true;
+  }
   if (!other.isa<AbstractFunction>()) {
     return false;
   }
-  const auto &other_func = static_cast<const AbstractFunction &>(other);
-  bool value_equal = (*this == other_func);
-  return value_equal;
+  return *this == static_cast<const AbstractFunction &>(other);
 }
 
-const AbstractBasePtr AbstractSequeue::operator[](const std::size_t &dim) const {
+const AbstractBasePtr AbstractSequence::operator[](const std::size_t &dim) const {
   if (dim >= size()) {
     MS_LOG(EXCEPTION) << "Index [" << dim << "] Out of the size [" << size() << "] of the list.";
   }
   return elements_[dim];
 }
 
-std::string AbstractSequeue::ToString() const {
+std::string AbstractSequence::ToString() const {
   std::ostringstream buffer;
   size_t i = 0;
   size_t size = elements_.size();
@@ -284,7 +256,7 @@ std::string AbstractSequeue::ToString() const {
   return buffer.str();
 }
 
-TypePtrList AbstractSequeue::ElementsType() const {
+TypePtrList AbstractSequence::ElementsType() const {
   TypePtrList element_type_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -294,7 +266,7 @@ TypePtrList AbstractSequeue::ElementsType() const {
   return element_type_list;
 }
 
-BaseShapePtrList AbstractSequeue::ElementsShape() const {
+BaseShapePtrList AbstractSequence::ElementsShape() const {
   BaseShapePtrList element_shape_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -304,7 +276,7 @@ BaseShapePtrList AbstractSequeue::ElementsShape() const {
   return element_shape_list;
 }
 
-AbstractBasePtrList AbstractSequeue::ElementsClone() const {
+AbstractBasePtrList AbstractSequence::ElementsClone() const {
   AbstractBasePtrList ele_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -314,7 +286,7 @@ AbstractBasePtrList AbstractSequeue::ElementsClone() const {
   return ele_list;
 }
 
-AbstractBasePtrList AbstractSequeue::ElementsBroaden() const {
+AbstractBasePtrList AbstractSequence::ElementsBroaden() const {
   AbstractBasePtrList ele_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -324,7 +296,7 @@ AbstractBasePtrList AbstractSequeue::ElementsBroaden() const {
   return ele_list;
 }
 
-AbstractBasePtrList AbstractSequeue::ElementsPartialBroaden() const {
+AbstractBasePtrList AbstractSequence::ElementsPartialBroaden() const {
   AbstractBasePtrList ele_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -335,7 +307,7 @@ AbstractBasePtrList AbstractSequeue::ElementsPartialBroaden() const {
 }
 
 template <typename T>
-ValuePtr AbstractSequeue::ElementsBuildValue() const {
+ValuePtr AbstractSequence::ElementsBuildValue() const {
   std::vector<ValuePtr> element_value_list;
   for (const auto &ele : elements_) {
     MS_EXCEPTION_IF_NULL(ele);
@@ -348,11 +320,11 @@ ValuePtr AbstractSequeue::ElementsBuildValue() const {
   }
   return std::make_shared<T>(element_value_list);
 }
-template ValuePtr AbstractSequeue::ElementsBuildValue<ValueTuple>() const;
-template ValuePtr AbstractSequeue::ElementsBuildValue<ValueList>() const;
+template ValuePtr AbstractSequence::ElementsBuildValue<ValueTuple>() const;
+template ValuePtr AbstractSequence::ElementsBuildValue<ValueList>() const;
 
 template <typename T>
-AbstractBasePtr AbstractSequeue::ElementsJoin(const AbstractBasePtr &other) {
+AbstractBasePtr AbstractSequence::ElementsJoin(const AbstractBasePtr &other) {
   MS_EXCEPTION_IF_NULL(other);
   auto other_sequeue = dyn_cast<T>(other);
   if (other_sequeue == nullptr) {
@@ -371,10 +343,10 @@ AbstractBasePtr AbstractSequeue::ElementsJoin(const AbstractBasePtr &other) {
   }
   return std::make_shared<T>(joined_list);
 }
-template AbstractBasePtr AbstractSequeue::ElementsJoin<AbstractList>(const AbstractBasePtr &);
-template AbstractBasePtr AbstractSequeue::ElementsJoin<AbstractTuple>(const AbstractBasePtr &);
+template AbstractBasePtr AbstractSequence::ElementsJoin<AbstractList>(const AbstractBasePtr &);
+template AbstractBasePtr AbstractSequence::ElementsJoin<AbstractTuple>(const AbstractBasePtr &);
 
-std::size_t AbstractSequeue::hash() const {
+std::size_t AbstractSequence::hash() const {
   std::size_t hash_sum = hash_combine(tid(), std::hash<size_t>{}(elements_.size()));
   // Hashing all elements is costly, so only take at most 4 elements into account based on
   // some experiments.
@@ -385,51 +357,54 @@ std::size_t AbstractSequeue::hash() const {
   return hash_sum;
 }
 
-bool AbstractSequeue::operator==(const AbstractSequeue &other) const {
-  if (&other == this) {
+bool AbstractSequence::operator==(const AbstractSequence &other) const {
+  if (this == &other) {
     return true;
   }
-
   if (elements_.size() != other.elements_.size()) {
     return false;
   }
-  for (size_t i = 0; i < elements_.size(); i++) {
-    MS_EXCEPTION_IF_NULL(elements_[i]);
-    MS_EXCEPTION_IF_NULL(other.elements_[i]);
-    if (!(*(elements_[i]) == *(other.elements_[i]))) {
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    if (!IsEqual(elements_[i], other.elements_[i])) {
       return false;
     }
   }
   return true;
 }
 
-bool AbstractTuple::operator==(const AbstractTuple &other) const { return AbstractSequeue::operator==(other); }
+bool AbstractTuple::operator==(const AbstractTuple &other) const { return AbstractSequence::operator==(other); }
 
 bool AbstractTuple::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-
-  if (other.isa<AbstractTuple>()) {
-    auto other_tuple = static_cast<const AbstractTuple *>(&other);
-    return *this == *other_tuple;
+  if (!other.isa<AbstractTuple>()) {
+    return false;
   }
-
-  return false;
+  return AbstractSequence::operator==(static_cast<const AbstractSequence &>(other));
 }
 
-bool AbstractList::operator==(const AbstractList &other) const { return AbstractSequeue::operator==(other); }
+bool AbstractTuple::ContainsAllBroadenTensors() const {
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    if (!(elements_[i]->isa<abstract::AbstractUndetermined>() && elements_[i]->IsBroaden()) &&
+        !(elements_[i]->isa<abstract::AbstractTuple>() &&
+          elements_[i]->cast<abstract::AbstractTuplePtr>()->ContainsAllBroadenTensors())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AbstractList::operator==(const AbstractList &other) const { return AbstractSequence::operator==(other); }
 
 bool AbstractList::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-
-  if (other.isa<AbstractList>()) {
-    auto other_list = static_cast<const AbstractList *>(&other);
-    return *this == *other_list;
+  if (!other.isa<AbstractList>()) {
+    return false;
   }
-  return false;
+  return AbstractSequence::operator==(static_cast<const AbstractSequence &>(other));
 }
 
 TypePtr AbstractSlice::BuildType() const {
@@ -443,21 +418,20 @@ TypePtr AbstractSlice::BuildType() const {
 }
 
 bool AbstractSlice::operator==(const AbstractSlice &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  return (*start_ == *other.start_ && *stop_ == *other.stop_ && *step_ == *other.step_);
+  return IsEqual(start_, other.start_) && IsEqual(stop_, other.stop_) && IsEqual(step_, other.step_);
 }
 
 bool AbstractSlice::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
   if (!other.isa<AbstractSlice>()) {
     return false;
   }
-  auto other_slice = static_cast<const AbstractSlice *>(&other);
-  return *this == *other_slice;
+  return *this == static_cast<const AbstractSlice &>(other);
 }
 
 AbstractBasePtr AbstractSlice::Clone() const {
@@ -585,38 +559,37 @@ AbstractBasePtr AbstractTensor::Join(const AbstractBasePtr &other) {
 }
 
 bool AbstractTensor::equal_to(const AbstractTensor &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-
+  // Check value. for AbstractTensor, both value should be AnyValue.
   auto v1 = GetValueTrack();
   auto v2 = other.GetValueTrack();
-  if (v1 == nullptr || v2 == nullptr) {
-    MS_LOG(EXCEPTION) << "The value of AbstractTensor is nullptr";
+  if (v1 != v2 && (v1 == nullptr || !v1->isa<AnyValue>() || v2 == nullptr || !v2->isa<AnyValue>())) {
+    return false;
   }
-
-  bool is_value_equal = (v1 == v2);
-  if (v1->isa<AnyValue>() && v2->isa<AnyValue>()) {
-    is_value_equal = true;
+  // Check element type.
+  if (!IsEqual(element_, other.element_)) {
+    return false;
   }
-  MS_EXCEPTION_IF_NULL(element_);
-  MS_EXCEPTION_IF_NULL(other.element_);
-  return (*element_ == *other.element_) && (*shape() == *other.shape()) && is_value_equal;
+  // Check shape.
+  if (!IsEqual(shape(), other.shape())) {
+    return false;
+  }
+  // Check min and max values.
+  return IsEqual(get_min_value(), other.get_min_value()) && IsEqual(get_max_value(), other.get_max_value());
 }
 
 bool AbstractTensor::operator==(const AbstractTensor &other) const { return equal_to(other); }
 
 bool AbstractTensor::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-
-  if (other.tid() == tid()) {
-    auto other_tensor = static_cast<const AbstractTensor *>(&other);
-    return *this == *other_tensor;
-  } else {
+  if (tid() != other.tid()) {
     return false;
   }
+  return equal_to(static_cast<const AbstractTensor &>(other));
 }
 
 AbstractBasePtr AbstractTensor::Clone() const {
@@ -679,14 +652,10 @@ bool AbstractDictionary::operator==(const AbstractDictionary &other) const {
   if (key_values_.size() != other.key_values_.size()) {
     return false;
   }
-
-  for (size_t index = 0; index < key_values_.size(); index++) {
-    if (key_values_[index].first != other.key_values_[index].first) {
-      return false;
-    }
-    MS_EXCEPTION_IF_NULL(key_values_[index].second);
-    MS_EXCEPTION_IF_NULL(other.key_values_[index].second);
-    if (!(*key_values_[index].second == *other.key_values_[index].second)) {
+  for (size_t index = 0; index < key_values_.size(); ++index) {
+    auto &kv1 = key_values_[index];
+    auto &kv2 = other.key_values_[index];
+    if (kv1.first != kv2.first || !IsEqual(kv1.second, kv2.second)) {
       return false;
     }
   }
@@ -694,14 +663,13 @@ bool AbstractDictionary::operator==(const AbstractDictionary &other) const {
 }
 
 bool AbstractDictionary::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  if (other.isa<AbstractDictionary>()) {
-    auto other_class = static_cast<const AbstractDictionary *>(&other);
-    return *this == *other_class;
+  if (!other.isa<AbstractDictionary>()) {
+    return false;
   }
-  return false;
+  return *this == static_cast<const AbstractDictionary &>(other);
 }
 
 AbstractBasePtr AbstractDictionary::Clone() const {
@@ -776,40 +744,20 @@ bool AbstractClass::operator==(const AbstractClass &other) const {
   if (!(tag_ == other.tag_)) {
     return false;
   }
-  if (attributes_.size() != other.attributes_.size()) {
+  if (!common::IsAttrsEqual(attributes_, other.attributes_)) {
     return false;
   }
-  for (size_t i = 0; i < attributes_.size(); i++) {
-    MS_EXCEPTION_IF_NULL(attributes_[i].second);
-    MS_EXCEPTION_IF_NULL(other.attributes_[i].second);
-    if (!(*attributes_[i].second == *other.attributes_[i].second)) {
-      MS_LOG(DEBUG) << "attr " << attributes_[i].first << " not equal, arg1:" << attributes_[i].second->ToString()
-                    << " arg2:" << other.attributes_[i].second->ToString();
-      return false;
-    }
-  }
-  // method compare;
-  if (methods_.size() != other.methods_.size()) {
-    return false;
-  }
-  for (const auto &iter : methods_) {
-    auto iter_other = other.methods_.find(iter.first);
-    if (iter_other == other.methods_.end()) {
-      return false;
-    }
-    if (!(*iter.second == *iter_other->second)) {
-      return false;
-    }
-  }
-  return true;
+  return common::IsAttrsEqual(methods_, other.methods_);
 }
 
 bool AbstractClass::operator==(const AbstractBase &other) const {
-  if (other.isa<AbstractClass>()) {
-    auto other_class = static_cast<const AbstractClass *>(&other);
-    return *this == *other_class;
+  if (this == &other) {
+    return true;
   }
-  return false;
+  if (!other.isa<AbstractClass>()) {
+    return false;
+  }
+  return *this == static_cast<const AbstractClass &>(other);
 }
 
 AbstractBasePtr AbstractClass::GetAttribute(const std::string &name) {
@@ -893,7 +841,7 @@ ValuePtr AbstractClass::RealBuildValue() const {
   auto type = BuildType();
   MS_EXCEPTION_IF_NULL(type);
   auto cls = type->cast<ClassPtr>();
-  std::unordered_map<std::string, ValuePtr> attributes_value_map;
+  mindspore::HashMap<std::string, ValuePtr> attributes_value_map;
   for (const auto &attr : attributes_) {
     MS_EXCEPTION_IF_NULL(attr.second);
     ValuePtr value = attr.second->BuildValue();
@@ -924,18 +872,16 @@ AbstractBasePtr AbstractJTagged::Join(const AbstractBasePtr &other) {
   return std::make_shared<AbstractJTagged>(joined_elem);
 }
 
-bool AbstractJTagged::operator==(const AbstractJTagged &other) const {
-  MS_EXCEPTION_IF_NULL(element_);
-  MS_EXCEPTION_IF_NULL(other.element_);
-  return (*element_ == *other.element_);
-}
+bool AbstractJTagged::operator==(const AbstractJTagged &other) const { return IsEqual(element_, other.element_); }
 
 bool AbstractJTagged::operator==(const AbstractBase &other) const {
-  if (other.isa<AbstractJTagged>()) {
-    auto other_jtagged = static_cast<const AbstractJTagged *>(&other);
-    return *this == *other_jtagged;
+  if (this == &other) {
+    return true;
   }
-  return false;
+  if (!other.isa<AbstractJTagged>()) {
+    return false;
+  }
+  return *this == static_cast<const AbstractJTagged &>(other);
 }
 
 std::string AbstractJTagged::ToString() const {
@@ -962,15 +908,20 @@ TypePtr AbstractRef::BuildType() const {
 }
 
 bool AbstractRef::operator==(const AbstractRef &other) const {
-  return AbstractTensor::equal_to(other) && (*ref_key_ == *other.ref_key_);
+  if (this == &other) {
+    return true;
+  }
+  return IsEqual(ref_key_, other.ref_key_) && AbstractTensor::equal_to(other);
 }
 
 bool AbstractRef::operator==(const AbstractBase &other) const {
-  if (other.isa<AbstractRef>()) {
-    auto other_conf = static_cast<const AbstractRef *>(&other);
-    return *this == *other_conf;
+  if (this == &other) {
+    return true;
   }
-  return false;
+  if (!other.isa<AbstractRef>()) {
+    return false;
+  }
+  return *this == static_cast<const AbstractRef &>(other);
 }
 
 AbstractBasePtr AbstractRefKey::Join(const AbstractBasePtr &other) {
@@ -1032,11 +983,10 @@ AbstractBasePtr AbstractRef::PartialBroaden() const { return Clone(); }
 bool AbstractNone::operator==(const AbstractNone &) const { return true; }
 
 bool AbstractNone::operator==(const AbstractBase &other) const {
-  if (other.isa<AbstractNone>()) {
-    auto other_none = static_cast<const AbstractNone *>(&other);
-    return *this == *other_none;
+  if (this == &other) {
+    return true;
   }
-  return false;
+  return other.isa<AbstractNone>();
 }
 
 std::string AbstractNone::ToString() const {
@@ -1048,31 +998,28 @@ std::string AbstractNone::ToString() const {
 ValuePtr AbstractNone::RealBuildValue() const { return kNone; }
 
 bool AbstractRefKey::operator==(const AbstractRefKey &other) const {
-  ValuePtr value_self = GetValueTrack();
-  ValuePtr value_other = other.GetValueTrack();
-  if (value_self != nullptr && value_other != nullptr) {
-    if (value_self->isa<AnyValue>() && value_other->isa<AnyValue>()) {
-      return true;
-    }
-    if (!value_self->isa<RefKey>() || !value_other->isa<RefKey>()) {
-      return false;
-    }
-    RefKeyPtr type_self = value_self->cast<RefKeyPtr>();
-    RefKeyPtr type_other = value_other->cast<RefKeyPtr>();
-    return *type_self == *type_other;
-  } else if (value_self != nullptr || value_other != nullptr) {
+  ValuePtr v1 = GetValueTrack();
+  ValuePtr v2 = other.GetValueTrack();
+  if (v1 == v2) {
+    return true;
+  }
+  if (v1 == nullptr || v2 == nullptr) {
     return false;
   }
-  return true;
+  if (v1->isa<AnyValue>() && v2->isa<AnyValue>()) {
+    return true;
+  }
+  return IsEqual(dyn_cast<RefKey>(v1), dyn_cast<RefKey>(v2));
 }
 
 bool AbstractRefKey::operator==(const AbstractBase &other) const {
-  if (other.isa<AbstractRefKey>()) {
-    auto other_confkey = static_cast<const AbstractRefKey *>(&other);
-    return *this == *other_confkey;
-  } else {
+  if (this == &other) {
+    return true;
+  }
+  if (!other.isa<AbstractRefKey>()) {
     return false;
   }
+  return *this == static_cast<const AbstractRefKey &>(other);
 }
 
 std::string AbstractRefKey::ToString() const {
@@ -1088,15 +1035,10 @@ std::string AbstractRefKey::ToString() const {
 bool AbstractNull::operator==(const AbstractNull &) const { return true; }
 
 bool AbstractNull::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  if (other.isa<AbstractNull>()) {
-    auto other_none = static_cast<const AbstractNull *>(&other);
-    return *this == *other_none;
-  } else {
-    return false;
-  }
+  return other.isa<AbstractNull>();
 }
 
 std::string AbstractNull::ToString() const {
@@ -1108,15 +1050,10 @@ std::string AbstractNull::ToString() const {
 bool AbstractTimeOut::operator==(const AbstractTimeOut &) const { return true; }
 
 bool AbstractTimeOut::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  if (other.isa<AbstractTimeOut>()) {
-    auto other_none = static_cast<const AbstractTimeOut *>(&other);
-    return *this == *other_none;
-  } else {
-    return false;
-  }
+  return other.isa<AbstractTimeOut>();
 }
 
 std::string AbstractTimeOut::ToString() const {
@@ -1129,15 +1066,10 @@ std::string AbstractTimeOut::ToString() const {
 bool AbstractEllipsis::operator==(const AbstractEllipsis &) const { return true; }
 
 bool AbstractEllipsis::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  if (other.isa<AbstractEllipsis>()) {
-    auto other_none = static_cast<const AbstractEllipsis *>(&other);
-    return *this == *other_none;
-  } else {
-    return false;
-  }
+  return other.isa<AbstractEllipsis>();
 }
 
 std::string AbstractEllipsis::ToString() const {
@@ -1171,31 +1103,27 @@ std::string AbstractKeywordArg::ToString() const {
   std::ostringstream buffer;
   MS_EXCEPTION_IF_NULL(arg_value_);
   buffer << type_name() << "(";
-  buffer << "key : " << arg_name_;
-  buffer << "value : " << arg_value_->ToString();
+  buffer << "key: " << arg_name_;
+  buffer << ", value: " << arg_value_->ToString();
   buffer << ")";
   return buffer.str();
 }
 
 bool AbstractKeywordArg::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-
-  if (other.isa<AbstractKeywordArg>()) {
-    auto other_tuple = static_cast<const AbstractKeywordArg *>(&other);
-    return *this == *other_tuple;
+  if (!other.isa<AbstractKeywordArg>()) {
+    return false;
   }
-  return false;
+  return *this == static_cast<const AbstractKeywordArg &>(other);
 }
 
 bool AbstractKeywordArg::operator==(const AbstractKeywordArg &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
-  MS_EXCEPTION_IF_NULL(arg_value_);
-  MS_EXCEPTION_IF_NULL(other.arg_value_);
-  return other.arg_name_ == arg_name_ && *other.arg_value_ == *arg_value_;
+  return other.arg_name_ == arg_name_ && IsEqual(other.arg_value_, arg_value_);
 }
 
 ValuePtr AbstractKeywordArg::RealBuildValue() const {
@@ -1209,41 +1137,30 @@ ValuePtr AbstractKeywordArg::RealBuildValue() const {
 }
 
 std::size_t AbstractBasePtrListHash(const AbstractBasePtrList &args_spec_list) {
-  std::size_t hash_value = 0;
-  // Hashing all elements is costly, so only take at most 4 elements into account based on
-  // some experiments.
-  constexpr auto kMaxElementsNum = 4;
-  for (size_t i = 0; (i < args_spec_list.size()) && (i < kMaxElementsNum); i++) {
-    MS_EXCEPTION_IF_NULL(args_spec_list[i]);
-    hash_value = hash_combine(hash_value, args_spec_list[i]->hash());
+  const size_t n_args = args_spec_list.size();
+  std::size_t hash_value = n_args;
+  // Hashing all elements is costly, we only calculate hash from
+  // the first few elements base on some experiments.
+  constexpr size_t kMaxElementsNum = 4;
+  for (size_t i = 0; (i < n_args) && (i < kMaxElementsNum); ++i) {
+    const auto &arg = args_spec_list[i];
+    MS_EXCEPTION_IF_NULL(arg);
+    hash_value = hash_combine(hash_value, arg->hash());
   }
   return hash_value;
 }
 
 bool AbstractBasePtrListDeepEqual(const AbstractBasePtrList &lhs, const AbstractBasePtrList &rhs) {
-  if (lhs.size() != rhs.size()) {
+  const std::size_t size = lhs.size();
+  if (size != rhs.size()) {
     return false;
   }
-  std::size_t size = lhs.size();
-  for (std::size_t i = 0; i < size; i++) {
-    MS_EXCEPTION_IF_NULL(lhs[i]);
-    MS_EXCEPTION_IF_NULL(rhs[i]);
-    if (lhs[i] == rhs[i]) {
-      continue;
-    }
-    if (!(*lhs[i] == *rhs[i])) {
+  for (std::size_t i = 0; i < size; ++i) {
+    if (!IsEqual(lhs[i], rhs[i])) {
       return false;
     }
   }
   return true;
-}
-
-std::size_t AbstractBasePtrListHasher::operator()(const AbstractBasePtrList &args_spec_list) const {
-  return AbstractBasePtrListHash(args_spec_list);
-}
-
-bool AbstractBasePtrListEqual::operator()(const AbstractBasePtrList &lhs, const AbstractBasePtrList &rhs) const {
-  return AbstractBasePtrListDeepEqual(lhs, rhs);
 }
 
 // RowTensor
@@ -1432,6 +1349,113 @@ std::string AbstractSparseTensor::ToString() const {
   return buffer.str();
 }
 
+// CSRTensor
+TypePtr AbstractCSRTensor::BuildType() const {
+  MS_EXCEPTION_IF_NULL(element());
+  TypePtr element_type = element()->BuildType();
+  return std::make_shared<CSRTensorType>(element_type);
+}
+
+AbstractBasePtr AbstractCSRTensor::Clone() const {
+  MS_EXCEPTION_IF_NULL(element());
+  auto clone = std::make_shared<AbstractCSRTensor>(element()->Clone());
+  ShapePtr shp = shape();
+  MS_EXCEPTION_IF_NULL(shp);
+  MS_EXCEPTION_IF_NULL(indptr_);
+  MS_EXCEPTION_IF_NULL(indices_);
+  MS_EXCEPTION_IF_NULL(values_);
+  MS_EXCEPTION_IF_NULL(dense_shape_);
+  auto indptr_clone = indptr_->Clone();
+  auto indices_clone = indices_->Clone();
+  auto value_clone = values_->Clone();
+  auto dense_clone = dense_shape_->Clone();
+  MS_EXCEPTION_IF_NULL(indptr_clone);
+  MS_EXCEPTION_IF_NULL(indices_clone);
+  MS_EXCEPTION_IF_NULL(value_clone);
+  MS_EXCEPTION_IF_NULL(dense_clone);
+  clone->set_shape(shp->Clone());
+  clone->set_value(GetValueTrack());
+  clone->set_indptr(indptr_clone->cast<AbstractTensorPtr>());
+  clone->set_indices(indices_clone->cast<AbstractTensorPtr>());
+  clone->set_values(value_clone->cast<AbstractTensorPtr>());
+  clone->set_dense_shape(dense_clone->cast<AbstractTuplePtr>());
+  return clone;
+}
+
+AbstractBasePtr AbstractCSRTensor::Broaden() const {
+  MS_EXCEPTION_IF_NULL(element());
+  auto broaden = std::make_shared<AbstractCSRTensor>(element()->Broaden());
+  auto shp = shape();
+  MS_EXCEPTION_IF_NULL(shp);
+  MS_EXCEPTION_IF_NULL(indptr_);
+  MS_EXCEPTION_IF_NULL(indices_);
+  MS_EXCEPTION_IF_NULL(values_);
+  MS_EXCEPTION_IF_NULL(dense_shape_);
+  auto indptr_clone = indptr_->Clone();
+  auto indices_clone = indices_->Clone();
+  auto value_clone = values_->Clone();
+  auto dense_clone = dense_shape_->Clone();
+  MS_EXCEPTION_IF_NULL(indptr_clone);
+  MS_EXCEPTION_IF_NULL(indices_clone);
+  MS_EXCEPTION_IF_NULL(value_clone);
+  MS_EXCEPTION_IF_NULL(dense_clone);
+  broaden->set_shape(shp->Clone());
+  broaden->set_value(kAnyValue);
+  broaden->set_indptr(indptr_clone->cast<AbstractTensorPtr>());
+  broaden->set_indices(indices_clone->cast<AbstractTensorPtr>());
+  broaden->set_values(value_clone->cast<AbstractTensorPtr>());
+  broaden->set_dense_shape(dense_clone->cast<AbstractTuplePtr>());
+  return broaden;
+}
+
+AbstractBasePtr AbstractCSRTensor::BroadenWithShape() const {
+  MS_EXCEPTION_IF_NULL(element());
+  auto broaden = std::make_shared<AbstractCSRTensor>(element()->Broaden());
+  auto this_shape = shape();
+  MS_EXCEPTION_IF_NULL(this_shape);
+  auto shp = this_shape->Clone();
+  MS_EXCEPTION_IF_NULL(shp);
+  shp->Broaden();
+  broaden->set_shape(shp);
+  broaden->set_value(kAnyValue);
+  MS_EXCEPTION_IF_NULL(indptr_);
+  MS_EXCEPTION_IF_NULL(indices_);
+  MS_EXCEPTION_IF_NULL(values_);
+  MS_EXCEPTION_IF_NULL(dense_shape_);
+  auto indptr_clone = indptr_->Clone();
+  auto indices_clone = indices_->Clone();
+  auto value_clone = values_->Clone();
+  auto dense_clone = dense_shape_->Clone();
+  MS_EXCEPTION_IF_NULL(indptr_clone);
+  MS_EXCEPTION_IF_NULL(indices_clone);
+  MS_EXCEPTION_IF_NULL(value_clone);
+  MS_EXCEPTION_IF_NULL(dense_clone);
+  broaden->set_indptr(indptr_clone->cast<AbstractTensorPtr>());
+  broaden->set_indices(indices_clone->cast<AbstractTensorPtr>());
+  broaden->set_values(value_clone->cast<AbstractTensorPtr>());
+  broaden->set_dense_shape(dense_clone->cast<AbstractTuplePtr>());
+  return broaden;
+}
+
+std::string AbstractCSRTensor::ToString() const {
+  std::ostringstream buffer;
+  BaseShapePtr shape_track = GetShapeTrack();
+  MS_EXCEPTION_IF_NULL(shape_track);
+  MS_EXCEPTION_IF_NULL(element());
+  auto value_track = GetValueTrack();
+  MS_EXCEPTION_IF_NULL(value_track);
+  MS_EXCEPTION_IF_NULL(indptr_);
+  MS_EXCEPTION_IF_NULL(indices_);
+  MS_EXCEPTION_IF_NULL(values_);
+  MS_EXCEPTION_IF_NULL(dense_shape_);
+  buffer << type_name() << "("
+         << "shape: " << shape_track->ToString() << ", element: " << element()->ToString()
+         << ", value_ptr: " << value_track << ", value: " << value_track->ToString() << ")"
+         << ", indptr: " << indptr_->ToString() << ", indices: " << indices_->ToString() << ", values"
+         << values_->ToString() << ", dense_shape: " << dense_shape_->ToString();
+  return buffer.str();
+}
+
 AbstractBasePtr AbstractUMonad::Join(const AbstractBasePtr &other) {
   MS_EXCEPTION_IF_NULL(other);
   if (!other->isa<AbstractUMonad>()) {
@@ -1447,7 +1471,7 @@ AbstractBasePtr AbstractUMonad::Join(const AbstractBasePtr &other) {
 bool AbstractUMonad::operator==(const AbstractUMonad &) const { return true; }
 
 bool AbstractUMonad::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
   return other.isa<AbstractUMonad>();
@@ -1468,7 +1492,7 @@ AbstractBasePtr AbstractIOMonad::Join(const AbstractBasePtr &other) {
 bool AbstractIOMonad::operator==(const AbstractIOMonad &) const { return true; }
 
 bool AbstractIOMonad::operator==(const AbstractBase &other) const {
-  if (&other == this) {
+  if (this == &other) {
     return true;
   }
   return other.isa<AbstractIOMonad>();

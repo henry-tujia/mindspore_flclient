@@ -72,7 +72,8 @@ void CPUKernelRuntime::AssignKernelAddress(session::KernelGraph *kernel_graph) {
   if (is_enable_mem_reuse) {
     MS_EXCEPTION_IF_NULL(mem_manager_);
     mem_manager_->ResetDynamicMemory();
-    AssignDynamicMemory(kernel_graph);
+    MS_EXCEPTION_IF_NULL(kernel_graph);
+    AssignDynamicMemory(*kernel_graph);
 #ifdef MEM_REUSE_DEBUG
     // Get normal graph ir for memreuse
     mindspore::memreuse::MemReuseChecker::GetInstance().CheckNormalIR(kernel_graph);
@@ -111,6 +112,7 @@ void CPUKernelRuntime::AssignValueNodeAddress(session::KernelGraph *kernel_graph
       size_t tensor_size = std::accumulate(data_shape.begin(), data_shape.end(), type_size, std::multiplies<size_t>());
       DeviceAddressPtr address = nullptr;
       address = CreateDeviceAddress(nullptr, tensor_size, kOpFormat_DEFAULT, output_type_id);
+      address->set_from_persistent_mem(tensor->is_parameter());
       MS_EXCEPTION_IF_NULL(address);
       if (tensor->data_type() == output_type_id) {
         address->ptr_ = tensor->data_c();
@@ -129,7 +131,7 @@ void CPUKernelRuntime::AssignValueNodeAddress(session::KernelGraph *kernel_graph
 
 void CPUKernelRuntime::AssignInputNodeAddress(const session::KernelGraph *kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  for (auto &item : kernel_graph->inputs()) {
+  for (auto &item : kernel_graph->input_nodes()) {
     MS_EXCEPTION_IF_NULL(item);
     if (item->isa<Parameter>()) {
       auto output_num = AnfAlgo::GetOutputTensorNum(item);
@@ -145,6 +147,7 @@ void CPUKernelRuntime::AssignInputNodeAddress(const session::KernelGraph *kernel
                             : std::accumulate(fmt_shape.begin(), fmt_shape.end(), type_size, std::multiplies<size_t>());
         auto format = AnfAlgo::GetOutputFormat(item, index);
         auto address = CreateDeviceAddress(nullptr, tensor_size, format, output_type_id);
+        address->set_from_persistent_mem(true);
         AnfAlgo::SetOutputAddr(address, index, item.get());
       }
     }
@@ -182,11 +185,11 @@ DeviceAddressPtr CPUKernelRuntime::CreateDeviceAddress(void *device_ptr, size_t 
   return std::make_shared<CPUDeviceAddress>(device_ptr, device_size, format, type_id, node_index);
 }
 
-tensor::TensorPtr CPUKernelRuntime::CreatTensorForOutput(
-  session::KernelGraph *kernel_graph, const CNodePtr &node, size_t index,
-  std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node) {
+tensor::TensorPtr CPUKernelRuntime::CreateTensorForOutput(session::KernelGraph *kernel_graph, const CNodePtr &node,
+                                                          size_t index, std::set<DeviceAddressPtr> *bound_addresses) {
+  MS_EXCEPTION_IF_NULL(kernel_graph);
   MS_EXCEPTION_IF_NULL(node);
-  MS_EXCEPTION_IF_NULL(tensor_to_node);
+  MS_EXCEPTION_IF_NULL(bound_addresses);
   size_t output_size = AnfAlgo::GetOutputTensorNum(node);
   if (index >= output_size) {
     MS_LOG(EXCEPTION) << "For node " << node->DebugString() << ", index " << index << " exceed output size "
@@ -220,32 +223,35 @@ tensor::TensorPtr CPUKernelRuntime::CreatTensorForOutput(
     tensor = std::make_shared<tensor::Tensor>(infer_type_id, temp_shape);
   }
   tensor->set_device_address(address);
-  if (bound_addresses_.find(address) == bound_addresses_.end()) {
+  tensor->set_sync_status(kNeedSyncDeviceToHostImmediately);
+  if (bound_addresses->find(address) == bound_addresses->end()) {
     if (infer_type_id != device_type_id) {
       size_t type_size = GetTypeByte(TypeIdToType(device_type_id));
       ShapeVector data_shape = tensor->shape();
       size_t tensor_size = std::accumulate(data_shape.begin(), data_shape.end(), type_size, std::multiplies<size_t>());
       address->ptr_ = static_cast<CPUMemoryManager *>(mem_manager_.get())->StaticMemMalloc(tensor_size);
       address->size_ = tensor_size;
+      address->type_id_ = device_type_id;
     } else {
-      address->ptr_ = nullptr;
+      tensor->set_sync_status(kNoNeedSync);
     }
-    (void)bound_addresses_.insert(address);
+    (void)bound_addresses->insert(address);
   }
-  tensor->set_sync_status(kNeedSyncDeviceToHostImmediately);
-  session::KernelWithIndex node_index(node, index);
   tensor->SetNeedWait(true);
   tensor->SetIsGraphOutput();
-  (*tensor_to_node)[tensor] = node_index;
   return tensor;
 }
 
-BaseRef CPUKernelRuntime::CreatTensorForOutput(session::KernelGraph *kernel_graph,
-                                               const session::KernelWithIndex &kernel_with_index,
-                                               std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node) {
+BaseRef CPUKernelRuntime::GetOrCreateTensorForOutput(
+  session::KernelGraph *kernel_graph, const session::KernelWithIndex &kernel_with_index,
+  std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node,
+  std::map<AnfNodePtr, tensor::TensorPtr> *input_param_tensor_map, std::set<DeviceAddressPtr> *bound_addresses) {
+  MS_EXCEPTION_IF_NULL(tensor_to_node);
+  MS_EXCEPTION_IF_NULL(input_param_tensor_map);
   auto &input_node = kernel_with_index.first;
   auto index = kernel_with_index.second;
   MS_EXCEPTION_IF_NULL(input_node);
+
   if (input_node->isa<CNode>()) {
     auto node = input_node->cast<CNodePtr>();
     MS_EXCEPTION_IF_NULL(node);
@@ -253,15 +259,18 @@ BaseRef CPUKernelRuntime::CreatTensorForOutput(session::KernelGraph *kernel_grap
       VectorRef ret;
       for (size_t i = 1; i < node->inputs().size(); i++) {
         auto item_with_index = AnfAlgo::VisitKernelWithReturnType(node->input(i), 0);
-        auto out = CreatTensorForOutput(kernel_graph, item_with_index, tensor_to_node);
+        auto out = GetOrCreateTensorForOutput(kernel_graph, item_with_index, tensor_to_node, input_param_tensor_map,
+                                              bound_addresses);
         ret.push_back(out);
       }
       return ret;
     }
-    return CreatTensorForOutput(kernel_graph, node, index, tensor_to_node);
+    auto tensor = CreateTensorForOutput(kernel_graph, node, index, bound_addresses);
+    (*tensor_to_node)[tensor] = kernel_with_index;
+    return tensor;
   } else if (input_node->isa<Parameter>()) {
-    auto iter = input_param_tensor_map_.find(input_node);
-    if (iter != input_param_tensor_map_.end()) {
+    auto iter = input_param_tensor_map->find(input_node);
+    if (iter != input_param_tensor_map->end()) {
       return iter->second;
     }
   } else if (input_node->isa<ValueNode>()) {
@@ -278,31 +287,32 @@ void CPUKernelRuntime::CreateOutputTensors(session::KernelGraph *kernel_graph,
   MS_EXCEPTION_IF_NULL(kernel_graph);
   MS_EXCEPTION_IF_NULL(outputs);
   MS_EXCEPTION_IF_NULL(tensor_to_node);
-  auto &input_nodes = kernel_graph->inputs();
+  auto &input_nodes = kernel_graph->input_nodes();
   if (input_nodes.size() != inputs.size()) {
     MS_LOG(EXCEPTION) << "Input size " << inputs.size() << " is not equal to input node size " << input_nodes.size();
   }
 
+  std::map<AnfNodePtr, tensor::TensorPtr> input_param_tensor_map;
   size_t input_idx = 0;
   for (auto &item : input_nodes) {
     MS_EXCEPTION_IF_NULL(item);
-    input_param_tensor_map_[item] = inputs[input_idx];
+    input_param_tensor_map[item] = inputs[input_idx];
     input_idx++;
   }
 
-  bound_addresses_.clear();
+  std::set<DeviceAddressPtr> bound_addresses;
   auto output_nodes = kernel_graph->outputs();
   for (const auto &item : output_nodes) {
     auto item_with_index = AnfAlgo::VisitKernelWithReturnType(item, 0, false);
-    auto out = CreatTensorForOutput(kernel_graph, item_with_index, tensor_to_node);
+    auto out = GetOrCreateTensorForOutput(kernel_graph, item_with_index, tensor_to_node, &input_param_tensor_map,
+                                          &bound_addresses);
     outputs->push_back(std::move(out));
   }
-  input_param_tensor_map_.clear();
 }
 
 void CPUKernelRuntime::BindInputTensorAddressPtr(const session::KernelGraph &kernel_graph,
                                                  const std::vector<tensor::TensorPtr> &inputs) {
-  auto &input_nodes = kernel_graph.inputs();
+  auto &input_nodes = kernel_graph.input_nodes();
   if (input_nodes.size() != inputs.size()) {
     MS_LOG(EXCEPTION) << "Input size" << inputs.size() << " is not equal to input node size " << input_nodes.size();
   }
@@ -368,7 +378,7 @@ void CPUKernelRuntime::BindOutputTensorAddressPtr(const VectorRef *outputs) {
         continue;
       }
       auto address_ptr = std::dynamic_pointer_cast<device::DeviceAddress>(address);
-      if (address_ptr->ptr_ == nullptr || tensor->sync_status() == kNoNeedSync) {
+      if (address_ptr->type_id_ == tensor->data_type_c() && tensor->sync_status() == kNoNeedSync) {
         address_ptr->ptr_ = tensor->data_c();
       }
       address_ptr->ref_count_ = INIT_NODE_REF;
@@ -379,6 +389,7 @@ void CPUKernelRuntime::BindOutputTensorAddressPtr(const VectorRef *outputs) {
 void CPUKernelRuntime::BindInputOutput(session::KernelGraph *kernel_graph, const std::vector<tensor::TensorPtr> &inputs,
                                        VectorRef *outputs) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
+  MS_EXCEPTION_IF_NULL(outputs);
   BindInputTensorAddressPtr(*kernel_graph, inputs);
   BindOutputTensorAddressPtr(outputs);
 }
@@ -405,16 +416,15 @@ void CPUKernelRuntime::DecreaseSummaryRefCount(const session::NamedSummaryOutput
   static_cast<CPUMemoryManager *>(mem_manager_.get())->DecreaseSummaryRefCount(summary_outputs);
 }
 
-bool CPUKernelRuntime::Run(session::KernelGraph *kernel_graph, bool) {
-  MS_EXCEPTION_IF_NULL(kernel_graph);
-  static_cast<CPUMemoryManager *>(mem_manager_.get())->IncreaseAddressRefCount(kernel_graph);
+bool CPUKernelRuntime::Run(const session::KernelGraph &kernel_graph, bool) {
+  static_cast<CPUMemoryManager *>(mem_manager_.get())->IncreaseAddressRefCount(&kernel_graph);
 
-  auto kernels = kernel_graph->execution_order();
+  auto kernels = kernel_graph.execution_order();
 
 #ifndef ENABLE_SECURITY
   auto &dump_json_parser = DumpJsonParser::GetInstance();
   bool iter_dump_flag = dump_json_parser.GetIterDumpFlag();
-  uint32_t graph_id = kernel_graph->graph_id();
+  uint32_t graph_id = kernel_graph.graph_id();
 #endif
 #ifdef ENABLE_DUMP_IR
   std::string name = "mem_address_list";
@@ -466,7 +476,7 @@ bool CPUKernelRuntime::Run(session::KernelGraph *kernel_graph, bool) {
     try {
       ret = kernel_mod->Launch(kernel_inputs, kernel_workspaces, kernel_outputs, 0);
     } catch (std::exception &e) {
-      MS_LOG(EXCEPTION) << e.what() << "\nTrace:" << trace::DumpSourceLines(kernel);
+      MS_LOG(EXCEPTION) << e.what() << trace::DumpSourceLines(kernel);
     }
 #ifndef ENABLE_SECURITY
     if (iter_dump_flag) {
@@ -480,7 +490,7 @@ bool CPUKernelRuntime::Run(session::KernelGraph *kernel_graph, bool) {
 #ifdef ENABLE_DUMP_IR
       mindspore::RDR::TriggerAll();
 #endif
-      MS_LOG(EXCEPTION) << "Launch kernel failed. Trace:" << trace::DumpSourceLines(kernel);
+      MS_LOG(EXCEPTION) << "Launch kernel failed." << trace::DumpSourceLines(kernel);
     }
     static_cast<CPUMemoryManager *>(mem_manager_.get())->DecreaseAddressRefCount(kernel);
 #ifdef ENABLE_PROFILE
@@ -490,7 +500,8 @@ bool CPUKernelRuntime::Run(session::KernelGraph *kernel_graph, bool) {
   }
 #ifndef ENABLE_SECURITY
   if (iter_dump_flag) {
-    CPUE2eDump::DumpParametersAndConst(kernel_graph, graph_id);
+    CPUE2eDump::DumpParameters(&kernel_graph, graph_id);
+    CPUE2eDump::DumpConstants(&kernel_graph, graph_id);
   }
   if (graph_id == 0) {
     dump_json_parser.UpdateDumpIter();

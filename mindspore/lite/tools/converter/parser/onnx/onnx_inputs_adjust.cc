@@ -22,6 +22,7 @@
 #include "ops/resize.h"
 #include "include/errorcode.h"
 #include "nnacl/op_base.h"
+#include "tools/optimizer/common/gllo_utils.h"
 
 namespace mindspore::lite {
 namespace {
@@ -31,6 +32,7 @@ STATUS AddAttrToInput(const FuncGraphPtr &func_graph, const CNodePtr &cnode, int
                       const std::string &attr_name) {
   MS_ASSERT(func_graph != nullptr);
   MS_ASSERT(cnode != nullptr);
+  MS_CHECK_TRUE_RET(!cnode->inputs().empty(), lite::RET_ERROR);
   if (!opt::CheckInputs(cnode)) {
     MS_LOG(ERROR) << "input is invalid.";
     return lite::RET_INPUT_TENSOR_ERROR;
@@ -170,7 +172,7 @@ STATUS ReplaceTransposeWithGraphInput(const FuncGraphPtr &func_graph, const CNod
   MS_ASSERT(func_graph != nullptr);
   MS_ASSERT(cnode != nullptr);
   if (cnode->inputs().size() != opt::kInputSizeThree) {
-    MS_LOG(ERROR) << "onnx transpose input size is 2, now is " << (cnode->inputs().size() - 1);
+    MS_LOG(ERROR) << "onnx transpose input size should be 2, now is " << (cnode->inputs().size() - 1);
     return lite::RET_ERROR;
   }
   auto anf_node = cnode->input(1);
@@ -196,6 +198,7 @@ STATUS ReplaceTransposeWithGraphInput(const FuncGraphPtr &func_graph, const CNod
     return lite::RET_OK;
   }
   auto perm_anf = cnode->input(opt::kInputIndexTwo);
+  MS_ASSERT(perm_anf != nullptr);
   auto perm_param = perm_anf->cast<ParameterPtr>();
   if (perm_param == nullptr || !perm_param->has_default() ||
       !utils::isa<tensor::TensorPtr>(perm_param->default_param())) {
@@ -203,6 +206,7 @@ STATUS ReplaceTransposeWithGraphInput(const FuncGraphPtr &func_graph, const CNod
     return lite::RET_OK;
   }
   auto perm_value = perm_param->default_param()->cast<tensor::TensorPtr>();
+  MS_ASSERT(perm_value != nullptr);
   if (perm_value->shape().empty()) {
     MS_LOG(ERROR) << "transpose second input is invalid.";
     return lite::RET_ERROR;
@@ -229,6 +233,7 @@ STATUS ReplaceTransposeWithGraphInput(const FuncGraphPtr &func_graph, const CNod
 
 STATUS AdjustStridedSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode) {
   MS_ASSERT(func_graph != nullptr);
+  auto manager = func_graph->manager();
   MS_ASSERT(cnode != nullptr);
   if (!opt::CheckInputs(cnode)) {
     MS_LOG(ERROR) << "input is invalid.";
@@ -246,9 +251,11 @@ STATUS AdjustStridedSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode)
     MS_LOG(ERROR) << "onnx slice's input size need to be >2, now is " << (cnode->inputs().size() - 1);
     return lite::RET_INPUT_TENSOR_ERROR;
   }
-  int size = 0;
+  int size = 1;
   for (size_t i = 2; i < cnode->inputs().size(); ++i) {
-    const auto &param_node = cnode->input(opt::kInputIndexTwo)->cast<ParameterPtr>();
+    auto param_anf = cnode->input(opt::kInputIndexTwo);
+    MS_ASSERT(param_anf != nullptr);
+    const auto &param_node = param_anf->cast<ParameterPtr>();
     if (param_node == nullptr || !param_node->has_default()) {
       continue;
     }
@@ -258,10 +265,13 @@ STATUS AdjustStridedSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode)
       return lite::RET_ERROR;
     }
     auto shape = default_data->shape();
-    size = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>());
+    for (size_t j = 0; j < shape.size(); j++) {
+      MS_CHECK_GE(shape.at(j), 0, RET_ERROR);
+      MS_CHECK_FALSE_MSG(INT_MUL_OVERFLOW(size, static_cast<int>(shape.at(j))), RET_ERROR, "Int mul overflow.");
+      size = size * static_cast<int>(shape.at(j));
+    }
     break;
   }
-  auto inputs = cnode->inputs();
   switch (cnode->inputs().size()) {
     case opt::kInputSizeFour: {
       std::vector<int32_t> axes;
@@ -272,7 +282,8 @@ STATUS AdjustStridedSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode)
       if (new_param_node == nullptr) {
         MS_LOG(ERROR) << "new a parameter node failed.";
       }
-      inputs.push_back(new_param_node);
+      manager->AddEdge(cnode, new_param_node);
+      // fall through
     }
     case opt::kInputSizeFive: {
       std::vector<int32_t> steps;
@@ -283,19 +294,20 @@ STATUS AdjustStridedSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode)
       if (new_param_node == nullptr) {
         MS_LOG(ERROR) << "new a parameter node failed.";
       }
-      inputs.push_back(new_param_node);
+      manager->AddEdge(cnode, new_param_node);
       break;
     }
     default:
       MS_LOG(DEBUG) << "no need to adjust.";
       return lite::RET_NO_CHANGE;
   }
-  cnode->set_inputs(inputs);
   return lite::RET_OK;
 }
 
-STATUS AdjustResize(const CNodePtr &cnode) {
+STATUS AdjustResize(bool *need_update_manager, const CNodePtr &cnode) {
   MS_ASSERT(cnode != nullptr);
+  MS_ASSERT(func_graph != nullptr);
+  MS_CHECK_TRUE_RET(!cnode->inputs().empty(), lite::RET_ERROR);
   auto node = cnode->input(0);
   MS_ASSERT(node != nullptr);
   auto resize_prim = GetValueNode<std::shared_ptr<ops::Resize>>(node);
@@ -310,6 +322,7 @@ STATUS AdjustResize(const CNodePtr &cnode) {
     auto new_input = cnode->inputs();
     new_input.erase(new_input.begin() + opt::kInputIndexTwo);
     cnode->set_inputs(new_input);
+    *need_update_manager = true;
   } else if (cnode->inputs().size() > opt::kInputSizeFour) {
     std::vector<AnfNodePtr> new_resize_inputs;
     new_resize_inputs.push_back(cnode->inputs()[0]);
@@ -349,6 +362,7 @@ STATUS AdjustResize(const CNodePtr &cnode) {
     }
     new_resize_inputs.push_back(cnode->inputs()[shape_index]);
     cnode->set_inputs(new_resize_inputs);
+    *need_update_manager = true;
   }
   return lite::RET_OK;
 }
@@ -363,6 +377,7 @@ bool OnnxInputAdjust::Adjust(const FuncGraphPtr &func_graph) {
   }
   auto node_list = TopoSort(func_graph->get_return());
   int status = RET_OK;
+  bool need_update_manager = false;
   for (auto &node : node_list) {
     if (utils::isa<ParameterPtr>(node)) {
       auto param_node = node->cast<ParameterPtr>();
@@ -384,7 +399,7 @@ bool OnnxInputAdjust::Adjust(const FuncGraphPtr &func_graph) {
     } else if (opt::CheckPrimitiveType(node, prim::kPrimStridedSlice)) {
       status = AdjustStridedSlice(func_graph, cnode);
     } else if (opt::CheckPrimitiveType(node, prim::kPrimResize)) {
-      status = AdjustResize(cnode);
+      status = AdjustResize(&need_update_manager, cnode);
     } else {
       continue;
     }
@@ -392,6 +407,9 @@ bool OnnxInputAdjust::Adjust(const FuncGraphPtr &func_graph) {
       MS_LOG(ERROR) << "adjust input pass is failed.";
       return false;
     }
+  }
+  if (need_update_manager) {
+    mindspore::opt::UpdateManager(func_graph);
   }
   return true;
 }

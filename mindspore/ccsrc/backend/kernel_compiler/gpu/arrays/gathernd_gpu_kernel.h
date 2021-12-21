@@ -44,6 +44,9 @@ class GatherNdGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     S *indices_addr = GetDeviceAddress<S>(inputs, 1);
@@ -68,17 +71,24 @@ class GatherNdGpuFwdKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
     memcpy_flag_ = false;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(EXCEPTION) << "Argument number is " << input_num << ", but GatherNdGpuFwdKernel needs 2.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
     input_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     indices_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     output_shapes_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
-
+    is_null_input_ = CHECK_SHAPE_NULL(input_shapes_, kernel_name, "input_x") ||
+                     CHECK_SHAPE_NULL(indices_shapes_, kernel_name, "indices") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     Reshape();
 
     size_t dim_indices_last = dims_[dims_.size() - 1];
@@ -97,14 +107,18 @@ class GatherNdGpuFwdKernel : public GpuKernel {
     const size_t strides_len = sizeof(S) * batch_strides_.size();
     void *dev_batch_strides_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(strides_len);
     if (dev_batch_strides_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc dev_batch_strides_work, size: " << strides_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name
+                        << "', the memory alloc of dev_batch_strides_work should be successful, but failed, got size: "
+                        << strides_len;
     }
     dev_batch_strides_ = static_cast<S *>(dev_batch_strides_work);
 
     const size_t indices_len = sizeof(S) * batch_indices_.size();
     void *dev_batch_indices_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(indices_len);
     if (dev_batch_indices_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc dev_batch_indices_work, size: " << indices_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name
+                        << "', the memory alloc of dev_batch_indices_work should be successful, but failed, got size: "
+                        << indices_len;
     }
     dev_batch_indices_ = static_cast<S *>(dev_batch_indices_work);
 
@@ -158,6 +172,7 @@ class GatherNdGpuFwdKernel : public GpuKernel {
   S *dev_batch_strides_;
   S *dev_batch_indices_;
   bool memcpy_flag_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

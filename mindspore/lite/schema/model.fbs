@@ -24,8 +24,8 @@ file_identifier "MSL2";
 file_extension "ms";
 
 table QuantParam {
-    scale: double;
-    zeroPoint: int;
+    scale: double = 1;
+    zeroPoint: int = 0;
     min: double = 0;
     max: double = 0;
     narrowRange: bool = true;
@@ -45,6 +45,13 @@ enum WeightQunatCompressType: int {
     FSE
 }
 
+table ExternalData {
+    checkSum: string;
+    location: string;
+    offset: int64 = 0;
+    length: int64 = -1;
+}
+
 table Tensor {
     nodeType: int;
     // data type
@@ -60,6 +67,7 @@ table Tensor {
     name: string;
     enableHuffmanCode: bool = false;
     weightQunatCompressType: WeightQunatCompressType = NONE;
+    externalData: [ExternalData];
 }
 
 enum QuantType: int {

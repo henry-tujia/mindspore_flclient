@@ -31,6 +31,8 @@
 namespace mindspore {
 enum NCHW_SHAPE { NCHW_INVALID = -1, NCHW_N = 0, NCHW_C = 1, NCHW_H = 2, NCHW_W = 3 };
 enum NHWC_SHAPE { NHWC_N = 0, NHWC_H = 1, NHWC_W = 2, NHWC_C = 3 };
+inline const std::vector<int> NHWC2NCHW_PERM = {0, 3, 1, 2};
+inline const std::vector<int> NCHW2NHWC_PERM = {0, 2, 3, 1};
 
 enum NPU_ACTIVATION_MODE {
   ACTIVATION_INVALID = -1,
@@ -70,15 +72,15 @@ void Float32ToFloat16(const float *__restrict input, float16_t *__restrict outpu
 void Float16ToFloat32(const float16_t *__restrict input, float *__restrict output, int number);
 #endif
 
-std::shared_ptr<ge::Tensor> ConverterToNPUTensor(mindspore::MSTensor src);
+std::shared_ptr<ge::Tensor> ConverterToNPUTensor(mindspore::MSTensor src, bool is_expand_4d = false);
 
-hiai::op::Data *ConverterToNPUData(mindspore::MSTensor src, const std::string &name);
+hiai::op::Data *ConverterToNPUData(const mindspore::MSTensor &src, const std::string &name);
 
 ge::Format ConverterToNPUFormat(schema::Format format);
 
 ge::DataType ConverterToNPUDataType(DataType type_id);
 
-ge::Shape ConverterToNPUShape(const std::vector<int64_t> &src_shape);
+ge::Shape ConverterToNPUShape(const std::vector<int64_t> &src_shape, bool is_expand_4d = false);
 
 int ConverterToNPUEltwiseMode(schema::EltwiseMode mode);
 
@@ -86,6 +88,8 @@ int ConverterToNPUActivationMode(schema::ActivationType type);
 
 int TransFormAxis(int axis);
 
-bool IsContainMSTensor(const std::vector<mindspore::MSTensor> &tensor_vec, const mindspore::MSTensor tensor);
+void AssistDataNHWC2NCHW(int *data, size_t unit_size);
+
+int MaskDataNHWC2NCHW(int mask);
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_NPU_NPU_CONVERTER_UITLS_H_

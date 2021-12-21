@@ -35,7 +35,9 @@ Worker::~Worker() {
 void Worker::CreateThread() { thread_ = std::thread(&Worker::Run, this); }
 
 void Worker::SetAffinity() {
-#ifdef BIND_CORE
+#ifdef _WIN32
+  SetWindowsSelfAffinity(core_id_);
+#elif defined(BIND_CORE)
 #ifdef __ANDROID__
   int ret = sched_setaffinity(gettid(), sizeof(cpu_set_t), &mask_);
   if (ret != THREAD_OK) {
@@ -54,11 +56,26 @@ void Worker::SetAffinity() {
 #endif
 }
 
+void Worker::InitWorkerMask(const std::vector<int> &core_list, size_t workers_size) {
+#ifdef _WIN32
+  static uint32_t windows_core_index = 0;
+  core_id_ = windows_core_index++;
+#elif defined(BIND_CORE)
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  if (core_list.size() > 0) {
+    CPU_SET(core_list[workers_size % core_list.size()], &mask);
+  }
+  this->set_mask(mask);
+#endif
+  return;
+}
+
 void Worker::Run() {
   SetAffinity();
 #if !defined(__APPLE__) && !defined(SUPPORT_MSVC)
   static std::atomic_int index = {0};
-  pthread_setname_np(pthread_self(), ("KernelThread_" + std::to_string(index++)).c_str());
+  (void)pthread_setname_np(pthread_self(), ("KernelThread_" + std::to_string(index++)).c_str());
 #endif
   while (alive_) {
     if (RunLocalKernelTask()) {
@@ -66,7 +83,7 @@ void Worker::Run() {
     } else {
       YieldAndDeactive();
     }
-    if (spin_count_ >= max_spin_count_) {
+    if (spin_count_ > max_spin_count_) {
       WaitUntilActive();
       spin_count_ = 0;
     }
@@ -81,7 +98,7 @@ bool Worker::RunLocalKernelTask() {
   int task_id = task_id_.load(std::memory_order_consume);
   task->status |= task->func(task->content, task_id, lhs_scale_, rhs_scale_);
   task_.store(nullptr, std::memory_order_relaxed);
-  ++task->finished;
+  (void)++task->finished;
   return true;
 }
 
@@ -96,7 +113,8 @@ void Worker::YieldAndDeactive() {
 
 void Worker::WaitUntilActive() {
   std::unique_lock<std::mutex> _l(mutex_);
-  cond_var_.wait(_l, [&] { return status_ == kThreadBusy || !alive_; });
+  cond_var_.wait(_l, [&] { return status_ == kThreadBusy || active_num_ > 0 || !alive_; });
+  active_num_--;
 }
 
 void Worker::set_scale(float lhs_scale, float rhs_scale) {
@@ -114,6 +132,15 @@ void Worker::Active(Task *task, int task_id) {
   cond_var_.notify_one();
 }
 
+void Worker::Active() {
+  {
+    std::lock_guard<std::mutex> _l(mutex_);
+    active_num_++;
+    status_ = kThreadBusy;
+  }
+  cond_var_.notify_one();
+}
+
 bool Worker::available() {
   int expected = kThreadIdle;
   return status_.compare_exchange_strong(expected, kThreadHeld);
@@ -125,8 +152,11 @@ ThreadPool::~ThreadPool() {
     worker = nullptr;
   }
   workers_.clear();
-  delete affinity_;
-  affinity_ = nullptr;
+
+  if (affinity_ != nullptr) {
+    delete affinity_;
+    affinity_ = nullptr;
+  }
   THREAD_INFO("destruct success");
 }
 
@@ -134,22 +164,15 @@ int ThreadPool::CreateThreads(size_t thread_num, const std::vector<int> &core_li
   size_t core_num = std::thread::hardware_concurrency();
   thread_num = thread_num < core_num ? thread_num : core_num;
   THREAD_INFO("ThreadInfo, Num: [%zu], CoreNum: [%zu]", thread_num, core_num);
-  if (thread_num <= 0) {
-    THREAD_ERROR("thread num is invalid");
-    return THREAD_ERROR;
+  if (thread_num == 0) {
+    THREAD_INFO("Current thread as working thread.");
+    return THREAD_OK;
   }
   std::lock_guard<std::mutex> _l(pool_mutex_);
   for (size_t i = 0; i < thread_num; ++i) {
     auto worker = new (std::nothrow) Worker();
     THREAD_ERROR_IF_NULL(worker);
-#ifdef BIND_CORE
-    cpu_set_t mask;
-    CPU_ZERO(&mask);
-    if (core_list.size() > 0) {
-      CPU_SET(core_list[workers_.size() % core_list.size()], &mask);
-    }
-    worker->set_mask(mask);
-#endif
+    worker->InitWorkerMask(core_list, workers_.size());
     worker->CreateThread();
     workers_.push_back(worker);
     THREAD_INFO("create kernel thread[%zu]", i);
@@ -196,7 +219,7 @@ void ThreadPool::SyncRunTask(Task *task, int start_num, int task_num) const {
     float rhs_scale = (i + 1) * per_scale;
     rhs_scale = i == task_num - 1 ? kMaxScale : rhs_scale;
     task->status |= task->func(task->content, i, lhs_scale, rhs_scale);
-    ++task->finished;
+    (void)++task->finished;
   }
 }
 
@@ -241,6 +264,9 @@ void ThreadPool::CalculateScales(const std::vector<Worker *> &assigned, int sum_
   // divide task according to computing power(core frequency)
   float lhs_scale = 0;
   float rhs_scale = 0;
+  if (sum_frequency == 0) {
+    return;
+  }
   for (const auto &worker : assigned) {
     THREAD_RETURN_IF_NULL(worker);
     rhs_scale += worker->frequency() * 1.0 / sum_frequency;
@@ -257,8 +283,14 @@ void ThreadPool::ActiveWorkers(const std::vector<Worker *> &workers, Task *task,
     THREAD_RETURN_IF_NULL(worker);
     worker->Active(task, i);
     if (worker == curr) {
-      worker->RunLocalKernelTask();
+      (void)worker->RunLocalKernelTask();
     }
+  }
+}
+
+void ThreadPool::ActiveWorkers() const {
+  for (auto &worker : workers_) {
+    worker->Active();
   }
 }
 
@@ -272,6 +304,7 @@ Worker *ThreadPool::CurrentWorker() const {
 }
 
 int ThreadPool::InitAffinityInfo() {
+#ifdef BIND_CORE
   affinity_ = new (std::nothrow) CoreAffinity();
   THREAD_ERROR_IF_NULL(affinity_);
   int ret = affinity_->InitHardwareCoreInfo();
@@ -280,6 +313,7 @@ int ThreadPool::InitAffinityInfo() {
     affinity_ = nullptr;
     return THREAD_ERROR;
   }
+#endif
   return THREAD_OK;
 }
 
@@ -287,33 +321,27 @@ int ThreadPool::SetCpuAffinity(BindMode bind_mode) {
   if (workers_.empty()) {
     return THREAD_ERROR;
   }
-#ifdef BIND_CORE
-  THREAD_ERROR_IF_NULL(affinity_);
-  return affinity_->BindThreads(workers_, bind_mode);
-#else
+  if (affinity_ != nullptr) {
+    return affinity_->BindThreads(workers_, bind_mode);
+  }
   return THREAD_OK;
-#endif  // BIND_CORE
 }
 
 int ThreadPool::SetCpuAffinity(const std::vector<int> &core_list) {
   if (workers_.empty()) {
     return THREAD_ERROR;
   }
-#ifdef BIND_CORE
-  THREAD_ERROR_IF_NULL(affinity_);
-  return affinity_->BindThreads(workers_, core_list);
-#else
+  if (affinity_ != nullptr) {
+    return affinity_->BindThreads(workers_, core_list);
+  }
   return THREAD_OK;
-#endif  // BIND_CORE
 }
 
 int ThreadPool::SetProcessAffinity(BindMode bind_mode) const {
-#ifdef BIND_CORE
-  THREAD_ERROR_IF_NULL(affinity_);
-  return affinity_->BindProcess(bind_mode);
-#else
+  if (affinity_ != nullptr) {
+    return affinity_->BindProcess(bind_mode);
+  }
   return THREAD_OK;
-#endif  // BIND_CORE
 }
 
 void ThreadPool::SetSpinCountMaxValue() {
@@ -332,6 +360,20 @@ void ThreadPool::SetSpinCountMinValue() {
   return;
 }
 
+void ThreadPool::SetMaxSpinCount(int spin_count) {
+  if (spin_count <= 0) {
+    return;
+  }
+  max_spin_count_ = spin_count;
+}
+
+void ThreadPool::SetMinSpinCount(int spin_count) {
+  if (spin_count <= 0) {
+    return;
+  }
+  min_spin_count_ = spin_count;
+}
+
 ThreadPool *ThreadPool::CreateThreadPool(size_t thread_num, const std::vector<int> &core_list) {
   ThreadPool *pool = new (std::nothrow) ThreadPool();
   if (pool == nullptr) {
@@ -342,13 +384,11 @@ ThreadPool *ThreadPool::CreateThreadPool(size_t thread_num, const std::vector<in
     delete pool;
     return nullptr;
   }
-#ifdef BIND_CORE
   ret = pool->InitAffinityInfo();
   if (ret != THREAD_OK) {
     delete pool;
     return nullptr;
   }
-#endif  // BIND_CORE
   return pool;
 }
 }  // namespace mindspore

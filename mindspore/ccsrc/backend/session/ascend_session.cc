@@ -18,10 +18,10 @@
 #include <map>
 #include <tuple>
 #include <set>
-#include <unordered_set>
 #include <string>
 #include <list>
 
+#include "utils/hash_set.h"
 #include "base/core_ops.h"
 #include "base/base_ref_utils.h"
 #include "ir/tensor.h"
@@ -32,20 +32,9 @@
 #include "runtime/device/ascend/kernel_build_ascend.h"
 #include "runtime/device/ascend/ascend_kernel_runtime.h"
 #include "runtime/device/ascend/profiling/profiling_manager.h"
+#include "runtime/device/ascend/ascend_memory_adapter.h"
 #include "backend/optimizer/ascend/ascend_backend_optimization.h"
 #include "backend/optimizer/common/common_backend_optimization.h"
-#include "backend/optimizer/ascend/mindir/space_batch_nd_attr_update.h"
-#include "backend/optimizer/ascend/mindir/dropout_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/maxpool_to_maxpool_with_argmax.h"
-#include "backend/optimizer/ascend/mindir/maxpool_with_argmax_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/conv2d_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/optimizer_unify_output.h"
-#include "backend/optimizer/ascend/mindir/fake_learned_scale_quant_grad_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/sparse_softmax_cross_entropy_with_logits_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/slice_grad_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/avg_pool_grad_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/bn_grad_unify_mindir.h"
-#include "backend/optimizer/ascend/mindir/all_to_all_unify_mindir.h"
 #include "runtime/device/kernel_adjust.h"
 #include "runtime/device/ascend/ascend_stream_assign.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -58,6 +47,7 @@
 #ifndef ENABLE_SECURITY
 #include "debug/data_dump/dump_json_parser.h"
 #include "debug/data_dump/e2e_dump.h"
+#include "debug/debugger/debugger_utils.h"
 #endif
 #include "debug/anf_ir_utils.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_optimization.h"
@@ -72,6 +62,7 @@
 #include "debug/debugger/proto_exporter_stub.h"
 #endif
 #include "common/util/error_manager/error_manager.h"
+#include "toolchain/adx_datadump_callback.h"
 #include "toolchain/adx_datadump_server.h"
 #ifdef ENABLE_DUMP_IR
 #include "debug/rdr/running_data_recorder.h"
@@ -86,20 +77,14 @@
 #ifndef ENABLE_SECURITY
 #include "profiler/device/ascend/memory_profiling.h"
 
+using Adx::AdxRegDumpProcessCallBack;
 using mindspore::device::ascend::ProfilingManager;
 using mindspore::profiler::ascend::MemoryProfiling;
 #endif
 
 namespace mindspore {
 namespace session {
-const size_t kInvalidIndex = SIZE_MAX;
-const size_t kLoopSinkTensorNum = 3;
-const size_t kLoopSinkCurLoopIndex = 0;
-const size_t kLoopSinkNextLoopIndex = 1;
-const size_t kLoopSinkEpochIndex = 2;
 const size_t kLabelNumsThreshold = 1023;
-constexpr char SR_TAG[] = "sr_tag";
-constexpr char BACKWARD[] = "backward";
 constexpr auto kUnknowErrorString = "Unknown error occurred";
 namespace {
 #ifndef ENABLE_SECURITY
@@ -135,9 +120,13 @@ void DumpGraphExeOrder(const std::vector<CNodePtr> &execution_order, const std::
 }
 #endif
 
-bool IsVMGraphTaskSink() {
+// Enable device_to_device copy.
+bool EnableDeviceCopy() {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
+  if (common::GetEnv("ENABLE_DEVICE_COPY") != "1") {
+    return false;
+  }
   if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) != kGraphMode) {
     return false;
   }
@@ -152,8 +141,10 @@ bool IsVMGraphTaskSink() {
 
 // Handle control flow by auto-monad.
 void HandleControlFlow(NotNull<KernelGraphPtr> graph) {
+  MS_LOG(INFO) << "Status record: start handle control flow. graph id: " << graph->graph_id();
   AscendAutoMonad auto_monad(graph);
   auto_monad.Run();
+  MS_LOG(INFO) << "Status record: end handle control flow. graph id: " << graph->graph_id();
 }
 
 void SetStreamDistinctionLabel(const KernelGraphPtr &graph, uint32_t label, bool is_override) {
@@ -208,8 +199,11 @@ void GenOpOutputStubTensor(const KernelGraphPtr &single_op_graph, const CNodePtr
     device_info.format_ = output_format;
     device_info.data_type_ = TypeIdToType(output_type);
     stub_output_tensor->set_device_info(device_info);
-    device::DeviceAddressPtr device_address =
-      std::make_shared<device::ascend::AscendDeviceAddress>(nullptr, 0, output_format, output_type);
+    auto ms_context = MsContext::GetInstance();
+    MS_EXCEPTION_IF_NULL(ms_context);
+    auto device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
+    device::DeviceAddressPtr device_address = std::make_shared<device::ascend::AscendDeviceAddress>(
+      nullptr, 0, output_format, output_type, kAscendDevice, device_id);
     stub_output_tensor->set_device_address(device_address);
     output_tensor_info.output_stub_tensor = stub_output_tensor;
     auto kernel_info = dynamic_cast<const device::KernelInfo *>(output_node->kernel_info());
@@ -219,103 +213,20 @@ void GenOpOutputStubTensor(const KernelGraphPtr &single_op_graph, const CNodePtr
   }
 }
 
-size_t LoadCtrlInputTensor(const std::shared_ptr<KernelGraph> &graph, std::vector<tensor::TensorPtr> *inputs) {
-  MS_EXCEPTION_IF_NULL(graph);
-  MS_LOG(DEBUG) << "Load kInputCtrlTensors";
-  auto inputs_params = graph->input_ctrl_tensors();
-  if (inputs_params == nullptr) {
-    return 0;
-  }
-  if (inputs_params->size() < kLoopSinkTensorNum) {
-    MS_LOG(EXCEPTION) << "Illegal inputs_params size";
-  }
-  // update current loop tensor to 0 per iterator
-  auto cur_loop_tensor = (*inputs_params)[kLoopSinkCurLoopIndex];
-  MS_EXCEPTION_IF_NULL(cur_loop_tensor);
-  auto *cur_val = static_cast<int32_t *>(cur_loop_tensor->data_c());
-  MS_EXCEPTION_IF_NULL(cur_val);
-  *cur_val = 0;
-  cur_loop_tensor->set_sync_status(kNeedSyncHostToDevice);
-  // set loop_count to zero
-  if (inputs) {
-    inputs->push_back(cur_loop_tensor);
-  } else {
-    auto device_address = cur_loop_tensor->device_address();
-    if (!device_address->SyncHostToDevice(cur_loop_tensor->shape(), LongToSize(cur_loop_tensor->data().nbytes()),
-                                          cur_loop_tensor->data_type(), cur_loop_tensor->data_c(),
-                                          cur_loop_tensor->device_info().host_format_)) {
-      MS_LOG(EXCEPTION) << "SyncHostToDevice failed for cur_loop_tensor needed for async dump.";
-    }
-  }
-
-  // update next loop tensor to 0 per iterator
-  auto next_loop_tensor = (*inputs_params)[kLoopSinkNextLoopIndex];
-  MS_EXCEPTION_IF_NULL(next_loop_tensor);
-  auto *next_val = static_cast<int32_t *>(next_loop_tensor->data_c());
-  MS_EXCEPTION_IF_NULL(next_val);
-  *next_val = 0;
-  next_loop_tensor->set_sync_status(kNeedSyncHostToDevice);
-  // set loop_count to zero
-  if (inputs) {
-    inputs->push_back(next_loop_tensor);
-  } else {
-    auto device_address = next_loop_tensor->device_address();
-    if (!device_address->SyncHostToDevice(next_loop_tensor->shape(), LongToSize(next_loop_tensor->data().nbytes()),
-                                          next_loop_tensor->data_type(), next_loop_tensor->data_c(),
-                                          next_loop_tensor->device_info().host_format_)) {
-      MS_LOG(EXCEPTION) << "SyncHostToDevice failed for next_loop_tensor needed for async dump.";
-    }
-  }
-
-  auto epoch_tensor = (*inputs_params)[kLoopSinkEpochIndex];
-  MS_EXCEPTION_IF_NULL(epoch_tensor);
-  auto *epoch_val = static_cast<int32_t *>(epoch_tensor->data_c());
-  MS_EXCEPTION_IF_NULL(epoch_val);
-  *epoch_val = SizeToInt(graph->current_epoch());
-  epoch_tensor->set_sync_status(kNeedSyncHostToDevice);
-  if (inputs) {
-    inputs->push_back(epoch_tensor);
-  } else {
-    auto device_address = epoch_tensor->device_address();
-    if (!device_address->SyncHostToDevice(epoch_tensor->shape(), LongToSize(epoch_tensor->data().nbytes()),
-                                          epoch_tensor->data_type(), epoch_tensor->data_c(),
-                                          epoch_tensor->device_info().host_format_)) {
-      MS_LOG(EXCEPTION) << "SyncHostToDevice failed for epoch_tensor needed for async dump.";
-    }
-  }
-  MS_LOG(DEBUG) << "Load epoch_val:" << *epoch_val;
-  graph->set_current_epoch(graph->current_epoch() + 1);
-  return inputs_params->size();
-}
-
-void UpdateCtrlInputTensor(const std::shared_ptr<KernelGraph> &graph, std::vector<tensor::TensorPtr> *inputs,
-                           size_t *input_ctrl_size) {
-  if (graph->input_ctrl_tensors()) {
-    bool sink_mode = (ConfigManager::GetInstance().dataset_mode() == DS_SINK_MODE || graph->isDatasetGraph());
-    if (sink_mode) {
-      *input_ctrl_size = LoadCtrlInputTensor(graph, inputs);
-    } else {
-      LoadCtrlInputTensor(graph, nullptr);
-    }
-  }
-}
-
 bool NeedMemcpyInDevice(const device::DeviceAddressPtr &src_device_addr,
                         const device::DeviceAddressPtr &dst_device_addr) {
   MS_EXCEPTION_IF_NULL(dst_device_addr);
   if (src_device_addr.get() == nullptr) {
     return false;
   }
-  if (src_device_addr->DeviceType() == dst_device_addr->DeviceType() &&
-      src_device_addr->format() == dst_device_addr->format() &&
-      src_device_addr->type_id() == dst_device_addr->type_id()) {
-    return true;
-  }
-  return false;
+  return (src_device_addr->DeviceType() == dst_device_addr->DeviceType() &&
+          src_device_addr->format() == dst_device_addr->format() &&
+          src_device_addr->type_id() == dst_device_addr->type_id());
 }
 
 bool TensorNeedSync(const std::shared_ptr<KernelGraph> &kernel_graph, const AnfNodePtr &parameter,
                     const tensor::TensorPtr &tensor, uint32_t *memcpy_nums) {
+  MS_EXCEPTION_IF_NULL(tensor);
   if (tensor->NeedSyncHostToDevice()) {
     return true;
   }
@@ -327,12 +238,11 @@ bool TensorNeedSync(const std::shared_ptr<KernelGraph> &kernel_graph, const AnfN
   }
   auto tensor_address = std::dynamic_pointer_cast<device::DeviceAddress>(tensor->device_address());
   if (tensor_address != device_address) {
-    if (!kernel_graph->is_dynamic_shape() && IsVMGraphTaskSink() &&
-        NeedMemcpyInDevice(tensor_address, device_address)) {
-      auto status = device_address->SyncDeviceToDevice(trans::GetRuntimePaddingShape(parameter, 0),
-                                                       tensor_address->GetSize(), tensor_address->type_id(),
-                                                       tensor_address->GetPtr(), tensor_address->format());
-      if (status == false) {
+    if (!kernel_graph->is_dynamic_shape() && EnableDeviceCopy() && NeedMemcpyInDevice(tensor_address, device_address)) {
+      auto status = device_address->AsyncDeviceToDevice(trans::GetRuntimePaddingShape(parameter, 0),
+                                                        tensor_address->GetSize(), tensor_address->type_id(),
+                                                        tensor_address->GetPtr(), tensor_address->format());
+      if (!status) {
         MS_LOG(EXCEPTION) << "SyncDeviceToDevice failed.";
       }
       MS_EXCEPTION_IF_NULL(memcpy_nums);
@@ -372,87 +282,36 @@ void AddGraphToManager(const NotNull<KernelGraphPtr> graph, NotNull<FuncGraphMan
     AddGraphToManager(NOT_NULL(child_graph.lock()), manager, memo);
   }
 }
+void CheckControlFlowDynamicShape(std::vector<KernelGraphPtr> all_graphs) {
+  if (all_graphs.size() <= 1) {
+    return;
+  }
+  for (auto &graph : all_graphs) {
+    if (graph->is_dynamic_shape()) {
+      MS_LOG(EXCEPTION) << "Dynamic shape is not supported with control flow(loop control statements and conditions "
+                           "control statements).";
+    }
+  }
+}
 }  // namespace
 
 void AscendSession::Init(uint32_t device_id) { InitExecutor(kAscendDevice, device_id); }
 
 void AscendSession::UnifyMindIR(const KernelGraphPtr &graph) {
+  MS_LOG(INFO) << "Status record: start unify mindir. graph id: " << graph->graph_id();
   SessionBasic::UnifyMindIR(graph);
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-#ifdef ENABLE_DUMP_IR
-  bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
-  if (save_graphs) {
-    std::string file_name = "hwopt_d_before_unify_mindir_graph_" + std::to_string(graph->graph_id()) + ".ir";
-    DumpIR(file_name, graph);
-    DumpIRProto(graph, "before_unify_mindir_hwopt_" + std::to_string(graph->graph_id()));
-  }
-#endif
-  auto optimizer = std::make_shared<opt::GraphOptimizer>();
-  auto unify_mindir_pm = std::make_shared<opt::PassManager>("unify_mindir_pm");
-  unify_mindir_pm->AddPass(std::make_shared<opt::SpaceToBatchNDAttrUpdate>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::BatchToSpaceNDAttrUpdate>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::MaxPool2MaxPoolWithArgmax>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::MaxPoolWithArgmaxUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::MaxPoolGradWithArgmaxUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::Conv2DUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::Conv2DBackpropInputUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::Conv2DBackpropFilterUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::SliceGradUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::AvgPoolGradUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::FtrlUnifyOutput>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::MomentumUnifyOutput>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::RMSPropUnifyOutput>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::CenteredRMSPropUnifyOutput>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::FakeLearnedScaleQuantPerLayerGradUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::FakeLearnedScaleQuantPerChannelGradUnifyMindIR>());
-  auto ms_context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(ms_context);
-  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
-    unify_mindir_pm->AddPass(std::make_shared<opt::DropoutAndDropoutGradUnifyMindIR>());
-    unify_mindir_pm->AddPass(std::make_shared<opt::DropoutUnifyMindIR0>());
-    unify_mindir_pm->AddPass(std::make_shared<opt::GradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR>());
-    unify_mindir_pm->AddPass(std::make_shared<opt::GradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIRV2>());
-    unify_mindir_pm->AddPass(std::make_shared<opt::SparseSoftmaxCrossEntropyWithLogitsUnifyMindIR>());
-  } else {
-    // Add PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR pass first to avoid the backward loss function
-    // from the python frontend matching the pattern defined in PynativeSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR.
-    unify_mindir_pm->AddPass(std::make_shared<opt::PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR>());
-    unify_mindir_pm->AddPass(std::make_shared<opt::PynativeSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR>());
-  }
-  unify_mindir_pm->AddPass(std::make_shared<opt::DropoutUnifyMindIR1>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::DropoutGradUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::BatchNormGradUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::NeighborExchangeUnifyMindIR>());
-  unify_mindir_pm->AddPass(std::make_shared<opt::AllToAllUnifyMindIR>());
-
-  optimizer->AddPassManager(unify_mindir_pm);
-  (void)optimizer->Optimize(graph);
-  graph->SetExecOrderByDefault();
-#ifdef ENABLE_DUMP_IR
-  if (save_graphs) {
-    std::string file_name = "hwopt_d_after_unify_mindir_graph_" + std::to_string(graph->graph_id()) + ".ir";
-    DumpIR(file_name, graph);
-  }
-#endif
+  opt::AscendUnifyMindIR(graph);
+  MS_LOG(INFO) << "Status record: end unify mindir. graph id: " << graph->graph_id();
 }
 
 void AscendSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_graph,
                                   const std::vector<tensor::TensorPtr> &inputs_const) const {
   std::vector<tensor::TensorPtr> inputs(inputs_const);
-  size_t input_ctrl_size = kLoopSinkTensorNum;
   uint32_t device_memcpy_nums = 0;
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  UpdateCtrlInputTensor(kernel_graph, &inputs, &input_ctrl_size);
+  device::KernelAdjust::GetInstance().LoadDeviceLoopCtrlParameters(kernel_graph);
   auto &input_nodes = kernel_graph->input_nodes();
-  if ((inputs.size() + input_ctrl_size) - kLoopSinkTensorNum != input_nodes.size()) {
-    MS_LOG(EXCEPTION) << "Tensor input:" << inputs.size() << " is not equal graph inputs:" << input_nodes.size()
-                      << ", input_ctrl_size:" << input_ctrl_size;
-  }
-  auto ms_context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(ms_context);
-  auto enable_mem_scheduler = ms_context->get_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER);
-  if (enable_mem_scheduler) {
+  if (device::KernelRuntime::UseMemScheduler()) {
     kernel_graph->SetInputTensors(inputs);
     return;
   }
@@ -460,7 +319,9 @@ void AscendSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_gra
     auto output_tensor = item.first;
     output_tensor->set_device_address(item.second);
   }
-  SyncStream();
+  if (!tensor_device_addr_map_.empty()) {
+    SyncStream();
+  }
   for (size_t i = 0; i < inputs.size(); ++i) {
     auto tensor = inputs[i];
     MS_EXCEPTION_IF_NULL(tensor);
@@ -498,6 +359,8 @@ void AscendSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_gra
                                             tensor->data_c(), tensor->device_info().host_format_)) {
         MS_LOG(EXCEPTION) << "SyncHostToDevice failed.";
       }
+      auto ms_context = MsContext::GetInstance();
+      MS_EXCEPTION_IF_NULL(ms_context);
       if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode ||
           AnfAlgo::IsParameterWeight(input_param) || kernel_graph->IsUpdatedParameter(input_param)) {
         tensor->set_device_address(device_address);
@@ -522,32 +385,33 @@ void AscendSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_gra
 }
 
 GraphId AscendSession::CompileGraphImpl(const AnfNodePtrList &lst, const AnfNodePtrList &outputs) {
-  MS_LOG(INFO) << "Start";
+  MS_LOG(INFO) << "Status record: start compile graph.";
   // construct graph, if successfully, graph_sum_ + 1
   auto graph = ConstructKernelGraph(lst, outputs);
   auto graph_id = graph->graph_id();
   InitAllBucket(graph);
-  MS_LOG(INFO) << "Compile graph " << graph_id << " success";
+  MS_LOG(INFO) << "Status record: end compile graph. graph id: " << graph_id;
   return graph_id;
 }
 
 GraphId AscendSession::CompileGraphImpl(NotNull<FuncGraphPtr> func_graph) {
-  MS_LOG(INFO) << "Start";
+  MS_LOG(INFO) << "Status record: start compile graph.";
   std::vector<KernelGraphPtr> all_graphs;
   auto root_graph = ConstructKernelGraph(func_graph, &all_graphs);
   for (const auto &graph : all_graphs) {
     graph->set_root_graph_id(root_graph->graph_id());
   }
   UnifyMindIR(root_graph);
-  // Update Graph Dynamic Shape Attr
-  UpdateAllGraphDynamicShapeAttr(all_graphs);
   opt::BackendCommonOptimization(root_graph);
+  CheckControlFlowDynamicShape(all_graphs);
+
   // empty graph dont entry to backend
   if (root_graph->execution_order().empty()) {
     MS_LOG(INFO) << root_graph->ToString() << " is empty graph.";
     AnfAlgo::InsertMakeTupleForOutput(NOT_NULL(root_graph));
     root_graph->set_executable(false);
     InitRuntimeResource();
+    MS_LOG(INFO) << "Status record: end compile graph. graph id: " << root_graph->graph_id();
     return root_graph->graph_id();
   }
 
@@ -607,7 +471,9 @@ GraphId AscendSession::CompileGraphImpl(NotNull<FuncGraphPtr> func_graph) {
   device::KernelAdjust::GetInstance().InsertOverflowCheckOperations(NOT_NULL(root_graph));
   // build kernel
   BuildKernel(root_graph);
-  SetSummaryNodes(root_graph.get());
+#ifndef ENABLE_SECURITY
+  SessionBasic::SetSummaryNodes(root_graph.get());
+#endif
   // Alloc memory for child graph's inputs
   AssignStaticMemory(NOT_NULL(root_graph), NOT_NULL(&memo));
   memo.clear();
@@ -620,20 +486,23 @@ GraphId AscendSession::CompileGraphImpl(NotNull<FuncGraphPtr> func_graph) {
   DumpAllGraphs(all_graphs);
   // Save memory profiling data to proto file
 #ifndef ENABLE_SECURITY
-  auto profiling_instance = MemoryProfiling::GetInstance();
-  if (profiling_instance.IsMemoryProfilingEnable()) {
+  if (MemoryProfiling::GetInstance().IsMemoryProfilingInitialized()) {
     auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
     MS_EXCEPTION_IF_NULL(runtime_instance);
-    uint64_t mem_size = runtime_instance->GetAvailableMemMaxSize();
-    profiling_instance.SetDeviceMemSize(mem_size);
-    profiling_instance.SaveMemoryProfiling();
+    uint64_t mem_size = runtime_instance->GetMsUsedHbmSize();
+    MemoryProfiling::GetInstance().SetDeviceMemSize(mem_size);
+    if (MemoryProfiling::GetInstance().NeedSaveMemoryProfiling()) {
+      MemoryProfiling::GetInstance().SaveMemoryProfiling();
+    }
   }
 #endif
   // return the root_graph id to backend
   auto graph_id = root_graph->graph_id();
+  MS_LOG(INFO) << "Status record: end compile graph. graph id: " << graph_id;
   return graph_id;
 }
 
+#ifndef ENABLE_SECURITY
 void AscendSession::SetFinalGraphSummaryFlag(const std::shared_ptr<KernelGraph> &kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto graph_order = GetGraphOrder(kernel_graph->graph_id());
@@ -649,6 +518,7 @@ void AscendSession::SetFinalGraphSummaryFlag(const std::shared_ptr<KernelGraph> 
   }
   kernel_graph->set_summary_node_exist(false);
 }
+#endif
 
 void AscendSession::BuildGraphImpl(GraphId graph_id) {
   MS_LOG(INFO) << "Start";
@@ -691,8 +561,7 @@ void AscendSession::BuildGraphImpl(GraphId graph_id) {
   } else {
     // alloc memory, including static memory and dynamic memory
     MemoryAlloc(graph.get());
-    auto enable_mem_scheduler = ms_context->get_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER);
-    if (!enable_mem_scheduler) {
+    if (!device::KernelRuntime::UseMemScheduler()) {
       AnfAlgo::CacheAddrForGraph(graph);
     }
     // generate and load task info to device if it is sink mode
@@ -719,7 +588,7 @@ void AscendSession::CompileChildGraph(const KernelGraphPtr &child_graph) {
   }
 #endif
   // select kernel build info
-  SelectKernel(*child_graph);
+  SelectKernel(child_graph);
 #ifdef ENABLE_DUMP_IR
   if (save_graphs) {
     std::string file_name = "select_kernel_after_graph_" + std::to_string(child_graph->graph_id()) + ".ir";
@@ -729,16 +598,15 @@ void AscendSession::CompileChildGraph(const KernelGraphPtr &child_graph) {
   // optimize graph
   HardwareOptimize(child_graph);
   // assign static memory of parameters
-  auto enable_mem_scheduler = context_ptr->get_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER);
-  if (!enable_mem_scheduler) {
+  if (!device::KernelRuntime::UseMemScheduler()) {
     auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
     MS_EXCEPTION_IF_NULL(runtime_instance);
-    runtime_instance->AssignStaticMemoryInput(child_graph.get());
-    runtime_instance->AssignStaticMemoryValueNode(child_graph.get());
+    runtime_instance->AssignStaticMemoryInput(*child_graph);
+    runtime_instance->AssignStaticMemoryValueNode(*child_graph);
   }
 }
 
-bool AscendSession::IsSupportSummary() { return !device::KernelAdjust::NeedInsertSwitch(); }
+bool AscendSession::IsSupportSummary() { return !device::KernelAdjust::NeedLoopSink(); }
 
 void AscendSession::PreExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph,
                                     const std::vector<tensor::TensorPtr> &inputs, VectorRef *const) {
@@ -760,7 +628,9 @@ void AscendSession::PreExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_g
 void AscendSession::PostExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph,
                                      const std::vector<tensor::TensorPtr> &, VectorRef *const) {
   // summary
+#ifndef ENABLE_SECURITY
   Summary(kernel_graph.get());
+#endif
 #ifdef ENABLE_DEBUGGER
   // load tensor from device for debugger
   if (debugger_ && debugger_->debugger_enabled()) {
@@ -770,6 +640,9 @@ void AscendSession::PostExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_
   if (debugger_) {
     debugger_->PostExecute();
   }
+#endif
+#ifndef ENABLE_SECURITY
+  DumpSetup(kernel_graph);
 #endif
 }
 
@@ -822,9 +695,10 @@ void AscendSession::BindAddressToTensor(
   }
 }
 
-void AscendSession::LaunchFunc(const KernelGraphPtr &graph, const std::vector<int64_t> &tensors_mask,
+void AscendSession::LaunchFunc(const KernelGraphPtr &graph,
                                const std::map<tensor::TensorPtr, session::KernelWithIndex> &tensor_to_node,
                                bool is_dynamic_shape, const std::vector<tensor::TensorPtr> &input_tensors) {
+  MS_EXCEPTION_IF_NULL(graph);
   // Wait for AllReduce
   for (auto &tensor : input_tensors) {
     if (tensor->NeedWaitDevice()) {
@@ -833,7 +707,7 @@ void AscendSession::LaunchFunc(const KernelGraphPtr &graph, const std::vector<in
   }
 
   RunOpRemoveNopNode(graph);
-  RunOpMemoryAllocNew(input_tensors, tensor_to_node, graph.get());
+  RunOpMemoryAllocNew(input_tensors, tensor_to_node, *graph);
   AnfAlgo::CacheAddrForGraph(graph);
   // Bind Device Ptr to DeviceAddress of Tensor
   BindAddressToTensor(tensor_to_node);
@@ -872,7 +746,7 @@ void AscendSession::BatchBuildKernel(const std::vector<std::shared_ptr<SessionTa
 
   std::vector<CNodePtr> atomic_node_to_build;
   for (auto &graph : graphs) {
-    device::ascend::KernelBuildPreprocess(graph.get());
+    device::ascend::InsertAtomicCleanOps(graph);
     const auto &nodes = graph->execution_order();
     std::copy(nodes.begin(), nodes.end(), std::back_inserter(atomic_node_to_build));
   }
@@ -885,9 +759,9 @@ void AscendSession::PrepareForOutputTensor(const KernelGraphPtr &graph,
                                            std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node,
                                            VectorRef *outputs) const {
   // Create DeviceAddress For Output Tensor(contain: Shape, Format, DType)
-  auto runtime_instance = device::KernelRuntimeManager::Instance().GetCurrentKernelRuntime();
+  auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   runtime_instance->RunOpMallocPre(*graph, input_tensors);
-  runtime_instance->UpdateRefNodeOutputMem(graph.get());
+  runtime_instance->UpdateRefNodeOutputMem(*graph);
   // CREATE OUTPUT TENSOR ADDRESS
   UpdateOutputs(graph, outputs, input_tensors, tensor_to_node);
 }
@@ -941,6 +815,7 @@ void AscendSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_inf
   }
 
   MS_EXCEPTION_IF_NULL(input_tensors);
+  ProcessInputTensorsForHeterogeneous("Ascend", *input_tensors);
   bool cache_miss = run_op_graphs_.find(graph_info) == run_op_graphs_.end();
   auto graph = CreateKernelGraph(graph_info, op_run_info, input_tensors, tensors_mask, cache_miss);
   EraseValueNodeTensor(tensors_mask, input_tensors);
@@ -951,7 +826,7 @@ void AscendSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_inf
   auto &task_manager = PynativeTaskManager::GetInstance();
   if (!cache_miss && task_manager.QueueEmpty()) {
     // Cache match and there are no task in Queue. Just Launch immediately.
-    LaunchFunc(graph, tensors_mask, tensor_to_node, op_run_info->is_dynamic_shape, *input_tensors);
+    LaunchFunc(graph, tensor_to_node, op_run_info->is_dynamic_shape, *input_tensors);
   } else {
     auto run_op_context = std::make_shared<RunOpContext>(graph_info, op_run_info->is_dynamic_shape, graph, tensors_mask,
                                                          *input_tensors, tensor_to_node);
@@ -978,8 +853,8 @@ void AscendSession::RunOpImplOrigin(const GraphInfo &graph_info, OpRunInfo *op_r
                                     const std::vector<int64_t> &tensors_mask) {
   MS_EXCEPTION_IF_NULL(input_tensors);
   MS_EXCEPTION_IF_NULL(op_run_info);
+  ProcessInputTensorsForHeterogeneous("Ascend", *input_tensors);
   const auto &graph = BuildOpImpl(*op_run_info, graph_info, *input_tensors, tensors_mask);
-
   EraseValueNodeTensor(tensors_mask, input_tensors);
 
   // wait for allreduce
@@ -988,9 +863,10 @@ void AscendSession::RunOpImplOrigin(const GraphInfo &graph_info, OpRunInfo *op_r
       tensor->WaitDevice();
     }
   }
+
   // malloc mem
   RunOpRemoveNopNode(graph);
-  RunOpMemoryAlloc(*input_tensors, graph.get());
+  RunOpMemoryAlloc(*input_tensors, graph.get(), op_run_info->is_gradient_out);
   RunOpGenKernelEvent(graph.get());
   AnfAlgo::CacheAddrForGraph(graph);
   // Build dynamic kernel
@@ -1018,7 +894,7 @@ KernelGraphPtr AscendSession::PreBuildOp(const OpRunInfo &op_run_info,
   auto graph = ConstructSingleOpGraph(op_run_info, input_tensors, tensors_mask, true);
   MS_EXCEPTION_IF_NULL(graph);
   opt::RunOpAscendBackendIRFusionOptimization(graph);
-  SelectKernel(*graph);
+  SelectKernel(graph);
   RunOpHardwareOptimize(graph);
   CacheCNodeOutputInfo(*graph);
   return graph;
@@ -1083,7 +959,8 @@ void AscendSession::GetOpInputStubTensors(const CNodePtr &cnode, const std::map<
     tensor::TensorPtr tensor = nullptr;
     if (real_input->isa<ValueNode>()) {
       tensor = GetValueNodeOutputTensor(real_input, kernel_with_index.second);
-      input_tensor_info->input_tensors_mask.emplace_back(kParameterDataTensorMask);
+      input_tensor_info->input_tensors_mask.emplace_back(
+        GetValueNode(real_input)->isa<StringImm>() ? kValueNodeTensorMask : kParameterDataTensorMask);
     } else if (real_input->isa<Parameter>()) {
       tensor = GetParameterOutputTensor(real_input, parameter_index, graph_inputs);
       auto parameter = real_input->cast<ParameterPtr>();
@@ -1115,20 +992,20 @@ void AscendSession::BuildOpsInGraph(const GraphId &graph_id, const std::map<AnfN
   MS_EXCEPTION_IF_NULL(graph);
   std::map<KernelWithIndex, OutputTensorInfo> op_output_info;
   std::vector<CNodePtr> kernels;
-  std::unordered_map<KernelGraphPtr, GraphInfo> single_op_graphs;
+  mindspore::HashMap<KernelGraphPtr, GraphInfo> single_op_graphs;
   // Collect kernels need to be built in single op graphs
   for (const auto &kernel : graph->execution_order()) {
     // Generate fake input tensors, tensor masks and input kernel with index
     InputTensorInfo input_tensor_info;
     GetOpInputStubTensors(kernel, parameter_index, graph_inputs, op_output_info, &input_tensor_info);
     // Get OpRunInfo and GraphInfo
-    OpRunInfo op_run_info;
-    GetSingleOpRunInfo(kernel, &op_run_info);
+    const GraphInfo &graph_info = GetSingleOpGraphInfo(kernel, input_tensor_info.input_tensors);
+    OpRunInfo op_run_info = GetSingleOpRunInfo(kernel, graph_info, input_tensor_info, nullptr);
     if (op_run_info.is_dynamic_shape) {
       MS_LOG(INFO) << "BuildOpsInGraph stop, op " << op_run_info.op_name << " is dynamic shape.";
       break;
     }
-    const GraphInfo &graph_info = GetSingleOpGraphInfo(kernel, input_tensor_info.input_tensors);
+
     const auto &single_op_graph_iter = run_op_graphs_.find(graph_info);
     if (single_op_graph_iter != run_op_graphs_.end()) {
       // if graph of same single op exists, the output tensor of current op should be generated
@@ -1149,10 +1026,10 @@ void AscendSession::BuildOpsInGraph(const GraphId &graph_id, const std::map<AnfN
   InitRuntimeResource();
   // Compile all kernels parallel
   BuildKernel(kernels);
-  // Some new kernel may be added after KernelBuildPreprocess, so collect and build kernels again
+  // Some new kernel may be added after InsertAtomicCleanOps, so collect and build kernels again
   kernels.clear();
   for (const auto &graph_item : single_op_graphs) {
-    device::ascend::KernelBuildPreprocess(graph_item.first.get());
+    device::ascend::InsertAtomicCleanOps(graph_item.first);
     const auto &execution_order = graph_item.first->execution_order();
     std::copy(execution_order.begin(), execution_order.end(), std::back_inserter(kernels));
   }
@@ -1169,45 +1046,20 @@ void AscendSession::BuildOpsInGraph(const GraphId &graph_id, const std::map<AnfN
   built_graph_id_.insert(graph_id);
 }
 
-// compile graph steps
-void AscendSession::SelectKernel(const KernelGraph &kernel_graph) const {
-  MS_LOG(INFO) << "Start!";
-  size_t raise_precision_count = 0;
-  size_t reduce_precision_count = 0;
-  for (const auto &cnode : kernel_graph.execution_order()) {
-    auto status = device::ascend::SelectKernelInfo(cnode);
-    AnfAlgo::EraseNodeAttr(kAttrPynativeNextOpName, cnode);
-    AnfAlgo::EraseNodeAttr(kAttrPynativeNextIndex, cnode);
-    if (status == device::ascend::kStatusRaisePrecision) {
-      raise_precision_count++;
-    } else if (status == device::ascend::kStatusReducePrecision) {
-      reduce_precision_count++;
-    }
-    MS_LOG(INFO) << "Select ApplyKernel: " << cnode->DebugString();
-  }
-  auto ms_context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(ms_context);
-  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
-    if (raise_precision_count > 0) {
-      MS_LOG(WARNING) << "There has " << raise_precision_count
-                      << " node/nodes used raise precision to selected the kernel!";
-    }
-    if (reduce_precision_count > 0) {
-      MS_LOG(WARNING) << "There has " << reduce_precision_count
-                      << " node/nodes used reduce precision to selected the kernel!";
-    }
-  }
-  MS_LOG(INFO) << "Finish!";
-}
-
 #ifndef ENABLE_SECURITY
 void DumpInit(uint32_t device_id) {
   auto &json_parser = DumpJsonParser::GetInstance();
   json_parser.Parse();
-  json_parser.CopyJsonToDir(device_id);
+  json_parser.CopyDumpJsonToDir(device_id);
   json_parser.CopyHcclJsonToDir(device_id);
   json_parser.CopyMSCfgJsonToDir(device_id);
   if (json_parser.async_dump_enabled()) {
+#ifdef ENABLE_D
+    // register callback to adx
+    if (json_parser.FileFormatIsNpy()) {
+      AdxRegDumpProcessCallBack(DumpDataCallBack);
+    }
+#endif
     if (AdxDataDumpServerInit() != 0) {
       MS_LOG(EXCEPTION) << "Adx data dump server init failed";
     }
@@ -1216,7 +1068,7 @@ void DumpInit(uint32_t device_id) {
 #endif
 
 void AscendSession::InitRuntimeResource() {
-  MS_LOG(INFO) << "Start!";
+  MS_LOG(INFO) << "Status record: start init runtime resource.";
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
   if (!runtime_instance->Init()) {
@@ -1232,35 +1084,37 @@ void AscendSession::InitRuntimeResource() {
 #ifndef ENABLE_SECURITY
   DumpInit(rank_id_);
 #endif
-  MS_LOG(INFO) << "Finish!";
+  MS_LOG(INFO) << "Status record: end init runtime resource.";
 }
 
 void AscendSession::HardwareOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) const {
-  MS_LOG(INFO) << "HardwareOptimize start!";
+  MS_EXCEPTION_IF_NULL(kernel_graph);
   opt::AscendBackendOptimization(kernel_graph);
   FinalOptimize(kernel_graph);
   GraphKernelOptimize(kernel_graph);
-  MS_EXCEPTION_IF_NULL(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
-  MS_LOG(INFO) << "HardwareOptimize Finish!";
 }
 
 void AscendSession::GraphKernelOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) const {
-  if (!context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+  if (!graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
     return;
   }
-  opt::GraphKernelOptimize(kernel_graph);
+  graphkernel::GraphKernelOptimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
 }
 
 void AscendSession::AdjustKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const {
-  MS_LOG(INFO) << "Start!";
+  MS_LOG(INFO) << "Status record: start adjust kernel. graph id: " << kernel_graph->graph_id();
   opt::HideNopNode(kernel_graph.get());
+  auto execution_order = kernel_graph->execution_order();
+  AnfAlgo::ReorderExecList(NOT_NULL(&execution_order));
+  kernel_graph->set_execution_order(execution_order);
   // Insert CLearZero op
   // prepare for next step from json get atomic info
   BuildKernel(kernel_graph);
-  device::ascend::KernelBuildPreprocess(kernel_graph.get());
-  device::KernelAdjust::GetInstance().InsertSwitchLoop(kernel_graph);
+  device::ascend::InsertAtomicCleanOps(kernel_graph);
+  device::KernelAdjust::GetInstance().InsertDeviceLoopCtrl(kernel_graph);
+  device::KernelAdjust::GetInstance().ProcessLoopSink(kernel_graph);
 #ifdef ENABLE_DUMP_IR
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
@@ -1269,7 +1123,7 @@ void AscendSession::AdjustKernel(const std::shared_ptr<KernelGraph> &kernel_grap
     DumpIR("after_adjust_kernel.ir", kernel_graph);
   }
 #endif
-  MS_LOG(INFO) << "Finish!";
+  MS_LOG(INFO) << "Status record: end adjust kernel. graph id: " << kernel_graph->graph_id();
 }
 
 void AscendSession::RunOpAdjustKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const {
@@ -1278,23 +1132,25 @@ void AscendSession::RunOpAdjustKernel(const std::shared_ptr<KernelGraph> &kernel
   // Insert CLearZero op
   // prepare for next step from json get atomic info
   BuildKernel(kernel_graph);
-  device::ascend::KernelBuildPreprocess(kernel_graph.get());
+  device::ascend::InsertAtomicCleanOps(kernel_graph);
   MS_LOG(INFO) << "Finish!";
 }
 
 void AscendSession::AssignStream(NotNull<KernelGraphPtr> kernel_graph) const {
-  MS_LOG(INFO) << "Start!";
+  MS_LOG(INFO) << "Status record: start assign stream, graph id: " << kernel_graph->graph_id();
   device::ascend::AscendStreamAssign::GetInstance().AssignStream(kernel_graph);
-  MS_LOG(INFO) << "Finish!";
+  MS_LOG(INFO) << "Status record: end assign stream, graph id: " << kernel_graph->graph_id();
 }
 
 void AscendSession::BuildKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const {
+  MS_LOG(INFO) << "Status record: start build kernel, graph id: " << kernel_graph->graph_id();
   BuildKernel(kernel_graph->execution_order());
+  MS_LOG(INFO) << "Status record: end build kernel, graph id: " << kernel_graph->graph_id();
 }
 
 void AscendSession::BuildKernel(const std::vector<CNodePtr> &kernels) {
-  MS_LOG(INFO) << "Start!";
-  struct timeval start_time, end_time;
+  struct timeval start_time {};
+  struct timeval end_time {};
   (void)gettimeofday(&start_time, nullptr);
   auto ret = device::ascend::KernelBuild(kernels);
   if (!ret) {
@@ -1305,7 +1161,6 @@ void AscendSession::BuildKernel(const std::vector<CNodePtr> &kernels) {
   uint64_t cost = kUSecondInSecond * static_cast<uint64_t>(end_time.tv_sec - start_time.tv_sec);
   cost += static_cast<uint64_t>(end_time.tv_usec - start_time.tv_usec);
   MS_LOG(INFO) << "KernelBuild run in  " << PRIu64 << " us " << cost;
-  MS_LOG(INFO) << "Finish!";
 }
 
 void AscendSession::BuildDynamicKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const {
@@ -1320,7 +1175,7 @@ void AscendSession::BuildDynamicKernel(const std::shared_ptr<KernelGraph> &kerne
   }
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  if (!runtime_instance->GenDynamicKernel(kernel_graph.get())) {
+  if (!runtime_instance->GenDynamicKernel(*kernel_graph)) {
     MS_LOG(DEBUG) << "Graph:" << kernel_graph->graph_id() << " failed to generate dynamic kernel!";
   }
   MS_LOG(DEBUG) << "Finish!";
@@ -1411,7 +1266,7 @@ void InitMemReuseExecOrder(KernelGraph *kernel_graph) {
   if (!kernel_graph->subgraph_multi_call()) {
     return;
   }
-  std::unordered_map<uint32_t, uint32_t> label_id_index_map;
+  mindspore::HashMap<uint32_t, uint32_t> label_id_index_map;
   auto kernel_cnodes = kernel_graph->execution_order();
   std::vector<CNodePtr> mem_reuse_order;
   for (uint32_t i = 0; i < kernel_cnodes.size(); i++) {
@@ -1455,59 +1310,67 @@ void InitMemReuseExecOrder(KernelGraph *kernel_graph) {
 }
 
 void AscendSession::MemoryAlloc(KernelGraph *kernel_graph) const {
-  MS_LOG(INFO) << "Start!";
+  MS_LOG(INFO) << "Status record: start memory alloc. graph id: " << kernel_graph->graph_id();
   MS_EXCEPTION_IF_NULL(kernel_graph);
   InitMemReuseExecOrder(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->AssignMemory(kernel_graph);
-  MS_LOG(INFO) << "Finish!";
+  runtime_instance->AssignMemory(*kernel_graph);
+  device::KernelAdjust::GetInstance().AssignLoopCtrlMemory(*kernel_graph);
+  MS_LOG(INFO) << "Status record: end memory alloc. graph id: " << kernel_graph->graph_id()
+               << ", Memory Statistics:" << device::ascend::AscendMemAdapter::GetInstance().DevMemStatistics();
+  MS_LOG(INFO) << "The dynamic memory pool total size is "
+               << device::ascend::AscendMemoryPool::GetInstance().TotalMemStatistics() / kMBToByte
+               << "M, total used size is "
+               << device::ascend::AscendMemoryPool::GetInstance().TotalUsedMemStatistics() / kMBToByte
+               << "M, used peak size is "
+               << device::ascend::AscendMemoryPool::GetInstance().UsedMemPeakStatistics() / kMBToByte << "M.";
 }
 
-void AscendSession::RunOpMemoryAlloc(const std::vector<tensor::TensorPtr> &input_tensors,
-                                     KernelGraph *kernel_graph) const {
+void AscendSession::RunOpMemoryAlloc(const std::vector<tensor::TensorPtr> &input_tensors, KernelGraph *kernel_graph,
+                                     bool is_gradient_out) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->RunOpAssignMemory(input_tensors, kernel_graph);
+  runtime_instance->RunOpAssignMemory(input_tensors, *kernel_graph, is_gradient_out);
 }
 
 void AscendSession::RunOpMemoryAllocNew(const std::vector<tensor::TensorPtr> &input_tensors,
                                         const std::map<tensor::TensorPtr, session::KernelWithIndex> &tensor_to_node,
-                                        KernelGraph *kernel_graph) const {
-  MS_EXCEPTION_IF_NULL(kernel_graph);
+                                        const KernelGraph &kernel_graph) const {
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->RunOpAssignMemory(input_tensors, kernel_graph, tensor_to_node);
+  runtime_instance->RunOpAssignMemory(input_tensors, kernel_graph, false, tensor_to_node);
 }
 
 void AscendSession::RunOpGenKernelEvent(const KernelGraph *graph) const {
   MS_EXCEPTION_IF_NULL(graph);
+  auto kernels = graph->execution_order();
+  device::ascend::AscendStreamAssign::GetInstance().AssignStreamForNonTaskSink(kernels);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->GenKernelEvents(graph);
+  runtime_instance->GenKernelEvents(*graph);
 }
 
 void AscendSession::RunOpMemoryClear(const KernelGraph *kernel_graph) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  runtime_instance->RunOpClearMemory(kernel_graph);
+  runtime_instance->RunOpClearMemory(*kernel_graph);
 }
 
 void AscendSession::Load(const std::shared_ptr<KernelGraph> &kernel_graph) const {
-  MS_LOG(INFO) << "Start!";
+  MS_LOG(INFO) << "Status record: start load task. graph id: " << kernel_graph->graph_id();
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
   bool is_task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
-  (void)device::KernelAdjust::GetInstance().StepLoadCtrlInputs(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  bool ret_ok = runtime_instance->Load(kernel_graph.get(), is_task_sink);
+  bool ret_ok = runtime_instance->Load(*kernel_graph, is_task_sink);
   if (!ret_ok) {
     MS_LOG(EXCEPTION) << "Load task error!";
   }
-  MS_LOG(INFO) << "Finish!";
+  MS_LOG(INFO) << "Status record: end load task. graph id: " << kernel_graph->graph_id();
 }
 
 void AscendSession::Execute(const std::shared_ptr<KernelGraph> &kernel_graph, bool is_task) const {
@@ -1520,17 +1383,12 @@ void AscendSession::Execute(const std::shared_ptr<KernelGraph> &kernel_graph, bo
   }
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  if (is_task && is_task_sink) {
+  bool ret_ok = runtime_instance->Run(*kernel_graph, is_task_sink);
 #ifndef ENABLE_SECURITY
-    DumpSetup(kernel_graph);
-#endif
-  }
-  bool ret_ok = runtime_instance->Run(kernel_graph.get(), is_task_sink);
   if (is_task && is_task_sink) {
-#ifndef ENABLE_SECURITY
     Dump(kernel_graph);
-#endif
   }
+#endif
   if (!ret_ok) {
 #ifdef ENABLE_DUMP_IR
     mindspore::RDR::TriggerAll();
@@ -1544,13 +1402,14 @@ void AscendSession::Execute(const std::shared_ptr<KernelGraph> &kernel_graph, bo
 void AscendSession::DumpSetup(const std::shared_ptr<KernelGraph> &kernel_graph) const {
   MS_LOG(DEBUG) << "Start!";
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  E2eDump::DumpSetup(kernel_graph.get(), rank_id_);
+  E2eDump::DumpSetup(kernel_graph.get());
   MS_LOG(DEBUG) << "Finish!";
 }
 
 void AscendSession::Dump(const std::shared_ptr<KernelGraph> &kernel_graph) const {
   MS_LOG(DEBUG) << "Start!";
   MS_EXCEPTION_IF_NULL(kernel_graph);
+  E2eDump::DumpRunIter(kernel_graph, rank_id_);
   E2eDump::DumpData(kernel_graph.get(), rank_id_);
   MS_LOG(DEBUG) << "Finish!";
 }
@@ -1584,8 +1443,11 @@ void AscendSession::DumpAllGraphs(const std::vector<KernelGraphPtr> &all_graphs)
     if (json_parser.e2e_dump_enabled() || json_parser.async_dump_enabled()) {
       std::string root_dir = json_parser.path() + "/rank_" + std::to_string(rank_id_);
       std::string target_dir = root_dir + "/graphs";
+      std::string net_name = json_parser.net_name();
+      std::string cst_file_dir = GenerateDumpPath(graph->root_graph_id(), rank_id_, true);
       std::string ir_file_path = target_dir + "/" + "ms_output_" + final_graph + ".ir";
       DumpIRProtoWithSrcInfo(graph, final_graph, target_dir, kDebugWholeStack);
+      DumpConstantInfo(graph, cst_file_dir);
       DumpIR("trace_code_graph", graph, true, kWholeStack, ir_file_path);
       DumpGraphExeOrder("ms_execution_order_graph_" + std::to_string(graph->graph_id()) + ".csv", root_dir,
                         graph->execution_order());
@@ -1599,10 +1461,11 @@ void AscendSession::LoadTensor(const std::shared_ptr<KernelGraph> &kernel_graph)
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
-  (void)runtime_instance->LoadData(kernel_graph.get());
+  (void)runtime_instance->LoadData(*kernel_graph);
   MS_LOG(INFO) << "Finish!";
 }
 
+#ifndef ENABLE_SECURITY
 void AscendSession::RecurseSetSummaryNodes(KernelGraph *graph,
                                            std::map<std::string, std::pair<AnfNodePtr, int>> *summary) {
   MS_EXCEPTION_IF_NULL(graph);
@@ -1640,6 +1503,7 @@ void AscendSession::SetSummaryNodes(KernelGraph *graph) {
   graph->set_summary_nodes(summary);
   MS_LOG(DEBUG) << "Update summary end size: " << summary.size();
 }
+#endif
 
 void AscendSession::MergeGraphExecOrder() {
   MS_LOG(INFO) << "Start!";
@@ -1758,83 +1622,69 @@ void AscendSession::IrFusionPass(const NotNull<KernelGraphPtr> graph, NotNull<st
   memo->insert(graph.get());
   opt::AscendBackendIRFusionOptimization(graph);
   graph->SetExecOrderByDefault();
-#ifdef ENABLE_DUMP_IR
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-  bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
-  if (save_graphs) {
-    std::string file_name = "select_kernel_before_graph_" + std::to_string(graph->graph_id()) + ".ir";
-    DumpIR(file_name, graph.get());
-  }
-#endif
-
   for (auto &child_graph : graph->child_graph_order()) {
     IrFusionPass(NOT_NULL(child_graph.lock()), memo);
   }
 }
 
-void AscendSession::SelectKernel(NotNull<KernelGraphPtr> root_graph) {
-  MS_LOG(INFO) << "Start select kernel.";
-  size_t raise_precision_count = 0;
-  size_t reduce_precision_count = 0;
-
-  std::set<KernelGraphPtr> memo;
-  RecurseSelectKernelInfo(root_graph, NOT_NULL(&memo), &raise_precision_count, &reduce_precision_count);
-  memo.clear();
-
-  auto ms_context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(ms_context);
-  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
-    if (raise_precision_count > 0) {
-      MS_LOG(WARNING) << "There are " << raise_precision_count
-                      << " node/nodes used raise precision to selected the kernel!";
+void AscendSession::SetOperatorInfo(const std::vector<CNodePtr> &nodes) const {
+  for (const auto &node : nodes) {
+    auto status = device::ascend::SelectKernelInfo(node);
+    AnfAlgo::EraseNodeAttr(kAttrPynativeNextOpName, node);
+    AnfAlgo::EraseNodeAttr(kAttrPynativeNextIndex, node);
+    if (status == device::ascend::kStatusRaisePrecision) {
+      raise_precision_count_++;
+    } else if (status == device::ascend::kStatusReducePrecision) {
+      reduce_precision_count_++;
     }
-    if (reduce_precision_count > 0) {
-      MS_LOG(WARNING) << "There are " << reduce_precision_count
-                      << " node/nodes used reduce precision to selected the kernel!";
-    }
+    MS_LOG(INFO) << "Select ApplyKernel: " << node->DebugString();
   }
-  MS_LOG(INFO) << "Finish!";
 }
 
-void AscendSession::RecurseSelectKernelInfo(NotNull<KernelGraphPtr> graph,
-                                            NotNull<std::set<KernelGraphPtr> *> const memo,
-                                            size_t *const raise_precision_count,
-                                            size_t *const reduce_precision_count) const {
+void AscendSession::RecurseSelectKernelInfo(const KernelGraphPtr &graph, std::set<KernelGraphPtr> *memo) const {
+  MS_EXCEPTION_IF_NULL(memo);
   if (memo->find(graph) != memo->end()) {
     return;
   }
-  memo->insert(graph.get());
+  memo->insert(graph);
   MS_LOG(INFO) << "Start to select kernel info in graph: " << graph->graph_id();
+  SetOperatorInfo(graph->execution_order());
+  MS_LOG(INFO) << "Finish selecting kernel info in graph: " << graph->graph_id();
 
-  for (const auto &cnode : graph->execution_order()) {
-    if (AnfAlgo::IsCondControlKernel(cnode)) {
-      std::vector<KernelGraphPtr> child_graphs;
-      if (AnfAlgo::HasNodeAttr(kAttrChildGraph, cnode)) {
-        child_graphs = AnfAlgo::GetNodeAttr<std::vector<KernelGraphPtr>>(cnode, kAttrChildGraph);
-      }
-      for (auto &child_graph : child_graphs) {
-        RecurseSelectKernelInfo(NOT_NULL(child_graph), memo, raise_precision_count, reduce_precision_count);
-      }
-    }
-
-    auto status = device::ascend::SelectKernelInfo(cnode);
-    if (status == device::ascend::kStatusRaisePrecision) {
-      (*raise_precision_count)++;
-    } else if (status == device::ascend::kStatusReducePrecision) {
-      (*reduce_precision_count)++;
-    }
-  }
 #ifdef ENABLE_DUMP_IR
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
   bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
   if (save_graphs) {
     std::string file_name = "select_kernel_after_graph_" + std::to_string(graph->graph_id()) + ".ir";
-    DumpIR(file_name, graph.get());
+    DumpIR(file_name, graph);
   }
 #endif
-  MS_LOG(INFO) << "Finish selecting kernel info in graph: " << graph->graph_id();
+
+  for (auto &child_graph : graph->child_graph_order()) {
+    RecurseSelectKernelInfo(child_graph.lock(), memo);
+  }
+}
+
+void AscendSession::SelectKernel(const KernelGraphPtr &graph) const {
+  MS_LOG(INFO) << "Status record: start select kernel. graph id: " << graph->graph_id();
+  raise_precision_count_ = 0;
+  reduce_precision_count_ = 0;
+  std::set<KernelGraphPtr> memo;
+  RecurseSelectKernelInfo(graph, &memo);
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
+    if (raise_precision_count_ > 0) {
+      MS_LOG(WARNING) << "There are " << raise_precision_count_
+                      << " node/nodes used raise precision to selected the kernel!";
+    }
+    if (reduce_precision_count_ > 0) {
+      MS_LOG(WARNING) << "There are " << reduce_precision_count_
+                      << " node/nodes used reduce precision to selected the kernel!";
+    }
+  }
+  MS_LOG(INFO) << "Status record: end select kernel. graph id: " << graph->graph_id();
 }
 
 void AscendSession::HardwareOptimize(NotNull<KernelGraphPtr> graph,
@@ -1843,14 +1693,10 @@ void AscendSession::HardwareOptimize(NotNull<KernelGraphPtr> graph,
     return;
   }
   memo->insert(graph.get());
-
-  MS_LOG(INFO) << "Start to do HardwareOptimize in graph: " << graph->graph_id();
-
   HardwareOptimize(graph.get());
   for (auto &child_graph : graph->child_graph_order()) {
     HardwareOptimize(NOT_NULL(child_graph.lock()), memo);
   }
-  MS_LOG(INFO) << "Finish doing HardwareOptimize in graph: " << graph->graph_id();
 }
 
 #ifdef ENABLE_DEBUGGER
@@ -1863,6 +1709,7 @@ void AscendSession::LoadGraphsToDbg(NotNull<KernelGraphPtr> graph,
 
   MS_LOG(INFO) << "Start to do LoadGraphsToDbg in graph: " << graph->graph_id();
 
+  MS_EXCEPTION_IF_NULL(debugger_);
   debugger_->LoadGraphs(graph);
   MS_LOG(INFO) << "graph_sum_: " << graph_sum_;
   for (auto &child_graph : graph->child_graph_order()) {
@@ -1878,18 +1725,17 @@ void AscendSession::AssignStaticMemory(NotNull<KernelGraphPtr> graph,
     return;
   }
   memo->insert(graph.get());
-
-  MS_LOG(INFO) << "Start to assign static memory for parameter in graph: " << graph->graph_id();
+  MS_LOG(INFO) << "Status record: start assign static memory for parameter in graph. graph id: " << graph->graph_id();
   // assign static memory for parameters
   auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(runtime_instance);
   runtime_instance->ClearGlobalIdleMem();
-  runtime_instance->AssignStaticMemoryInput(graph.get().get());
-  runtime_instance->AssignStaticMemoryValueNode(graph.get().get());
+  runtime_instance->AssignStaticMemoryInput(*graph.get());
+  runtime_instance->AssignStaticMemoryValueNode(*graph.get());
   for (auto &child_graph : graph->child_graph_order()) {
     AssignStaticMemory(NOT_NULL(child_graph.lock()), memo);
   }
-  MS_LOG(INFO) << "Finish assigning static memory for parameter in graph: " << graph->graph_id();
+  MS_LOG(INFO) << "Status record: end assign static memory for parameter in graph. graph id: " << graph->graph_id();
 }
 
 void AscendSession::UpdateRefOutputMap(NotNull<KernelGraphPtr> graph,
@@ -1928,7 +1774,7 @@ void AscendSession::SyncStream() const {
 std::shared_ptr<device::Bucket> AscendSession::CreateBucket(uint32_t bucket_id, uint32_t bucket_size) {
   auto bucket = std::make_shared<device::ascend::AscendBucket>(bucket_id, bucket_size);
 
-  auto kernel_runtime = device::KernelRuntimeManager::Instance().GetCurrentKernelRuntime();
+  auto kernel_runtime = device::KernelRuntimeManager::Instance().GetKernelRuntime(kAscendDevice, device_id_);
   MS_EXCEPTION_IF_NULL(kernel_runtime);
   auto compute_stream = kernel_runtime->compute_stream();
   auto communication_stream = kernel_runtime->communication_stream();
@@ -1977,8 +1823,7 @@ void AscendSession::ExecuteAllTaskInQueue() {
     while (!launch_tasks.empty()) {
       auto &launch_task = launch_tasks.front();
       const auto &context = launch_task->context();
-      LaunchFunc(context->graph(), context->tensor_mask(), context->tensor_to_node(), context->is_dynamic_shape(),
-                 context->input_tensors());
+      LaunchFunc(context->graph(), context->tensor_to_node(), context->is_dynamic_shape(), context->input_tensors());
       launch_tasks.pop();
     }
 
@@ -1996,10 +1841,7 @@ void AscendSession::ExecuteAllTaskInQueue() {
 void AscendSession::UpdateOutputTensors(const VectorRef *outputs,
                                         const std::map<tensor::TensorPtr, session::KernelWithIndex> &tensor_to_node,
                                         std::map<DeviceAddressPtr, DeviceAddressPtr> *) {
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-  auto enable_mem_scheduler = context_ptr->get_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER);
-  if (enable_mem_scheduler) {
+  if (device::KernelRuntime::UseMemScheduler()) {
     return;
   }
   MS_EXCEPTION_IF_NULL(outputs);
@@ -2021,12 +1863,12 @@ void AscendSession::UpdateOutputTensors(const VectorRef *outputs,
         }
         const auto &address = AnfAlgo::GetMutableOutputAddr(node, output_index);
         tensor->set_device_address(address);
-        if (IsVMGraphTaskSink()) {
+        if (EnableDeviceCopy() && tensor->NeedSyncDeviceToHostImmediately()) {
           auto dst_device_address = AssignExtraMemForGraphOutput(tensor, node, output_index);
           MS_EXCEPTION_IF_NULL(dst_device_address);
-          if (!dst_device_address->SyncDeviceToDevice(trans::GetRuntimePaddingShape(node, output_index),
-                                                      address->GetSize(), address->type_id(), address->GetPtr(),
-                                                      address->format())) {
+          if (!dst_device_address->AsyncDeviceToDevice(trans::GetRuntimePaddingShape(node, output_index),
+                                                       address->GetSize(), address->type_id(), address->GetPtr(),
+                                                       address->format())) {
             MS_LOG(EXCEPTION) << "SyncDeviceToDevice failed!";
           }
           tensor->set_sync_status(kNoNeedSync);

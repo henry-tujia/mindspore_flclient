@@ -15,9 +15,6 @@
  */
 
 #include "runtime/device/ascend/ascend_launch_kernel.h"
-
-#include <vector>
-#include <memory>
 #include "runtime/device/memory_manager.h"
 #include "runtime/device/ascend/ascend_memory_pool.h"
 #include "runtime/device/ascend/kernel_build_ascend.h"
@@ -30,11 +27,13 @@ size_t AscendLaunchKernel::AlignSizeForLaunchKernel(size_t size) { return Memory
 
 uint8_t *AscendLaunchKernel::AllocDeviceMem(size_t size) {
   auto device_memory = AscendMemoryPool::GetInstance().AllocTensorMem(size);
-  MS_EXCEPTION_IF_NULL(device_memory);
+  if (device_memory == nullptr) {
+    MS_LOG(EXCEPTION) << "Fail to alloc memory, size: " << size;
+  }
   return static_cast<uint8_t *>(device_memory);
 }
 
-void AscendLaunchKernel::KernelSelect(std::shared_ptr<session::KernelGraph> kernel_graph) {
+void AscendLaunchKernel::KernelSelect(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto node_list = kernel_graph->execution_order();
   for (size_t i = 0; i < node_list.size(); ++i) {
@@ -45,7 +44,7 @@ void AscendLaunchKernel::KernelSelect(std::shared_ptr<session::KernelGraph> kern
   }
 }
 
-void AscendLaunchKernel::KernelBuild(std::shared_ptr<session::KernelGraph> kernel_graph) {
+void AscendLaunchKernel::KernelBuild(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto ret = device::ascend::KernelBuild(kernel_graph->execution_order());
   if (!ret) {

@@ -31,7 +31,7 @@ int OutputTensor2TensorC(const std::vector<lite::Tensor *> &tensors, std::vector
       return RET_ERROR;
     }
     tensor_c->data_type_ = kNumberTypeFloat32;
-    tensor_c->format_ = mindspore::NCHW;
+    tensor_c->format_ = tensors[i]->format();
     tensor_c->data_ = nullptr;
     tensor_c->shape_size_ = 0;
     tensors_c->push_back(tensor_c);
@@ -66,7 +66,7 @@ void FreeAllTensorC(std::vector<TensorC *> *tensors_in) {
 int Tensor2TensorC(const Tensor *src, TensorC *dst) {
   MS_CHECK_TRUE_RET(src != nullptr && dst != nullptr, RET_ERROR);
   dst->is_ready_ = src->IsReady();
-  dst->format_ = src->format();
+  dst->format_ = static_cast<int>(src->format());
   dst->data_ = src->data();
   dst->data_type_ = src->data_type();
   dst->shape_size_ = src->shape().size();
@@ -102,7 +102,7 @@ int TensorList2TensorListC(TensorList *src, TensorListC *dst) {
   MS_CHECK_TRUE_RET(src != nullptr && dst != nullptr, RET_ERROR);
   dst->is_ready_ = src->IsReady();
   dst->data_type_ = static_cast<TypeIdC>(src->data_type());
-  dst->format_ = src->format();
+  dst->format_ = static_cast<int>(src->format());
   dst->shape_value_ = src->shape().empty() ? 0 : src->shape().front();
   dst->element_num_ = src->shape().empty() ? 0 : src->tensors().size();
 
@@ -142,7 +142,7 @@ int TensorListC2TensorList(const TensorListC *src, TensorList *dst) {
 
   // Set Tensors
   for (size_t i = 0; i < src->element_num_; i++) {
-    auto ret = TensorC2Tensor(&src->tensors_[i], dst->GetTensor(i));
+    auto ret = TensorC2Tensor(&src->tensors_[i], dst->GetTensor(static_cast<int>(i)));
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "TensorC2Tensor failed";
       return ret;
@@ -154,25 +154,17 @@ int TensorListC2TensorList(const TensorListC *src, TensorList *dst) {
   return RET_OK;
 }
 
-int GenerateMergeSwitchOutTensorC(const std::vector<lite::Tensor *> &inputs, int outputs_size,
-                                  std::vector<TensorC *> *out_tensor_c) {
-  MS_CHECK_TRUE_RET(out_tensor_c != nullptr, RET_ERROR);
-  int ret = RET_OK;
-  for (int i = 0; i < outputs_size; i++) {
-    out_tensor_c->push_back(nullptr);
-  }
-  return ret;
-}
 #endif
 
-int GenerateOutTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &inputs,
-                       const std::vector<lite::Tensor *> &outputs, std::vector<TensorC *> *out_tensor_c) {
+int GenerateOutTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &outputs,
+                       std::vector<TensorC *> *out_tensor_c) {
   MS_CHECK_TRUE_RET(out_tensor_c != nullptr && parameter != nullptr, RET_ERROR);
   if (parameter->type_ == mindspore::schema::PrimitiveType_TensorListFromTensor ||
       parameter->type_ == mindspore::schema::PrimitiveType_TensorListReserve ||
       parameter->type_ == mindspore::schema::PrimitiveType_TensorListSetItem) {
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
     // TensorListC ->TensorC
+    MS_CHECK_TRUE_RET(!outputs.empty() && outputs.front()->data_type() == TypeId::kObjectTypeTensorType, RET_ERROR);
     auto *tensor_list_c = reinterpret_cast<TensorListC *>(malloc(sizeof(TensorListC)));
     if (tensor_list_c == nullptr) {
       return RET_ERROR;
@@ -190,7 +182,7 @@ int GenerateOutTensorC(const OpParameter *const parameter, const std::vector<lit
 }
 
 int GenerateInTensorC(const OpParameter *const parameter, const std::vector<lite::Tensor *> &inputs,
-                      const std::vector<lite::Tensor *> &outputs, std::vector<TensorC *> *in_tensor_c) {
+                      std::vector<TensorC *> *in_tensor_c) {
   MS_CHECK_TRUE_RET(in_tensor_c != nullptr, RET_ERROR);
   int ret = RET_OK;
   for (auto input : inputs) {
@@ -225,6 +217,7 @@ int GenerateInTensorC(const OpParameter *const parameter, const std::vector<lite
       ret = Tensor2TensorC(input, tensor_c);
       if (ret != RET_OK) {
         MS_LOG(ERROR) << "Tensor to TensorC failed.";
+        free(tensor_c);
         return ret;
       }
       in_tensor_c->emplace_back(tensor_c);

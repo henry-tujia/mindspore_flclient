@@ -49,7 +49,11 @@ struct HashTableInfo {
   size_t embedding_size{0};
   size_t vocab_size{0};
   Address device_address{nullptr, 0};
+#ifdef __APPLE__
+  std::shared_ptr<float> host_address{nullptr};
+#else
   std::shared_ptr<float[]> host_address{nullptr};
+#endif
   ParamInitInfo param_init_info_;
 };
 
@@ -145,7 +149,7 @@ class PsCacheManager {
   void set_current_graph_step() { graph_running_step_ = graph_step_; }
   std::string channel_name();
   void set_channel_name(const std::string channel_name);
-  void InitParameterServer();
+  bool InitParameterServer();
   void InitDataChannel();
   void AllocMemForHashTable();
   void SetLocalIdRank();

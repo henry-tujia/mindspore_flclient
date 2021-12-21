@@ -17,11 +17,9 @@
 #include "src/delegate/npu/op/resize_npu.h"
 #include <memory>
 #include "src/delegate/npu/npu_converter_utils.h"
+#include "src/delegate/npu/npu_manager.h"
 
 namespace mindspore {
-constexpr int RESIZE_INPUT_SIZE = 2;
-constexpr int SHAPE_SIZE = 2;
-
 int ResizeNPUOp::IsSupport(const schema::Primitive *primitive, const std::vector<mindspore::MSTensor> &in_tensors,
                            const std::vector<mindspore::MSTensor> &out_tensors) {
   auto resize_prim = primitive->value_as_Resize();
@@ -40,64 +38,82 @@ int ResizeNPUOp::IsSupport(const schema::Primitive *primitive, const std::vector
     MS_LOG(WARNING) << "Npu resize does not support reduction.";
     return RET_NOT_SUPPORT;
   }
+  is_support_v2_ = NPUManager::CheckDDKVerGreatEqual("100.500.010.010");
+  is_support_scale_ = NPUManager::CheckDDKVerGreatEqual("100.320.012.043");
   return RET_OK;
 }
 
 int ResizeNPUOp::Init(const schema::Primitive *primitive, const std::vector<mindspore::MSTensor> &in_tensors,
                       const std::vector<mindspore::MSTensor> &out_tensors) {
-  auto resize_prim = primitive->value_as_Resize();
-  if (resize_prim == nullptr) {
-    MS_LOG(ERROR) << "Get null primitive value for op ." << name_;
-    return RET_ERROR;
-  }
-  if (in_tensors.size() == 1) {
-    new_height_ = resize_prim->new_height();
-    new_width_ = resize_prim->new_width();
-  } else if (in_tensors.size() == RESIZE_INPUT_SIZE) {
-    auto out_size = in_tensors.at(1).Data();
-    if (out_size == nullptr) {
-      MS_LOG(ERROR) << "Out size is not assigned";
-      return RET_ERROR;
-    }
-    new_height_ = out_tensors.at(0).Shape().at(NHWC_H);
-    new_width_ = out_tensors.at(0).Shape().at(NHWC_W);
-  } else {
-    MS_LOG(ERROR) << "Get resize op new_height and new_width error.";
-    return RET_ERROR;
-  }
+  auto org_height = static_cast<float>(in_tensors.at(0).Shape().at(NHWC_H));
+  auto org_width = static_cast<float>(in_tensors.at(0).Shape().at(NHWC_W));
+  auto new_height = static_cast<int>(out_tensors.at(0).Shape().at(NHWC_H));
+  auto new_width = static_cast<int>(out_tensors.at(0).Shape().at(NHWC_W));
 
-  ge::TensorDesc sizeTensorDesc(ge::Shape({SHAPE_SIZE}), ge::FORMAT_NCHW, ge::DT_INT32);
-  ge::TensorPtr sizeTensor = std::make_shared<hiai::Tensor>(sizeTensorDesc);
-  vector<int32_t> dataValue = {static_cast<int32_t>(new_height_), static_cast<int32_t>(new_width_)};
-  sizeTensor->SetData(reinterpret_cast<uint8_t *>(dataValue.data()), SHAPE_SIZE * sizeof(int32_t));
+  ge::TensorPtr size_tensor = std::make_shared<hiai::Tensor>();
+  if (is_support_scale_) {
+    ge::TensorDesc size_tensor_desc(ge::Shape({NPU_SHAPE_SIZE}), ge::FORMAT_ND, ge::DT_FLOAT);
+    size_tensor->SetTensorDesc(size_tensor_desc);
+    std::vector<float> data_value = {1, 1, new_height / org_height, new_width / org_width};
+    size_tensor->SetData(reinterpret_cast<uint8_t *>(data_value.data()), NPU_SHAPE_SIZE * sizeof(float));
+  } else {
+    ge::TensorDesc size_tensor_desc(ge::Shape({DIMENSION_2D}), ge::FORMAT_ND, ge::DT_INT32);
+    size_tensor->SetTensorDesc(size_tensor_desc);
+    std::vector<int> data_value = {new_height, new_width};
+    size_tensor->SetData(reinterpret_cast<uint8_t *>(data_value.data()), DIMENSION_2D * sizeof(int));
+  }
   out_size_ = new (std::nothrow) hiai::op::Const(name_ + "_size");
   if (out_size_ == nullptr) {
     MS_LOG(ERROR) << "create const NPU op failed for " << name_;
     return RET_ERROR;
   }
-  out_size_->set_attr_value(sizeTensor);
+  out_size_->set_attr_value(size_tensor);
 
+  auto resize_prim = primitive->value_as_Resize();
+  if (resize_prim == nullptr) {
+    MS_LOG(ERROR) << "Get null primitive value for op ." << name_;
+    return RET_ERROR;
+  }
+  auto ret = SelectResizeOp(resize_prim);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Select Resize op failed!";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int ResizeNPUOp::SelectResizeOp(const mindspore::schema::Resize *prim) {
   if (resize_method_ == schema::ResizeMethod_LINEAR) {
     auto resize_bilinear = new (std::nothrow) hiai::op::ResizeBilinearV2(name_);
     if (resize_bilinear == nullptr) {
       MS_LOG(ERROR) << " resize_ is nullptr.";
       return RET_ERROR;
     }
-    resize_bilinear->set_attr_align_corners(resize_prim->coordinate_transform_mode() ==
+    resize_bilinear->set_attr_align_corners(prim->coordinate_transform_mode() ==
                                             schema::CoordinateTransformMode_ALIGN_CORNERS);
     resize_bilinear->set_input_size(*out_size_);
-    resize_bilinear->set_attr_half_pixel_centers(resize_prim->preserve_aspect_ratio());
+    resize_bilinear->set_attr_half_pixel_centers(prim->preserve_aspect_ratio());
     resize_ = resize_bilinear;
   } else if (resize_method_ == schema::ResizeMethod_NEAREST) {
-    auto resize_nearest = new (std::nothrow) hiai::op::ResizeNearestNeighborV2(name_);
-    if (resize_nearest == nullptr) {
-      MS_LOG(ERROR) << " resize_ is nullptr.";
-      return RET_ERROR;
+    if (is_support_v2_) {
+      auto resize_nearest_v2 = new (std::nothrow) hiai::op::ResizeNearestNeighborV2(name_);
+      if (resize_nearest_v2 == nullptr) {
+        MS_LOG(ERROR) << " resize_ is nullptr.";
+        return RET_ERROR;
+      }
+      resize_nearest_v2->set_attr_align_corners(prim->coordinate_transform_mode() ==
+                                                schema::CoordinateTransformMode_ALIGN_CORNERS);
+      resize_nearest_v2->set_input_size(*out_size_);
+      resize_ = resize_nearest_v2;
+    } else {
+      auto resize_nearest = new (std::nothrow) hiai::op::ResizeNearestNeighbor(name_);
+      if (resize_nearest == nullptr) {
+        MS_LOG(ERROR) << " resize_ is nullptr.";
+        return RET_ERROR;
+      }
+      resize_nearest->set_input_size(*out_size_);
+      resize_ = resize_nearest;
     }
-    resize_nearest->set_attr_align_corners(resize_prim->coordinate_transform_mode() ==
-                                           schema::CoordinateTransformMode_ALIGN_CORNERS);
-    resize_nearest->set_input_size(*out_size_);
-    resize_ = resize_nearest;
   } else {
     MS_LOG(WARNING) << "Unsupported resize method type:" << resize_method_;
     return RET_ERROR;
@@ -112,8 +128,13 @@ int ResizeNPUOp::SetNPUInputs(const std::vector<mindspore::MSTensor> &in_tensors
     auto resize_bilinear = reinterpret_cast<hiai::op::ResizeBilinearV2 *>(resize_);
     resize_bilinear->set_input_x(*npu_inputs[0]);
   } else if (resize_method_ == schema::ResizeMethod_NEAREST) {
-    auto resize_nearest = reinterpret_cast<hiai::op::ResizeNearestNeighborV2 *>(resize_);
-    resize_nearest->set_input_x(*npu_inputs[0]);
+    if (is_support_v2_) {
+      auto resize_nearest_v2 = reinterpret_cast<hiai::op::ResizeNearestNeighborV2 *>(resize_);
+      resize_nearest_v2->set_input_x(*npu_inputs[0]);
+    } else {
+      auto resize_nearest = reinterpret_cast<hiai::op::ResizeNearestNeighbor *>(resize_);
+      resize_nearest->set_input_x(*npu_inputs[0]);
+    }
   } else {
     MS_LOG(WARNING) << "Unsupported resize method type:" << resize_method_;
     return RET_ERROR;

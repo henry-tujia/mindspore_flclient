@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORT_SEGMENT_SUM_H_
-#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORT_SEGMENT_SUM_H_
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_SUM_GPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_SUM_GPU_KERNEL_H_
 
 #include <vector>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
@@ -54,14 +54,14 @@ class UnsortedSegmentSumGpuKernel : public GpuKernel {
   bool Init(const CNodePtr &kernel_node) override {
     kernel_node_ = kernel_node;
     auto input_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(input_shapes);
+    auto ids_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
+    auto output_shapes = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shapes) || CHECK_NULL_INPUT(ids_shapes) || CHECK_NULL_INPUT(output_shapes);
     if (is_null_input_) {
-      MS_LOG(WARNING) << "UnsortedSegmentSum input is null";
+      MS_LOG(WARNING) << "For 'UnsortedSegmentSumGpuKernel', input or output is null";
       InitSizeLists();
       return true;
     }
-    auto ids_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
-    auto output_shapes = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
 
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num == 3) {
@@ -120,4 +120,4 @@ class UnsortedSegmentSumGpuKernel : public GpuKernel {
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORT_SEGMENT_SUM_H_
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_SUM_GPU_KERNEL_H_

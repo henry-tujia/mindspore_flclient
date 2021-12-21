@@ -20,7 +20,7 @@
 #include <string>
 #include "src/inner_kernel.h"
 #include "include/context.h"
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 
 namespace mindspore::kernel {
 class NormalizeCPUKernel : public InnerKernel {
@@ -30,7 +30,7 @@ class NormalizeCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~NormalizeCPUKernel() = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 

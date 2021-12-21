@@ -29,12 +29,17 @@
 #include <memory>
 #include <cfloat>
 #include <utility>
+#ifndef BENCHMARK_CLIP_JSON
 #include <nlohmann/json.hpp>
+#endif
 #include "tools/benchmark/benchmark_base.h"
 #include "include/model.h"
 #include "tools/common/flag_parser.h"
 #include "src/common/file_utils.h"
 #include "src/common/utils.h"
+#ifdef ENABLE_OPENGL_TEXTURE
+#include "tools/common/opengl_util.h"
+#endif
 #include "include/lite_session.h"
 
 namespace mindspore::lite {
@@ -50,13 +55,23 @@ class MS_API Benchmark : public BenchmarkBase {
  protected:
   // call GenerateRandomData to fill inputTensors
   int GenerateInputData() override;
+#ifdef ENABLE_OPENGL_TEXTURE
+  int GenerateGLTexture(std::map<std::string, GLuint> *inputGlTexture, std::map<std::string, GLuint> *outputGLTexture);
+
+  int LoadGLTexture();
+
+  int ReadGLTextureFile(std::map<std::string, GLuint> *inputGlTexture, std::map<std::string, GLuint> *outputGLTexture);
+
+  int FillGLTextureToTensor(std::map<std::string, GLuint> *gl_texture, mindspore::tensor::MSTensor *tensor,
+                            std::string name, void *data = nullptr);
+#endif
+  int LoadInput() override;
 
   int ReadInputFile() override;
 
-  int ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name,
-                     const std::vector<size_t> &dims) override;
+  int GetDataTypeByTensorName(const std::string &tensor_name) override;
 
-  void InitContext(const std::shared_ptr<Context> &context);
+  int InitContext(const std::shared_ptr<Context> &context);
 
   int CompareOutput() override;
 
@@ -79,10 +94,20 @@ class MS_API Benchmark : public BenchmarkBase {
 
   int CheckInputNames();
 
+  int CompareOutputByCosineDistance(float cosine_distance_threshold);
+
+  int CompareDataGetTotalCosineDistanceAndSize(const std::string &name, tensor::MSTensor *tensor,
+                                               float *total_cosine_distance, int *total_size);
+  tensor::MSTensor *GetTensorByNodeShape(const std::vector<size_t> &node_shape);
+  tensor::MSTensor *GetTensorByNameOrShape(const std::string &node_or_tensor_name, const std::vector<size_t> &dims);
+
  private:
+#ifdef ENABLE_OPENGL_TEXTURE
+  mindspore::OpenGL::OpenGLRuntime gl_runtime_;
+#endif
   session::LiteSession *session_{nullptr};
   std::vector<mindspore::tensor::MSTensor *> ms_inputs_;
-  std::unordered_map<std::string, std::vector<mindspore::tensor::MSTensor *>> ms_outputs_;
+  std::unordered_map<std::string, mindspore::tensor::MSTensor *> ms_outputs_;
 
   KernelCallBack before_call_back_ = nullptr;
   KernelCallBack after_call_back_ = nullptr;

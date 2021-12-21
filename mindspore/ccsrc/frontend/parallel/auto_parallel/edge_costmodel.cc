@@ -23,6 +23,7 @@
 #include "frontend/parallel/auto_parallel/costmodel.h"
 #include "frontend/parallel/auto_parallel/graph_costmodel.h"
 #include "frontend/parallel/tensor_layout/tensor_redistribution.h"
+#include "frontend/parallel/ops_info/reshape_info.h"
 
 namespace mindspore {
 namespace parallel {
@@ -348,50 +349,195 @@ CostPtr Edge::GetCostByStrategyPair(const CostPtrKey &stra_pair) {
   return cost_vec[0];
 }
 
-StrategyPtr Edge::GetNextOpStrategyByPrevOpStrategyWithZeroComm(const StrategyPtr &prev_op_stra) {
+StrategyPtr Edge::GetNextOpStrategyByPrevOpStrategyWithMiniComm(const StrategyPtr &prev_op_stra) {
   std::vector<std::pair<StrategyPtr, double>> next_op_stras;
+  // First, try to find the strategy with zero communication cost.
   for (auto &key_value : cost_map_) {
     const auto &candidate_prev_op_stra = key_value.first.first;
     if (prev_op_stra->IsEqual(candidate_prev_op_stra) && (key_value.second[0]->communication_cost_ == 0.0)) {
-      next_op_stras.emplace_back(key_value.first.second, key_value.second[0]->computation_cost_);
+      (void)next_op_stras.emplace_back(key_value.first.second, key_value.second[0]->computation_cost_);
     }
   }
   if (next_op_stras.empty()) {
-    MS_LOG(ERROR) << "There are no available strategy for zero communication cost for edge: " << edge_name_;
-    return nullptr;
-  } else if (next_op_stras.size() > 1) {
+    // Second, if there is not strategy with zero communication cost, find the one with minimum communication cost.
+    std::vector<std::pair<StrategyPtr, double>> next_stras;
+    for (auto &key_value : cost_map_) {
+      const auto &candidate_prev_op_stra = key_value.first.first;
+      if (prev_op_stra->IsEqual(candidate_prev_op_stra)) {
+        (void)next_stras.emplace_back(key_value.first.second, key_value.second[0]->communication_cost_);
+      }
+    }
+    if (next_stras.empty()) {
+      MS_LOG(ERROR) << "There are no available strategy for zero communication cost for edge: " << edge_name_;
+      return nullptr;
+    }
+    MS_LOG(WARNING) << "Inconsistency occurred at edge: " << edge_name();
+    std::sort(next_stras.begin(), next_stras.end(),
+              [](const std::pair<StrategyPtr, double> &a, const std::pair<StrategyPtr, double> &b) {
+                return a.second != b.second ? a.second < b.second : a.first->PartitionNum() > b.first->PartitionNum();
+              });
+    return next_stras[0].first;
+  }
+  if (next_op_stras.size() > 1) {
     MS_LOG(INFO) << "There are multiple strategies for edge: " << edge_name_
-                 << ", choose the one with"
-                    " minimum computation costs.";
+                 << " with zero communication cost, choose the one with minimum computation costs.";
   }
   std::sort(next_op_stras.begin(), next_op_stras.end(),
             [](const std::pair<StrategyPtr, double> &a, const std::pair<StrategyPtr, double> &b) {
-              return a.second <= b.second;
+              return a.second != b.second ? a.second < b.second : a.first->PartitionNum() > b.first->PartitionNum();
             });
   return next_op_stras[0].first;
 }
 
-StrategyPtr Edge::GetPrevOpStrategyByNextOpStrategyWithZeroComm(const StrategyPtr &next_op_stra) {
+StrategyPtr Edge::GetPrevOpStrategyByNextOpStrategyWithMiniComm(const StrategyPtr &next_op_stra) {
   std::vector<std::pair<StrategyPtr, double>> prev_op_stras;
+  // First, try to find the strategy with zero communication cost.
   for (auto &key_value : cost_map_) {
     const auto &candidate_next_op_stra = key_value.first.second;
     if (next_op_stra->IsEqual(candidate_next_op_stra) && (key_value.second[0]->communication_cost_ == 0.0)) {
-      prev_op_stras.emplace_back(key_value.first.first, key_value.second[0]->computation_cost_);
+      (void)prev_op_stras.emplace_back(key_value.first.first, key_value.second[0]->computation_cost_);
     }
   }
   if (prev_op_stras.empty()) {
-    MS_LOG(ERROR) << "There are no available strategy for zero communication cost for edge: " << edge_name_;
-    return nullptr;
-  } else if (prev_op_stras.size() > 1) {
+    // Second, if there is no strategy with zero communication cost, find the one with minimum communication cost.
+    std::vector<std::pair<StrategyPtr, double>> prev_stras;
+    for (auto &key_value : cost_map_) {
+      const auto &candidate_next_op_stra = key_value.first.second;
+      if (next_op_stra->IsEqual(candidate_next_op_stra)) {
+        (void)prev_stras.emplace_back(key_value.first.first, key_value.second[0]->communication_cost_);
+      }
+    }
+    if (prev_stras.empty()) {
+      MS_LOG(ERROR) << "There are no available strategy for zero communication cost for edge: " << edge_name_;
+      return nullptr;
+    }
+    MS_LOG(WARNING) << "Inconsistency occurred at edge: " << edge_name();
+    std::sort(prev_stras.begin(), prev_stras.end(),
+              [](const std::pair<StrategyPtr, double> &a, const std::pair<StrategyPtr, double> &b) {
+                return a.second != b.second ? a.second < b.second : a.first->PartitionNum() > b.first->PartitionNum();
+              });
+    return prev_stras[0].first;
+  }
+  if (prev_op_stras.size() > 1) {
     MS_LOG(INFO) << "There are multiple strategies for edge: " << edge_name_
-                 << ", choose the one with minimum "
-                    "computation costs.";
+                 << " with zero communication costs, choose the one with minimum computation costs.";
   }
   std::sort(prev_op_stras.begin(), prev_op_stras.end(),
             [](const std::pair<StrategyPtr, double> &a, const std::pair<StrategyPtr, double> &b) {
-              return a.second <= b.second;
+              return a.second != b.second ? a.second < b.second : a.first->PartitionNum() > b.first->PartitionNum();
             });
   return prev_op_stras[0].first;
+}
+
+int64_t Edge::GetReshapeSWCIndexByNextOpStrategy(const StrategyPtr &next_op_stra) {
+  if (!prev_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << "'s prev_op is not a Reshape.";
+  }
+  if (next_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << " has two Reshapes, which is not supported currently.";
+  }
+  const auto &reshape_output_layout = next_op_->GetInputLayoutFromSWCByStrategy(next_op_stra, next_op_input_index_);
+  MS_LOG(INFO) << prev_op_->name() << "'s output layout: " << reshape_output_layout.ToString();
+  auto reshape_ptr = std::dynamic_pointer_cast<ReshapeInfo>(prev_op_);
+  // First, try to find the zero communication strategy.
+  auto swc_index = reshape_ptr->GetSWCIndexByOutputLayoutWithZeroComm(reshape_output_layout);
+  if (swc_index == -1) {
+    // Second, if there is no strategy with zero communication cost, find the strategy with minimum cost.
+    swc_index = reshape_ptr->GetSWCIndexByOutputLayoutWithMiniComm(reshape_output_layout);
+    if (swc_index != -1) {
+      MS_LOG(WARNING) << "Inconsistency occurred at edge: " << edge_name();
+    }
+  }
+  if (swc_index == -1) {
+    MS_LOG(EXCEPTION) << "No available strategy found at edge: " << edge_name_ << " for: " << prev_op_->name();
+  }
+  return swc_index;
+}
+
+int64_t Edge::GetReshapeSWCIndexByPrevOpStrategy(const StrategyPtr &prev_op_stra) {
+  if (!next_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << "'s next_op is not a Reshape.";
+  }
+  if (prev_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << " has two Reshapes, which is not supported currently.";
+  }
+  const auto &reshape_input_lyt = prev_op_->GetOutputLayoutFromSWCByStrategy(prev_op_stra, prev_op_output_index_);
+  MS_LOG(INFO) << next_op_->name() << "'s input layout: " << reshape_input_lyt.ToString();
+  auto reshape_ptr = std::dynamic_pointer_cast<ReshapeInfo>(next_op_);
+  // First, try to find the zero communication strategy.
+  auto swc_index = reshape_ptr->GetSWCIndexByInputLayoutWithZeroComm(reshape_input_lyt);
+  if (swc_index == -1) {
+    // Second, if there is no zero communication strategy, find the strategy with minimum cost.
+    swc_index = reshape_ptr->GetSWCIndexByInputLayoutWithMiniComm(reshape_input_lyt);
+    if (swc_index != -1) {
+      MS_LOG(WARNING) << "Inconsistency occurred at edge: " << edge_name();
+    }
+  }
+  if (swc_index == -1) {
+    MS_LOG(EXCEPTION) << "No available strategy found at edge: " << edge_name_ << " for: " << next_op_->name();
+  }
+  return swc_index;
+}
+
+StrategyPtr Edge::GetPrevOpStrategyByReshapeSWCIndex(int64_t swc_index) {
+  if (!next_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << "'s next_op is not a Reshape.";
+  }
+  if (prev_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << " has two Reshapes, which is not supported currently.";
+  }
+  auto reshape_ptr = std::dynamic_pointer_cast<ReshapeInfo>(next_op_);
+  const auto &reshape_input_lyt = reshape_ptr->GetInputLayoutBySWCIndex(swc_index);
+  auto stra = prev_op_->GetStrategyFromSWCByOutputLayout(reshape_input_lyt, prev_op_output_index_);
+  if (stra == nullptr) {
+    MS_LOG(EXCEPTION) << "No available strategy found at edge: " << edge_name_ << " for: " << prev_op_->name();
+  }
+  return stra;
+}
+
+StrategyPtr Edge::GetNextOpStrategyByReshapeSWCIndex(int64_t swc_index) {
+  if (!prev_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << "'s next_op is not a Reshape.";
+  }
+  if (next_op_->IsReshape()) {
+    MS_LOG(EXCEPTION) << "The edge: " << edge_name_ << " has two Reshapes, which is not supported currently.";
+  }
+  auto reshape_ptr = std::dynamic_pointer_cast<ReshapeInfo>(prev_op_);
+  const auto &reshape_output_lyt = reshape_ptr->GetOutputLayoutBySWCIndex(swc_index);
+  auto stra = next_op_->GetStrategyFromSWCByInputLayout(reshape_output_lyt, next_op_input_index_);
+  if (stra == nullptr) {
+    MS_LOG(EXCEPTION) << "No available strategy found at edge: " << edge_name_ << " for: " << prev_op_->name();
+  }
+  return stra;
+}
+
+bool Edge::CheckStrategyConsistency(StrategyPtr prev_stra, StrategyPtr next_stra) {
+  if (prev_stra == nullptr) {
+    MS_LOG(EXCEPTION) << prev_op_->name() << "'s selected strategy is null!";
+  }
+  if (next_stra == nullptr) {
+    MS_LOG(EXCEPTION) << next_op_->name() << "'s selected strategy is null!";
+  }
+  auto cost = GetCostByStrategyPair({prev_stra, next_stra});
+  if (cost == nullptr || cost->communication_cost_ > 0.0) {
+    MS_LOG(INFO) << "The edge " << edge_name_ << "'s strategy: ";
+    PrintStrategy(prev_stra);
+    PrintStrategy(next_stra);
+    if (prev_op_->IsTmpIdentity()) {
+      MS_LOG(ERROR) << "The parameter: " << prev_op_->refkey_parameter_name()
+                    << " has been used by operators with "
+                       "different sharding strategies. These operators are: ";
+      auto const &succ_edges = prev_op_->succ_edges();
+      for (auto const &succ_edge : succ_edges) {
+        MS_LOG(ERROR) << succ_edge->next_operator()->name() << ", the corresponding fullname is: "
+                      << succ_edge->next_operator()->cnode()->fullname_with_scope();
+      }
+      MS_LOG(EXCEPTION) << "Configure these operators with consistent sharding strategies.";
+    }
+    MS_LOG(WARNING) << "There are redistribution cost occurs at edge: " << edge_name() << ".";
+    return false;
+  }
+  return true;
 }
 
 void Edge::SetCostMapAndInputOutput(std::map<CostPtrKey, CostPtrList> &cost_map) {

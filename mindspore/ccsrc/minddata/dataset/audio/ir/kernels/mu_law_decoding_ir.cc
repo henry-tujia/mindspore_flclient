@@ -20,16 +20,14 @@
 
 namespace mindspore {
 namespace dataset {
-
 namespace audio {
-
-MuLawDecodingOperation::MuLawDecodingOperation(int quantization_channels)
+MuLawDecodingOperation::MuLawDecodingOperation(int32_t quantization_channels)
     : quantization_channels_(quantization_channels) {}
 
 MuLawDecodingOperation::~MuLawDecodingOperation() = default;
 
 Status MuLawDecodingOperation::ValidateParams() {
-  RETURN_IF_NOT_OK(ValidateIntScalarPositive("MuLawEncoding", "quantization_channels", quantization_channels_));
+  RETURN_IF_NOT_OK(ValidateIntScalarPositive("MuLawDecoding", "quantization_channels", quantization_channels_));
   return Status::OK();
 }
 
@@ -46,7 +44,6 @@ std::shared_ptr<TensorOp> MuLawDecodingOperation::Build() {
 }
 
 std::string MuLawDecodingOperation::Name() const { return kMuLawDecodingOperation; }
-
 }  // namespace audio
 }  // namespace dataset
 }  // namespace mindspore

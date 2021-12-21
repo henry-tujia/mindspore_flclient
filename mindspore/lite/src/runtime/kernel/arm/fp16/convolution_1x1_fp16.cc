@@ -84,29 +84,31 @@ int Convolution1x1FP16CPUKernel::MallocWeightBiasData() {
   auto weight_tensor = in_tensors_.at(kWeightIndex);
   auto input_channel = weight_tensor->Channel();
   auto output_channel = weight_tensor->Batch();
-
+  MS_CHECK_TRUE_RET(input_channel > 0 && output_channel > 0, RET_ERROR);
   size_t size = input_channel * UP_ROUND(output_channel, col_tile_) * sizeof(float16_t);
   if (!op_parameter_->is_train_session_) {
     if (packed_weight_ == nullptr) {
+      CHECK_LESS_RETURN(MAX_MALLOC_SIZE, size);
       packed_weight_ = malloc(size);
       if (packed_weight_ == nullptr) {
         MS_LOG(ERROR) << "Conv1x1 Malloc packed_weight_ error!";
         return RET_ERROR;
       }
     }
-    memset(reinterpret_cast<char *>(packed_weight_), 0, size);
+    memset(packed_weight_, 0, size);
   }
 
   if (in_tensors_.size() == kInputSize2) {
     size = UP_ROUND(output_channel, col_tile_) * sizeof(float16_t);
     if (bias_data_ == nullptr) {
+      CHECK_LESS_RETURN(MAX_MALLOC_SIZE, size);
       bias_data_ = malloc(size);
       if (bias_data_ == nullptr) {
         MS_LOG(ERROR) << "Conv1x1 Malloc bias_ptr_ error!";
         return RET_ERROR;
       }
     }
-    memset(reinterpret_cast<char *>(bias_data_), 0, size);
+    memset(bias_data_, 0, size);
   }
   return RET_OK;
 }
@@ -131,10 +133,9 @@ void Convolution1x1FP16CPUKernel::PackWeight() {
 #endif
 }
 
-int Convolution1x1FP16CPUKernel::Init() {
+int Convolution1x1FP16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
-  UpdateOriginWeightAndBias();
 #ifdef ENABLE_ARM64
   if (out_tensors_.front()->format() == NC4HW4) {
     row_tile_ = C16NUM;
@@ -155,10 +156,12 @@ int Convolution1x1FP16CPUKernel::Init() {
     size_t size = input_channel * UP_ROUND(output_channel, col_tile_) * sizeof(float16_t);
     set_workspace_size(size);
   }
-  matmul_param_ = new (std::nothrow) MatMulParameter();
   if (matmul_param_ == nullptr) {
-    MS_LOG(ERROR) << "Init matmul_param_ failed.";
-    return RET_ERROR;
+    matmul_param_ = new (std::nothrow) MatMulParameter();
+    if (matmul_param_ == nullptr) {
+      MS_LOG(ERROR) << "Init matmul_param_ failed.";
+      return RET_ERROR;
+    }
   }
   int ret = InitConvWeightBias();
   if (ret != RET_OK) {
@@ -178,7 +181,7 @@ void Convolution1x1FP16CPUKernel::FreeTmpBuffer() {
 
 int Convolution1x1FP16CPUKernel::ReSize() {
   FreeTmpBuffer();
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "ConvolutionBase init failed.";
     return ret;
@@ -330,5 +333,4 @@ int Convolution1x1FP16CPUKernel::Run() {
   pack_input_ = nullptr;
   return RET_OK;
 }
-
 }  // namespace mindspore::kernel

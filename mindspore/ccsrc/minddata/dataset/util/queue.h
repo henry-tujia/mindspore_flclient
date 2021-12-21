@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,7 +66,11 @@ class Queue {
 
   bool empty() const { return head_ == tail_; }
 
-  void Reset() { ResetQue(); }
+  void Reset() {
+    std::unique_lock<std::mutex> _lock(mux_);
+    ResetQue();
+    extra_arr_.clear();
+  }
 
   // Producer
   Status Add(const_reference ele) noexcept {
@@ -74,8 +78,7 @@ class Queue {
     // Block when full
     Status rc = full_cv_.Wait(&_lock, [this]() -> bool { return (size() != capacity()); });
     if (rc.IsOk()) {
-      auto k = tail_++ % sz_;
-      *(arr_[k]) = ele;
+      RETURN_IF_NOT_OK(AddWhileHoldingLock(ele));
       empty_cv_.NotifyAll();
       _lock.unlock();
     } else {
@@ -89,8 +92,7 @@ class Queue {
     // Block when full
     Status rc = full_cv_.Wait(&_lock, [this]() -> bool { return (size() != capacity()); });
     if (rc.IsOk()) {
-      auto k = tail_++ % sz_;
-      *(arr_[k]) = std::forward<T>(ele);
+      RETURN_IF_NOT_OK(AddWhileHoldingLock(std::forward<T>(ele)));
       empty_cv_.NotifyAll();
       _lock.unlock();
     } else {
@@ -121,32 +123,13 @@ class Queue {
     // Block when empty
     Status rc = empty_cv_.Wait(&_lock, [this]() -> bool { return !empty(); });
     if (rc.IsOk()) {
-      auto k = head_++ % sz_;
-      *p = std::move(*(arr_[k]));
+      RETURN_IF_NOT_OK(PopFrontWhileHoldingLock(p, true));
       full_cv_.NotifyAll();
       _lock.unlock();
     } else {
       full_cv_.Interrupt();
     }
     return rc;
-  }
-
-  void ResetQue() noexcept {
-    std::unique_lock<std::mutex> _lock(mux_);
-    // If there are elements in the queue, drain them. We won't call PopFront directly
-    // because we have got the lock already. We will deadlock if we call PopFront
-    for (auto i = head_; i < tail_; ++i) {
-      auto k = i % sz_;
-      auto val = std::move(*(arr_[k]));
-      // Let val go out of scope and its destructor will be invoked automatically.
-      // But our compiler may complain val is not in use. So let's do some useless
-      // stuff.
-      MS_LOG(DEBUG) << "Address of val: " << &val;
-    }
-    empty_cv_.ResetIntrpState();
-    full_cv_.ResetIntrpState();
-    head_ = 0;
-    tail_ = 0;
   }
 
   Status Register(TaskGroup *vg) {
@@ -159,15 +142,96 @@ class Queue {
     }
   }
 
+  Status Resize(int32_t new_capacity) {
+    std::unique_lock<std::mutex> _lock(mux_);
+    CHECK_FAIL_RETURN_UNEXPECTED(new_capacity > 0,
+                                 "New capacity: " + std::to_string(new_capacity) + ", should be larger than 0");
+    RETURN_OK_IF_TRUE(new_capacity == static_cast<int32_t>(capacity()));
+    std::vector<T> queue;
+    // pop from the original queue until the new_capacity is full
+    for (int32_t i = 0; i < new_capacity; ++i) {
+      if (head_ < tail_) {
+        // if there are elements left in queue, pop out
+        T temp;
+        RETURN_IF_NOT_OK(this->PopFrontWhileHoldingLock(&temp, true));
+        queue.push_back(temp);
+      } else {
+        // if there is nothing left in queue, check extra_arr_
+        if (!extra_arr_.empty()) {
+          // if extra_arr_ is not empty, push to fill the new_capacity
+          queue.push_back(extra_arr_[0]);
+          extra_arr_.erase(extra_arr_.begin());
+        } else {
+          // if everything in the queue and extra_arr_ is popped out, break the loop
+          break;
+        }
+      }
+    }
+    // if there are extra elements in queue, put them to extra_arr_
+    while (head_ < tail_) {
+      T temp;
+      RETURN_IF_NOT_OK(this->PopFrontWhileHoldingLock(&temp, false));
+      extra_arr_.push_back(temp);
+    }
+    this->ResetQue();
+    RETURN_IF_NOT_OK(arr_.allocate(new_capacity));
+    sz_ = new_capacity;
+    for (int32_t i = 0; i < static_cast<int32_t>(queue.size()); ++i) {
+      RETURN_IF_NOT_OK(this->AddWhileHoldingLock(queue[i]));
+    }
+    queue.clear();
+    _lock.unlock();
+    return Status::OK();
+  }
+
  private:
   size_t sz_;
   MemGuard<T, Allocator<T>> arr_;
+  std::vector<T> extra_arr_;  // used to store extra elements after reducing capacity, will not be changed by Add,
+                              // will pop when there is a space in queue (by PopFront or Resize)
   size_t head_;
   size_t tail_;
   std::string my_name_;
   std::mutex mux_;
   CondVar empty_cv_;
   CondVar full_cv_;
+
+  // Helper function for Add, must be called when holding a lock
+  Status AddWhileHoldingLock(const_reference ele) {
+    auto k = tail_++ % sz_;
+    *(arr_[k]) = ele;
+    return Status::OK();
+  }
+
+  // Helper function for Add, must be called when holding a lock
+  Status AddWhileHoldingLock(T &&ele) {
+    auto k = tail_++ % sz_;
+    *(arr_[k]) = std::forward<T>(ele);
+    return Status::OK();
+  }
+
+  // Helper function for PopFront, must be called when holding a lock
+  Status PopFrontWhileHoldingLock(pointer p, bool clean_extra) {
+    auto k = head_++ % sz_;
+    *p = std::move(*(arr_[k]));
+    if (!extra_arr_.empty() && clean_extra) {
+      RETURN_IF_NOT_OK(this->AddWhileHoldingLock(std::forward<T>(extra_arr_[0])));
+      extra_arr_.erase(extra_arr_.begin());
+    }
+    return Status::OK();
+  }
+
+  void ResetQue() noexcept {
+    while (head_ < tail_) {
+      T val;
+      this->PopFrontWhileHoldingLock(&val, false);
+      MS_LOG(DEBUG) << "Address of val: " << &val;
+    }
+    empty_cv_.ResetIntrpState();
+    full_cv_.ResetIntrpState();
+    head_ = 0;
+    tail_ = 0;
+  }
 };
 
 // A container of queues with [] operator accessors.  Basically this is a wrapper over of a vector of queues
@@ -202,6 +266,16 @@ class QueueList {
   const std::unique_ptr<Queue<T>> &operator[](const int index) const { return queue_list_[index]; }
 
   ~QueueList() = default;
+
+  Status AddQueue(TaskGroup *vg) {
+    queue_list_.emplace_back(std::make_unique<Queue<T>>(queue_list_[0]->capacity()));
+    return queue_list_[queue_list_.size() - 1]->Register(vg);
+  }
+  Status RemoveLastQueue() {
+    CHECK_FAIL_RETURN_UNEXPECTED(queue_list_.size() > 1, "Cannot remove more than the current queues.");
+    queue_list_.pop_back();
+    return Status::OK();
+  }
 
  private:
   // Queue contains non-copyable objects, so it cannot be added to a vector due to the vector

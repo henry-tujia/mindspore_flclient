@@ -75,8 +75,9 @@ namespace dataset {
     }                                 \
   } while (false)
 
-#define RETURN_STATUS_SYNTAX_ERROR(_e)                                 \
+#define LOG_AND_RETURN_STATUS_SYNTAX_ERROR(_e)                         \
   do {                                                                 \
+    MS_LOG(ERROR) << _e;                                               \
     return Status(StatusCode::kMDSyntaxError, __LINE__, __FILE__, _e); \
   } while (false)
 
@@ -89,8 +90,8 @@ namespace dataset {
     }                                  \
   } while (false)
 
-#if !defined(_WIN32) && !defined(_WIN64)
-const float MAX_MEMORY_USAGE_THRESHOLD = 0.95;
+#if !defined(_WIN32) && !defined(_WIN64) && !defined(__APPLE__)
+const float MAX_MEMORY_USAGE_THRESHOLD = 0.8;
 float GetMemoryUsage();
 #endif
 }  // namespace dataset

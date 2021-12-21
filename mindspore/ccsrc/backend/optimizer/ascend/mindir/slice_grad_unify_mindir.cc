@@ -23,6 +23,7 @@
 
 #include "utils/utils.h"
 #include "utils/ms_context.h"
+#include "utils/trace_base.h"
 #include "backend/optimizer/common/helper.h"
 #include "runtime/device/kernel_info.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -67,11 +68,11 @@ const AnfNodePtr SliceGradUnifyMindIR::Process(const FuncGraphPtr &graph, const 
   if (input_num != kSliceGradInputTensorNum && input_num != kSliceGradCangjieInputTensorNum) {
     MS_LOG(EXCEPTION) << "The input tensor size[" << input_num
                       << "] of node " + slice_grad->DebugString() + " is not equal to " << kSliceGradInputTensorNum
-                      << " or " << kSliceGradCangjieInputTensorNum;
+                      << " or " << kSliceGradCangjieInputTensorNum << trace::DumpSourceLines(node);
   }
   std::vector<AnfNodePtr> pad_inputs = {NewValueNode(std::make_shared<Primitive>(kPadOpName)),
                                         slice_grad->input(kIndex1)};
-  auto pad = graph->NewCNode(pad_inputs);
+  auto pad = NewCNode(pad_inputs, graph);
   MS_EXCEPTION_IF_NULL(pad);
   pad->set_scope(slice_grad->scope());
   pad->set_abstract(slice_grad->abstract());
@@ -89,7 +90,10 @@ const AnfNodePtr SliceGradUnifyMindIR::Process(const FuncGraphPtr &graph, const 
     sizes = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(slice_grad, kAttrSize);
   }
   if (x_shape.size() != begins.size() || begins.size() != sizes.size()) {
-    MS_LOG(EXCEPTION) << "For SliceGrad, x's shape dim number should be equal to len(begin) and len(size).";
+    MS_LOG(EXCEPTION)
+      << "For SliceGrad, x_shape dim number should be equal to len(begin) and len(size), but got x_shape dim: "
+      << x_shape.size() << ", len(begin): " << begins.size() << ", len(size): " << sizes.size()
+      << trace::DumpSourceLines(node);
   }
   std::vector<std::vector<int64_t>> paddings;
   for (size_t i = 0; i < x_shape.size(); ++i) {

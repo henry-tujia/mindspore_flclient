@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,9 @@
  */
 #include "backend/optimizer/ascend/buffer_fusion/bnupdate_eltwise_eltwise_fusion_pass.h"
 #include <vector>
-#include <unordered_set>
 #include <memory>
 #include <string>
+#include "utils/hash_set.h"
 #include "backend/kernel_compiler/kernel_fusion.h"
 #include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -45,7 +45,7 @@ void BnupdateEltwiseEltwiseFusionPass::MatchBnupdateAddRelu(const CNodePtr &cnod
     MS_EXCEPTION_IF_NULL(bnupdate);
     if (bnupdate->isa<CNode>() && AnfAlgo::GetCNodeName(bnupdate) == kBNTrainingUpdateOpName &&
         GetNodeOutputTotalUsedNum(kernel_graph, bnupdate) == kBNTrainingUpdateOutputUsedTotalNum) {
-      std::unordered_set<AnfNodePtr> record{cnode, relu_input, bnupdate};
+      mindspore::HashSet<AnfNodePtr> record{cnode, relu_input, bnupdate};
       candidate_fusion->push_back(record);
       SetRecordFusionId(record);
     }
@@ -54,13 +54,10 @@ void BnupdateEltwiseEltwiseFusionPass::MatchBnupdateAddRelu(const CNodePtr &cnod
 
 void BnupdateEltwiseEltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGraph &kernel_graph,
                                                                 FusedNodeRecord *candidate_fusion) {
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::BnupdateEltwiseEltwiseFusionPass)) {
-    return;
-  }
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

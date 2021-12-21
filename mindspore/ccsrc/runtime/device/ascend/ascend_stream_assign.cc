@@ -26,6 +26,7 @@
 #include "frontend/parallel/device_manager.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "runtime/device/kernel_adjust.h"
+#include "runtime/device/ascend/ascend_stream_manager.h"
 #include "backend/optimizer/common/helper.h"
 #include "backend/kernel_compiler/oplib/oplib.h"
 #include "utils/utils.h"
@@ -43,10 +44,7 @@ constexpr uint32_t kDeviceNumThreshold = 1024;
 const char kDefaultGroup[] = "__default_group";
 constexpr auto kAttrStreamID = "stream_id";
 
-constexpr uint32_t kMaxStreamNum = 1024;
 constexpr uint32_t kHcomSecondaryStreamNum = 3;
-
-constexpr uint32_t kMaxTaskNumPerStream = 1010;
 constexpr uint32_t kMaxCommonNodeNumPerStream = 350;
 
 constexpr uint32_t kTaskNumPerHcomNode = 200;
@@ -152,6 +150,7 @@ uint32_t GetHcomTaskNum(const CNodePtr &cnode) {
 }
 
 CNodePtr GetHcomAndOverflowMarker(const NotNull<KernelGraphPtr> &graph_ptr, vector<CNodePtr> *hcom_nodes) {
+  MS_EXCEPTION_IF_NULL(hcom_nodes);
   auto cnode_ptr_list = graph_ptr->execution_order();
   CNodePtr overflow_marker = nullptr;
   std::string kNPUGetFloatStatusOpName = "NPUGetFloatStatus";
@@ -203,6 +202,7 @@ StreamActiveKind GetStreamKind(uint32_t cur_stream_id, uint32_t pre_stream_id, u
 
   return kInvalid;
 }
+
 void SetNodeStreamIDAttr(const NotNull<KernelGraphPtr> &graph_ptr) {
   auto exec_orders = graph_ptr->execution_order();
   for (auto node : exec_orders) {
@@ -211,8 +211,51 @@ void SetNodeStreamIDAttr(const NotNull<KernelGraphPtr> &graph_ptr) {
 }
 }  // namespace
 
+void AscendStreamAssign::AssignStreamForNonTaskSink(const std::vector<CNodePtr> &kernels) {
+  if (kernels.empty()) {
+    return;
+  }
+  if (stream_groups_.empty()) {
+    stream_groups_.emplace_back(std::vector<uint32_t>{kDefaultStreamIndex});
+    stream_groups_.emplace_back(std::vector<uint32_t>{kIndependentStreamIndex});
+    stream_groups_.emplace_back(std::vector<uint32_t>{kWorldGroupStreamIndex});
+  }
+  group_stream_id_map_[kHcclWorldGroup] = kWorldGroupStreamIndex;
+  for (size_t i = 0; i < kernels.size(); ++i) {
+    auto &node = kernels[i];
+    if (AnfAlgo::IsCommunicationOp(node)) {
+      auto group = AnfAlgo::GetNodeAttr<std::string>(node, kAttrGroup);
+      auto iter = group_stream_id_map_.find(group);
+      if (iter == group_stream_id_map_.end()) {
+        auto id = SizeToUint(group_stream_id_map_.size()) + kWorldGroupStreamIndex;
+        group_stream_id_map_[group] = id;
+        AnfAlgo::SetStreamId(id, node.get());
+        stream_groups_.emplace_back(std::vector<uint32_t>{id});
+      } else {
+        auto id = iter->second;
+        AnfAlgo::SetStreamId(id, node.get());
+      }
+    } else if (AnfAlgo::IsIndependentNode(node)) {
+      AnfAlgo::SetStreamId(kIndependentStreamIndex, node.get());
+    } else {
+      AnfAlgo::SetStreamId(kDefaultStreamIndex, node.get());
+    }
+  }
+  for (size_t i = 1; i < kernels.size(); ++i) {
+    if (AnfAlgo::GetCNodeName(kernels[i - 1]) == kAtomicAddrCleanOpName) {
+      auto stream_id = AnfAlgo::GetStreamId(kernels[i]);
+      AnfAlgo::SetStreamId(stream_id, kernels[i - 1].get());
+    }
+  }
+}
+
 void AscendStreamAssign::AssignStream(const NotNull<KernelGraphPtr> &graph_ptr) {
-  if (IsTaskSink() && !graph_ptr->is_dynamic_shape()) {
+  if (!IsTaskSink()) {
+    auto kernels = graph_ptr->execution_order();
+    AssignStreamForNonTaskSink(kernels);
+    return;
+  }
+  if (!graph_ptr->is_dynamic_shape()) {
     MS_LOG(INFO) << "Communication parallel mode: " << parallel::ParallelContext::GetInstance()->communi_parallel_mode()
                  << ".";
 
@@ -254,7 +297,7 @@ void AscendStreamAssign::AssignStream(const NotNull<KernelGraphPtr> &graph_ptr) 
 }
 
 void AscendStreamAssign::SetLoopSink() {
-  if (KernelAdjust::NeedInsertSwitch()) {
+  if (KernelAdjust::NeedLoopSink()) {
     loop_sink_ = true;
   } else {
     loop_sink_ = false;
@@ -322,6 +365,7 @@ void AscendStreamAssign::ReorderIndependentOrders(const NotNull<KernelGraphPtr> 
 
 void AscendStreamAssign::CheckScenario(const NotNull<KernelGraphPtr> &graph_ptr,
                                        vector<CNodePtr> *last_grad_and_status) {
+  MS_EXCEPTION_IF_NULL(last_grad_and_status);
   auto cnode_ptr_list = graph_ptr->execution_order();
   vector<CNodePtr> hcom_nodes;
   auto overflow_marker = GetHcomAndOverflowMarker(graph_ptr, &hcom_nodes);
@@ -376,6 +420,8 @@ CNodePtr AscendStreamAssign::GetCNodesNeededMoved(vector<CNodePtr> *moved_backwa
                                                   vector<CNodePtr> *moved_forward_cnodes,
                                                   const vector<CNodePtr> &last_grad_and_status,
                                                   const NotNull<KernelGraphPtr> &graph_ptr) {
+  MS_EXCEPTION_IF_NULL(moved_backward_cnodes);
+  MS_EXCEPTION_IF_NULL(moved_forward_cnodes);
   auto cnode_ptr_list = graph_ptr->execution_order();
   if (last_grad_and_status.size() != kLastGradAndStatusNum) {
     return nullptr;
@@ -454,10 +500,11 @@ CNodePtr AscendStreamAssign::GetTargetOutputNode(const vector<CNodePtr> &moved_b
     return nullptr;
   }
 
-  for (; it < cnode_ptr_list.end() && AnfAlgo::GetGraphId((*it).get()) != subgraph_id; it++) {
+  for (; it < cnode_ptr_list.end(); it++) {
     auto inputs = GetInputKernels(*it);
     for (auto &input : inputs) {
-      if (find(moved_backward_cnodes.begin(), moved_backward_cnodes.end(), input) != moved_backward_cnodes.end()) {
+      if (find(moved_backward_cnodes.begin(), moved_backward_cnodes.end(), input) != moved_backward_cnodes.end() &&
+          AnfAlgo::GetGraphId((*it).get()) != subgraph_id) {
         MS_LOG(INFO) << "The nodes moved backward were used by nodes on different subgraphs, no need moved";
         return nullptr;
       }
@@ -585,7 +632,7 @@ void AscendStreamAssign::AssignAllNodesStream(const NotNull<KernelGraphPtr> &gra
   auto cnode_ptr_list = graph_ptr->execution_order();
   bool exit_independent = false;
   bool exit_hcom = false;
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   for (size_t i = 0; i < cnode_ptr_list.size(); ++i) {
     CNodePtr cur_cnode_ptr = cnode_ptr_list[i];
     MS_EXCEPTION_IF_NULL(cur_cnode_ptr);
@@ -607,35 +654,42 @@ void AscendStreamAssign::AssignAllNodesStream(const NotNull<KernelGraphPtr> &gra
     AssignCommonStreamId(cur_cnode_ptr);
   }
 
-  auto common_stream_num = resource_manager.get_cur_stream_num();
+  auto common_stream_num = resource_manager.cur_stream_num();
 
   if (exit_hcom) {
     AssignHcom(graph_ptr);
   }
-  auto hcom_stream_num = resource_manager.get_cur_stream_num() - common_stream_num;
+  auto hcom_stream_num = resource_manager.cur_stream_num() - common_stream_num;
 
   if (exit_independent) {
     AssignIndependent(graph_ptr);
   }
-  auto independent_stream_num = resource_manager.get_cur_stream_num() - common_stream_num - hcom_stream_num;
-  auto total_stream_num = resource_manager.get_cur_stream_num() + hcom_stream_num * kHcomSecondaryStreamNum;
+  auto independent_stream_num = resource_manager.cur_stream_num() - common_stream_num - hcom_stream_num;
+  auto total_stream_num =
+    resource_manager.cur_stream_num() + Uint32tMulWithOverflowCheck(hcom_stream_num, kHcomSecondaryStreamNum);
   MS_LOG(INFO) << "Total stream number: " << total_stream_num << ", common stream number: " << common_stream_num
                << ", hcom stream number: " << hcom_stream_num << "*" << (kHcomSecondaryStreamNum + 1)
                << ", independent stream number: " << independent_stream_num << ".";
 
-  if (total_stream_num > kMaxStreamNum) {
-    MS_LOG(EXCEPTION) << "Total stream number " << total_stream_num << " exceeds the limit of " << kMaxStreamNum
+  uint32_t max_stream_count = 0;
+  uint32_t max_task_count = 0;
+  auto ret = rtGetMaxStreamAndTask(RT_NORMAL_STREAM, &max_stream_count, &max_task_count);
+  if (ret != RT_ERROR_NONE) {
+    MS_LOG(EXCEPTION) << "call rtGetMaxStreamAndTask failed.";
+  }
+  if (total_stream_num > max_stream_count) {
+    MS_LOG(EXCEPTION) << "Total stream number " << total_stream_num << " exceeds the limit of " << max_stream_count
                       << ", search details information in mindspore's FAQ.";
   }
 
-  MS_LOG(INFO) << "After stream assign, total stream nums:" << resource_manager.get_cur_stream_num();
+  MS_LOG(INFO) << "After stream assign, total stream nums:" << resource_manager.cur_stream_num();
 }
 
 void AscendStreamAssign::AssignCommonStreamId(const CNodePtr &cur_cnode_ptr) {
   MS_EXCEPTION_IF_NULL(cur_cnode_ptr);
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   uint32_t cur_common_stream_id = 0;
-  uint32_t cur_stream_num = resource_manager.get_cur_stream_num();
+  uint32_t cur_stream_num = resource_manager.cur_stream_num();
   if (cur_stream_num == 0) {
     cur_common_stream_id = resource_manager.ApplyNewStream();
   } else {
@@ -712,7 +766,7 @@ void AscendStreamAssign::AssignHcom(const NotNull<KernelGraphPtr> &graph_ptr) {
 
 uint32_t AscendStreamAssign::AssignHcomStreamId(const CNodePtr &cur_cnode_ptr, bool new_graph) {
   MS_EXCEPTION_IF_NULL(cur_cnode_ptr);
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto task_num = GetHcomTaskNum(cur_cnode_ptr);
 
   uint32_t cur_hcom_stream_id;
@@ -726,9 +780,15 @@ uint32_t AscendStreamAssign::AssignHcomStreamId(const CNodePtr &cur_cnode_ptr, b
     AnfAlgo::SetStreamId(cur_hcom_stream_id, cur_cnode_ptr.get());
     hcom_stream_map_.emplace(cur_hcom_stream_id, task_num);
   } else {
-    if (it->second <= kMaxTaskNumPerStream - task_num) {
+    uint32_t max_stream_count = 0;
+    uint32_t max_task_count = 0;
+    auto ret = rtGetMaxStreamAndTask(RT_NORMAL_STREAM, &max_stream_count, &max_task_count);
+    if (ret != RT_ERROR_NONE) {
+      MS_LOG(EXCEPTION) << "call rtGetMaxStreamAndTask failed.";
+    }
+    if (it->second <= max_task_count - task_num) {
       AnfAlgo::SetStreamId(it->first, cur_cnode_ptr.get());
-      it->second += task_num;
+      it->second = Uint32tAddWithOverflowCheck(it->second, task_num);
     } else {
       cur_hcom_stream_id = resource_manager.ApplyNewStream();
       AnfAlgo::SetStreamId(cur_hcom_stream_id, cur_cnode_ptr.get());
@@ -743,6 +803,7 @@ void AscendStreamAssign::AssignIndependent(const NotNull<KernelGraphPtr> &graph_
   std::map<uint32_t, std::vector<CNodePtr>> graph_nodes_map;
   for (size_t i = 0; i < cnode_ptr_list.size(); ++i) {
     CNodePtr cur_cnode_ptr = cnode_ptr_list[i];
+    MS_EXCEPTION_IF_NULL(cur_cnode_ptr);
     if (AnfAlgo::GetStreamId(cur_cnode_ptr) != kInvalidStreamId) {
       continue;
     }
@@ -773,7 +834,7 @@ void AscendStreamAssign::AssignIndependent(const NotNull<KernelGraphPtr> &graph_
 
 uint32_t AscendStreamAssign::AssignIndependentStreamId(const CNodePtr &cur_cnode_ptr, bool new_graph) {
   MS_EXCEPTION_IF_NULL(cur_cnode_ptr);
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   uint32_t cur_independent_stream_id;
   if (new_graph) {
     cur_independent_stream_id = resource_manager.ApplyNewStream();
@@ -1002,6 +1063,7 @@ void AscendStreamAssign::ActiveRootGraphIndependent(const NotNull<KernelGraphPtr
   independent_stream_activated_ = true;
   graph_ptr->set_execution_order(update_cnode_list);
 }
+
 void AscendStreamAssign::InsertStreamActiveForCommon(const NotNull<KernelGraphPtr> &graph_ptr) {
   MS_LOG(INFO) << "Start";
   GetProcessedStream(graph_ptr);
@@ -1176,6 +1238,8 @@ bool AscendStreamAssign::IsProcessedStream(uint32_t stream_id) {
 }
 
 bool AscendStreamAssign::IsAllOutGraphOut(const KernelGraphPtr &graph, const CNodePtr &cnode) {
+  MS_EXCEPTION_IF_NULL(graph);
+  MS_EXCEPTION_IF_NULL(cnode);
   auto cnode_out_num = AnfAlgo::GetOutputTensorNum(cnode);
   auto nodes = AnfAlgo::GetAllOutput(graph->output(), {prim::kPrimTupleGetItem});
   std::set<int> output_index_set;
@@ -1183,7 +1247,7 @@ bool AscendStreamAssign::IsAllOutGraphOut(const KernelGraphPtr &graph, const CNo
   for (const auto &node : nodes) {
     auto item_with_index = AnfAlgo::VisitKernelWithReturnType(node, 0, true);
     MS_EXCEPTION_IF_NULL(item_with_index.first);
-    if (!item_with_index.first->isa<CNode>() || !AnfAlgo::IsRealKernel(item_with_index.first)) {
+    if (!item_with_index.first->isa<CNode>() || !AnfUtils::IsRealKernel(item_with_index.first)) {
       continue;
     }
     if (item_with_index.first == cnode) {
@@ -1212,13 +1276,99 @@ vector<CNodePtr>::iterator AscendStreamAssign::FindGraphEnd(vector<CNodePtr>::it
 void AscendStreamAssign::InsertEventForHcomParallel(const NotNull<KernelGraphPtr> &graph_ptr) {
   MS_LOG(INFO) << "Start";
   InsertEventCommonDependHcom(graph_ptr);
+  InsertEventForIndependentHcom(graph_ptr);
   InsertEventHcomDependCommonBak(graph_ptr);
   InsertEventHcomDependHcom(graph_ptr);
   MS_LOG(INFO) << "End";
 }
 
+bool AscendStreamAssign::ExistStreamSendAfterLastHcomNode(const NotNull<KernelGraphPtr> &graph_ptr, uint32_t graph_id) {
+  auto cnodes = graph_ptr->execution_order();
+  for (int64_t i = cnodes.size() - 1; i >= 0; i--) {
+    if (AnfAlgo::GetGraphId(cnodes[i].get()) == graph_id && IsHcom(cnodes[i])) {
+      return (AnfAlgo::GetCNodeName(cnodes[i]) == kSendOpName) ||
+             ((i < SizeToLong(cnodes.size() - 1)) && AnfAlgo::GetCNodeName(cnodes[i + 1]) == kSendOpName);
+    }
+  }
+  MS_LOG(WARNING) << "There is no hcom nodes of graph " << graph_id << " in the root graph " << graph_ptr->graph_id();
+  return true;
+}
+
+void AscendStreamAssign::GraphLoopSync(const NotNull<KernelGraphPtr> &root_graph, uint32_t graph_id) {
+  if (ExistStreamSendAfterLastHcomNode(root_graph, graph_id)) {
+    return;
+  }
+  MS_LOG(WARNING) << "There is no event between computing stream and hcom stream in graph " << graph_id
+                  << " need insert event.";
+
+  auto cnodes = root_graph->execution_order();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
+  uint32_t cur_event_id = resource_manager.ApplyNewEvent();
+
+  // insert StreamSend node after the last hcom node
+  for (auto iter = cnodes.end() - 1; iter >= cnodes.begin(); iter--) {
+    if (IsHcom(*iter) && AnfAlgo::GetGraphId((*iter).get()) == graph_id) {
+      CNodePtr send_cnode = CreateSendApplyKernel(root_graph, cur_event_id, AnfAlgo::GetStreamId((*iter)));
+      MS_LOG(INFO) << "Insert StreamSend " << cur_event_id << " after node: " << (*iter)->fullname_with_scope();
+      cnodes.insert(iter + 1, send_cnode);
+      break;
+    }
+  }
+
+  std::set<std::string> ending_nodes = {kStreamActiveOpName, kLabelGotoOpName};
+  // insert StreamRecv node before the last node in the graph if the node is <StreamActive, LabelGoto> or insert
+  // StreamRecv node after the last node, at the same time, the next node of the last not in the graph is LabelSet.
+  for (auto iter = cnodes.end() - 1; iter >= cnodes.begin(); iter--) {
+    if (AnfAlgo::GetGraphId((*iter).get()) != graph_id) {
+      continue;
+    }
+    auto node_name = AnfAlgo::GetCNodeName(*iter);
+    auto cnode = (*iter)->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(cnode);
+    CNodePtr recv_cnode = CreateRecvApplyKernel(root_graph, cur_event_id, AnfAlgo::GetStreamId(cnode));
+    if (ending_nodes.find(node_name) != ending_nodes.end()) {
+      MS_LOG(INFO) << "Insert StreamRecv " << cur_event_id << " before node: " << (*iter)->fullname_with_scope();
+      iter = cnodes.insert(iter, recv_cnode);
+      break;
+    } else if ((iter < cnodes.end() - 1) && AnfAlgo::GetCNodeName(*(iter + 1)) == kLabelSetOpName) {
+      MS_LOG(INFO) << "Insert StreamRecv " << cur_event_id << "after node: " << (*iter)->fullname_with_scope();
+      iter = cnodes.insert(iter + 1, recv_cnode);
+      break;
+    } else {
+      MS_LOG(EXCEPTION) << "The last node of graph " << graph_id
+                        << " is not in the set <StreamActive, LabelGoto>, whereas is " << (*iter)->fullname_with_scope()
+                        << ", and check whether the next node exists and is LabelSet.";
+    }
+  }
+  root_graph->set_execution_order(cnodes);
+}
+
+void AscendStreamAssign::GetAllGraphID(const NotNull<KernelGraphPtr> &graph_ptr, std::vector<uint32_t> *graphs_id) {
+  if (std::find(graphs_id->begin(), graphs_id->end(), graph_ptr->graph_id()) != graphs_id->end()) {
+    return;
+  }
+  graphs_id->push_back(graph_ptr->graph_id());
+  for (auto child_graph : graph_ptr->child_graph_order()) {
+    GetAllGraphID(NOT_NULL(child_graph.lock()), graphs_id);
+  }
+}
+// Application scenario: In the loop sink mode, the last communication operator did not send 'send' to the calculation
+// stream, causing the next loop to start without waiting for the end of the communication stream.
+// Solution: In the above scenario, insert 'send' after the last communication operator, and insert 'recv' before the
+//  `active` operator in the calculation stream to ensure loop synchronization.
+void AscendStreamAssign::InsertEventForIndependentHcom(const NotNull<KernelGraphPtr> &graph_ptr) {
+  if (!KernelAdjust::NeedLoopSink()) {
+    return;
+  }
+  std::vector<uint32_t> graphs_id;
+  GetAllGraphID(graph_ptr, &graphs_id);
+  for (auto graph_id : graphs_id) {
+    GraphLoopSync(graph_ptr, graph_id);
+  }
+}
+
 void AscendStreamAssign::InsertEventCommonDependHcom(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto cnode_ptr_list = graph_ptr->execution_order();
   vector<CNodePtr> cnodes = cnode_ptr_list;
   uint32_t cur_event_id = resource_manager.ApplyNewEvent();
@@ -1238,6 +1388,7 @@ void AscendStreamAssign::InsertEventCommonDependHcom(const NotNull<KernelGraphPt
         }
 
         if (target == cnodes.end()) {
+          MS_EXCEPTION_IF_NULL(*(it - 1));
           MS_LOG(WARNING) << "Hcom node:" << (*(it - 1))->fullname_with_scope()
                           << ", can't find target for insert recv op, no insert send/recv";
           it = cnodes.erase(it);
@@ -1256,12 +1407,12 @@ void AscendStreamAssign::InsertEventCommonDependHcom(const NotNull<KernelGraphPt
   // one event allocated additional, should delete
   resource_manager.DeleteEvent();
   graph_ptr->set_execution_order(cnodes);
-  MS_LOG(INFO) << "After common depend hcom, total event nums:" << resource_manager.get_cur_event_num();
+  MS_LOG(INFO) << "After common depend hcom, total event nums:" << resource_manager.cur_event_num();
 }
 
 // after memory reuse is correct, use this function
 void AscendStreamAssign::InsertEventHcomDependCommonBak(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto cnode_ptr_list = graph_ptr->execution_order();
   vector<CNodePtr> cnodes;
   CNodePtr cur_cnode_ptr = nullptr;
@@ -1309,7 +1460,7 @@ void AscendStreamAssign::InsertEventHcomDependCommonBak(const NotNull<KernelGrap
   }
 
   graph_ptr->set_execution_order(cnodes);
-  MS_LOG(INFO) << "After hcom depend common, total event nums:" << resource_manager.get_cur_event_num();
+  MS_LOG(INFO) << "After hcom depend common, total event nums:" << resource_manager.cur_event_num();
 }
 
 vector<CNodePtr> AscendStreamAssign::GetLastInputCnode(const NotNull<KernelGraphPtr> &graph_ptr,
@@ -1361,12 +1512,14 @@ vector<CNodePtr> AscendStreamAssign::GetLastInputCnode(const NotNull<KernelGraph
 }
 
 vector<CNodePtr> AscendStreamAssign::GetInputKernels(const CNodePtr &cnode) {
+  MS_EXCEPTION_IF_NULL(cnode);
   vector<CNodePtr> input_cnodes;
   queue<CNodePtr> nop_nodes;
   auto inputs = cnode->inputs();
   for (size_t i = 1; i < inputs.size(); i++) {
     auto real_input = AnfAlgo::VisitKernel(inputs[i], 0);
     auto node = real_input.first;
+    MS_EXCEPTION_IF_NULL(node);
     if (opt::IsNopNode(node)) {
       nop_nodes.push(node->cast<CNodePtr>());
       while (!nop_nodes.empty()) {
@@ -1376,6 +1529,7 @@ vector<CNodePtr> AscendStreamAssign::GetInputKernels(const CNodePtr &cnode) {
         for (size_t j = 1; j < new_inputs.size(); j++) {
           auto new_real_input = AnfAlgo::VisitKernel(new_inputs[j], 0);
           auto new_node = new_real_input.first;
+          MS_EXCEPTION_IF_NULL(new_node);
           if (opt::IsNopNode(new_node)) {
             nop_nodes.push(new_node->cast<CNodePtr>());
           } else if (new_node->isa<CNode>()) {
@@ -1391,7 +1545,7 @@ vector<CNodePtr> AscendStreamAssign::GetInputKernels(const CNodePtr &cnode) {
 }
 
 void AscendStreamAssign::InsertEventHcomDependCommon(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto cnode_ptr_list = graph_ptr->execution_order();
   vector<CNodePtr> cnodes;
   CNodePtr cur_cnode_ptr = nullptr;
@@ -1432,7 +1586,54 @@ void AscendStreamAssign::InsertEventHcomDependCommon(const NotNull<KernelGraphPt
   }
 
   graph_ptr->set_execution_order(cnodes);
-  MS_LOG(INFO) << "After hcom depend common, total event nums:" << resource_manager.get_cur_event_num();
+  MS_LOG(INFO) << "After hcom depend common, total event nums:" << resource_manager.cur_event_num();
+}
+
+std::vector<std::pair<uint32_t, vector<size_t>>> AscendStreamAssign::GetStreamIDHcomMap(
+  std::vector<CNodePtr> cnode_ptr_list, std::string group, size_t graph_id) {
+  std::vector<std::pair<uint32_t, vector<size_t>>> stream_indices;
+  for (size_t i = 0; i < cnode_ptr_list.size(); i++) {
+    auto cur_cnode = cnode_ptr_list[i];
+    if (!IsHcom(cur_cnode)) {
+      continue;
+    }
+
+    uint32_t cur_stream_id = AnfAlgo::GetStreamId(cur_cnode);
+    auto group_name = GetHcomGroup(cur_cnode);
+    auto cur_graph_id = AnfAlgo::GetGraphId(cur_cnode.get());
+    MS_LOG(INFO) << "Hcom node name:" << AnfAlgo::GetCNodeName(cur_cnode) << "; group:" << group_name
+                 << "; stream id:" << cur_stream_id;
+    if (group_name != group || cur_graph_id != graph_id) {
+      continue;
+    }
+
+    bool exit = false;
+    for (auto &item : stream_indices) {
+      if (item.first == cur_stream_id) {
+        item.second.emplace_back(i);
+        exit = true;
+        break;
+      }
+    }
+    if (!exit) {
+      stream_indices.emplace_back(std::make_pair(cur_stream_id, std::vector<size_t>{i}));
+    }
+  }
+  return stream_indices;
+}
+
+void AscendStreamAssign::InsertEventHcomDependHcomAtSameGroup(
+  const NotNull<KernelGraphPtr> &graph_ptr, std::pair<std::string, std::map<uint32_t, std::set<uint32_t>>> group_item) {
+  for (const auto &graph_item : group_item.second) {
+    auto stream_indices = GetStreamIDHcomMap(graph_ptr->execution_order(), group_item.first, graph_item.first);
+    constexpr size_t kStreamMax = 2;
+    if (stream_indices.size() < kStreamMax) {
+      MS_LOG(INFO) << "Group:" << group_item.first << ", Graph: " << graph_item.first
+                   << " different stream hcom size is less than 2, no need insert event between them";
+      continue;
+    }
+    InsertEventBetweenHcom(graph_ptr, stream_indices);
+  }
 }
 
 void AscendStreamAssign::InsertEventHcomDependHcom(const NotNull<KernelGraphPtr> &graph_ptr) {
@@ -1440,60 +1641,19 @@ void AscendStreamAssign::InsertEventHcomDependHcom(const NotNull<KernelGraphPtr>
     return;
   }
   for (const auto &group_item : group_hcom_graph_map_) {
-    auto group = group_item.first;
-    for (const auto &graph_item : group_item.second) {
-      auto graph_id = graph_item.first;
-      auto cnode_ptr_list = graph_ptr->execution_order();
-      std::vector<std::pair<uint32_t, vector<size_t>>> stream_indices;
-      for (size_t i = 0; i < cnode_ptr_list.size(); i++) {
-        auto cur_cnode = cnode_ptr_list[i];
-        if (!IsHcom(cur_cnode)) {
-          continue;
-        }
-
-        uint32_t cur_stream_id = AnfAlgo::GetStreamId(cur_cnode);
-        auto group_name = GetHcomGroup(cur_cnode);
-        auto cur_graph_id = AnfAlgo::GetGraphId(cur_cnode.get());
-        MS_LOG(INFO) << "Hcom node name:" << AnfAlgo::GetCNodeName(cur_cnode) << "; group:" << group_name
-                     << "; stream id:" << cur_stream_id;
-        if (group_name != group || cur_graph_id != graph_id) {
-          continue;
-        }
-
-        if (stream_indices.empty()) {
-          stream_indices.emplace_back(std::make_pair(cur_stream_id, std::vector<size_t>{i}));
-        } else {
-          bool exit = false;
-          for (auto &item : stream_indices) {
-            if (item.first == cur_stream_id) {
-              item.second.emplace_back(i);
-              exit = true;
-              break;
-            }
-          }
-          if (!exit) {
-            stream_indices.emplace_back(std::make_pair(cur_stream_id, std::vector<size_t>{i}));
-          }
-        }
-      }
-
-      constexpr size_t kStreamMax = 2;
-      if (stream_indices.size() < kStreamMax) {
-        MS_LOG(INFO) << "Group:" << group
-                     << "; different stream hcom size is less than 2, no need insert event between them";
-        continue;
-      }
-      InsertEventBetweenHcom(graph_ptr, stream_indices);
-    }
+    InsertEventHcomDependHcomAtSameGroup(graph_ptr, group_item);
   }
 }
 
 void AscendStreamAssign::InsertEventBetweenHcom(const NotNull<KernelGraphPtr> &graph_ptr,
                                                 const std::vector<std::pair<uint32_t, vector<size_t>>> &hcom_index) {
   vector<CNodePtr> orders;
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto cnode_ptr_list = graph_ptr->execution_order();
   uint32_t cur_event_id = resource_manager.ApplyNewEvent();
+  if (hcom_index.empty()) {
+    MS_LOG(EXCEPTION) << "Hcom stream number is empty";
+  }
   size_t first_stream_last_index = hcom_index[0].second.back();
   size_t last_stream_first_index = hcom_index.back().second.front();
   MS_LOG(INFO) << "First stream last index:" << first_stream_last_index
@@ -1576,7 +1736,7 @@ bool AscendStreamAssign::IsSatisfiedHcom(const std::vector<std::pair<uint32_t, v
 // section6
 void AscendStreamAssign::InsertEventForIndependentParallel(const NotNull<KernelGraphPtr> &graph_ptr) {
   MS_LOG(INFO) << "Start";
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   auto cnode_ptr_list = graph_ptr->execution_order();
   vector<CNodePtr> cnodes = cnode_ptr_list;
   uint32_t cur_event_id = resource_manager.ApplyNewEvent();
@@ -1632,7 +1792,7 @@ void AscendStreamAssign::InsertEventForIndependentParallel(const NotNull<KernelG
   }
 
   graph_ptr->set_execution_order(new_cnodes);
-  MS_LOG(INFO) << "After independent parallel, total event nums:" << resource_manager.get_cur_event_num();
+  MS_LOG(INFO) << "After independent parallel, total event nums:" << resource_manager.cur_event_num();
   MS_LOG(INFO) << "End";
 }
 
@@ -1652,8 +1812,9 @@ void AscendStreamAssign::GetIndependentMaxTarget(const NotNull<KernelGraphPtr> &
       auto inputs = target_node->inputs();
       for (size_t m = 1; m < inputs.size(); m++) {
         auto input = inputs[m];
+        MS_EXCEPTION_IF_NULL(input);
         if (opt::IsNopNode(input)) {
-          CNodePtr cnode = input->cast<CNodePtr>();
+          auto cnode = input->cast<CNodePtr>();
           auto new_inputs = cnode->inputs();
           for (size_t k = 1; k < new_inputs.size(); k++) {
             auto new_real_input = AnfAlgo::VisitKernel(new_inputs[k], 0);
@@ -1818,7 +1979,7 @@ void AscendStreamAssign::CheckResourceAssign(const NotNull<KernelGraphPtr> &grap
 }
 
 void AscendStreamAssign::CheckStreamAssign(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   std::set<uint32_t> streams;
   uint32_t max_stream = 0;
   uint32_t min_stream = kInvalidStreamId;
@@ -1845,7 +2006,7 @@ void AscendStreamAssign::CheckStreamAssign(const NotNull<KernelGraphPtr> &graph_
     if (min_stream != 0) {
       MS_LOG(EXCEPTION) << "Stream should start from 0, now is from " << min_stream;
     }
-    uint32_t assigned_stream_num = resource_manager.get_cur_stream_num();
+    uint32_t assigned_stream_num = resource_manager.cur_stream_num();
     if ((max_stream != assigned_stream_num - 1) || (streams.size() != assigned_stream_num)) {
       MS_LOG(EXCEPTION) << "Stream should be consecutive, max stream id:" << max_stream
                         << "; alloc stream nums:" << assigned_stream_num << "; streams size:" << streams.size();
@@ -1854,7 +2015,7 @@ void AscendStreamAssign::CheckStreamAssign(const NotNull<KernelGraphPtr> &graph_
 }
 
 void AscendStreamAssign::CheckEventAssign(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   std::map<uint32_t, std::vector<CNodePtr>> event_map;
   uint32_t max_event_id = 0;
   uint32_t min_event_id = kInvalidEventId;
@@ -1885,7 +2046,7 @@ void AscendStreamAssign::CheckEventAssign(const NotNull<KernelGraphPtr> &graph_p
     if (min_event_id != 0) {
       MS_LOG(EXCEPTION) << "Event should start from 0, now is from " << min_event_id;
     }
-    uint32_t assigned_event_num = resource_manager.get_cur_event_num();
+    uint32_t assigned_event_num = resource_manager.cur_event_num();
     if ((max_event_id != assigned_event_num - 1) || (event_map.size() != assigned_event_num)) {
       MS_LOG(EXCEPTION) << "Event should be consecutive, however, assigned event num is: " << assigned_event_num
                         << ", max event id:" << max_event_id << ", event map is:" << event_map;
@@ -1974,6 +2135,7 @@ vector<CNodePtr>::iterator AscendStreamAssign::FindTargetOp(vector<CNodePtr>::it
     auto inputs = (*begin)->inputs();
     for (size_t i = 1; i < inputs.size(); i++) {
       auto input = inputs[i];
+      MS_EXCEPTION_IF_NULL(input);
       if (opt::IsNopNode(input)) {
         if (IsNopNodeTarget(input, node, *begin, exclude_hcom)) {
           return begin;
@@ -2007,8 +2169,8 @@ bool AscendStreamAssign::IsTaskSink() {
 
 void AscendStreamAssign::GetWaitStreams(vector<uint32_t> *wait_active_stream_list) {
   MS_EXCEPTION_IF_NULL(wait_active_stream_list);
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
-  uint32_t total_stream_num = resource_manager.get_cur_stream_num();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
+  uint32_t total_stream_num = resource_manager.cur_stream_num();
   if (total_stream_num == 0) {
     MS_LOG(INFO) << "The total_common_stream_num is zero";
     return;
@@ -2084,6 +2246,7 @@ bool AscendStreamAssign::IsVecExist(const std::vector<uint32_t> &group) {
 }
 
 void AscendStreamAssign::DFS(uint32_t start, std::vector<uint32_t> *group) {
+  MS_EXCEPTION_IF_NULL(group);
   auto it = stream_relations_.find(start);
   if (it == stream_relations_.end()) {
     if (!IsVecExist(*group)) {
@@ -2116,8 +2279,8 @@ void AscendStreamAssign::GetStreamRelations() {
 }
 
 void AscendStreamAssign::FindStreamRelations(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
-  auto stream_num = resource_manager.get_cur_stream_num();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
+  auto stream_num = resource_manager.cur_stream_num();
   if (stream_num <= 1) {
     return;
   }
@@ -2169,6 +2332,9 @@ void AscendStreamAssign::GetStreamActiveStreamRelation(const NotNull<KernelGraph
   }
 
   auto orders = graph_ptr->execution_order();
+  if (index >= orders.size()) {
+    MS_LOG(EXCEPTION) << "Invalid index.";
+  }
   auto cur_cnode = orders[index];
   auto cur_stream_id = AnfAlgo::GetStreamId(cur_cnode);
   auto active_list = AnfAlgo::GetNodeAttr<vector<uint32_t>>(cur_cnode, kAttrActiveStreamList);
@@ -2357,8 +2523,8 @@ bool AscendStreamAssign::IsSatisfiedEvent(uint32_t send_stream_id, uint32_t recv
 }
 
 void AscendStreamAssign::FindEventRelations(const NotNull<KernelGraphPtr> &graph_ptr) {
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
-  auto event_nums = resource_manager.get_cur_event_num();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
+  auto event_nums = resource_manager.cur_event_num();
   if (event_nums == 0) {
     return;
   }

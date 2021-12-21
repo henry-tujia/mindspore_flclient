@@ -31,18 +31,26 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNamePack = "Pack";
+/// \brief Stacks a list of tensors in specified axis.
+/// Refer to Python API @ref mindspore.ops.Stack for more details.
 class MS_CORE_API Pack : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Pack() : PrimitiveC(kNamePack) {}
+  /// \brief Destructor.
   ~Pack() = default;
   MS_DECLARE_PARENT(Pack, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Stack for the inputs.
   void Init(const int64_t &axis = 0);
+  /// \brief Set axis.
   void set_axis(const int64_t &axis);
+  /// \brief Get axis.
+  ///
+  /// \return axis.
   int64_t get_axis() const;
 };
 AbstractBasePtr PackInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimPackPtr = std::shared_ptr<Pack>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_PACK_H_

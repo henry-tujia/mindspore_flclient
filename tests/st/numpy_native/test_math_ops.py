@@ -16,7 +16,6 @@
 
 import pytest
 import numpy as onp
-
 import mindspore.numpy as mnp
 from mindspore import context
 from mindspore.common.dtype import dtype_to_nptype
@@ -2157,16 +2156,10 @@ def test_bincount():
 @pytest.mark.env_onecard
 def test_histogram():
     x = onp.random.randint(-10, 10, 10)
-    weights = onp.random.randn(10)
     for bins in [(1, 2, 3), [2], 1, 5]:
         # pylint: disable=redefined-builtin
         for range in [None, (2, 20)]:
             match_res(mnp.histogram, onp.histogram, x, bins=bins, range=range, error=1)
-            match_res(mnp.histogram, onp.histogram, x, bins=bins, range=range, density=True, error=1)
-            mnp_res = mnp.histogram(to_tensor(x), bins=bins, range=range,
-                                    weights=to_tensor(weights), density=True)
-            onp_res = onp.histogram(x, bins=bins, range=range, weights=weights, density=True)
-            match_all_arrays(mnp_res, onp_res, error=1)
 
 
 @pytest.mark.level0
@@ -2177,19 +2170,11 @@ def test_histogram():
 @pytest.mark.env_onecard
 def test_histogramdd():
     x = onp.random.randint(-10, 10, (5, 3))
-    y = [onp.random.randint(-10, 10, 5), onp.random.randint(-10, 10, 5), onp.random.randint(-10, 10, 5)]
-    mnp_y = list(map(to_tensor, y))
-    weights = onp.random.randn(5)
     for bins in [(15, 4, 9)]:
         # pylint: disable=redefined-builtin
         for range in [[[0, 5], [2, 7], [1, 3]]]:
             mnp_res = mnp.histogramdd(to_tensor(x), bins=bins, range=range)
             onp_res = onp.histogramdd(x, bins=bins, range=range)
-            match_all_arrays(mnp_res[0], onp_res[0], error=1)
-            match_all_arrays(mnp_res[1], onp_res[1], error=1)
-            mnp_res = mnp.histogramdd(mnp_y, bins=bins, range=range, weights=to_tensor(weights),
-                                      density=True)
-            onp_res = onp.histogramdd(y, bins, range=range, weights=weights, density=True)
             match_all_arrays(mnp_res[0], onp_res[0], error=1)
             match_all_arrays(mnp_res[1], onp_res[1], error=1)
 
@@ -2210,15 +2195,10 @@ def test_histogram2d():
     x = onp.random.randint(-10, 10, 10)
     y = onp.random.randint(-10, 10, 10)
 
-    weights = onp.random.randn(10)
     for bins in [4, [8, [1, 2, 3]]]:
         # pylint: disable=redefined-builtin
         for range in [None, [(3, 3), (2, 20)]]:
             match_res(mnp.histogram2d, onp.histogram2d, x, y, bins=bins, range=range, error=1)
-            mnp_res = mnp.histogram2d(to_tensor(x), to_tensor(y), bins=bins, range=range,
-                                      weights=to_tensor(weights), density=True)
-            onp_res = onp.histogram2d(x, y, bins=bins, range=range, weights=weights, density=True)
-            match_all_arrays(mnp_res, onp_res, error=1)
 
 
 @pytest.mark.level1

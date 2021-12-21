@@ -23,7 +23,7 @@
 #include "utils/comm_manager.h"
 #include "utils/scoped_long_running.h"
 #include "pybind_api/ir/tensor_py.h"
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
 #include "ps/ps_cache/ps_cache_manager.h"
 #endif
 
@@ -130,6 +130,9 @@ void RunGraphTask::Run() {
     return;
   }
   graph->ResetGraphRunningStatus();
+  if (device::KernelRuntime::UseMemScheduler()) {
+    graph->SetOutputNodeToTensor(node_to_tensor_);
+  }
   try {
     session_->LoadInputs(graph_id_, input_tensors_);
     session_->RunGraphImpl(graph_id_, input_tensors_, &outputs_);
@@ -204,7 +207,10 @@ void Executor::WorkerLoop() {
       task = ready_tasks_.front();
       ready_tasks_.pop();
     }
-    if (task->type_ == kExit) {
+    MS_EXCEPTION_IF_NULL(task);
+    enum TaskType task_type = task->type_;
+    bool task_sync_flag = task->sync_run_;
+    if (task_type == kExit) {
       OnWorkerExit();
       return;
     }
@@ -225,9 +231,9 @@ void Executor::WorkerLoop() {
     }
     {
       std::lock_guard<std::mutex> lock(done_task_mutex_);
-      done_tasks_.emplace_back(task);
+      done_tasks_.emplace_back(std::move(task));
     }
-    if (task->type_ != kRunGraph || task->sync_run_) {
+    if (task_type != kRunGraph || task_sync_flag) {
       std::lock_guard<std::mutex> lock(task_mutex_);
       sync_run_task_finished_ = true;
       sync_cond_var_.notify_all();
@@ -242,7 +248,7 @@ std::vector<std::shared_ptr<RunGraphTask>> Executor::GetReadyTasksFromPendingLis
     auto task = *iter;
     if (IsTaskReady(task)) {
       (void)ready_tasks.emplace_back(task);
-      pending_tasks_.erase(iter++);
+      iter = pending_tasks_.erase(iter);
     } else {
       ++iter;
     }
@@ -361,7 +367,7 @@ void Executor::RunGraph(const SessionPtr &session, const GraphId &graph_id,
   task->session_ = session;
   task->graph_id_ = graph_id;
   task->input_tensors_ = inputs;
-  session->CreateOutputTensors(graph_id, inputs, outputs, &task->tensor_to_node_);
+  session->CreateOutputTensors(graph_id, inputs, outputs, &task->tensor_to_node_, &task->node_to_tensor_);
   task->outputs_ = *outputs;
   task->sync_run_ = true;
   RunTask(task, true, true);
@@ -383,7 +389,7 @@ void Executor::RunGraphAsync(const SessionPtr &session, const GraphId &graph_id,
     reenter_cond_var_.wait(lock, [&graph] { return graph->IsPostGraphFinished(); });
     MsException::Instance().CheckException();
   }
-  session->CreateOutputTensors(graph_id, inputs, outputs, &task->tensor_to_node_);
+  session->CreateOutputTensors(graph_id, inputs, outputs, &task->tensor_to_node_, &task->node_to_tensor_);
   // maintain a copy of output vector
   task->outputs_ = *outputs;
 
@@ -404,6 +410,9 @@ void Executor::RunGraphAsync(const SessionPtr &session, const GraphId &graph_id,
     return;
   }
   WaitLockedInputs(task);
+  for (auto &tensor_node : task->tensor_to_node_) {
+    tensor_node.first->SetNeedWait(true);
+  }
   {
     std::lock_guard<std::mutex> lock(pending_task_mutex_);
     if (!IsTaskReady(task)) {
@@ -419,6 +428,9 @@ void Executor::RunOp(const SessionPtr &session, OpRunInfo *op_run_info, const Gr
                      std::vector<tensor::TensorPtr> *input_tensors, VectorRef *outputs,
                      const std::vector<int64_t> &tensors_mask) {
   MS_EXCEPTION_IF_NULL(session);
+  MS_EXCEPTION_IF_NULL(input_tensors);
+  MS_EXCEPTION_IF_NULL(outputs);
+  MS_EXCEPTION_IF_NULL(op_run_info);
   auto ms_context = MsContext::GetInstance();
   auto target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
   if (target == kGPUDevice) {

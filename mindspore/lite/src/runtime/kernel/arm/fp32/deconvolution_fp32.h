@@ -28,6 +28,7 @@
 #include "nnacl/fp32/matmul_fp32.h"
 
 namespace mindspore::kernel {
+#define DECONV_WINOGRAD_MAX 2000
 class DeConvolutionCPUKernel : public ConvolutionBaseCPUKernel {
  public:
   DeConvolutionCPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
@@ -35,7 +36,7 @@ class DeConvolutionCPUKernel : public ConvolutionBaseCPUKernel {
       : ConvolutionBaseCPUKernel(parameter, inputs, outputs, ctx, inputs.at(kWeightIndex)->data(),
                                  inputs.size() == kInputSize2 ? inputs.at(kBiasIndex)->data() : nullptr) {}
   ~DeConvolutionCPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int Run() override;
   int ReSize() override;
 

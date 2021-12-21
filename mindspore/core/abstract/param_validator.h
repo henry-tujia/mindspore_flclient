@@ -41,19 +41,17 @@ TypePtr CheckTensorsDTypeSame(const AbstractTensorPtrList &tensor_list, const Ty
 TypePtr CheckScalarType(const AbstractScalarPtr &scalar, const TypePtrList &accepts,
                         const std::string &error_message_prefix);
 
-ShapePtr CheckShapeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor);
+void CheckShapeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor);
 
 TypePtr CheckDtypeSame(const std::string &op, const AbstractTensorPtr &tensor_base, const AbstractTensorPtr &tensor);
 
-int64_t CheckAxis(const std::string &op, const ValuePtr &axis, int64_t min, int64_t max);
+int64_t CheckAxis(const std::string &op, const std::string &arg_name, const ValuePtr &axis, int64_t min, int64_t max);
 
 void CheckArgsSize(const std::string &op, const AbstractBasePtrList &args_spec_list, size_t size_expect);
 
 void CheckShapeAllPositive(const std::string &op, const ShapeVector &shape);
 
 void CheckShapeAnyAndPositive(const std::string &op, const ShapeVector &shape);
-
-int64_t CheckAttrPositiveInt64(const std::string &op, const ValuePtr &attr, const std::string &attr_name);
 
 std::vector<int64_t> CheckAttrIntOrTuple(const std::string &op, const ValuePtr &attr, const size_t start_idx,
                                          const size_t num_element);
@@ -83,7 +81,8 @@ ABSTRACT_REPORT_NAME_TRAITS(KeywordArg)
 ABSTRACT_REPORT_NAME_TRAITS(Class)
 ABSTRACT_REPORT_NAME_TRAITS(RowTensor)
 ABSTRACT_REPORT_NAME_TRAITS(SparseTensor)
-ABSTRACT_REPORT_NAME_TRAITS(Sequeue)
+ABSTRACT_REPORT_NAME_TRAITS(CSRTensor)
+ABSTRACT_REPORT_NAME_TRAITS(Sequence)
 
 template <typename T>
 std::shared_ptr<T> CheckArg(const std::string &op, const AbstractBasePtrList &args_spec_list, size_t index) {
@@ -93,7 +92,7 @@ std::shared_ptr<T> CheckArg(const std::string &op, const AbstractBasePtrList &ar
   }
   auto arg = dyn_cast<T>(args_spec_list[index]);
   if (arg == nullptr) {
-    MS_EXCEPTION(TypeError) << "Operator " << op << " input[" << index << "] should be " << ReportNameTraits<T>::name
+    MS_EXCEPTION(TypeError) << "For \'" << op << "\', input[" << index << "] should be " << ReportNameTraits<T>::name
                             << ", but got " << args_spec_list[index]->BuildType()->ToString() << ".";
   }
   return arg;

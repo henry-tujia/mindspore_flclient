@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-#include <string>
-#include "minddata/dataset/include/dataset/datasets.h"
 #include "minddata/dataset/engine/opt/pre/deep_copy_pass.h"
+
+#include <string>
+
 #include "minddata/dataset/engine/ir/datasetops/root_node.h"
+#include "minddata/dataset/include/dataset/datasets.h"
 
 namespace mindspore {
 namespace dataset {
@@ -49,7 +51,7 @@ Status DeepCopyPass::Visit(std::shared_ptr<DatasetNode> node, bool *const modifi
   // Temporary fix to set the num_workers to each cloned node.
   // This can be improved by adding a new method in the base class DatasetNode to transfer the properties to
   // the cloned node. Each derived class's Copy() will need to include this method.
-  new_node->SetNumWorkers(node->num_workers());
+  new_node->SetNumWorkers(node->NumWorkers());
   // This method below assumes a DFS walk and from the first child to the last child.
   // Future: A more robust implementation that does not depend on the above assumption.
   RETURN_IF_NOT_OK(parent_->AppendChild(new_node));

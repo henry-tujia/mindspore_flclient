@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,10 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <unordered_map>
 #include <memory>
-#include <unordered_set>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -34,6 +34,7 @@
 #include "pipeline/jit/resource_base.h"
 #include "pipeline/jit/static_analysis/prim.h"
 #include "pipeline/jit/static_analysis/static_analysis.h"
+#include "load_mindir/load_model.h"
 
 namespace mindspore {
 namespace pipeline {
@@ -47,7 +48,7 @@ const char kPynativeGraphId[] = "graph_id";
 
 class InferenceResource;
 
-using BuiltInTypeMap = std::unordered_map<int64_t, std::unordered_map<std::string, Any>>;
+using BuiltInTypeMap = mindspore::HashMap<int64_t, mindspore::HashMap<std::string, Any>>;
 
 BuiltInTypeMap &GetMethodMap();
 
@@ -72,6 +73,9 @@ class Resource : public ResourceBase {
   FuncGraphPtr func_graph() const { return func_graph_; }
   void set_func_graph(const FuncGraphPtr &func_graph) { func_graph_ = func_graph; }
 
+  FuncGraphPtr optimize_graph() const { return optimize_graph_; }
+  void set_optimize_graph(const FuncGraphPtr &optimize_graph) { optimize_graph_ = optimize_graph; }
+
   const abstract::AbstractBasePtrList &args_spec() const { return args_spec_; }
   void set_args_spec(const abstract::AbstractBasePtrList &args_spec) { args_spec_ = args_spec; }
 
@@ -83,6 +87,21 @@ class Resource : public ResourceBase {
   bool is_load() { return is_load_; }
   bool vm_loop_flag() { return vm_loop_flag_; }
   int64_t loop_size() { return loop_size_; }
+
+  void set_layout_map(const LayoutMap &layout_map) { layout_map_ = layout_map; }
+  const LayoutMap &get_layout_map() const { return layout_map_; }
+
+  bool enable_compile_cache() { return enable_compile_cache_; }
+  void set_enable_compile_cache(bool enable_compile_cache) { enable_compile_cache_ = enable_compile_cache; }
+
+  size_t compile_cache_id() { return compile_cache_id_; }
+  void set_compile_cache_id(size_t compile_cache_id) { compile_cache_id_ = compile_cache_id; }
+
+  const std::string &compile_cache_dep_files_hash() { return compile_cache_dep_files_hash_; }
+  void set_compile_cache_dep_files_hash(const std::string &compile_cache_dep_files_hash) {
+    compile_cache_dep_files_hash_ = compile_cache_dep_files_hash;
+  }
+
   // Reclaim resource and clear the cache.
   // GraphExecutorPy::Compile() can be called multiple times, so cache
   // should be cleared.
@@ -91,6 +110,7 @@ class Resource : public ResourceBase {
  private:
   abstract::AnalysisEnginePtr engine_;
   FuncGraphPtr func_graph_;
+  FuncGraphPtr optimize_graph_;
   abstract::AbstractBasePtrList args_spec_;
   // The source obj to compile, usually a `Cell` or `ms_function` decorated function.
   py::object source_input_;
@@ -99,6 +119,10 @@ class Resource : public ResourceBase {
   bool is_load_{false};
   bool vm_loop_flag_{false};
   int64_t loop_size_{1};
+  bool enable_compile_cache_{false};
+  size_t compile_cache_id_{0};
+  std::string compile_cache_dep_files_hash_;
+  LayoutMap layout_map_{};
 };
 
 using ResourcePtr = std::shared_ptr<pipeline::Resource>;

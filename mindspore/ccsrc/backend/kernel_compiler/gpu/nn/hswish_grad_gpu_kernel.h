@@ -36,6 +36,9 @@ class HSwishGradKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *x = GetDeviceAddress<T>(inputs, 1);
@@ -45,16 +48,22 @@ class HSwishGradKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but HSwishGrad needs 2 inputs.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but HSwishGrad has 1 output.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     input_size_ = 1;
     for (size_t i = 0; i < input_shape.size(); i++) {
       input_size_ *= input_shape[i];
@@ -65,6 +74,7 @@ class HSwishGradKernel : public GpuKernel {
 
   void ResetResource() noexcept override {
     input_size_ = 1;
+    is_null_input_ = false;
     input_size_list_.clear();
     output_size_list_.clear();
     workspace_size_list_.clear();
@@ -79,6 +89,7 @@ class HSwishGradKernel : public GpuKernel {
 
  private:
   size_t input_size_;
+  bool is_null_input_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

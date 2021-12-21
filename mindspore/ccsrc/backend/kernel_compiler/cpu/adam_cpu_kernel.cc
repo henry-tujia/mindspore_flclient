@@ -13,30 +13,36 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "backend/kernel_compiler/cpu/mkldnn/mkl_kernel_engine.h"
-#include "runtime/device/cpu/cpu_device_address.h"
+
 #include "backend/kernel_compiler/cpu/adam_cpu_kernel.h"
-#include "nnacl/errorcode.h"
-#include "nnacl/fp32/adam_fp32.h"
+#include "backend/kernel_compiler/cpu/nnacl/errorcode.h"
+#include "backend/kernel_compiler/cpu/nnacl/fp32/adam_fp32.h"
+#include "runtime/device/cpu/cpu_device_address.h"
 #include "utils/ms_utils.h"
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kAdamInputsNum = 10;
+constexpr size_t kAdamOutputsNum = 3;
+constexpr size_t kScalarIndex = 0;
+}  // namespace
+
 template <typename T>
 void AdamCPUKernel::LaunchAdam(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &) {
   T *var = reinterpret_cast<T *>(inputs[VAR]->addr);
   T *m = reinterpret_cast<T *>(inputs[M]->addr);
   T *v = reinterpret_cast<T *>(inputs[V]->addr);
-  float beta1_power = reinterpret_cast<float *>(inputs[BETA1_POWER]->addr)[SCALAR_INDEX];
-  float beta2_power = reinterpret_cast<float *>(inputs[BETA2_POWER]->addr)[SCALAR_INDEX];
-  float lr = reinterpret_cast<float *>(inputs[LR]->addr)[SCALAR_INDEX];
-  T beta1 = static_cast<T>(reinterpret_cast<float *>(inputs[BETA1]->addr)[SCALAR_INDEX]);
-  T beta2 = static_cast<T>(reinterpret_cast<float *>(inputs[BETA1]->addr)[SCALAR_INDEX]);
-  T epsilon = static_cast<T>(reinterpret_cast<float *>(inputs[EPSILON]->addr)[SCALAR_INDEX]);
+  float beta1_power = reinterpret_cast<float *>(inputs[BETA1_POWER]->addr)[kScalarIndex];
+  float beta2_power = reinterpret_cast<float *>(inputs[BETA2_POWER]->addr)[kScalarIndex];
+  float lr = reinterpret_cast<float *>(inputs[LR]->addr)[kScalarIndex];
+  T beta1 = static_cast<T>(reinterpret_cast<float *>(inputs[BETA1]->addr)[kScalarIndex]);
+  T beta2 = static_cast<T>(reinterpret_cast<float *>(inputs[BETA1]->addr)[kScalarIndex]);
+  T epsilon = static_cast<T>(reinterpret_cast<float *>(inputs[EPSILON]->addr)[kScalarIndex]);
   T *gradient = reinterpret_cast<T *>(inputs[GRAD]->addr);
   constexpr float ONE = 1.0;
   if (beta1_power - ONE == 0) {
-    MS_LOG(EXCEPTION) << "The beta1_power can't be set 1.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'beta1_power' can't be set 1.";
   }
   T new_lr = static_cast<T>(lr * std::sqrt(ONE - beta2_power) / (ONE - beta1_power));
   // multithreading
@@ -54,7 +60,7 @@ void AdamCPUKernel::LaunchAdam(const std::vector<kernel::AddressPtr> &inputs, co
       }
     }
   };
-  CPUKernelUtils::ParallelFor(task, lens);
+  ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
 }
 
 void AdamCPUKernel::LaunchAdamNnacl(const std::vector<kernel::AddressPtr> &inputs,
@@ -62,16 +68,16 @@ void AdamCPUKernel::LaunchAdamNnacl(const std::vector<kernel::AddressPtr> &input
   float *var = reinterpret_cast<float *>(inputs[VAR]->addr);
   float *m = reinterpret_cast<float *>(inputs[M]->addr);
   float *v = reinterpret_cast<float *>(inputs[V]->addr);
-  float beta1_power = reinterpret_cast<float *>(inputs[BETA1_POWER]->addr)[SCALAR_INDEX];
-  float beta2_power = reinterpret_cast<float *>(inputs[BETA2_POWER]->addr)[SCALAR_INDEX];
-  float lr = reinterpret_cast<float *>(inputs[LR]->addr)[SCALAR_INDEX];
-  float beta1 = reinterpret_cast<float *>(inputs[BETA1]->addr)[SCALAR_INDEX];
-  float beta2 = reinterpret_cast<float *>(inputs[BETA2]->addr)[SCALAR_INDEX];
-  float epsilon = reinterpret_cast<float *>(inputs[EPSILON]->addr)[SCALAR_INDEX];
+  float beta1_power = reinterpret_cast<float *>(inputs[BETA1_POWER]->addr)[kScalarIndex];
+  float beta2_power = reinterpret_cast<float *>(inputs[BETA2_POWER]->addr)[kScalarIndex];
+  float lr = reinterpret_cast<float *>(inputs[LR]->addr)[kScalarIndex];
+  float beta1 = reinterpret_cast<float *>(inputs[BETA1]->addr)[kScalarIndex];
+  float beta2 = reinterpret_cast<float *>(inputs[BETA2]->addr)[kScalarIndex];
+  float epsilon = reinterpret_cast<float *>(inputs[EPSILON]->addr)[kScalarIndex];
   float *gradient = reinterpret_cast<float *>(inputs[GRAD]->addr);
   constexpr float ONE = 1.0;
   if (beta1_power - ONE == 0) {
-    MS_LOG(EXCEPTION) << "The beta1_power can't be set 1.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'beta1_power' can't be set 1.";
   }
   float new_lr = lr * std::sqrt(ONE - beta2_power) / (ONE - beta1_power);
 
@@ -80,7 +86,7 @@ void AdamCPUKernel::LaunchAdamNnacl(const std::vector<kernel::AddressPtr> &input
   auto task = [this, &var, &m, &v, &gradient, new_lr, beta1, beta2, epsilon](size_t start, size_t end) {
     int ret = AdamFp32(var, m, v, new_lr, beta1, beta2, epsilon, gradient, start, end, use_nesterov_);
     if (ret != NNACL_OK) {
-      MS_LOG(EXCEPTION) << "AdamFp32 failed.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', AdamFp32 failed. Error no: " << ret;
     }
   };
   ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
@@ -88,34 +94,59 @@ void AdamCPUKernel::LaunchAdamNnacl(const std::vector<kernel::AddressPtr> &input
 
 void AdamCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
-  if (input_num != INPUT_NUMS) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but Adam needs 10 inputs.";
-  }
+  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
+  CHECK_KERNEL_INPUTS_NUM(input_num, kAdamInputsNum, kernel_name_);
   size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != OUTPUT_NUMS) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but Adam needs 3 outputs.";
-  }
-  use_nesterov_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, "use_nesterov");
+  CHECK_KERNEL_OUTPUTS_NUM(output_num, kAdamOutputsNum, kernel_name_);
+  use_nesterov_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, USE_NESTEROV);
 }
 
 bool AdamCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &,
                            const std::vector<kernel::AddressPtr> &outputs) {
-  if (inputs.size() != INPUT_NUMS) {
-    MS_LOG(EXCEPTION) << "Input number is " << inputs.size() << ", but Adam needs 10 inputs.";
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kAdamInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kAdamOutputsNum, kernel_name_);
+
+  if (inputs[VAR]->size != inputs[M]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape and dtype of 'm' and 'var' should be same, but got the memory size of 'm': "
+                      << inputs[M]->size << " and 'var': " << inputs[VAR]->size;
   }
-  if (outputs.size() != OUTPUT_NUMS) {
-    MS_LOG(EXCEPTION) << "Output number is " << outputs.size() << ", but Adam needs 3 outputs.";
+  if (inputs[VAR]->size != inputs[V]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape and dtype of 'v' and 'var' should be same, but got the memory size of 'v': "
+                      << inputs[V]->size << " and 'var': " << inputs[VAR]->size;
   }
-  if (inputs[VAR]->size != inputs[M]->size || inputs[VAR]->size != inputs[V]->size ||
-      inputs[VAR]->size != inputs[GRAD]->size) {
-    MS_LOG(EXCEPTION) << "Error input data size!";
+  if (inputs[VAR]->size != inputs[GRAD]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the shape and dtype of 'gradient' and 'var' should be same, but got "
+                         "the memory size of 'gradient': "
+                      << inputs[GRAD]->size << " and 'var': " << inputs[VAR]->size;
   }
   size_t f_size = sizeof(float);
-  if (inputs[BETA1_POWER]->size != f_size || inputs[BETA2_POWER]->size != f_size || inputs[LR]->size != f_size ||
-      inputs[BETA1]->size != f_size || inputs[BETA2]->size != f_size || inputs[EPSILON]->size != f_size) {
-    MS_LOG(EXCEPTION) << "The attribute beta_power, beta, lr and epsilon must be float!";
+  if (inputs[BETA1_POWER]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta1_power' should be float, but got 'beta1_power': " << inputs[BETA1_POWER];
+  }
+  if (inputs[BETA2_POWER]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta2_power' should be float, but got 'beta2_power': " << inputs[BETA2_POWER];
+  }
+  if (inputs[LR]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'lr' should be float, but got 'lr': " << inputs[LR];
+  }
+  if (inputs[BETA1]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta1' should be float, but got 'beta1': " << inputs[BETA1];
+  }
+  if (inputs[BETA2]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta2' should be float, but got 'beta2': " << inputs[BETA2];
+  }
+  if (inputs[EPSILON]->size != f_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'epsilon' should be float, but got 'epsilon': " << inputs[EPSILON];
   }
 
   if (dtype_ == kNumberTypeFloat32) {
@@ -123,8 +154,8 @@ bool AdamCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const 
   } else if (dtype_ == kNumberTypeFloat16) {
     LaunchAdam<float16>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Adam not support " << dtype_;
-    return false;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dtype of 'var' should be Float16 or Float32, but got "
+                      << TypeIdToType(dtype_)->ToString();
   }
   return true;
 }

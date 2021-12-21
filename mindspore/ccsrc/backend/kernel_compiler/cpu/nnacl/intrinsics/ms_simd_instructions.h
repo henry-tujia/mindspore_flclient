@@ -79,6 +79,7 @@ static inline float32x4_t vrecp(float32x4_t v) {
 #define MS_SLLIQ_EPI32(src1, src2) vshlq_s32(src1, vmovq_n_s32(src2))
 #define MS_CVTQPS_EPI32(src) vcvtq_s32_f32(src)
 #define MS_CVTQEPI32_PS(src) vcvtq_f32_s32(src)
+#define MS_CMPLEQ_F32(src1, src2) vcleq_f32(src1, src2)
 #define MS_CMPGTQ_F32(src1, src2) vcgtq_f32(src1, src2)
 #define MS_CMPGTQ_EPI32(src1, src2) vcgtq_s32(src1, src2)
 // Note: Compared with X86, the vbslq_f32 parameters are the opposite with _mm_blendv_f32
@@ -96,7 +97,7 @@ static inline float32x4_t vrecp(float32x4_t v) {
 #define MS_ADD256_EPI32 _mm256_add_epi32
 #define MS_MOV256_F32 _mm256_set1_ps
 #define MS_MOV256_EPI32 _mm256_set1_epi32
-#define MS_MLA256_F32(src1, src2, src3) _mm256_add_ps(src1, _mm256_mul_ps(src2, src3))
+#define MS_MLA256_F32(src1, src2, src3) _mm256_fmadd_ps(src2, src3, src1)
 #define MS_ST256_F32 _mm256_storeu_ps
 #define MS_ST256_EPI32(src1, src2) _mm256_storeu_si256((__m256i *)(src1), src2)
 #define MS_SUB256_F32 _mm256_sub_ps
@@ -146,6 +147,7 @@ static inline float32x4_t vrecp(float32x4_t v) {
 #define MS_SLLIQ_EPI32(src1, src2) _mm_slli_epi32(src1, src2)
 #define MS_CVTQPS_EPI32(src) _mm_cvttps_epi32(src)  // truncate float to int
 #define MS_CVTQEPI32_PS(src) _mm_cvtepi32_ps(src)
+#define MS_CMPLEQ_F32(src1, src2) _mm_cmple_ps(src1, src2)
 #define MS_CMPGTQ_F32(src1, src2) _mm_cmpgt_ps(src1, src2)
 #define MS_CMPGTQ_EPI32(src1, src2) _mm_cmpgt_epi32(src1, src2)
 #define MS_BLENDQ_F32(src1, src2, src3) _mm_blendv_ps(src1, src2, src3)

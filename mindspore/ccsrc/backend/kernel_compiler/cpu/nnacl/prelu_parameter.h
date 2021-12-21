@@ -22,9 +22,7 @@ typedef struct PReluParameter {
   // Primitive parameter
   OpParameter op_parameter_;
   // other parameter
-  float *slope_;
   bool channelShared;
-  int tile_block_;
   int channel_num_;
   int input_num_;
 } PReluParameter;

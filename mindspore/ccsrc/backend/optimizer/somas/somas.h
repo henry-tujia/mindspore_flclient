@@ -20,11 +20,11 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "backend/kernel_compiler/tbe/tbe_utils.h"
 #include "backend/optimizer/somas/somas_node.h"
 #include "backend/optimizer/somas/somas_solver_pre.h"
@@ -52,9 +52,9 @@ class Somas {
   std::string SomasInfo(bool calc_hash = false) const;
   std::string SomasMemory() const;
   void DumpSomasInfoIR(const string filename) const;
-  void DumpSomasMemoryIR(const string filename) const;
+  void DumpSomasMemoryIR(const string &filename) const;
 
-  static bool NodeSort(SomasNodePtr, SomasNodePtr);
+  static bool NodeSort(const SomasNodePtr &node1, const SomasNodePtr &node2);
 #ifndef ENABLE_SECURITY
   void ConvertToProfilingNode(uint32_t graph_id);
 #endif
@@ -64,7 +64,7 @@ class Somas {
   // hash id
   std::string hash_id_;
   // Maps
-  std::unordered_map<size_t, SomasTensorPtr> tensors_map_;
+  mindspore::HashMap<size_t, SomasTensorPtr> tensors_map_;
   std::map<void *, std::vector<SomasNodePtr>> nodes_map_;
   std::map<void *, vector<SomasParameterPtr>> parameters_map_;
 
@@ -115,7 +115,9 @@ class Somas {
   void InitSomasInputTensors(const session::KernelGraph *graph);
   void GetNextOutputProcess(const session::KernelGraph *graph);
   void IndependentNodeOutputProcess(const session::KernelGraph *graph);
+#ifndef ENABLE_SECURITY
   void SummaryInputProcess(const session::KernelGraph *graph);
+#endif
   void RefNodeProcess(const session::KernelGraph *graph);
   void NonTaskSplitProcess(const session::KernelGraph *graph);
   void UnReuseNodeProcess(const session::KernelGraph *graph);
@@ -131,8 +133,8 @@ class Somas {
   std::string GetSplitName(const string &scope_name) const;
   size_t CalcLowerBound() const;
   void GenGraphStatisticInfo();
-  SomasParameterPtr GetSomasParameter(AnfNodePtr node, size_t index);
-  SomasParameterPtr CreateSomasParameter(AnfNodePtr node, size_t index);
+  SomasParameterPtr GetSomasParameter(const AnfNodePtr &node, size_t index);
+  SomasParameterPtr CreateSomasParameter(const AnfNodePtr &node, size_t index);
   void InitCommonNodeInputs(bool is_all_nop_node, const CNodePtr &kernel);
   void InitAtomicCleanInputs(bool is_all_nop_node, const CNodePtr &kernel);
   void ComputeOneTensorConflicts(const std::shared_ptr<SomasTensor> &calc_tensor,

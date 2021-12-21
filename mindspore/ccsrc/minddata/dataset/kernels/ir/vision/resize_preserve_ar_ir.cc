@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/resize_preserve_ar_ir.h"
 
 #include "minddata/dataset/kernels/image/resize_preserve_ar_op.h"
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -36,8 +35,7 @@ Status ResizePreserveAROperation::ValidateParams() {
   if (img_orientation_ < 1 || img_orientation_ > 8) {
     std::string err_msg =
       "ResizePreserveAR: img_orientation must be in range of [1, 8], got: " + std::to_string(img_orientation_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -56,16 +54,15 @@ Status ResizePreserveAROperation::to_json(nlohmann::json *out_json) {
 }
 
 Status ResizePreserveAROperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("height") != op_params.end(), "Failed to find height");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("width") != op_params.end(), "Failed to find width");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("img_orientation") != op_params.end(), "Failed to find img_orientation");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "height", kResizePreserveAROperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "width", kResizePreserveAROperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "img_orientation", kResizePreserveAROperation));
   int32_t height = op_params["height"];
   int32_t width = op_params["width"];
   int32_t img_orientation = op_params["img_orientation"];
   *operation = std::make_shared<vision::ResizePreserveAROperation>(height, width, img_orientation);
   return Status::OK();
 }
-
 }  // namespace vision
 }  // namespace dataset
 }  // namespace mindspore

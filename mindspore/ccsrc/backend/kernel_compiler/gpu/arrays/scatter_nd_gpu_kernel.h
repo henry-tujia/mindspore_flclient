@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,8 @@ class ScatterNdGpuFwdKernel : public GpuKernel {
         work_shape_(nullptr),
         indices_dim_0_(0),
         indices_dim_1_(0),
-        memcpy_flag_(false) {}
+        memcpy_flag_(false),
+        is_null_input_(false) {}
   ~ScatterNdGpuFwdKernel() {
     if (indices_stride_ != nullptr) {
       device::gpu::GPUMemoryAllocator::GetInstance().FreeTensorMem(static_cast<void *>(indices_stride_));
@@ -53,6 +54,9 @@ class ScatterNdGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     S *indices = GetDeviceAddress<S>(inputs, 0);
     T *update = GetDeviceAddress<T>(inputs, 1);
@@ -86,23 +90,30 @@ class ScatterNdGpuFwdKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     memcpy_flag_ = false;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but transpose needs 2 input.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
       return false;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but transpose needs 1 output.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
       return false;
     }
 
     input_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     indices_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     output_shapes_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
-
+    is_null_input_ = CHECK_SHAPE_NULL(input_shapes_, kernel_name, "input") ||
+                     CHECK_SHAPE_NULL(indices_shapes_, kernel_name, "indices") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     std::vector<int64_t> shape_me = GetAttr<std::vector<int64_t>>(kernel_node, "shape");
     (void)std::transform(shape_me.begin(), shape_me.end(), std::back_inserter(vec_work_shape_),
                          [](const int64_t &value) { return static_cast<S>(value); });
@@ -112,14 +123,18 @@ class ScatterNdGpuFwdKernel : public GpuKernel {
     const size_t indices_len = sizeof(S) * vec_indices_stride_.size();
     void *indices_stride_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(indices_len);
     if (indices_stride_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc indices_stride_work, size: " << indices_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name
+                        << "', the memory alloc of indices_stride_work should be successful, but failed, got size: "
+                        << indices_len;
     }
     indices_stride_ = static_cast<S *>(indices_stride_work);
 
     const size_t vec_work_len = sizeof(S) * vec_work_shape_.size();
     void *work_shape_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(vec_work_len);
     if (work_shape_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc work_shape_work, size: " << vec_work_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name
+                        << "', the memory alloc of indices_stride_work should be successful, but failed, got size: "
+                        << vec_work_len;
     }
     work_shape_ = static_cast<S *>(work_shape_work);
 
@@ -189,6 +204,7 @@ class ScatterNdGpuFwdKernel : public GpuKernel {
   size_t indices_dim_0_;
   size_t indices_dim_1_;
   bool memcpy_flag_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

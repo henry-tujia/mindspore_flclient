@@ -15,8 +15,6 @@
  */
 
 #include "minddata/dataset/engine/runtime_context.h"
-#include <memory>
-#include <utility>
 namespace mindspore::dataset {
 void RuntimeContext::AssignConsumer(std::shared_ptr<TreeConsumer> tree_consumer) {
   tree_consumer_ = std::move(tree_consumer);
@@ -26,7 +24,7 @@ Status NativeRuntimeContext::Terminate() {
   if (tree_consumer_ != nullptr) {
     return TerminateImpl();
   }
-  MS_LOG(WARNING) << "Dataset TreeConsumer was not initialized.";
+  MS_LOG(INFO) << "Dataset TreeConsumer was not initialized.";
   return Status::OK();
 }
 
@@ -37,7 +35,9 @@ Status NativeRuntimeContext::TerminateImpl() {
 
 NativeRuntimeContext::~NativeRuntimeContext() {
   Status rc = NativeRuntimeContext::Terminate();
-  if (rc.IsError()) MS_LOG(ERROR) << "Error while terminating the consumer. Message:" << rc;
+  if (rc.IsError()) {
+    MS_LOG(ERROR) << "Error while terminating the consumer. Message:" << rc;
+  }
 }
 
 TreeConsumer *RuntimeContext::GetConsumer() { return tree_consumer_.get(); }

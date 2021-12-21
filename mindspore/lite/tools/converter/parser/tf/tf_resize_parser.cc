@@ -38,9 +38,11 @@ ops::PrimitiveC *TFResizeParser::Parse(const tensorflow::NodeDef &tf_op,
   }
   if (attr_value.b()) {
     prim->set_coordinate_transform_mode(mindspore::CoordinateTransformMode::ALIGN_CORNERS);
+    prim->AddAttr("align_corners", MakeValue(true));
   } else if (TensorFlowUtils::FindAttrValue(tf_op, "half_pixel_centers", &attr_value) && attr_value.b()) {
     prim->set_coordinate_transform_mode(mindspore::CoordinateTransformMode::HALF_PIXEL);
     prim->set_cubic_coeff(-0.5f);
+    prim->AddAttr("half_pixel_centers", MakeValue(true));
   } else {
     prim->set_coordinate_transform_mode(mindspore::CoordinateTransformMode::ASYMMETRIC);
   }
@@ -62,10 +64,12 @@ ops::PrimitiveC *TFResizeParser::Parse(const tensorflow::NodeDef &tf_op,
   if (!TensorFlowUtils::FindAttrValue(tf_op, "value", &attr_value)) {
     MS_LOG(WARNING) << "The value attr should be specified";
   }
-  auto tensor_proto = attr_value.tensor();
-  auto size_ptr = reinterpret_cast<const int32_t *>(tensor_proto.tensor_content().data());
-  prim->set_new_height(size_ptr[0]);
-  prim->set_new_width(size_ptr[1]);
+  auto tensor_content = attr_value.tensor().tensor_content();
+  if (tensor_content.size() >= kInputSize1 * sizeof(int32_t)) {
+    auto size_ptr = reinterpret_cast<const int32_t *>(tensor_content.data());
+    prim->set_new_height(size_ptr[0]);
+    prim->set_new_width(size_ptr[1]);
+  }
 
   *output_size = 1;
   if (AddOpInput(tf_op, 0, inputs) != RET_OK || AddOpInput(tf_op, 1, inputs) != RET_OK) {

@@ -56,7 +56,7 @@ int ConvolutionWinogradCPUKernel::InitTmpBuffer() {
   }
 
   tmp_data_ = reinterpret_cast<float *>(
-    ctx_->allocator->Malloc(thread_count_ * C4NUM * input_unit_ * input_unit_ * sizeof(float)));
+    ctx_->allocator->Malloc(thread_count_ * tmp_data_tile_ * input_unit_ * input_unit_ * sizeof(float)));
   if (tmp_data_ == nullptr) {
     MS_LOG(ERROR) << "malloc tmp_data_ failed.";
     return RET_MEMORY_FAILED;
@@ -90,14 +90,16 @@ int ConvolutionWinogradCPUKernel::ConfigInputOutput() {
   return RET_OK;
 }
 
-int ConvolutionWinogradCPUKernel::Init() {
+int ConvolutionWinogradCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   tile_num_ = C12NUM;
 #ifdef ENABLE_AVX
   oc_block_ = C16NUM;
+  tmp_data_tile_ = C8NUM;
 #else
   oc_block_ = C8NUM;
+  tmp_data_tile_ = C4NUM;
 #endif
   kernel_unit_ = conv_param_->kernel_h_;
   input_unit_ = output_unit_ + kernel_unit_ - 1;
@@ -126,7 +128,7 @@ int ConvolutionWinogradCPUKernel::ReSize() {
     MS_LOG(ERROR) << "Resize is invalid.";
     return ret;
   }
-  ret = ConvolutionBaseCPUKernel::Init();
+  ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "conv base init failed.";
     return ret;
@@ -205,6 +207,7 @@ int ConvolutionWinogradCPUKernel::MallocWeightBiasData() {
     input_unit_ * input_unit_ * in_channel * UP_ROUND(out_channel, oc_block_) * sizeof(float);
   if (!op_parameter_->is_train_session_) {
     if (packed_weight_ == nullptr) {
+      CHECK_LESS_RETURN(MAX_MALLOC_SIZE, trans_matrix_data_size);
       packed_weight_ = malloc(trans_matrix_data_size);
       if (packed_weight_ == nullptr) {
         MS_LOG(ERROR) << "malloc matrix_buffer failed.";
@@ -232,6 +235,7 @@ int ConvolutionWinogradCPUKernel::MallocWeightBiasData() {
   // init bias
   size_t new_bias_size = UP_ROUND(out_channel, C4NUM) * sizeof(float);
   if (bias_data_ == nullptr) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, new_bias_size);
     bias_data_ = malloc(new_bias_size);
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "malloc bias_data_ failed.";

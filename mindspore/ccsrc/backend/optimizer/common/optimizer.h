@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "ir/anf.h"
 #include "ir/func_graph.h"
 #include "ir/primitive.h"
@@ -41,6 +41,11 @@ class PatternProcessPass : public NodePass {
   virtual const AnfNodePtr Process(const FuncGraphPtr &, const AnfNodePtr &, const EquivPtr &) const = 0;
   virtual const BaseRef DefinePattern() const;
   AnfNodePtr Run(const FuncGraphPtr &func_graph, const AnfNodePtr &node) override;
+  CNodePtr NewCNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &fg) const;
+  CNodePtr NewCNode(const CNodePtr &cnode, const KernelGraphPtr &fg) const;
+
+ protected:
+  virtual std::vector<AnfNodePtr> GetOrigNodes() const;
 
  private:
   void Build();
@@ -49,6 +54,7 @@ class PatternProcessPass : public NodePass {
   bool multigraph_ = true;
   PatternEngine pattern_engine_;
   PrimitiveVarMapPtr primitive_vars_;
+  EquivPtr equiv_;
 };
 
 class MultipleOutputPatternProcessPass : public PatternProcessPass {
@@ -56,7 +62,8 @@ class MultipleOutputPatternProcessPass : public PatternProcessPass {
   explicit MultipleOutputPatternProcessPass(const std::string &name = "", bool multigraph = true)
       : PatternProcessPass(name, multigraph),
         child_pattern_engine_(PatternEngine(std::make_shared<Visitor>())),
-        child_primitive_vars_(std::make_shared<PrimitiveVarMap>()) {}
+        child_primitive_vars_(std::make_shared<PrimitiveVarMap>()),
+        child_equiv_(std::make_shared<Equiv>()) {}
   ~MultipleOutputPatternProcessPass() override = default;
   virtual BaseRef DefineAnotherPattern() const = 0;
   // check two patterns whether share the same nodes or not
@@ -64,8 +71,10 @@ class MultipleOutputPatternProcessPass : public PatternProcessPass {
 
  protected:
   bool MatchAnotherPattern(const AnfNodePtr &node, const EquivPtr &equiv) const;
+  std::vector<AnfNodePtr> GetOrigNodes() const override;
   PatternEngine child_pattern_engine_;
   PrimitiveVarMapPtr child_primitive_vars_;
+  EquivPtr child_equiv_;
 };
 
 class GraphOptimizer {

@@ -20,6 +20,7 @@
 
 #include "utils/symbolic.h"
 #include "utils/trace_base.h"
+#include "abstract/abstract_function.h"
 
 namespace mindspore {
 namespace abstract {
@@ -137,7 +138,17 @@ bool AnalysisContext::operator==(const AnalysisContext &other) const {
     return false;
   }
   for (std::size_t i = 0; i < args_spec_list_.size(); i++) {
-    if (!(*args_spec_list_[i] == *other.args_spec_list_[i])) {
+    if (func_graph_->has_flag(GRAPH_FLAG_IS_WHILE_HEADER) &&
+        args_spec_list_[i]->isa<abstract::FuncGraphAbstractClosure>() &&
+        other.args_spec_list_[i]->isa<abstract::FuncGraphAbstractClosure>()) {
+      auto temp_this = args_spec_list_[i]->cast<abstract::FuncGraphAbstractClosurePtr>()->Copy();
+      auto temp_other = other.args_spec_list_[i]->cast<abstract::FuncGraphAbstractClosurePtr>()->Copy();
+      temp_this->set_tracking_id(nullptr);
+      temp_other->set_tracking_id(nullptr);
+      if (!(*temp_this == *temp_other)) {
+        return false;
+      }
+    } else if (!(*args_spec_list_[i] == *other.args_spec_list_[i])) {
       return false;
     }
   }
@@ -196,7 +207,7 @@ std::string AnalysisContext::ToString() const {
   std::ostringstream buffer;
   buffer << "{";
   if (func_graph_ != nullptr) {
-    buffer << "Func Graph: " << func_graph_->ToString();
+    buffer << "FuncGraph: " << func_graph_->ToString();
   }
   buffer << " Args: ";
   int64_t i = 0;
@@ -225,7 +236,7 @@ void AnalysisContext::ClearContext() {
 AnalysisContextPtr AnalysisContext::CreateContext(const AnalysisContextPtr &parent, const FuncGraphPtr &fg,
                                                   const AbstractBasePtrList &args_spec_list) {
   auto context = std::make_shared<AnalysisContext>(parent, fg, args_spec_list);
-  all_context_.emplace_back(context);
+  (void)all_context_.emplace_back(context);
   return context;
 }
 }  // namespace abstract

@@ -25,22 +25,37 @@
 #include "minddata/dataset/audio/ir/kernels/bass_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/complex_norm_ir.h"
+#include "minddata/dataset/audio/ir/kernels/compute_deltas_ir.h"
 #include "minddata/dataset/audio/ir/kernels/contrast_ir.h"
+#include "minddata/dataset/audio/ir/kernels/db_to_amplitude_ir.h"
 #include "minddata/dataset/audio/ir/kernels/dc_shift_ir.h"
 #include "minddata/dataset/audio/ir/kernels/deemph_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/detect_pitch_frequency_ir.h"
+#include "minddata/dataset/audio/ir/kernels/dither_ir.h"
 #include "minddata/dataset/audio/ir/kernels/equalizer_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/fade_ir.h"
+#include "minddata/dataset/audio/ir/kernels/flanger_ir.h"
 #include "minddata/dataset/audio/ir/kernels/frequency_masking_ir.h"
+#include "minddata/dataset/audio/ir/kernels/gain_ir.h"
 #include "minddata/dataset/audio/ir/kernels/highpass_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/lfilter_ir.h"
 #include "minddata/dataset/audio/ir/kernels/lowpass_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/magphase_ir.h"
 #include "minddata/dataset/audio/ir/kernels/mu_law_decoding_ir.h"
+#include "minddata/dataset/audio/ir/kernels/mu_law_encoding_ir.h"
+#include "minddata/dataset/audio/ir/kernels/overdrive_ir.h"
+#include "minddata/dataset/audio/ir/kernels/phaser_ir.h"
+#include "minddata/dataset/audio/ir/kernels/riaa_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/sliding_window_cmn_ir.h"
+#include "minddata/dataset/audio/ir/kernels/spectrogram_ir.h"
 #include "minddata/dataset/audio/ir/kernels/time_masking_ir.h"
 #include "minddata/dataset/audio/ir/kernels/time_stretch_ir.h"
+#include "minddata/dataset/audio/ir/kernels/treble_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/vol_ir.h"
+#include "minddata/dataset/audio/kernels/audio_utils.h"
 
 namespace mindspore {
 namespace dataset {
-
 namespace audio {
 // AllpassBiquad Transform Operation.
 struct AllpassBiquad::Data {
@@ -176,6 +191,20 @@ ComplexNorm::ComplexNorm(float power) : data_(std::make_shared<Data>(power)) {}
 
 std::shared_ptr<TensorOperation> ComplexNorm::Parse() { return std::make_shared<ComplexNormOperation>(data_->power_); }
 
+// ComputeDeltas Transform Operation.
+struct ComputeDeltas::Data {
+  Data(int32_t win_length, BorderType pad_mode) : win_length_(win_length), pad_mode_(pad_mode) {}
+  int32_t win_length_;
+  BorderType pad_mode_;
+};
+
+ComputeDeltas::ComputeDeltas(int32_t win_length, BorderType pad_mode)
+    : data_(std::make_shared<Data>(win_length, pad_mode)) {}
+
+std::shared_ptr<TensorOperation> ComputeDeltas::Parse() {
+  return std::make_shared<ComputeDeltasOperation>(data_->win_length_, data_->pad_mode_);
+}
+
 // Contrast Transform Operation.
 struct Contrast::Data {
   explicit Data(float enhancement_amount) : enhancement_amount_(enhancement_amount) {}
@@ -188,11 +217,24 @@ std::shared_ptr<TensorOperation> Contrast::Parse() {
   return std::make_shared<ContrastOperation>(data_->enhancement_amount_);
 }
 
+// DBToAmplitude Transform Operation.
+struct DBToAmplitude::Data {
+  explicit Data(float ref, float power) : ref_(ref), power_(power) {}
+  float ref_;
+  float power_;
+};
+
+DBToAmplitude::DBToAmplitude(float ref, float power) : data_(std::make_shared<Data>(power, power)) {}
+
+std::shared_ptr<TensorOperation> DBToAmplitude::Parse() {
+  return std::make_shared<DBToAmplitudeOperation>(data_->ref_, data_->power_);
+}
+
 // DCShift Transform Operation.
 struct DCShift::Data {
   Data(float shift, float limiter_gain) : shift_(shift), limiter_gain_(limiter_gain) {}
-  float limiter_gain_;
   float shift_;
+  float limiter_gain_;
 };
 
 DCShift::DCShift(float shift) : data_(std::make_shared<Data>(shift, shift)) {}
@@ -201,6 +243,18 @@ DCShift::DCShift(float shift, float limiter_gain) : data_(std::make_shared<Data>
 
 std::shared_ptr<TensorOperation> DCShift::Parse() {
   return std::make_shared<DCShiftOperation>(data_->shift_, data_->limiter_gain_);
+}
+
+Status CreateDct(mindspore::MSTensor *output, int32_t n_mfcc, int32_t n_mels, NormMode norm) {
+  RETURN_UNEXPECTED_IF_NULL(output);
+  CHECK_FAIL_RETURN_UNEXPECTED(n_mfcc > 0, "CreateDct: n_mfcc must be greater than 0, got: " + std::to_string(n_mfcc));
+  CHECK_FAIL_RETURN_UNEXPECTED(n_mels > 0, "CreateDct: n_mels must be greater than 0, got: " + std::to_string(n_mels));
+
+  std::shared_ptr<dataset::Tensor> dct;
+  RETURN_IF_NOT_OK(Dct(&dct, n_mfcc, n_mels, norm));
+  CHECK_FAIL_RETURN_UNEXPECTED(dct->HasData(), "CreateDct: get an empty tensor with shape " + dct->shape().ToString());
+  *output = mindspore::MSTensor(std::make_shared<DETensor>(dct));
+  return Status::OK();
 }
 
 // DeemphBiquad Transform Operation.
@@ -213,6 +267,45 @@ DeemphBiquad::DeemphBiquad(int32_t sample_rate) : data_(std::make_shared<Data>(s
 
 std::shared_ptr<TensorOperation> DeemphBiquad::Parse() {
   return std::make_shared<DeemphBiquadOperation>(data_->sample_rate_);
+}
+
+// DetectPitchFrequency Transform Operation.
+struct DetectPitchFrequency::Data {
+  Data(int32_t sample_rate, float frame_time, int32_t win_length, int32_t freq_low, int32_t freq_high)
+      : sample_rate_(sample_rate),
+        frame_time_(frame_time),
+        win_length_(win_length),
+        freq_low_(freq_low),
+        freq_high_(freq_high) {}
+  int32_t sample_rate_;
+  float frame_time_;
+  int32_t win_length_;
+  int32_t freq_low_;
+  int32_t freq_high_;
+};
+
+DetectPitchFrequency::DetectPitchFrequency(int32_t sample_rate, float frame_time, int32_t win_length, int32_t freq_low,
+                                           int32_t freq_high)
+    : data_(std::make_shared<Data>(sample_rate, frame_time, win_length, freq_low, freq_high)) {}
+
+std::shared_ptr<TensorOperation> DetectPitchFrequency::Parse() {
+  return std::make_shared<DetectPitchFrequencyOperation>(data_->sample_rate_, data_->frame_time_, data_->win_length_,
+                                                         data_->freq_low_, data_->freq_high_);
+}
+
+// Dither Transform Operation.
+struct Dither::Data {
+  Data(DensityFunction density_function, bool noise_shaping)
+      : density_function_(density_function), noise_shaping_(noise_shaping) {}
+  DensityFunction density_function_;
+  bool noise_shaping_;
+};
+
+Dither::Dither(DensityFunction density_function, bool noise_shaping)
+    : data_(std::make_shared<Data>(density_function, noise_shaping)) {}
+
+std::shared_ptr<TensorOperation> Dither::Parse() {
+  return std::make_shared<DitherOperation>(data_->density_function_, data_->noise_shaping_);
 }
 
 // EqualizerBiquad Transform Operation.
@@ -248,6 +341,40 @@ std::shared_ptr<TensorOperation> Fade::Parse() {
   return std::make_shared<FadeOperation>(data_->fade_in_len_, data_->fade_out_len_, data_->fade_shape_);
 }
 
+// Flanger Transform Operation.
+struct Flanger::Data {
+  Data(int32_t sample_rate, float delay, float depth, float regen, float width, float speed, float phase,
+       Modulation modulation, Interpolation interpolation)
+      : sample_rate_(sample_rate),
+        delay_(delay),
+        depth_(depth),
+        regen_(regen),
+        width_(width),
+        speed_(speed),
+        phase_(phase),
+        modulation_(modulation),
+        interpolation_(interpolation) {}
+  int32_t sample_rate_;
+  float delay_;
+  float depth_;
+  float regen_;
+  float width_;
+  float speed_;
+  float phase_;
+  Modulation modulation_;
+  Interpolation interpolation_;
+};
+
+Flanger::Flanger(int32_t sample_rate, float delay, float depth, float regen, float width, float speed, float phase,
+                 Modulation modulation, Interpolation interpolation)
+    : data_(std::make_shared<Data>(sample_rate, delay, depth, regen, width, speed, phase, modulation, interpolation)) {}
+
+std::shared_ptr<TensorOperation> Flanger::Parse() {
+  return std::make_shared<FlangerOperation>(data_->sample_rate_, data_->delay_, data_->depth_, data_->regen_,
+                                            data_->width_, data_->speed_, data_->phase_, data_->modulation_,
+                                            data_->interpolation_);
+}
+
 // FrequencyMasking Transform Operation.
 struct FrequencyMasking::Data {
   Data(bool iid_masks, int32_t frequency_mask_param, int32_t mask_start, float mask_value)
@@ -255,9 +382,9 @@ struct FrequencyMasking::Data {
         frequency_mask_param_(frequency_mask_param),
         mask_start_(mask_start),
         mask_value_(mask_value) {}
+  bool iid_masks_;
   int32_t frequency_mask_param_;
   int32_t mask_start_;
-  bool iid_masks_;
   float mask_value_;
 };
 
@@ -268,6 +395,16 @@ std::shared_ptr<TensorOperation> FrequencyMasking::Parse() {
   return std::make_shared<FrequencyMaskingOperation>(data_->iid_masks_, data_->frequency_mask_param_,
                                                      data_->mask_start_, data_->mask_value_);
 }
+
+// Gain Transform Operation.
+struct Gain::Data {
+  explicit Data(float gain_db) : gain_db_(gain_db) {}
+  float gain_db_;
+};
+
+Gain::Gain(float gain_db) : data_(std::make_shared<Data>(gain_db)) {}
+
+std::shared_ptr<TensorOperation> Gain::Parse() { return std::make_shared<GainOperation>(data_->gain_db_); }
 
 // HighpassBiquad Transform Operation.
 struct HighpassBiquad::Data {
@@ -315,25 +452,156 @@ std::shared_ptr<TensorOperation> LowpassBiquad::Parse() {
   return std::make_shared<LowpassBiquadOperation>(data_->sample_rate_, data_->cutoff_freq_, data_->Q_);
 }
 
-// MuLawDecoding Transform Operation.
-struct MuLawDecoding::Data {
-  explicit Data(int quantization_channels) : quantization_channels_(quantization_channels) {}
-  int quantization_channels_;
+// Magphase Transform Operation.
+struct Magphase::Data {
+  explicit Data(float power) : power_(power) {}
+  float power_;
 };
 
-MuLawDecoding::MuLawDecoding(int quantization_channels) : data_(std::make_shared<Data>(quantization_channels)) {}
+Magphase::Magphase(float power) : data_(std::make_shared<Data>(power)) {}
+
+std::shared_ptr<TensorOperation> Magphase::Parse() { return std::make_shared<MagphaseOperation>(data_->power_); }
+
+// MuLawDecoding Transform Operation.
+struct MuLawDecoding::Data {
+  explicit Data(int32_t quantization_channels) : quantization_channels_(quantization_channels) {}
+  int32_t quantization_channels_;
+};
+
+MuLawDecoding::MuLawDecoding(int32_t quantization_channels) : data_(std::make_shared<Data>(quantization_channels)) {}
 
 std::shared_ptr<TensorOperation> MuLawDecoding::Parse() {
   return std::make_shared<MuLawDecodingOperation>(data_->quantization_channels_);
+}
+
+// MuLawEncoding Transform Operation.
+struct MuLawEncoding::Data {
+  explicit Data(int32_t quantization_channels) : quantization_channels_(quantization_channels) {}
+  int32_t quantization_channels_;
+};
+
+MuLawEncoding::MuLawEncoding(int32_t quantization_channels) : data_(std::make_shared<Data>(quantization_channels)) {}
+
+std::shared_ptr<TensorOperation> MuLawEncoding::Parse() {
+  return std::make_shared<MuLawEncodingOperation>(data_->quantization_channels_);
+}
+
+// Overdrive Transform Operation.
+struct Overdrive::Data {
+  Data(float gain, float color) : gain_(gain), color_(color) {}
+  float gain_;
+  float color_;
+};
+
+Overdrive::Overdrive(float gain, float color) : data_(std::make_shared<Data>(gain, color)) {}
+
+std::shared_ptr<TensorOperation> Overdrive::Parse() {
+  return std::make_shared<OverdriveOperation>(data_->gain_, data_->color_);
+}
+
+// Phaser Transform Operation.
+struct Phaser::Data {
+  Data(int32_t sample_rate, float gain_in, float gain_out, float delay_ms, float decay, float mod_speed,
+       bool sinusoidal)
+      : sample_rate_(sample_rate),
+        gain_in_(gain_in),
+        gain_out_(gain_out),
+        delay_ms_(delay_ms),
+        decay_(decay),
+        mod_speed_(mod_speed),
+        sinusoidal_(sinusoidal) {}
+  int32_t sample_rate_;
+  float gain_in_;
+  float gain_out_;
+  float delay_ms_;
+  float decay_;
+  float mod_speed_;
+  bool sinusoidal_;
+};
+
+Phaser::Phaser(int32_t sample_rate, float gain_in, float gain_out, float delay_ms, float decay, float mod_speed,
+               bool sinusoidal)
+    : data_(std::make_shared<Data>(sample_rate, gain_in, gain_out, delay_ms, decay, mod_speed, sinusoidal)) {}
+
+std::shared_ptr<TensorOperation> Phaser::Parse() {
+  return std::make_shared<PhaserOperation>(data_->sample_rate_, data_->gain_in_, data_->gain_out_, data_->delay_ms_,
+                                           data_->decay_, data_->mod_speed_, data_->sinusoidal_);
+}
+
+// RiaaBiquad Transform Operation.
+struct RiaaBiquad::Data {
+  explicit Data(int32_t sample_rate) : sample_rate_(sample_rate) {}
+  int32_t sample_rate_;
+};
+
+RiaaBiquad::RiaaBiquad(int32_t sample_rate) : data_(std::make_shared<Data>(sample_rate)) {}
+
+std::shared_ptr<TensorOperation> RiaaBiquad::Parse() {
+  return std::make_shared<RiaaBiquadOperation>(data_->sample_rate_);
+}
+
+// SlidingWindowCmn Transform Operation.
+struct SlidingWindowCmn::Data {
+  Data(int32_t cmn_window, int32_t min_cmn_window, bool center, bool norm_vars)
+      : cmn_window_(cmn_window), min_cmn_window_(min_cmn_window), center_(center), norm_vars_(norm_vars) {}
+  int32_t cmn_window_;
+  int32_t min_cmn_window_;
+  bool center_;
+  bool norm_vars_;
+};
+
+SlidingWindowCmn::SlidingWindowCmn(int32_t cmn_window, int32_t min_cmn_window, bool center, bool norm_vars)
+    : data_(std::make_shared<Data>(cmn_window, min_cmn_window, center, norm_vars)) {}
+
+std::shared_ptr<TensorOperation> SlidingWindowCmn::Parse() {
+  return std::make_shared<SlidingWindowCmnOperation>(data_->cmn_window_, data_->min_cmn_window_, data_->center_,
+                                                     data_->norm_vars_);
+}
+
+// Spectrogram Transform Operation.
+struct Spectrogram::Data {
+  Data(int32_t n_fft, int32_t win_length, int32_t hop_length, int32_t pad, WindowType window, float power,
+       bool normalized, bool center, BorderType pad_mode, bool onesided)
+      : n_fft_(n_fft),
+        win_length_(win_length),
+        hop_length_(hop_length),
+        pad_(pad),
+        window_(window),
+        power_(power),
+        normalized_(normalized),
+        center_(center),
+        pad_mode_(pad_mode),
+        onesided_(onesided) {}
+  int32_t n_fft_;
+  int32_t win_length_;
+  int32_t hop_length_;
+  int32_t pad_;
+  WindowType window_;
+  float power_;
+  bool normalized_;
+  bool center_;
+  BorderType pad_mode_;
+  bool onesided_;
+};
+
+Spectrogram::Spectrogram(int32_t n_fft, int32_t win_length, int32_t hop_length, int32_t pad, WindowType window,
+                         float power, bool normalized, bool center, BorderType pad_mode, bool onesided)
+    : data_(std::make_shared<Data>(n_fft, win_length, hop_length, pad, window, power, normalized, center, pad_mode,
+                                   onesided)) {}
+
+std::shared_ptr<TensorOperation> Spectrogram::Parse() {
+  return std::make_shared<SpectrogramOperation>(data_->n_fft_, data_->win_length_, data_->hop_length_, data_->pad_,
+                                                data_->window_, data_->power_, data_->normalized_, data_->center_,
+                                                data_->pad_mode_, data_->onesided_);
 }
 
 // TimeMasking Transform Operation.
 struct TimeMasking::Data {
   Data(bool iid_masks, int32_t time_mask_param, int32_t mask_start, float mask_value)
       : iid_masks_(iid_masks), time_mask_param_(time_mask_param), mask_start_(mask_start), mask_value_(mask_value) {}
+  bool iid_masks_;
   int32_t time_mask_param_;
   int32_t mask_start_;
-  bool iid_masks_;
   float mask_value_;
 };
 
@@ -347,18 +615,48 @@ std::shared_ptr<TensorOperation> TimeMasking::Parse() {
 
 // TimeStretch Transform Operation.
 struct TimeStretch::Data {
-  explicit Data(float hop_length, int n_freq, float fixed_rate)
+  explicit Data(float hop_length, int32_t n_freq, float fixed_rate)
       : hop_length_(hop_length), n_freq_(n_freq), fixed_rate_(fixed_rate) {}
   float hop_length_;
-  int n_freq_;
+  int32_t n_freq_;
   float fixed_rate_;
 };
 
-TimeStretch::TimeStretch(float hop_length, int n_freq, float fixed_rate)
+TimeStretch::TimeStretch(float hop_length, int32_t n_freq, float fixed_rate)
     : data_(std::make_shared<Data>(hop_length, n_freq, fixed_rate)) {}
 
 std::shared_ptr<TensorOperation> TimeStretch::Parse() {
   return std::make_shared<TimeStretchOperation>(data_->hop_length_, data_->n_freq_, data_->fixed_rate_);
+}
+
+// TrebleBiquad Transform Operation.
+struct TrebleBiquad::Data {
+  Data(int32_t sample_rate, float gain, float central_freq, float Q)
+      : sample_rate_(sample_rate), gain_(gain), central_freq_(central_freq), Q_(Q) {}
+  int32_t sample_rate_;
+  float gain_;
+  float central_freq_;
+  float Q_;
+};
+
+TrebleBiquad::TrebleBiquad(int32_t sample_rate, float gain, float central_freq, float Q)
+    : data_(std::make_shared<Data>(sample_rate, gain, central_freq, Q)) {}
+
+std::shared_ptr<TensorOperation> TrebleBiquad::Parse() {
+  return std::make_shared<TrebleBiquadOperation>(data_->sample_rate_, data_->gain_, data_->central_freq_, data_->Q_);
+}
+
+// Vol Transform Operation.
+struct Vol::Data {
+  Data(float gain, GainType gain_type) : gain_(gain), gain_type_(gain_type) {}
+  float gain_;
+  GainType gain_type_;
+};
+
+Vol::Vol(float gain, GainType gain_type) : data_(std::make_shared<Data>(gain, gain_type)) {}
+
+std::shared_ptr<TensorOperation> Vol::Parse() {
+  return std::make_shared<VolOperation>(data_->gain_, data_->gain_type_);
 }
 }  // namespace audio
 }  // namespace dataset

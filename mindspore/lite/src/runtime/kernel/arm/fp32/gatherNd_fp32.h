@@ -34,20 +34,20 @@ class GatherNdCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx), thread_count_(ctx->thread_num_) {}
   ~GatherNdCPUKernel() override;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-  int DoGatherNd(int task_id);
+  int DoGatherNd(int task_id) const;
 
  private:
-  void InitOffset();
+  int InitOffset();
   int thread_sz_count_ = 0;
   int thread_sz_stride_ = 0;
   int count_ = 0;
   int area_ = 0;
   int *in_offset_ = nullptr;
-  float *in_ptr_ = nullptr;
-  float *out_ptr_ = nullptr;
+  void *in_ptr_ = nullptr;
+  void *out_ptr_ = nullptr;
   int thread_count_ = 0;
 };
 }  // namespace mindspore::kernel

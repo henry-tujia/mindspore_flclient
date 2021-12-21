@@ -15,18 +15,21 @@
  */
 
 #include "runtime/device/ascend/executor/ai_core_dynamic_kernel.h"
+
 #include <algorithm>
-#include <memory>
 #include "framework/common/debug/log.h"
 #include "utils/log_adapter.h"
 #include "register/op_tiling.h"
 #include "utils/convert_utils_base.h"
 #include "utils/ms_context.h"
 #include "runtime/device/kernel_runtime_manager.h"
+#include "runtime/kernel.h"
+#include "runtime/mem.h"
 #include "pipeline/jit/static_analysis/static_analysis.h"
 #include "runtime/device/ascend/executor/tiling/op_tiling_adapter.h"
 #include "common/trans.h"
 #include "backend/kernel_compiler/tbe/tbe_utils.h"
+#include "acl/acl_rt.h"
 
 namespace mindspore {
 namespace device {
@@ -40,6 +43,30 @@ AiCoreDynamicKernel::~AiCoreDynamicKernel() {
   }
 }
 
+bool AiCoreDynamicKernel::NeedSkipExecute(const CNodePtr &cnode) {
+  // Skip run ReduceSum when axis is a Empty Tensor
+  MS_EXCEPTION_IF_NULL(cnode);
+  auto op_name = AnfAlgo::GetCNodeName(cnode);
+  if (op_name != "ReduceSum") {
+    return false;
+  }
+
+  const size_t axes_index = 1;
+  if (cnode->inputs().size() <= axes_index + 1) {
+    return false;
+  }
+  auto input_axes = cnode->input(axes_index + 1);
+  auto axes_abs = input_axes->abstract();
+  MS_EXCEPTION_IF_NULL(axes_abs);
+  auto axes_shape = AnfAlgo::GetInputDeviceShape(cnode, axes_index);
+  if (axes_abs->isa<abstract::AbstractTensor>()) {
+    if (std::any_of(axes_shape.begin(), axes_shape.end(), [](ssize_t shape) { return shape == 0; })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void AiCoreDynamicKernel::Execute() {
   if (stream_ == nullptr) {
     MS_LOG(EXCEPTION) << "stream_ptr should not be nullptr.";
@@ -48,6 +75,22 @@ void AiCoreDynamicKernel::Execute() {
   MS_EXCEPTION_IF_NULL(cnode);
   auto node_info = cnode->fullname_with_scope();
   MS_LOG(INFO) << "Start Execute node:" << node_info;
+
+  if (NeedSkipExecute(cnode)) {
+    // Skip reduce if axis is a empty Tensor (shape = 0)
+    MS_LOG(INFO) << "The node " << node_info << "Need Skip.";
+    rtError_t status = rtMemcpyAsync(kernel_outputs_[0]->addr, kernel_inputs_[0]->size, kernel_inputs_[0]->addr,
+                                     kernel_inputs_[0]->size, RT_MEMCPY_DEVICE_TO_DEVICE, stream_);
+    if (status != RT_ERROR_NONE) {
+      MS_LOG(EXCEPTION) << "rtMemcpyAsync failed for " << node_info;
+    }
+    std::vector<TypeId> dtypes{AnfAlgo::GetOutputInferDataType(cnode, 0)};
+    AnfAlgo::SetOutputInferTypeAndShape(dtypes, {AnfAlgo::GetInputDeviceShape(cnode, 0)}, cnode.get());
+
+    MS_LOG(INFO) << "Execute node:" << cnode->fullname_with_scope() << " success.";
+    return;
+  }
+
   rtL2Ctrl_t *l2ctrl = nullptr;
   auto args_size = static_cast<uint32_t>(UlongToUint(sizeof(void *)) * runtime_args_.size());
   if (handle_ != nullptr) {
@@ -72,23 +115,13 @@ void AiCoreDynamicKernel::ParseCompileJson() {
   if (!AnfAlgo::IsDynamicShape(cnode)) {
     return;
   }
-
-  MS_LOG(INFO) << "Get compile_info from attr start.";
-  std::string old_build = common::GetEnv("MS_OLD_BUILD_PROCESS");
-  if (!old_build.empty()) {
-    if (!AnfAlgo::HasNodeAttr(kAttrCompileInfo, cnode)) {
-      MS_LOG(EXCEPTION) << "Get compile info failed. node name: " << AnfAlgo::GetCNodeName(cnode);
-    }
-    op_compile_info_ = AnfAlgo::GetNodeAttr<std::string>(cnode, kAttrCompileInfo);
-  } else {
-    bool get_flag = true;
-    TbeUtils::GetCompileInfo(cnode, &op_compile_info_, &get_flag);
-    if (!get_flag) {
-      MS_LOG(EXCEPTION) << "Get compile_info failed. The compile result of [" << cnode->fullname_with_scope()
-                        << "] maybe not in the json file(kernel_meta/) or the file had been deleted.";
-    }
+  bool get_flag = true;
+  TbeUtils::GetCompileInfo(cnode, &op_compile_info_, &get_flag);
+  if (!get_flag) {
+    MS_LOG(EXCEPTION) << "Get compile_info failed. The compile result of [" << cnode->fullname_with_scope()
+                      << "] maybe not in the json file(kernel_meta/) or the file had been deleted.";
   }
-  MS_LOG(INFO) << "Get compile_info:" << op_compile_info_;
+  MS_LOG(INFO) << "Node: " << cnode->fullname_with_scope() << " get compile_info: " << op_compile_info_;
 }
 
 void AiCoreDynamicKernel::Initialize() {
@@ -108,16 +141,16 @@ void AiCoreDynamicKernel::UpdateArgs() {
   auto kernel_mod = AnfAlgo::GetKernelMod(cnode);
   MS_EXCEPTION_IF_NULL(kernel_mod);
 
-  AddressPtrList kernel_inputs;
-  AddressPtrList kernel_workspaces;
-  AddressPtrList kernel_outputs;
-  KernelRuntime::GenLaunchArgs(*kernel_mod, cnode, &kernel_inputs, &kernel_workspaces, &kernel_outputs);
+  KernelLaunchInfo kernel_launch_info;
+  KernelRuntime::GenLaunchArgs(*kernel_mod, cnode, &kernel_launch_info);
 
   runtime_args_.clear();
+  kernel_inputs_ = kernel_launch_info.inputs_;
+  kernel_outputs_ = kernel_launch_info.outputs_;
 
-  (void)std::transform(std::begin(kernel_inputs), std::end(kernel_inputs), std::back_inserter(runtime_args_),
+  (void)std::transform(std::begin(kernel_inputs_), std::end(kernel_inputs_), std::back_inserter(runtime_args_),
                        [](const AddressPtr &input) { return input->addr; });
-  (void)std::transform(std::begin(kernel_outputs), std::end(kernel_outputs), std::back_inserter(runtime_args_),
+  (void)std::transform(std::begin(kernel_outputs_), std::end(kernel_outputs_), std::back_inserter(runtime_args_),
                        [](const AddressPtr &output) { return output->addr; });
   // Update workspace
   if (!workspace_addr_.empty()) {
@@ -139,7 +172,7 @@ void AiCoreDynamicKernel::ComputeTiling() {
   tiling::OpTilingCalculateAdapter converter;
   ge::ComputeGraphPtr ge_graph = std::make_shared<ge::ComputeGraph>("default");
   auto ge_node = converter.AnfNodeToGeNodeAdapter(cnode, &ge_graph, depend_tensor_map_, op_compile_info_);
-  (void)optiling::OpParaCalculateV2(*ge_node, op_run_info_v2);
+  (void)optiling::OpParaCalculateV2(ge_node, op_run_info_v2);
 
   block_dim_ = op_run_info_v2.GetBlockDim();
   op_run_info_v2.GetAllWorkspaces(workspaces_size_);
@@ -158,7 +191,8 @@ void AiCoreDynamicKernel::AllocateWorkspace() {
 
   workspace_addr_.clear();
   for (auto size : workspaces_size_) {
-    auto device_address_ptr = std::make_shared<AscendDeviceAddress>(nullptr, size);
+    auto device_address_ptr = std::make_shared<AscendDeviceAddress>(nullptr, size, kAscendDevice, device_id);
+    device_address_ptr->set_is_ptr_persisted(true);
     auto device_ptr = runtime_instance->MallocMem(MemType::kDynamicMem, size, device_address_ptr);
     if (device_ptr == nullptr) {
       MS_LOG(EXCEPTION) << "MallocMem from memory pool failed. Node info :" << cnode->fullname_with_scope();
@@ -174,14 +208,14 @@ bool AiCoreDynamicKernel::CopyTilingToDevice() {
   }
 
   if (tiling_data_.empty() || tiling_data_ptr_ == nullptr) {
-    MS_LOG(INFO) << "Tiling size is 0, skip rtMemcpyAsync";
+    MS_LOG(INFO) << "Tiling size is 0, skip aclrtMemcpyAsync";
     return true;
   }
 
-  auto ret = rtMemcpyAsync(tiling_data_ptr_, tiling_data_.size(), tiling_data_.c_str(), tiling_data_.size(),
-                           RT_MEMCPY_HOST_TO_DEVICE_EX, stream_);
+  auto ret = aclrtMemcpyAsync(tiling_data_ptr_, tiling_data_.size(), tiling_data_.c_str(), tiling_data_.size(),
+                              ACL_MEMCPY_HOST_TO_DEVICE, stream_);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(EXCEPTION) << "Tiling rtMemcpyAsync failed, ret:" << ret;
+    MS_LOG(EXCEPTION) << "Tiling aclrtMemcpyAsync failed, ret:" << ret;
   }
   return true;
 }

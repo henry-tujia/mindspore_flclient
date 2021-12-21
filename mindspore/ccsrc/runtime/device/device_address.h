@@ -38,6 +38,7 @@ class CPUDeviceContext;
 namespace ascend {
 class AscendKernelRuntime;
 class AscendMemoryManager;
+class AscendDeviceContext;
 #ifndef ENABLE_SECURITY
 class DataDumper;
 #endif
@@ -71,26 +72,74 @@ class DeviceAddress : public mindspore::DeviceSync {
   explicit DeviceAddress(void *ptr, size_t size, const std::string &format, TypeId type_id,
                          const KernelWithIndex &node_index)
       : ptr_(ptr), size_(size), format_(format), type_id_(type_id), node_index_(node_index) {}
+
+  explicit DeviceAddress(void *ptr, size_t size, const std::string &device_name, uint32_t device_id)
+      : ptr_(ptr), size_(size), device_name_(device_name), device_id_(device_id) {}
+  explicit DeviceAddress(void *ptr, size_t size, const string &format, TypeId type_id, const std::string &device_name,
+                         uint32_t device_id)
+      : ptr_(ptr), size_(size), format_(format), type_id_(type_id), device_name_(device_name), device_id_(device_id) {}
+  explicit DeviceAddress(void *ptr, size_t size, const std::string &format, TypeId type_id,
+                         const KernelWithIndex &node_index, const std::string &device_name, uint32_t device_id)
+      : ptr_(ptr),
+        size_(size),
+        format_(format),
+        type_id_(type_id),
+        node_index_(node_index),
+        device_name_(device_name),
+        device_id_(device_id) {}
   virtual ~DeviceAddress() { ptr_ = nullptr; }
+
   const void *GetPtr() const { return ptr_; }
+  void set_ptr(void *ptr) { ptr_ = ptr; }
   size_t GetSize() const { return size_; }
   void SetSize(size_t size) { size_ = size; }
+
   std::string format() const { return format_; }
   TypeId type_id() const { return type_id_; }
   bool from_mem_pool() const { return from_mem_pool_; }
+  void set_from_mem_pool(bool from_mem_pool) { from_mem_pool_ = from_mem_pool; }
+  bool is_ptr_persisted() const { return is_ptr_persisted_; }
+  void set_is_ptr_persisted(bool is_ptr_persisted) { is_ptr_persisted_ = is_ptr_persisted; }
   void set_host_shape(const ShapeVector &shape) { host_shape_ = shape; }
+  ShapeVector host_shape() const { return host_shape_; }
+  bool from_persistent_mem() const { return from_persistent_mem_; }
+  void set_from_persistent_mem(bool from_persistent_mem) { from_persistent_mem_ = from_persistent_mem; }
   virtual void set_status(DeviceAddressStatus status) {}
   virtual DeviceAddressStatus status() const { return DeviceAddressStatus::kInDevice; }
   virtual DeviceAddressType DeviceType() const { return DeviceAddressType::kUnknown; }
   void *GetMutablePtr() const override { return ptr_; }
+  std::string device_name() const { return device_name_; }
+  uint32_t device_id() const { return device_id_; }
+
   virtual void SetNodeIndex(const AnfNodePtr &node, size_t out_index) { node_index_ = {node, out_index}; }
+  KernelWithIndex GetNodeIndex() const {
+    return node_index_.first.expired() ? KernelWithIndex{nullptr, node_index_.second}
+                                       : KernelWithIndex{node_index_.first.lock(), node_index_.second};
+  }
+
+  // The related interface of dynamic reference count operation.
+  void set_dynamic_ref_conut(int32_t dynamic_ref_conut) { dynamic_ref_conut_ = dynamic_ref_conut; }
+  int32_t dynamic_ref_conut() const { return dynamic_ref_conut_; }
+  void IncreaseDynamicRefCount() {
+    if (dynamic_ref_conut_ < INT32_MAX) {
+      dynamic_ref_conut_++;
+    }
+  }
+  void DecreaseDynamicRefCount() {
+    if (dynamic_ref_conut_ <= 0) {
+      MS_LOG(EXCEPTION) << "The dynamic reference count is invalid value:" << dynamic_ref_conut_;
+    }
+    dynamic_ref_conut_--;
+  }
+
   virtual bool DumpMemToFile(const std::string &filepath, const std::string &host_fmt, const ShapeVector &host_shape,
                              TypeId host_type, bool trans_flag) const {
     return true;
   }
 #ifdef ENABLE_DEBUGGER
   virtual bool LoadMemToHost(const std::string &tensor_name, int execution_order, const std::string &host_fmt,
-                             const ShapeVector &host_shape, TypeId host_type, size_t slot, bool keep_prev) const {
+                             const ShapeVector &host_shape, TypeId host_type, size_t slot, bool keep_prev,
+                             uint32_t root_graph_id = 0) const {
     return true;
   }
 #endif
@@ -98,11 +147,7 @@ class DeviceAddress : public mindspore::DeviceSync {
  protected:
   const void *ptr() const { return ptr_; }
   size_t size() const { return size_; }
-  void set_ptr(void *ptr) { ptr_ = ptr; }
-  KernelWithIndex GetNodeIndex() const {
-    return node_index_.first.expired() ? KernelWithIndex{nullptr, node_index_.second}
-                                       : KernelWithIndex{node_index_.first.lock(), node_index_.second};
-  }
+
   mutable void *ptr_{nullptr};
   size_t size_{0};
   string format_{"DefaultFormat"};
@@ -112,6 +157,19 @@ class DeviceAddress : public mindspore::DeviceSync {
   ShapeVector host_shape_{};
   // {node, out_index}
   std::pair<AnfNodeWeakPtr, size_t> node_index_{AnfNodePtr(nullptr), 0};
+  // The device address of the node that owns the device address cannot be updated and replaced.
+  // Application scenario: set to true when the hardware execution mode requires that ptr cannot be changed during
+  // execution.
+  bool is_ptr_persisted_{false};
+
+  // The device address generated in the control flow scene uses dynamic_ref_conut_.
+  std::atomic_int32_t dynamic_ref_conut_{INT32_MAX};
+
+  // The key of device context.
+  std::string device_name_{""};
+  uint32_t device_id_{0};
+  bool from_persistent_mem_{false};
+
   friend class KernelRuntime;
   friend class MemoryManager;
   friend class mindspore::device::ascend::tasksink::TaskGenerator;
@@ -124,6 +182,7 @@ class DeviceAddress : public mindspore::DeviceSync {
   friend class mindspore::device::gpu::GPUDeviceContext;
   friend class mindspore::device::ascend::AscendKernelRuntime;
   friend class mindspore::device::ascend::AscendMemoryManager;
+  friend class mindspore::device::ascend::AscendDeviceContext;
 #ifndef ENABLE_SECURITY
   friend class mindspore::device::ascend::DataDumper;
 #endif

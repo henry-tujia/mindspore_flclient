@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_NONLINEAR_FUC_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "ops/nonlinear_fuc_ops.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 
@@ -88,6 +88,15 @@ DECLARE_OP_USE_OUTPUT(Selu)
 
 DECLARE_OP_ADAPTER(Sigmoid)
 DECLARE_OP_USE_OUTPUT(Sigmoid)
+
+DECLARE_OP_ADAPTER(HardSwish)
+DECLARE_OP_USE_OUTPUT(HardSwish)
+
+DECLARE_OP_ADAPTER(HardSwishGrad)
+DECLARE_OP_USE_OUTPUT(HardSwishGrad)
+
+DECLARE_OP_ADAPTER(HardSigmoid)
+DECLARE_OP_USE_OUTPUT(HardSigmoid)
 
 DECLARE_OP_ADAPTER(SigmoidGrad)
 DECLARE_OP_USE_OUTPUT(SigmoidGrad)

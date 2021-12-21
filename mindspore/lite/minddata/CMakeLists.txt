@@ -112,6 +112,7 @@ if(BUILD_MINDDATA STREQUAL "full")
         ${TOP_DIR}/mindspore/lite/src/cxx_api/tensor_utils.cc
         ${TOP_DIR}/mindspore/lite/src/cxx_api/tensor/tensor_impl.cc
         ${TOP_DIR}/mindspore/lite/src/tensor.cc
+        ${TOP_DIR}/mindspore/lite/src/common/utils.cc
         ${TOP_DIR}/mindspore/lite/src/ms_tensor.cc
         ${TOP_DIR}/mindspore/lite/src/common/string_util.cc
         ${TOP_DIR}/mindspore/lite/src/common/lite_utils.cc
@@ -132,6 +133,7 @@ if(BUILD_MINDDATA STREQUAL "full")
         ${MINDDATA_DIR}/core/global_context.cc
         ${MINDDATA_DIR}/core/client.cc
         ${MINDDATA_DIR}/engine/tree_adapter_lite.cc
+        ${MINDDATA_DIR}/engine/tree_modifier.cc
         ${MINDDATA_DIR}/engine/consumers/pull_based_tree_consumer.cc
         ${MINDDATA_DIR}/engine/consumers/tree_consumer.cc
         ${MINDDATA_DIR}/engine/ir/datasetops/dataset_node.cc
@@ -161,7 +163,6 @@ if(BUILD_MINDDATA STREQUAL "full")
         ${MINDDATA_DIR}/engine/datasetops/shuffle_op.cc
         ${MINDDATA_DIR}/engine/datasetops/pipeline_op.cc
         ${MINDDATA_DIR}/engine/datasetops/batch_op.cc
-        ${MINDDATA_DIR}/engine/datasetops/parallel_op.cc
         ${MINDDATA_DIR}/engine/datasetops/map_op/map_op.cc
         ${MINDDATA_DIR}/engine/datasetops/map_op/cpu_map_job.cc
         ${MINDDATA_DIR}/engine/datasetops/source/album_op.cc
@@ -177,11 +178,11 @@ if(BUILD_MINDDATA STREQUAL "full")
         ${MINDDATA_DIR}/engine/opt/pre/deep_copy_pass.cc
         ${MINDDATA_DIR}/engine/opt/post/auto_worker_pass.cc
         ${MINDDATA_DIR}/engine/opt/pass.cc
+        ${MINDDATA_DIR}/engine/perf/auto_tune.cc
         ${MINDDATA_DIR}/engine/perf/profiling.cc
         ${MINDDATA_DIR}/engine/perf/monitor.cc
         ${MINDDATA_DIR}/engine/perf/device_queue_tracing.cc
         ${MINDDATA_DIR}/engine/perf/connector_size.cc
-        ${MINDDATA_DIR}/engine/perf/connector_throughput.cc
         ${MINDDATA_DIR}/engine/perf/dataset_iterator_tracing.cc
         ${MINDDATA_DIR}/engine/datasetops/source/sampler/sampler.cc
         ${MINDDATA_DIR}/engine/datasetops/source/sampler/subset_sampler.cc
@@ -288,23 +289,17 @@ if(BUILD_MINDDATA STREQUAL "full")
         ${MINDDATA_DIR}/util/arena.cc
         )
 
-    add_library(minddata-lite SHARED
+    add_library(minddata-lite-obj OBJECT
             ${MINDDATA_KERNELS_IMAGE_LITE_CV_FILES}
             ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/log.cc
             ${CORE_DIR}/utils/ms_utils.cc
             ${MINDDATA_FULL_SRC}
             )
+    add_dependencies(minddata-lite-obj fbs_src)
 
-    add_library(minddata-lite_static STATIC
-            ${MINDDATA_KERNELS_IMAGE_LITE_CV_FILES}
-            ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/log.cc
-            ${CORE_DIR}/utils/ms_utils.cc
-            ${MINDDATA_FULL_SRC}
-            )
+    add_library(minddata-lite SHARED $<TARGET_OBJECTS:minddata-lite-obj>)
+    add_library(minddata-lite_static STATIC $<TARGET_OBJECTS:minddata-lite-obj>)
     set_target_properties(minddata-lite_static PROPERTIES OUTPUT_NAME "minddata-lite")
-
-    add_dependencies(minddata-lite fbs_src)
-    add_dependencies(minddata-lite_static fbs_src)
 
     find_package(Threads REQUIRED)
     target_link_libraries(minddata-lite
@@ -432,6 +427,7 @@ elseif(BUILD_MINDDATA STREQUAL "wrapper")
             ${CORE_DIR}/utils/status.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/../src/cxx_api/types.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/../src/tensor.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/utils.cc
             )
 
     add_library(minddata-lite SHARED

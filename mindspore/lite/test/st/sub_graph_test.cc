@@ -24,8 +24,9 @@
 #include "include/model.h"
 #include "include/errorcode.h"
 #include "src/common/log_adapter.h"
+#include "src/common/file_utils.h"
 #include "src/lite_session.h"
-#include "tools/common/storage.h"
+#include "tools/common/meta_graph_serializer.h"
 #include "include/version.h"
 
 namespace mindspore {
@@ -49,12 +50,12 @@ TEST_F(SubGraphTest, RecursiveSubGraphTest) {
       add_0->primitive->value.value = add_0_prim;
       add_0->name = "Add0";
       auto tensor_0 = std::make_unique<schema::TensorT>();
-      tensor_0->nodeType = lite::NodeType_ValueNode;
+      tensor_0->nodeType = lite::NodeType_Parameter;
       tensor_0->format = schema::Format_NHWC;
       tensor_0->dataType = TypeId::kNumberTypeFloat32;
       tensor_0->dims = {1};
       auto tensor_1 = std::make_unique<schema::TensorT>();
-      tensor_1->nodeType = lite::NodeType_ValueNode;
+      tensor_1->nodeType = lite::NodeType_Parameter;
       tensor_1->format = schema::Format_NHWC;
       tensor_1->dataType = TypeId::kNumberTypeFloat32;
       tensor_1->dims = {1};
@@ -313,8 +314,8 @@ TEST_F(SubGraphTest, RecursiveSubGraphTest) {
   meta_graph->name = "graph";
   meta_graph->version = lite::Version();
   //  -----------------------------------------------------------------------
-  lite::Storage::Save(*meta_graph,
-                      "/mnt/data/workspace/OpenAI/Huawei/mindspore/mindspore/lite/my_test/models/recursive_subgraph");
+  lite::MetaGraphSerializer::Save(
+    *meta_graph, "/mnt/data/workspace/OpenAI/Huawei/mindspore/mindspore/lite/my_test/models/recursive_subgraph");
   //  -----------------------------------------------------------------------
   size_t size = 0;
   char *graph_buf = lite::ReadFile(

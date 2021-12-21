@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/conv2dbackprop_eltwise_fusion_pass.h"
-#include <vector>
-#include <unordered_set>
-#include <memory>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -27,14 +23,14 @@
 namespace mindspore {
 namespace opt {
 void Conv2DBackpropEltwiseFusionPass::MatchConv2DBackpropInputEltwise(const CNodePtr &cnode,
-                                                                      const session::KernelGraph & /*kernel_graph*/,
+                                                                      const session::KernelGraph & /* kernel_graph */,
                                                                       FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  std::unordered_set<AnfNodePtr> record{cnode};
+  mindspore::HashSet<AnfNodePtr> record{cnode};
   auto eltwise_input = cnode->input(kIndex1);
   MS_EXCEPTION_IF_NULL(eltwise_input);
-  if (!eltwise_input->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(eltwise_input) ||
+  if (!eltwise_input->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(eltwise_input) ||
       fusion_id_allocator->HasFusionIdAttr(eltwise_input)) {
     return;
   }
@@ -47,13 +43,10 @@ void Conv2DBackpropEltwiseFusionPass::MatchConv2DBackpropInputEltwise(const CNod
 
 void Conv2DBackpropEltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGraph &kernel_graph,
                                                                FusedNodeRecord *candidate_fusion) {
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::Conv2DBackpropEltwiseFusionPass)) {
-    return;
-  }
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

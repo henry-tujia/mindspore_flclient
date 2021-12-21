@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,24 +21,28 @@
 namespace mindspore {
 namespace kernel {
 namespace {
-constexpr size_t kResizeNearestNeighborGradInputSize = 4;
-constexpr size_t kResizeNearestNeighborGradOutputSize = 4;
+constexpr size_t kResizeNearestNeighborGradInputsNum = 1;
+constexpr size_t kResizeNearestNeighborGradOutputNum = 1;
+constexpr size_t kResizeNearestNeighborGradInputsShapeSize = 4;
+constexpr size_t kResizeNearestNeighborGradOutputsShapeSize = 4;
 }  // namespace
+
 void ResizeNearestNeighborGradCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  CheckParam(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   std::vector<size_t> input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   std::vector<size_t> output_size = AnfAlgo::GetOutputInferShape(kernel_node, 0);
   align_corners_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, "align_corners");
-  dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
-  if (input_shape.size() < kResizeNearestNeighborGradInputSize) {
-    MS_LOG(EXCEPTION) << "Input_0 shape size should be " << kResizeNearestNeighborGradInputSize << ", but got "
-                      << input_shape.size();
+  dtype_ = AnfAlgo::GetPrevNodeOutputInferDataType(kernel_node, 0);
+
+  if (input_shape.size() != kResizeNearestNeighborGradInputsShapeSize) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input should be "
+                      << kResizeNearestNeighborGradInputsShapeSize << ", but got " << input_shape.size();
   }
 
-  if (output_size.size() < kResizeNearestNeighborGradOutputSize) {
-    MS_LOG(EXCEPTION) << "Output shape size should be " << kResizeNearestNeighborGradOutputSize << ", but got "
-                      << output_size.size();
+  if (output_size.size() != kResizeNearestNeighborGradOutputsShapeSize) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of output should be "
+                      << kResizeNearestNeighborGradOutputsShapeSize << ", but got " << output_size.size();
   }
 
   batch_size_ = input_shape[0];
@@ -54,6 +58,8 @@ void ResizeNearestNeighborGradCPUKernel::InitKernel(const CNodePtr &kernel_node)
 bool ResizeNearestNeighborGradCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                                 const std::vector<kernel::AddressPtr> &,
                                                 const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kResizeNearestNeighborGradInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kResizeNearestNeighborGradOutputNum, kernel_name_);
   if (dtype_ == kNumberTypeFloat16) {
     LaunchKernel<float16>(inputs, outputs);
   } else if (dtype_ == kNumberTypeFloat32) {
@@ -65,7 +71,9 @@ bool ResizeNearestNeighborGradCPUKernel::Launch(const std::vector<kernel::Addres
   } else if (dtype_ == kNumberTypeInt64) {
     LaunchKernel<int64_t>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Unsupported input data type: " << dtype_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be float16, float32, float64, int32, or int64, but got "
+                      << TypeIdLabel(dtype_);
   }
   return true;
 }
@@ -73,17 +81,15 @@ bool ResizeNearestNeighborGradCPUKernel::Launch(const std::vector<kernel::Addres
 template <typename T>
 void ResizeNearestNeighborGradCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs,
                                                       const std::vector<AddressPtr> &outputs) {
-  auto dloss_addr = reinterpret_cast<T *>(inputs[0]->addr);
-  auto output_addr = reinterpret_cast<T *>(outputs[0]->addr);
-
+  const auto *dloss_addr = reinterpret_cast<T *>(inputs[0]->addr);
+  auto *output_addr = reinterpret_cast<T *>(outputs[0]->addr);
   auto ret = memset_s(output_addr, outputs[0]->size, 0, outputs[0]->size);
   if (ret != EOK) {
-    MS_LOG(EXCEPTION) << "Output buffer memset failed, ret:" << ret;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', output buffer memset failed. Error no: " << ret;
   }
 
   size_t in_hw_size = in_width_ * in_height_;
   size_t out_hw_size = out_width_ * out_height_;
-
   for (size_t b = 0; b < batch_size_; ++b) {
     for (size_t c = 0; c < channel_; ++c) {
       for (size_t h = 0; h < in_height_; ++h) {
@@ -100,17 +106,6 @@ void ResizeNearestNeighborGradCPUKernel::LaunchKernel(const std::vector<AddressP
       output_addr += out_hw_size;
       dloss_addr += in_hw_size;
     }
-  }
-}
-
-void ResizeNearestNeighborGradCPUKernel::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 1) {
-    MS_LOG(EXCEPTION) << "ResizeBilinearGrad needs 1 inputs, but gets " << input_num;
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "ResizeBilinear Gradexpects 1 output, but gets" << output_num;
   }
 }
 }  // namespace kernel

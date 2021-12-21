@@ -29,7 +29,8 @@ namespace kernel {
 template <typename T>
 class MatrixInverseGpuKernel : public GpuKernel {
  public:
-  MatrixInverseGpuKernel() : input_size_(0), adjoint_(false), batch_size_(1), size_(1) {}
+  MatrixInverseGpuKernel()
+      : input_size_(0), adjoint_(false), is_null_input_(false), handle_(nullptr), batch_size_(1), size_(1) {}
   ~MatrixInverseGpuKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -37,6 +38,11 @@ class MatrixInverseGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
+    CHECK_CUBLAS_RET_WITH_ERROR(cublasSetStream(handle_, reinterpret_cast<cudaStream_t>(stream_ptr)),
+                                "cublasSetStream failed");
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     T *output_addr = GetDeviceAddress<T>(outputs, 0);
     auto compute_input_addr = GetDeviceAddress<T>(workspace, 0);
@@ -94,6 +100,12 @@ class MatrixInverseGpuKernel : public GpuKernel {
     kernel_node_ = kernel_node;
     handle_ = device::gpu::GPUDeviceManager::GetInstance().GetCublasHandle();
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'MatrixInverseGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     if (input_shape.size() < 2) {
       MS_LOG(EXCEPTION) << "The dim entered needs to be greater than 2, but " << input_shape.size() << " was taken";
     }
@@ -138,6 +150,7 @@ class MatrixInverseGpuKernel : public GpuKernel {
   std::vector<size_t> workspace_size_list_;
   size_t input_size_;
   bool adjoint_;
+  bool is_null_input_;
   cublasHandle_t handle_;
   size_t batch_size_;
   size_t size_;

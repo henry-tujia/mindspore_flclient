@@ -16,16 +16,16 @@
  * limitations under the License.
  */
 
-#include <unordered_set>
 #include <set>
 #include <vector>
 #include <string>
 #include <memory>
+#include "utils/hash_set.h"
 #include "pipeline/jit/parse/parse_dynamic.h"
 #include "mindspore/core/ir/cell.h"
 
 namespace mindspore::parse {
-static std::unordered_set<std::string> cell_input_args_ = {};
+static mindspore::HashSet<std::string> cell_input_args_ = {};
 static const std::set<std::string> ignore_judge_dynamic_cell = {
   "Cell mindspore.nn.layer.basic.Dense", "Cell mindspore.nn.probability.distribution.normal.Normal",
   "Cell src.transformer.create_attn_mask.CreateAttentionMaskFromInputMask", "Cell mindspore.nn.layer.math.MatMul"};
@@ -140,7 +140,7 @@ bool DynamicParser::ParseAssignExprNode(const std::shared_ptr<parse::ParseFuncti
   return false;
 }
 
-bool DynamicParser::ParseAugAssignExprNode(const std::shared_ptr<parse::ParseFunctionAst> &ast, const py::object &node,
+bool DynamicParser::ParseAugAssignExprNode(const std::shared_ptr<parse::ParseFunctionAst> &, const py::object &node,
                                            const std::vector<std::string> &compare_prim) {
   MS_LOG(DEBUG) << "Parse augassign expr";
   bool ret = false;

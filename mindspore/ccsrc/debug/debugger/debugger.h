@@ -26,6 +26,9 @@
 #include "debug/debugger/grpc_client.h"
 #include "debug/debug_services.h"
 #include "common/trans.h"
+#ifdef ENABLE_D
+#include "debug/dump_data_builder.h"
+#endif
 
 using debugger::Chunk;
 using debugger::DataType;
@@ -80,6 +83,10 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   // do nothing if graph is set already
   void PreExecute(const KernelGraphPtr &graph_ptr);
 
+  void SetCurrentAndPrevRootGraph(uint32_t root_graph_id);
+
+  void StoreRunGraphIdList(uint32_t graph_id);
+
   // analyze tensors and wait for command
   // don't need a graph_ptr because it is saved during pre_execute
   void PostExecute();
@@ -88,7 +95,7 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   static uint32_t GetRankID();
 
-  void Dump(const KernelGraphPtr &kernel_graph) const;
+  void DumpGPU(const KernelGraphPtr &kernel_graph) const;
 
   void DumpSingleNode(const CNodePtr &node, uint32_t graph_id);
 
@@ -102,22 +109,13 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   void PostExecuteNode(const CNodePtr &kernel, bool last_kernel);
 
-  // suspend the execution after a debug_op
-  void PostDebugOp();
-
   bool DumpTensorToFile(const std::string &tensor_name, bool trans_flag, const std::string &filepath,
                         const std::string &host_fmt, const std::vector<int64_t> &host_shape, TypeId host_type,
                         TypeId device_type, const std::string &addr_format, size_t slot) const;
 
-  bool DebugServicesIsWatchPoint(const std::string &kernel_name, const CNodePtr &kernel = nullptr) const;
-
-  void EmptyTensor();
-
-  void SetTensorLoaderIterNum(uint32_t iter_num);
-
-  uint32_t GetTensorLoaderIterNum() const;
-
   bool LoadNewTensor(const std::shared_ptr<TensorData> &tensor, bool keep_prev);
+
+  std::shared_ptr<TensorData> GetTensor(const std::string &tensor_name) const;
 
   bool debugger_enabled() const;
 
@@ -129,10 +127,6 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   std::string run_level() const;
 
-  void SetStepNum(int32_t cur_num_step);
-
-  int32_t step_num() const;
-
   // check if any feature that uses the debugger backend is enabled
   bool DebuggerBackendEnabled() const;
 
@@ -141,6 +135,8 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   // returns true if reply received and mindspore version matched with mindinsight version
   // version_check should be true if you want the function to do backend compatibility check with Mindinsight
   bool SendMetadata(bool version_check);
+
+  bool CheckSendMetadata();
 
   void LoadParametersAndConst();
 
@@ -154,11 +150,15 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   void LoadGraphOutputs();
 
-  void CheckDatasetSinkMode();
+  void CheckDatasetSinkMode(const KernelGraphPtr &graph_ptr);
 
   void LoadGraphs(const KernelGraphPtr &graph_ptr);
 
   uint32_t GetFirstRunGraphId() const;
+
+  uint32_t GetCurrentRootGraphId() const { return cur_root_graph_id_; }
+
+  uint32_t GetPrevRootGraphId() const { return prev_root_graph_id_; }
 
   void SetGraphPtr(const KernelGraphPtr &graph_ptr) { graph_ptr_ = graph_ptr; }
 
@@ -171,6 +171,19 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   // check if dump using debugger backend is enabled
   bool CheckDebuggerDumpEnabled() const;
 
+  // check if debugger is enabled
+  bool CheckDebuggerEnabled() const;
+
+  std::map<uint32_t, int32_t> GetGraphIterMap() { return graph_iter_num_map_; }
+
+  void UpdateGraphIterMap(uint32_t graph_id, int32_t iter_num);
+
+#ifdef ENABLE_D
+  std::shared_ptr<DumpDataBuilder> LoadDumpDataBuilder(const std::string &node_name);
+
+  void ClearDumpDataBuilder(const std::string &node_name);
+#endif
+
  private:
   // private constructor for singleton
   Debugger();
@@ -179,9 +192,6 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   // instantiate class members
   // read env variable for grpc client
   void EnableDebugger();
-
-  // check if debugger enabled
-  bool CheckDebuggerEnabled() const;
 
   void CheckDebuggerEnabledParam() const;
 
@@ -203,6 +213,9 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   void SendGraphAndSuspend(const GraphProto &graph_proto);
 
   void SendMultiGraphsAndSuspend(const std::list<GraphProto> &graph_proto_list);
+
+  // send multi_graphs and clear the graph_proto_list_
+  void SendMultiGraphsAndClear(const KernelGraphPtr &graph_ptr);
 
   // wait for command and process command
   // send command request and process reply in a loop
@@ -238,7 +251,7 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   std::list<TensorSummary> LoadTensorsStat(const ProtoVector<TensorProto> &tensors) const;
 
   // terminate training process
-  void Exit();
+  void Exit(bool exit_success = false);
 
   // analyze tensors and check watchpoint conditions
   // return names of tensors and what condition they hit
@@ -254,7 +267,7 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   // Check if the IP is valid
   bool CheckIp(const std::string &host) const;
 
-  void LoadSingleAnfnode(const AnfNodePtr &anf_node, const size_t output_index);
+  void LoadSingleAnfnode(const AnfNodePtr &anf_node, const size_t output_index, uint32_t root_graph_id);
 
   // class members
 
@@ -271,15 +284,29 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   std::string node_name_;
   std::string cur_name_;
   bool training_done_;
+  bool send_metadata_done_;
+  bool received_new_graph_;
   bool is_dataset_graph_;
   bool partial_memory_;
   std::mutex access_lock_;
+  uint32_t cur_root_graph_id_ = UINT32_MAX;
+  uint32_t prev_root_graph_id_ = UINT32_MAX;
   // flag to keep track of the very first suspension of debugger
   bool initial_suspend_;
   bool enable_heartbeat_;
 
   std::list<GraphProto> graph_proto_list_;
   std::list<KernelGraphPtr> graph_ptr_list_;
+  // The vector of graph pointers that have been run in the current step.
+  std::vector<KernelGraphPtr> graph_ptr_step_vec_;
+
+  // map to store iter num in each epoch when dataset_sink_mode is true
+  std::map<uint32_t, int32_t> graph_iter_num_map_;
+
+#ifdef ENABLE_D
+  // to construct kernel data for async dump, key is the dump path to the node
+  std::map<std::string, std::shared_ptr<DumpDataBuilder>> dump_data_construct_map_;
+#endif
 
   // singleton
   static std::mutex instance_lock_;
@@ -291,8 +318,6 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
 using DebuggerPtr = std::shared_ptr<Debugger>;
 // get debugger ModelProto
-std::string GetDebuggerFuncGraphProtoString(const FuncGraphPtr &func_graph);
-
 ModelProto GetDebuggerFuncGraphProto(const FuncGraphPtr &func_graph);
 
 // for getting proto DataType from Type of Tensor

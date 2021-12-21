@@ -34,14 +34,18 @@ void ConvolutionInt8CPUKernel::CheckSupportOptimize() {
   support_optimize_ = false;
 #endif
 
-#ifdef ENABLE_ARM64
+#if defined(ENABLE_ARM64)
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   if (mindspore::lite::IsSupportSDot()) {
     matmul_func_ = MatMulRInt8_optimize_handler;
     support_optimize_ = true;
   } else {
+#endif
     tile_num_ = 4;
     support_optimize_ = false;
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   }
+#endif
 #endif
   conv_param_->tile_num_ = tile_num_;
 }
@@ -101,6 +105,7 @@ int ConvolutionInt8CPUKernel::InitWeightBias() {
   if (in_tensors_.size() == kInputSize2) {
     auto ori_bias = reinterpret_cast<int32_t *>(in_tensors_.at(kBiasIndex)->data());
     CHECK_NULL_RETURN(ori_bias);
+    MS_CHECK_GT(output_channel, 0, RET_ERROR);
     memcpy(bias_data_, ori_bias, static_cast<size_t>(output_channel) * sizeof(int32_t));
   } else {
     MS_ASSERT(in_tensors_.size() == kInputSize1);
@@ -165,7 +170,7 @@ int ConvolutionInt8CPUKernel::InitTmpBuffer() {
   return RET_OK;
 }
 
-int ConvolutionInt8CPUKernel::Init() {
+int ConvolutionInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CheckSupportOptimize();
@@ -194,7 +199,7 @@ int ConvolutionInt8CPUKernel::ReSize() {
     return ret;
   }
 
-  ret = ConvolutionBaseCPUKernel::Init();
+  ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "ConvolutionBase init failed.";
     return RET_ERROR;

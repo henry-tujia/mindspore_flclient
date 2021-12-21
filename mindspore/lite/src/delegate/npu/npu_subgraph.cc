@@ -27,7 +27,6 @@
 #include "include/version.h"
 #include "src/common/utils.h"
 #include "src/delegate/npu/npu_converter_utils.h"
-#include "src/delegate/npu/npu_graph_utils.h"
 namespace mindspore {
 static std::set<mindspore::schema::PrimitiveType> npu_specific_weight_nodes = {
   schema::PrimitiveType_Conv2DFusion, schema::PrimitiveType_Conv2dTransposeFusion, schema::PrimitiveType_PadFusion,
@@ -73,7 +72,7 @@ void NPUSubGraph::set_output(mindspore::MSTensor out_tensor, int index) {
 }
 
 int NPUSubGraph::GetGraphInOutOps() {
-  for (auto in_tensor : this->inputs()) {
+  for (const auto &in_tensor : this->inputs()) {
     for (auto op : npu_ops_) {
       if (find(op->inputs().begin(), op->inputs().end(), in_tensor) != op->inputs().end() &&
           find(in_ops_.begin(), in_ops_.end(), op) == in_ops_.end()) {
@@ -86,7 +85,7 @@ int NPUSubGraph::GetGraphInOutOps() {
     return RET_ERROR;
   }
 
-  for (auto out_tensor : this->outputs()) {
+  for (const auto &out_tensor : this->outputs()) {
     for (auto op : npu_ops_) {
       if (find(op->outputs().begin(), op->outputs().end(), out_tensor) != op->outputs().end() &&
           find(out_ops_.begin(), out_ops_.end(), op) == out_ops_.end()) {
@@ -103,7 +102,7 @@ int NPUSubGraph::GetGraphInOutOps() {
 
 std::vector<NPUOp *> NPUSubGraph::FindPreOps(NPUOp *cur_op) {
   std::vector<NPUOp *> in_ops;
-  for (auto in_tensor : cur_op->inputs()) {
+  for (const auto &in_tensor : cur_op->inputs()) {
     for (auto op : npu_ops_) {
       if (find(op->outputs().begin(), op->outputs().end(), in_tensor) != op->outputs().end()) {
         in_ops.push_back(op);
@@ -160,7 +159,7 @@ int NPUSubGraph::BuildNPUInputOp() {
       auto in_tensor = op->inputs()[i];
       if (IsSubGraphInputTensor(in_tensor)) {
         auto tensor_name = "Input_" + std::to_string(count++) + '_' + op->name();
-        hiai::op::Data *data;
+        hiai::op::Data *data = nullptr;
         data = ConverterToNPUData(in_tensor, tensor_name);
         subgraph_input_ops_.push_back(*data);
         input_ops.push_back(data);
@@ -216,7 +215,7 @@ int NPUSubGraph::BuildNPUInputOp() {
   return RET_OK;
 }
 
-bool NPUSubGraph::IsSubGraphInputTensor(mindspore::MSTensor input) {
+bool NPUSubGraph::IsSubGraphInputTensor(const mindspore::MSTensor &input) {
   if (find(this->inputs().begin(), this->inputs().end(), input) != this->inputs().end()) {
     return true;
   }
@@ -246,7 +245,7 @@ int NPUSubGraph::BuildNPUOutputOp() {
   out_tensor_sorted_.resize(outputs().size());
   int i = 0;
   for (auto node : out_ops_) {
-    for (auto tensor : node->outputs()) {
+    for (const auto &tensor : node->outputs()) {
       if (std::find(outputs().begin(), outputs().end(), tensor) != outputs().end())
         this->out_tensor_sorted_[i++] = tensor;
     }
@@ -281,6 +280,7 @@ int NPUSubGraph::Init() {
     MS_LOG(ERROR) << "Create NPUExecutor failed.";
     return RET_ERROR;
   }
+  executor_->InitInputMappingRelationShip(input_relationship_);
   return RET_OK;
 }
 

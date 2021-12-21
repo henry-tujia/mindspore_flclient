@@ -15,11 +15,37 @@
  */
 
 #include "runtime/framework/actor/abstract_actor.h"
+#include "runtime/framework/actor/output_actor.h"
 #include "utils/log_adapter.h"
 
 namespace mindspore {
 namespace runtime {
-bool AbstractActor::CheckRunningCondition(OpContext<DeviceTensor> *const context) const {
+void AbstractActor::RunOpData(OpData<DeviceTensor> *const input_data, OpContext<DeviceTensor> *const context) {
+  MS_EXCEPTION_IF_NULL(context);
+  auto &sequential_num = context->sequential_num_;
+  (void)input_op_datas_[sequential_num].emplace_back(input_data);
+
+  auto is_run = CheckRunningCondition(context);
+  MS_LOG(DEBUG) << "Actor(" << GetAID().Name() << ") receive the input op data and check running condition:" << is_run;
+  if (is_run) {
+    Run(context);
+  }
+}
+
+void AbstractActor::RunOpControl(AID *const input_control, OpContext<DeviceTensor> *const context) {
+  MS_EXCEPTION_IF_NULL(context);
+  auto &sequential_num = context->sequential_num_;
+  (void)input_op_controls_[sequential_num].emplace_back(input_control);
+
+  auto is_run = CheckRunningCondition(context);
+  MS_LOG(DEBUG) << "Actor(" << GetAID().Name()
+                << ") receive the input op control and check running condition:" << is_run;
+  if (is_run) {
+    Run(context);
+  }
+}
+
+bool AbstractActor::CheckRunningCondition(const OpContext<DeviceTensor> *context) const {
   MS_EXCEPTION_IF_NULL(context);
   if (input_datas_num_ != 0) {
     const auto &data_iter = input_op_datas_.find(context->sequential_num_);
@@ -43,7 +69,7 @@ bool AbstractActor::CheckRunningCondition(OpContext<DeviceTensor> *const context
   return true;
 }
 
-void AbstractActor::EraseInput(OpContext<DeviceTensor> *const context) {
+void AbstractActor::EraseInput(const OpContext<DeviceTensor> *context) {
   MS_EXCEPTION_IF_NULL(context);
   if (input_datas_num_ != 0) {
     auto ret = input_op_datas_.erase(context->sequential_num_);
@@ -63,6 +89,42 @@ void AbstractActor::EraseInput(OpContext<DeviceTensor> *const context) {
       MS_LOG(ERROR) << error_info << ", sequential_num: " << context->sequential_num_;
       return;
     }
+  }
+}
+
+void AbstractActor::SendOutput(OpContext<DeviceTensor> *const context) {
+  MS_EXCEPTION_IF_NULL(context);
+  // Must be the execution order: send data --> send control, avoid the illegal timing problem.
+  // 1.Send output data.
+  if (((output_data_arrows_.size() != output_data_.size()) ||
+       (output_data_arrows_.size() != output_data_nodes_.size())) &&
+      (type_ < KernelTransformType::kSwitchActor)) {
+    SET_OPCONTEXT_FAIL_RET_WITH_ERROR((*context), "The size of output data arrows is not equal to the output data.");
+  }
+  size_t output_data_arrow_index = 0;
+  for (auto &output_data : output_data_) {
+    MS_EXCEPTION_IF_NULL(output_data);
+    UpdateOutputData(output_data.get(), output_data_arrows_[output_data_arrow_index],
+                     output_data_nodes_[output_data_arrow_index], context);
+    ActorDispatcher::Send(output_data->op_id_, &OpActor::RunOpData, output_data.get(), context);
+    ++output_data_arrow_index;
+  }
+
+  // 2.Send output control.
+  if (output_control_arrows_.size() > 0) {
+    auto from_aid = const_cast<AID *>(&GetAID());
+    for (auto &output_control : output_control_arrows_) {
+      ActorDispatcher::Send(output_control, &OpActor::RunOpControl, from_aid, context);
+    }
+  }
+
+  // 3.Send recorder info.
+  SendRecorderInfo(context);
+
+  // No output.
+  if ((output_data_arrows_.size() == 0) && (output_control_arrows_.size() == 0) &&
+      (type_ < KernelTransformType::kSwitchActor)) {
+    SET_OPCONTEXT_SUCCESS_RET((*context));
   }
 }
 }  // namespace runtime

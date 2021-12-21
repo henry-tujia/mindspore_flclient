@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,16 +31,10 @@ class DatasetIteratorTracing : public Tracing {
   // Destructor
   ~DatasetIteratorTracing() override = default;
 
-  // Record tracing data
-  // @return Status The status code returned
-  Status Record(const int32_t type, const int32_t extra_info, const int32_t batch_num, const int32_t value,
-                const uint64_t time_stamp);
-
   std::string Name() const override { return kDatasetIteratorTracingName; };
 
-  Status Init(const std::string &dir_path, const std::string &device_id) override;
-
-  Status ChangeFileMode() override;
+ private:
+  Path GetFileName(const std::string &dir_path, const std::string &rank_id) override;
 };
 }  // namespace dataset
 }  // namespace mindspore

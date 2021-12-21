@@ -39,10 +39,12 @@ class ElementWiseTensorRT : public TensorRTOp {
 
   int AddConstTensor(nvinfer1::INetworkDefinition *network);
 
+  bool SameTensor(nvinfer1::ITensor *trt_tensor, mindspore::MSTensor *ms_tensor);
+
   nvinfer1::ElementWiseOperation element_wise_op_;
 
   // index of first input MSTensor in the trt input tensor vector
-  size_t first_in_tensor_index_ = 0;
+  size_t input_x_index_ = 0;
 };
 }  // namespace mindspore::lite
 #endif  // MINDSPORE_LITE_SRC_DELEGATE_TENSORRT_OP_ELEMENTWISE_TENSORRT_H_

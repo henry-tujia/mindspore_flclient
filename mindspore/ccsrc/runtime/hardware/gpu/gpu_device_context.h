@@ -39,6 +39,8 @@ class GPUDeviceContext : public DeviceContext {
   // Release device memory, stream, cudnn and cublas handle, etc.
   void Destroy() override;
 
+  bool BindDeviceToCurrentThread() const;
+
   bool AllocateMemory(DeviceAddress *const &address, size_t size) const override;
   void FreeMemory(DeviceAddress *const &address) const override;
   bool AllocateContinuousMemory(const std::vector<DeviceAddressPtr> &addr_list, size_t total_size,
@@ -71,6 +73,8 @@ class GPUDeviceContext : public DeviceContext {
   // handles all resource to launch and sync allreduce operator.
   std::shared_ptr<Bucket> CreateBucket(uint32_t bucket_id, uint32_t bucket_size) const override;
 
+  bool LoadCollectiveCommLib() override;
+
  private:
   DISABLE_COPY_AND_ASSIGN(GPUDeviceContext);
   bool InitDevice();
@@ -83,16 +87,12 @@ class GPUDeviceContext : public DeviceContext {
   // Operator fusion optimization.
   void FuseOperators(const KernelGraphPtr &graph) const;
 
-  // Update Graph Dynamic Shape Attr.
-  void UpdateGraphDynamicShapeAttr(const NotNull<KernelGraphPtr> &graph) const;
-
-  bool BindDeviceToCurrentThread() const;
-
+#ifndef ENABLE_SECURITY
   // Launch a kernel and record the elapsed time end to end.
   bool LaunchKernelWithProfiling(const CNodePtr &kernel, const std::vector<AddressPtr> &inputs,
                                  const std::vector<AddressPtr> &workspace,
                                  const std::vector<AddressPtr> &outputs) const;
-
+#endif
   // Launch a kernel by 'KernelMod' of the kernel.
   bool DoLaunchKernel(KernelMod *kernel_mod, const std::vector<AddressPtr> &inputs,
                       const std::vector<AddressPtr> &workspace, const std::vector<AddressPtr> &outputs) const;

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,17 +26,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameCeil = "Ceil";
+/// \brief Rounds a tensor up to the closest integer element-wise.
+/// Refer to Python API @ref mindspore.ops.Ceil for more details.
 class MS_CORE_API Ceil : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Ceil() : PrimitiveC(kNameCeil) { InitIOName({"x"}, {"y"}); }
+  /// \brief Destructor.
   ~Ceil() = default;
   MS_DECLARE_PARENT(Ceil, PrimitiveC);
-  void init() {}
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Ceil for the inputs.
+  void Init() {}
 };
-
 AbstractBasePtr CeilInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimCeilPtr = std::shared_ptr<Ceil>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_CEIL_H_

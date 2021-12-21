@@ -34,7 +34,7 @@ class ConvolutionWinogradCPUKernel : public ConvolutionBaseCPUKernel {
       : ConvolutionBaseCPUKernel(parameter, inputs, outputs, ctx, origin_weight, origin_bias),
         output_unit_(output_unit) {}
   ~ConvolutionWinogradCPUKernel() override {}
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int RunImpl(int task_id);
@@ -68,6 +68,7 @@ class ConvolutionWinogradCPUKernel : public ConvolutionBaseCPUKernel {
   int output_unit_{0};
   int oc_block_{0};
   int tile_num_{0};
+  int tmp_data_tile_{0};
   float *tmp_data_ = nullptr;
   float *trans_input_ = nullptr;
   float *gemm_out_ = nullptr;

@@ -18,6 +18,7 @@
 #include <queue>
 #include "include/errorcode.h"
 #include "src/common/prim_util.h"
+#include "src/delegate/npu/pass/npu_pass_utils.h"
 #include "src/delegate/npu/op/npu_op.h"
 #include "src/delegate/npu/op/activation_npu.h"
 #include "src/delegate/npu/op/argmax_npu.h"
@@ -50,11 +51,13 @@
 #include "src/delegate/npu/op/tile_npu.h"
 #include "src/delegate/npu/op/transpose_npu.h"
 #include "src/delegate/npu/op/unsqueeze_npu.h"
+#include "src/delegate/npu/op/abs_npu.h"
 #include "src/delegate/npu/npu_graph.h"
-#include "src/delegate/npu/npu_graph_utils.h"
+#include "src/delegate/delegate_utils.h"
 #include "src/delegate/npu/pass/npu_transform_pass.h"
 #include "src/delegate/npu/pass/npu_insert_transform_pass.h"
 #include "src/delegate/npu/pass/npu_fusion_pass.h"
+#include "src/delegate/npu/pass/npu_infer_format_pass.h"
 
 using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_OK;
@@ -98,6 +101,8 @@ Status NPUDelegate::Init() {
   pass_manager_->AddPass(insert_transform_pass);
   auto fusion_pass = new (std::nothrow) NPUFusionPass();
   pass_manager_->AddPass(fusion_pass);
+  auto infer_format_pass = new (std::nothrow) NPUInferFormatPass();
+  pass_manager_->AddPass(infer_format_pass);
 
   op_func_lists_.clear();
   op_func_lists_ = {
@@ -131,6 +136,7 @@ Status NPUDelegate::Init() {
     {schema::PrimitiveType_Sin, GetNPUOp<ArithmeticSelfNPUOp>},
     {schema::PrimitiveType_Sqrt, GetNPUOp<ArithmeticSelfNPUOp>},
     {schema::PrimitiveType_Square, GetNPUOp<ArithmeticSelfNPUOp>},
+    {schema::PrimitiveType_ExpFusion, GetNPUOp<ArithmeticSelfNPUOp>},
     {schema::PrimitiveType_AvgPoolFusion, GetNPUOp<AvgPoolingNPUOp>},
     {schema::PrimitiveType_MaxPoolFusion, GetNPUOp<MaxPoolingNPUOp>},
     {schema::PrimitiveType_FusedBatchNorm, GetNPUOp<BatchnormNPUOp>},
@@ -157,26 +163,27 @@ Status NPUDelegate::Init() {
     {schema::PrimitiveType_TileFusion, GetNPUOp<TileNPUOp>},
     {schema::PrimitiveType_Transpose, GetNPUOp<TransposeNPUOp>},
     {schema::PrimitiveType_Unsqueeze, GetNPUOp<UnsqueezeNPUOp>},
+    {schema::PrimitiveType_Abs, GetNPUOp<AbsNPUOp>},
   };
   return mindspore::kSuccess;
 }
 
-Status NPUDelegate::Build(DelegateModel *model) {
+Status NPUDelegate::Build(DelegateModel<schema::Primitive> *model) {
   KernelIter from, end;
   std::vector<NPUOp *> npu_ops;
   int graph_index = 0;
-  for (KernelIter iter = model->BeginKernelIterator(); iter != model->EndKernelIterator(); iter++) {
+  for (auto iter = model->BeginKernelIterator(); iter != model->EndKernelIterator(); iter++) {
     kernel::Kernel *kernel = *iter;
     auto npu_op = GetOP(kernel, model->GetPrimitive(kernel));
     if (npu_op != nullptr) {
       // If npu_op does not equal nullptr, this kernel can be supported by delegate
-      if (npu_ops.size() == 0) {
+      if (npu_ops.empty()) {
         from = iter;
       }
       npu_ops.push_back(npu_op);
       end = iter;
     } else {
-      if (npu_ops.size() > 0) {
+      if (!npu_ops.empty()) {
         auto npu_graph_kernel = CreateNPUGraph(npu_ops, model, from, end);
         if (npu_graph_kernel == nullptr) {
           MS_LOG(ERROR) << "Create NPU Graph failed.";
@@ -188,7 +195,7 @@ Status NPUDelegate::Build(DelegateModel *model) {
       }
     }
   }
-  if (npu_ops.size() > 0) {
+  if (!npu_ops.empty()) {
     auto npu_graph_kernel = CreateNPUGraph(npu_ops, model, from, end);
     if (npu_graph_kernel == nullptr) {
       MS_LOG(ERROR) << "Create NPU Graph failed.";
@@ -220,6 +227,8 @@ NPUOp *NPUDelegate::GetOP(kernel::Kernel *kernel, const schema::Primitive *primi
   auto node_type = primitive->value_type();
   if (node_type == schema::PrimitiveType_Conv2DFusion) {
     npu_op = GetNPUConvOp(primitive, kernel->inputs(), kernel->outputs(), name);
+  } else if (node_type == schema::PrimitiveType_FullConnection) {
+    npu_op = GetNPUFCOp(primitive, kernel->inputs(), kernel->outputs(), name);
   } else {
     if (op_func_lists_.find(node_type) != op_func_lists_.end()) {
       npu_op = op_func_lists_[node_type](primitive, kernel->inputs(), kernel->outputs(), name);
@@ -250,24 +259,25 @@ NPUOp *NPUDelegate::GetOP(kernel::Kernel *kernel, const schema::Primitive *primi
   return npu_op;
 }
 
-std::vector<mindspore::MSTensor> GraphOutTensors(const std::vector<NPUOp *> &ops, DelegateModel *model, KernelIter from,
+std::vector<mindspore::MSTensor> GraphOutTensors(const std::vector<NPUOp *> &ops,
+                                                 DelegateModel<schema::Primitive> *model, KernelIter from,
                                                  KernelIter end) {
-  auto out_tensors = NPUGraphUtils::GetGraphOutTensors(ops);
+  auto out_tensors = lite::GetGraphOutTensors(ops);
   std::vector<mindspore::MSTensor> all_out_tensors;
   for (auto op : ops) {
-    for (auto out_tensor : op->outputs()) {
+    for (const auto &out_tensor : op->outputs()) {
       if (find(out_tensors.begin(), out_tensors.end(), out_tensor) == out_tensors.end()) {
         all_out_tensors.push_back(out_tensor);
       }
     }
   }
 
-  for (KernelIter iter = model->BeginKernelIterator(); iter != model->EndKernelIterator(); iter++) {
+  for (auto iter = model->BeginKernelIterator(); iter != model->EndKernelIterator(); iter++) {
     if (iter >= from && iter <= end) {
       continue;
     }
     // The input of other kernels is the output of the current subgraph kernel.
-    for (auto in_tensor : (*iter)->inputs()) {
+    for (const auto &in_tensor : (*iter)->inputs()) {
       if (find(all_out_tensors.begin(), all_out_tensors.end(), in_tensor) != all_out_tensors.end() &&
           find(out_tensors.begin(), out_tensors.end(), in_tensor) == out_tensors.end()) {
         out_tensors.push_back(in_tensor);
@@ -277,9 +287,9 @@ std::vector<mindspore::MSTensor> GraphOutTensors(const std::vector<NPUOp *> &ops
   return out_tensors;
 }
 
-kernel::Kernel *NPUDelegate::CreateNPUGraph(const std::vector<NPUOp *> &ops, DelegateModel *model, KernelIter from,
-                                            KernelIter end) {
-  auto in_tensors = NPUGraphUtils::GetGraphInTensors(ops);
+kernel::Kernel *NPUDelegate::CreateNPUGraph(const std::vector<NPUOp *> &ops, DelegateModel<schema::Primitive> *model,
+                                            KernelIter from, KernelIter end) {
+  auto in_tensors = lite::GetGraphInTensors(ops, nullptr);
   auto out_tensors = GraphOutTensors(ops, model, from, end);
   auto graph_kernel = new (std::nothrow) NPUGraph(ops, npu_manager_, in_tensors, out_tensors);
   if (graph_kernel == nullptr) {

@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 #include "minddata/dataset/engine/datasetops/source/generator_op.h"
-#include <iomanip>
-#include "minddata/dataset/core/global_context.h"
 
+#include <iomanip>
+
+#include "minddata/dataset/core/global_context.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #include "minddata/dataset/util/task_manager.h"
 
@@ -24,13 +25,14 @@ namespace mindspore {
 namespace dataset {
 GeneratorOp::GeneratorOp(py::function generator_function, std::vector<std::string> column_names,
                          std::vector<DataType> column_types, int32_t prefetch_size, int32_t connector_size,
-                         std::shared_ptr<SamplerRT> sampler)
+                         std::shared_ptr<SamplerRT> sampler, int32_t num_parallel_workers)
     : PipelineOp(connector_size, std::move(sampler)),
       generator_function_(generator_function),
       column_names_(column_names),
       column_types_(std::move(column_types)),
       prefetch_size_(prefetch_size),
-      generator_counter_(0) {}
+      generator_counter_(0),
+      num_parallel_workers_(num_parallel_workers) {}
 
 void GeneratorOp::Print(std::ostream &out, bool show_all) const {
   if (!show_all) {
@@ -62,7 +64,7 @@ Status GeneratorOp::CreateGeneratorObject() {
     // Acquire Python GIL
     py::gil_scoped_acquire gil_acquire;
     if (Py_IsInitialized() == 0) {
-      return Status(StatusCode::kMDPythonInterpreterFailure, "Python Interpreter is finalized.");
+      return Status(StatusCode::kMDPythonInterpreterFailure, "[Internal ERROR] Python Interpreter is finalized.");
     }
     try {
       py::array sample_ids;
@@ -91,15 +93,17 @@ Status GeneratorOp::Init() {
 Status GeneratorOp::PyRowToTensorRow(py::object py_data, TensorRow *tensor_row) {
   if (!py::isinstance<py::tuple>(py_data)) {
     return Status(StatusCode::kMDPyFuncException, __LINE__, __FILE__,
-                  "Invalid data, Generator should return a tuple of NumPy arrays, currently returned is not a tuple.");
+                  "Invalid python function, the 'source' of 'GeneratorDataset' should return a tuple of NumPy arrays, "
+                  "but got " +
+                    std::string(py_data.get_type().str()));
   }
   py::tuple py_row = py_data.cast<py::tuple>();
   // Check if returned number of columns matches with column names
   if (py_row.size() != column_names_.size()) {
     return Status(
       StatusCode::kMDPyFuncException, __LINE__, __FILE__,
-      "Invalid data, Generator should return same number of NumPy arrays as specified in column_names, the size of"
-      " column_names is:" +
+      "Invalid python function, the 'source' of 'GeneratorDataset' should return same number of NumPy arrays as "
+      "specified in column_names, the size of column_names is:" +
         std::to_string(column_names_.size()) +
         " and number of returned NumPy array is:" + std::to_string(py_row.size()));
   }
@@ -108,15 +112,18 @@ Status GeneratorOp::PyRowToTensorRow(py::object py_data, TensorRow *tensor_row) 
     py::object ret_py_ele = py_row[i];
     if (!py::isinstance<py::array>(ret_py_ele)) {
       return Status(StatusCode::kMDPyFuncException, __LINE__, __FILE__,
-                    "Invalid data, Generator should return a tuple of NumPy arrays. Ensure each item in tuple that "
-                    "returned by source function of GeneratorDataset be NumPy array.");
+                    "Invalid python function, 'GeneratorDataset' should return a tuple of NumPy arrays, but got " +
+                      std::string(ret_py_ele.get_type().str()));
     }
     std::shared_ptr<Tensor> tensor;
     RETURN_IF_NOT_OK(Tensor::CreateFromNpArray(ret_py_ele.cast<py::array>(), &tensor));
     if ((!column_types_.empty()) && (column_types_[i] != DataType::DE_UNKNOWN) &&
         (column_types_[i] != tensor->type())) {
       return Status(StatusCode::kMDPyFuncException, __LINE__, __FILE__,
-                    "Invalid data, type of returned data in GeneratorDataset is not same with specified column_types.");
+                    "Invalid python function, type of returned data in 'GeneratorDataset' should be same with "
+                    "specified column_types, but the type of returned data: " +
+                      std::string(ret_py_ele.get_type().str()) +
+                      ", specified column type: " + column_types_[i].ToString());
     }
     tensor_row->push_back(tensor);
   }
@@ -171,10 +178,22 @@ Status GeneratorOp::operator()() {
     {
       py::gil_scoped_acquire gil_acquire;
       if (Py_IsInitialized() == 0) {
-        return Status(StatusCode::kMDPythonInterpreterFailure, "Python Interpreter is finalized");
+        return Status(StatusCode::kMDPythonInterpreterFailure, "[Internal ERROR] Python Interpreter is finalized");
       }
       try {
+#ifndef ENABLE_SECURITY
+        auto start = ProfilingTime::GetCurMilliSecond();
+#endif
         RETURN_IF_NOT_OK(PyRowToTensorRow(generator_.attr("__next__")(), &new_row));
+#ifndef ENABLE_SECURITY
+        auto end = ProfilingTime::GetCurMilliSecond();
+        if ((end - start) / num_parallel_workers_ > kGetItemTimeOutMilliSeconds) {
+          MS_LOG(WARNING) << "Bad performance attention, it takes more than 25 seconds to generator.__next__ new row, "
+                             "which might cause `GetNext` timeout problem when sink_mode=True. You can increase the "
+                             "parameter num_parallel_workers in GeneratorDataset / optimize the efficiency of "
+                             "obtaining samples in the user-defined generator function.";
+        }
+#endif
         generator_counter_++;
       } catch (py::error_already_set &e) {
         eoe = e.matches(PyExc_StopIteration);
@@ -215,7 +234,7 @@ Status GeneratorOp::operator()() {
         // Waiting for repeatOp to start new epoch
         // If Reset() is called first by repeat op, this wait() will return right away.
         // If Reset() is not called yet, this wait() will block until reset.
-        if (this->op_total_repeats() < 0) {
+        if (this->GetOpTotalRepeats() < 0) {
           RETURN_IF_NOT_OK(wp_.Wait());
           // Clear the status of the wait post
           wp_.Clear();
@@ -235,11 +254,13 @@ Status GeneratorOp::Reset() {
   MS_LOG(DEBUG) << Name() << " performing a self-reset.";
   // Create new generator object
   RETURN_IF_NOT_OK(CreateGeneratorObject());
-  if (this->op_total_repeats() < 0) {
+  // Once the master thread is waked up, that means a new epoch is started,
+  // so the counter must be reset before master thread starts increasing it.
+  generator_counter_ = 0;
+  if (this->GetOpTotalRepeats() < 0) {
     // Wake up master thread
     wp_.Set();
   }
-  generator_counter_ = 0;
   return Status(StatusCode::kSuccess, "GeneratorOp Reset Succeed");
 }
 

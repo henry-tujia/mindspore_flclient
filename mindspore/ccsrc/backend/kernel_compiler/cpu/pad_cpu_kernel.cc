@@ -19,46 +19,65 @@
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kPadInputsNum = 1;
+constexpr size_t kPadOutputsNum = 1;
+constexpr size_t kPadElemSize = 2;
+}  // namespace
+
 void PadCPUKernel::InitKernel(const CNodePtr &kernel_node) {
-  paddings_ = AnfAlgo::GetNodeAttr<std::vector<std::vector<int64_t>>>(kernel_node, "paddings");
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
+  std::vector<std::vector<int64_t>> paddings_ =
+    AnfAlgo::GetNodeAttr<std::vector<std::vector<int64_t>>>(kernel_node, "paddings");
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
-  std::vector<size_t> input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+  input_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+  std::vector<size_t> output_shape = AnfAlgo::GetOutputDeviceShape(kernel_node, 0);
 
-  shape_size_ = input_shape.size();
-  if (shape_size_ == 4) {  // shape adjustment from 2d/3d to 4d
-  } else if (shape_size_ == 3) {
-    auto it = input_shape.begin();
-    input_shape.insert(it, 1);  // batch padding
-    shape_size_ = 4;
-  } else if (shape_size_ == 2) {
-    auto it = input_shape.begin();
-    input_shape.insert(it, 2, 1);  // channel padding
-    shape_size_ = 4;
+  input_rank_ = input_shape_.size();
+  if (paddings_.size() != input_rank_) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dimension of 'paddings' should be equal to the rank of the input, but got the "
+                         "dimension of 'paddings': "
+                      << paddings_.size() << ", and the rank of the input: " << input_rank_;
   }
 
-  for (size_t i = 0; i < shape_size_; ++i) {
-    tensor_size_ *= input_shape[i];
-    input_shape_.push_back(input_shape[i]);
+  for (size_t i = 0; i < paddings_.size(); i++) {
+    if (paddings_[i].size() != kPadElemSize) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', each element in 'paddings' should have size 2, but got: " << paddings_[i].size();
+    }
+    flattened_paddings_.push_back(paddings_[i][0]);
+    flattened_paddings_.push_back(paddings_[i][1]);
   }
 
-  if (paddings_.size() == 4) {  // shape adjustment from 2d/3d to 4d
-  } else if (paddings_.size() == 3) {
-    auto it = paddings_.begin();
-    paddings_.insert(it, 1, {0, 0});  // batch padding
-  } else if (paddings_.size() == 2) {
-    auto it = paddings_.begin();
-    paddings_.insert(it, 2, {0, 0});  // channel padding
+  for (size_t i = 0; i < input_rank_; i++) {
+    input_size_ *= input_shape_[i];
+    output_size_ *=
+      (input_shape_[i] + flattened_paddings_[kPadElemSize * i] + flattened_paddings_[(kPadElemSize * i) + 1]);
   }
 
-  for (size_t i = 0; i < shape_size_; i++) {
-    size_t temp = input_shape[i] + LongToSize((paddings_[i][0] + paddings_[i][1]));  // compute new dim size
-    output_size_ *= temp;
-    output_shape_.push_back(temp);  // correct new dimension size
+  if (input_rank_ < 1) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the rank of input should be greater than or equal to 1, but got the rank of input: "
+                      << input_rank_;
+  }
+  if (output_shape.size() != input_rank_) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the rank of input should be equal to the rank of output, but got the rank of input: "
+                      << input_rank_ << ", and the rank of output: " << output_shape.size();
+  }
+  strides_.resize(input_rank_);
+  strides_[input_rank_ - 1] = 1;
+  for (int32_t i = input_rank_ - 2; i >= 0; i--) {
+    strides_[i] = output_shape[i + 1] * strides_[i + 1];
   }
 }
 
 bool PadCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &,
                           const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kPadInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kPadOutputsNum, kernel_name_);
   if (dtype_ == kNumberTypeFloat16) {
     LaunchKernel<float16>(inputs, outputs);
   } else if (dtype_ == kNumberTypeFloat32) {
@@ -68,60 +87,37 @@ bool PadCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const s
   } else if (dtype_ == kNumberTypeInt32) {
     LaunchKernel<int>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Data type is " << TypeIdLabel(dtype_) << " which is not supported.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be float16, float32, float64, or int32, but got "
+                      << TypeIdLabel(dtype_);
   }
   return true;
 }
 
 template <typename T>
-void PadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) {
-  auto inputs_addr = reinterpret_cast<T *>(inputs[0]->addr);
-  auto outputs_addr = reinterpret_cast<T *>(outputs[0]->addr);
+bool PadCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) {
+  const auto *inputs_addr = reinterpret_cast<T *>(inputs[0]->addr);
+  auto *outputs_addr = reinterpret_cast<T *>(outputs[0]->addr);
+  if (memset_s(outputs_addr, outputs[0]->size, 0, outputs[0]->size) != EOK) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', output buffer memset failed.";
+  }
 
-  const int pad_left = paddings_[3][0];
-  const int pad_top = paddings_[2][0];
-  const int pad_channel_before = paddings_[1][0];
-  const int pad_channel_after = paddings_[1][1];
-  const T pad_value = T(0);
-
-  const int channels_orig = input_shape_[1];
-  const int old_height = input_shape_[2];
-  const int old_width = input_shape_[3];
-  const int padded_height = output_shape_[2];
-  const int padded_width = output_shape_[3];
-
-  for (size_t pos = 0; pos < output_size_; ++pos) {
-    int block_num = (SizeToInt(pos) / padded_width) / padded_height;
-    const int padded_w = SizeToInt(pos) % padded_width;                    // x coordinate referred to by cur 'pos'
-    const int padded_h = (SizeToInt(pos) / padded_width) % padded_height;  // y coordinate referred to by cur 'pos'
-
-    int channels_new = channels_orig + pad_channel_after + pad_channel_before;  // new number of channels from padding
-    int channel_num = block_num % channels_new;                                 // current channel
-    int batch_item = block_num / channels_new;                                  // current item in batch
-
-    if (padded_h - pad_top < 0 || padded_w - pad_left < 0 || padded_h - pad_top >= old_height ||
-        padded_w - pad_left >= old_width || channel_num <= pad_channel_before - 1 ||
-        channel_num > channels_orig + pad_channel_before - 1) {
-      outputs_addr[pos] = pad_value;
-    } else {
-      // on a block/x,y position that isn't padding, copy data from the correct block/x,y pos the input
-      // calculate from number of blocks of padding (due to channel padding) inserted prior
-      int equiv_block_num = block_num - (batch_item * (pad_channel_before + pad_channel_after)) - pad_channel_before;
-      outputs_addr[pos] =
-        inputs_addr[(equiv_block_num * old_height + padded_h - pad_top) * old_width + padded_w - pad_left];
+  auto task = [&inputs_addr, &outputs_addr, this](size_t start, size_t end) {
+    for (size_t gt_id = start; gt_id < end; ++gt_id) {
+      size_t linear_index = gt_id;
+      size_t padded_linear_index = 0;
+      for (size_t i = input_rank_; i >= 1; i--) {
+        size_t unravel_dimension = input_shape_[i - 1];
+        size_t unraveled_index = linear_index % unravel_dimension;
+        padded_linear_index += ((unraveled_index + flattened_paddings_[kPadElemSize * (i - 1)]) * strides_[i - 1]);
+        linear_index -= unraveled_index;
+        linear_index /= unravel_dimension;
+      }
+      outputs_addr[padded_linear_index] = inputs_addr[gt_id];
     }
-  }
-}
-
-void PadCPUKernel::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 1) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but PadCPUKernel needs 1 input.";
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but PadCPUKernel needs 1 output.";
-  }
+  };
+  ParallelLaunchAutoSearch(task, input_size_, this, &parallel_search_info_);
+  return true;
 }
 }  // namespace kernel
 }  // namespace mindspore

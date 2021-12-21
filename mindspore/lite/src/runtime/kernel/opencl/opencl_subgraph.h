@@ -33,7 +33,13 @@ class OpenCLSubGraph : public SubGraphKernel {
                  Kernel *kernel)
       : SubGraphKernel(inKernels, outKernels, nodes, kernel) {
     ocl_runtime_ = ocl_runtime_wrap_.GetInstance();
-    subgraph_type_ = kGpuSubGraph;
+    if (nodes.front()->desc().data_type == kNumberTypeFloat16) {
+      subgraph_type_ = kGpuFp16SubGraph;
+      desc_.data_type = kNumberTypeFloat16;
+    } else {
+      subgraph_type_ = kGpuFp32SubGraph;
+      desc_.data_type = kNumberTypeFloat32;
+    }
     desc_.arch = kernel::KERNEL_ARCH::kGPU;
     static std::atomic_int index = 0;
     this->set_name("GpuSubGraph" + std::to_string(index++));
@@ -44,8 +50,8 @@ class OpenCLSubGraph : public SubGraphKernel {
   }
   ~OpenCLSubGraph() override;
 
+  int RunPass();
   int Prepare() override;
-  int Init() override;
   int ReSize() override;
   int ReSize(bool interrupt);
   int Execute() override;
@@ -62,6 +68,13 @@ class OpenCLSubGraph : public SubGraphKernel {
                     const std::vector<std::vector<kernel::LiteKernel *>> &in_kernels,
                     std::vector<lite::Tensor *> *out_tensors, std::vector<OpenCLToFormatParameter *> *out_parameters,
                     std::vector<LiteKernel *> *out_convert_ops, lite::opencl::MemType mem_type);
+#ifdef ENABLE_OPENGL_TEXTURE
+  int GenGLToCLOp(const std::vector<lite::Tensor *> &in_tensors,
+                  const std::vector<std::vector<kernel::LiteKernel *>> &in_kernels,
+                  std::vector<lite::Tensor *> *out_tensors,
+                  std::vector<OpenGLTexture2DToOpenCLParameter *> *out_parameters,
+                  std::vector<LiteKernel *> *out_convert_ops, lite::opencl::MemType mem_type);
+#endif
   void GetKernelFromToTensor(const std::vector<lite::Tensor *> &in_tensors,
                              const std::vector<kernel::LiteKernel *> &in_kernels,
                              std::vector<std::vector<kernel::LiteKernel *>> *out_kernels, bool is_from);
@@ -78,6 +91,10 @@ class OpenCLSubGraph : public SubGraphKernel {
   std::vector<lite::Tensor *> out_convert_tensors_;
   std::vector<OpenCLToFormatParameter *> in_parameters_;
   std::vector<OpenCLToFormatParameter *> out_parameters_;
+#ifdef ENABLE_OPENGL_TEXTURE
+  std::vector<OpenGLTexture2DToOpenCLParameter *> gl_in_parameters_;
+  std::vector<OpenGLTexture2DToOpenCLParameter *> gl_out_parameters_;
+#endif
   std::vector<LiteKernel *> in_convert_ops_;
   std::vector<LiteKernel *> out_convert_ops_;
   std::set<LiteKernel *> nodes_set_;

@@ -53,13 +53,16 @@ const std::unordered_map<TcpUserCommand, std::string> kUserCommandToMsgType = {
   {TcpUserCommand::kProceedToNextIter, "proceedToNextIter"},
   {TcpUserCommand::kEndLastIter, "endLastIter"},
   {TcpUserCommand::kStartFLJob, "startFLJob"},
+  {TcpUserCommand::kExchangeKeys, "exchangeKeys"},
+  {TcpUserCommand::kGetKeys, "getKeys"},
   {TcpUserCommand::kUpdateModel, "updateModel"},
   {TcpUserCommand::kGetModel, "getModel"},
   {TcpUserCommand::kPushMetrics, "pushMetrics"},
   {TcpUserCommand::kNewInstance, "newInstance"},
   {TcpUserCommand::kQueryInstance, "queryInstance"},
   {TcpUserCommand::kEnableFLS, "enableFLS"},
-  {TcpUserCommand::kDisableFLS, "disableFLS"}};
+  {TcpUserCommand::kDisableFLS, "disableFLS"},
+  {TcpUserCommand::kSyncAfterRecover, "syncAfterRecover"}};
 
 class TcpCommunicator : public CommunicatorBase {
  public:
@@ -82,12 +85,17 @@ class TcpCommunicator : public CommunicatorBase {
   bool SendPbRequest(const T &pb_msg, const uint32_t &rank_id, TcpUserCommand command,
                      std::shared_ptr<std::vector<unsigned char>> *output = nullptr) {
     const std::string &msg_str = pb_msg.SerializeAsString();
+#ifdef __APPLE__
+    std::shared_ptr<unsigned char> msg(new unsigned char[msg_str.size()], std::default_delete<unsigned char[]>());
+#else
     std::shared_ptr<unsigned char[]> msg(new unsigned char[msg_str.size()]);
+#endif
     MS_ERROR_IF_NULL_W_RET_VAL(msg, false);
     size_t dest_size = msg_str.size();
     size_t src_size = msg_str.size();
-    if (memcpy_s(msg.get(), dest_size, msg_str.c_str(), src_size) != EOK) {
-      MS_LOG(EXCEPTION) << "Memcpy_s error";
+    auto ret = memcpy_s(msg.get(), dest_size, msg_str.c_str(), src_size);
+    if (ret != EOK) {
+      MS_LOG(EXCEPTION) << "memcpy_s error, error no " << ret;
     }
 
     if (output != nullptr) {

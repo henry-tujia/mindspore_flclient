@@ -14,10 +14,6 @@
  * limitations under the License.
  */
 #include "backend/optimizer/pass/convert_const_input_to_attr.h"
-
-#include <string>
-#include <memory>
-
 #include "backend/optimizer/common/const_input_to_attr_registry.h"
 #include "backend/optimizer/common/helper.h"
 #include "utils/utils.h"
@@ -30,7 +26,7 @@ namespace mindspore {
 namespace opt {
 const AnfNodePtr ConvertConstInputToAttr::Process(const FuncGraphPtr &, const AnfNodePtr &node,
                                                   const EquivPtr &) const {
-  if (node == nullptr || !AnfAlgo::IsRealCNodeKernel(node)) {
+  if (node == nullptr || !AnfUtils::IsRealCNodeKernel(node)) {
     return nullptr;
   }
 
@@ -57,6 +53,11 @@ const AnfNodePtr ConvertConstInputToAttr::Process(const FuncGraphPtr &, const An
   if (AnfAlgo::IsDynamicShape(cnode)) {
     if (device == kGPUDevice) {
       if (DynamicShapeConstInputToAttrGPU.find(AnfAlgo::GetCNodeName(cnode)) == DynamicShapeConstInputToAttrGPU.end()) {
+        MS_LOG(INFO) << "current node is dynamic shape " << cnode->fullname_with_scope();
+        return nullptr;
+      }
+    } else if (device == kCPUDevice) {
+      if (DynamicShapeConstInputToAttrCPU.find(AnfAlgo::GetCNodeName(cnode)) == DynamicShapeConstInputToAttrCPU.end()) {
         MS_LOG(INFO) << "current node is dynamic shape " << cnode->fullname_with_scope();
         return nullptr;
       }

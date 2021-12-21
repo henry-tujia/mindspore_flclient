@@ -34,34 +34,50 @@ namespace mindspore {
 namespace lite {
 #ifndef CUSTOM_KERNEL_REGISTRY_CLIP
 int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vector<lite::Tensor *> &outputs,
-                     const void *primitive, std::set<std::string> &&providers, int schema_version) {
-  if (primitive == nullptr) {
+                     const void *primitive, std::set<std::string> &&providers, int schema_version,
+                     const kernel::Kernel *kernel) {
+  if (primitive == nullptr && kernel == nullptr) {
     return RET_NOT_SUPPORT;
   }
   std::shared_ptr<kernel::KernelInterface> kernel_interface = nullptr;
-  if (IsCustomNode(primitive, schema_version)) {
-    kernel_interface =
-      registry::RegisterKernelInterface::GetKernelInterface("", static_cast<const schema::Primitive *>(primitive));
+  bool is_custom_node = false;
+  if (kernel == nullptr) {
+    if (IsCustomNode(primitive, schema_version)) {
+      is_custom_node = true;
+    }
+  } else if (kernel->type() == schema::PrimitiveType_Custom) {
+    is_custom_node = true;
+  }
+  if (is_custom_node) {
+    kernel_interface = registry::RegisterKernelInterface::GetKernelInterface(
+      "", static_cast<const schema::Primitive *>(primitive), kernel);
   } else {
     for (auto &&provider : providers) {
       kernel_interface = registry::RegisterKernelInterface::GetKernelInterface(
-        provider, static_cast<const schema::Primitive *>(primitive));
+        provider, static_cast<const schema::Primitive *>(primitive), kernel);
       if (kernel_interface != nullptr) {
         break;
       }
     }
   }
+
   if (kernel_interface == nullptr) {
     return RET_NOT_SUPPORT;
   }
   std::vector<mindspore::MSTensor> in_tensors;
-  std::transform(inputs.begin(), inputs.end(), std::back_inserter(in_tensors),
-                 [](lite::Tensor *tensor) { return mindspore::MSTensor(std::make_shared<MSTensor::Impl>(tensor)); });
+  (void)std::transform(inputs.begin(), inputs.end(), std::back_inserter(in_tensors), [](lite::Tensor *tensor) {
+    return mindspore::MSTensor(std::make_shared<MSTensor::Impl>(tensor));
+  });
   std::vector<mindspore::MSTensor> out_tensors;
-  std::transform(outputs.begin(), outputs.end(), std::back_inserter(out_tensors),
-                 [](lite::Tensor *tensor) { return mindspore::MSTensor(std::make_shared<MSTensor::Impl>(tensor)); });
-  auto ret = kernel_interface->Infer(&in_tensors, &out_tensors, static_cast<const schema::Primitive *>(primitive));
+  (void)std::transform(outputs.begin(), outputs.end(), std::back_inserter(out_tensors), [](lite::Tensor *tensor) {
+    return mindspore::MSTensor(std::make_shared<MSTensor::Impl>(tensor));
+  });
+  auto ret =
+    kernel_interface->Infer(&in_tensors, &out_tensors, static_cast<const schema::Primitive *>(primitive), kernel);
   if (ret == kLiteInferInvalid) {
+    for (auto output : outputs) {
+      output->set_shape({-1});
+    }
     return RET_INFER_INVALID;
   }
   if (ret != kSuccess) {
@@ -71,6 +87,40 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
   return RET_OK;
 }
 #endif
+
+int CheckInfershapeResult(int result, const std::vector<lite::Tensor *> &inputs,
+                          const std::vector<lite::Tensor *> &outputs, OpParameter *parameter) {
+  if (result == NNACL_INFER_INVALID) {
+    return RET_INFER_INVALID;
+  } else if (result != NNACL_OK) {
+    if (result == NNACL_FORMAT_ERROR) {
+      MS_LOG(ERROR) << "Unexpected input format " << inputs[0]->format();
+    }
+    return RET_INFER_ERR;
+  }
+
+  for (auto output : outputs) {
+    if (static_cast<size_t>(output->ElementsNum()) >= GetMaxMallocSize() / sizeof(int64_t)) {
+      MS_LOG(ERROR) << "The size of output tensor is too big, output size: " << output->ElementsNum();
+      return RET_INFER_ERR;
+    }
+  }
+
+  parameter->is_zero_shape_ = true;
+  size_t zero_shape_num = 0;
+  for (auto tensor : outputs) {
+    for (size_t i = 0; i < tensor->shape().size(); i++) {
+      if (tensor->shape()[i] == 0) {
+        zero_shape_num++;
+        break;
+      }
+    }
+  }
+  if (zero_shape_num != outputs.size()) {
+    parameter->is_zero_shape_ = false;
+  }
+  return RET_OK;
+}
 
 int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vector<lite::Tensor *> &outputs,
                      OpParameter *parameter) {
@@ -88,17 +138,17 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
   std::vector<TensorC *> in_tensors;
   std::vector<TensorC *> out_tensors;
   if (parameter->type_ == schema::PrimitiveType_PartialFusion || parameter->type_ == schema::PrimitiveType_Switch ||
-      parameter->type_ == schema::PrimitiveType_Call) {
+      parameter->type_ == schema::PrimitiveType_Call || parameter->type_ == schema::PrimitiveType_SwitchLayer) {
     MS_LOG(INFO) << "no need infer shape.";
     return RET_OK;
   }
 
-  int ret = GenerateInTensorC(parameter, inputs, outputs, &in_tensors);
+  int ret = GenerateInTensorC(parameter, inputs, &in_tensors);
   if (ret != RET_OK) {
     FreeAllTensorC(&in_tensors);
     return RET_ERROR;
   }
-  ret = GenerateOutTensorC(parameter, inputs, outputs, &out_tensors);
+  ret = GenerateOutTensorC(parameter, outputs, &out_tensors);
   if (ret != RET_OK) {
     FreeAllTensorC(&in_tensors);
     FreeAllTensorC(&out_tensors);
@@ -107,10 +157,13 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
   auto infer_shape_func = GetInferFunc(parameter->type_);
   if (infer_shape_func == nullptr) {
     MS_LOG(ERROR) << "Get infershape func failed! type:" << PrimitiveCurVersionTypeName(parameter->type_);
+    FreeAllTensorC(&in_tensors);
+    FreeAllTensorC(&out_tensors);
     return RET_ERROR;
   }
   ret = infer_shape_func(static_cast<TensorC **>(in_tensors.data()), in_tensors.size(), out_tensors.data(),
                          out_tensors.size(), parameter);
+  FreeAllTensorC(&in_tensors);
   for (size_t i = 0; i < out_tensors.size(); i++) {
     if (out_tensors.at(i) == nullptr) {
       continue;
@@ -128,6 +181,7 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
       auto tensor_ret = TensorListC2TensorList(tensor_list_c, tensor_list);
       if (tensor_ret != RET_OK) {
         MS_LOG(ERROR) << "TensorCList2TensorList failed";
+        FreeAllTensorC(&out_tensors);
         return tensor_ret;
       }
     } else {
@@ -135,26 +189,20 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
       auto tensor_ret = TensorC2Tensor(out_tensors.at(i), outputs.at(i));
       if (tensor_ret != RET_OK) {
         MS_LOG(ERROR) << "TensorC2Tensor failed";
+        FreeAllTensorC(&out_tensors);
         return tensor_ret;
       }
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
     }
 #endif
+
     if (ret == NNACL_INFER_INVALID) {
       outputs.at(i)->set_shape({-1});
     }
   }
-  FreeAllTensorC(&in_tensors);
   FreeAllTensorC(&out_tensors);
-  if (ret == NNACL_INFER_INVALID) {
-    return RET_INFER_INVALID;
-  } else if (ret != NNACL_OK) {
-    if (ret == NNACL_FORMAT_ERROR) {
-      MS_LOG(ERROR) << "Unexpected input format " << inputs[0]->format();
-    }
-    return RET_INFER_ERR;
-  }
-  return RET_OK;
+
+  return CheckInfershapeResult(ret, inputs, outputs, parameter);
 }
 }  // namespace lite
 }  // namespace mindspore

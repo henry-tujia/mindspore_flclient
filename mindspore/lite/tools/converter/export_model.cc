@@ -18,6 +18,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include "backend/optimizer/common/optimizer.h"
@@ -27,6 +28,7 @@
 #include "tools/anf_exporter/anf_exporter.h"
 #include "tools/converter/graphdef_transform.h"
 #include "tools/converter/optimizer_manager.h"
+#include "tools/converter/parser/parser_utils.h"
 #include "tools/optimizer/graph/control_flow_pass.h"
 #include "nnacl/op_base.h"
 #include "src/common/log_util.h"
@@ -42,10 +44,13 @@ void CloneGraphInputs(const FuncGraphPtr &origin, const FuncGraphPtr &mirror, No
   auto origin_inputs = origin->get_inputs();
   for (auto &input : origin_inputs) {
     auto mirror_input = mirror->add_parameter();
+    MS_CHECK_TRUE_RET_VOID(mirror_input != nullptr);
     if (input->abstract() != nullptr) {
       mirror_input->set_abstract(input->abstract()->Clone());
     }
     mirror_input->set_name(input->fullname_with_scope());
+    MS_ASSERT(origin_map->find(input->fullname_with_scope()) != origin_map->end());
+    MS_ASSERT(mirror_map->find(input->fullname_with_scope()) != mirror_map->end());
     (*origin_map)[input->fullname_with_scope()].push_back(input);
     (*mirror_map)[input->fullname_with_scope()].push_back(mirror_input);
   }
@@ -85,9 +90,9 @@ AnfNodePtr CloneParameterAndValueNode(const CNodePtr &cnode, size_t index, const
   DataInfo data_info;
   STATUS status;
   if (utils::isa<Parameter>(node)) {
-    status = FetchDataFromParameterNode(cnode, index, flags->fmk, flags->trainModel, &data_info);
+    status = FetchDataFromParameterNode(cnode, index, flags->fmk, flags->trainModel, &data_info, true);
   } else if (utils::isa<ValueNode>(node)) {
-    status = FetchDataFromValueNode(cnode, index, flags->fmk, flags->trainModel, &data_info);
+    status = FetchDataFromValueNode(cnode, index, flags->fmk, flags->trainModel, &data_info, true);
   } else {
     status = RET_ERROR;
   }
@@ -95,14 +100,21 @@ AnfNodePtr CloneParameterAndValueNode(const CNodePtr &cnode, size_t index, const
     MS_LOG(ERROR) << "fetch data failed.";
     return nullptr;
   }
-  if (opt::CheckPrimitiveType(cnode, prim::kPrimTupleGetItem) && !data_info.data_.empty()) {
+  if (opt::CheckPrimitiveType(cnode, prim::kPrimTupleGetItem) && data_info.data_.size() >= sizeof(int)) {
     return NewValueNode(MakeValue<int>(*reinterpret_cast<int *>(data_info.data_.data())));
   }
   ShapeVector shape_vec(data_info.shape_.begin(), data_info.shape_.end());
+  if (data_info.data_type_ == kObjectTypeTensorType) {
+    shape_vec = ShapeVector{static_cast<int64_t>(data_info.data_.size() / sizeof(int))};
+  }
   auto tensor_info = std::make_shared<tensor::Tensor>(static_cast<TypeId>(data_info.data_type_), shape_vec);
   MS_CHECK_TRUE_RET(tensor_info != nullptr, nullptr);
   if (!data_info.data_.empty()) {
     auto tensor_data = reinterpret_cast<uint8_t *>(tensor_info->data_c());
+    if (tensor_info->data().nbytes() < 0) {
+      MS_LOG(ERROR) << "tensor info data size is smaller than zero.";
+      return nullptr;
+    }
     if (memcpy_s(tensor_data, tensor_info->data().nbytes(), data_info.data_.data(), data_info.data_.size()) != EOK) {
       MS_LOG(ERROR) << "memcpy_s failed";
       return nullptr;
@@ -121,7 +133,9 @@ AnfNodePtr CloneParameterAndValueNode(const CNodePtr &cnode, size_t index, const
 PrimitivePtr ClonePrimitive(const CNodePtr &cnode) {
   MS_ASSERT(cnode != nullptr);
   auto origin_prim = GetValueNode<PrimitivePtr>(cnode->input(0));
-  MS_ASSERT(origin_prim != nullptr);
+  if (origin_prim == nullptr) {
+    return nullptr;
+  }
   PrimitivePtr prim;
   auto op_primc_fns = ops::OpPrimCRegister::GetInstance().GetPrimCMap();
   if (op_primc_fns.find(origin_prim->name()) != op_primc_fns.end()) {
@@ -134,11 +148,18 @@ PrimitivePtr ClonePrimitive(const CNodePtr &cnode) {
   prim->SetAttrs(origin_prim->attrs());
   return prim;
 }
+}  // namespace
 
-FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *flags) {
+FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *flags,
+                            std::map<FuncGraphPtr, FuncGraphPtr> *cloned_func_graph) {
   MS_ASSERT(graph != nullptr);
+  auto cloned_func_graph_iter = cloned_func_graph->find(graph);
+  if (cloned_func_graph_iter != cloned_func_graph->end()) {
+    return cloned_func_graph_iter->second;
+  }
   auto mirror_graph = std::make_shared<FuncGraph>();
   MS_CHECK_TRUE_RET(mirror_graph != nullptr, nullptr);
+  cloned_func_graph->insert({graph, mirror_graph});
   mirror_graph->set_attrs(graph->attrs());
   NodesMap origin_nodes;
   NodesMap mirror_nodes;
@@ -149,9 +170,13 @@ FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *f
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
-    auto mirrro_prim = ClonePrimitive(cnode);
     std::vector<AnfNodePtr> node_inputs;
-    for (size_t i = 1; i < cnode->size(); ++i) {
+    size_t begin_index = 1;
+    auto mirror_prim = ClonePrimitive(cnode);
+    if (mirror_prim == nullptr) {
+      begin_index = 0;
+    }
+    for (size_t i = begin_index; i < cnode->size(); ++i) {
       auto origin_input = cnode->input(i);
       MS_CHECK_TRUE_RET(origin_input != nullptr, nullptr);
       AnfNodePtr mirror_input = nullptr;
@@ -163,7 +188,7 @@ FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *f
       if (mirror_input == nullptr) {
         if (IsValueNode<FuncGraph>(origin_input)) {
           auto sub_func_graph = GetValueNode<FuncGraphPtr>(origin_input);
-          auto mirror_sub_graph = CloneFuncGraph(sub_func_graph, flags);
+          auto mirror_sub_graph = CloneFuncGraph(sub_func_graph, flags, cloned_func_graph);
           mirror_input = NewValueNode(mirror_sub_graph);
         } else {
           mirror_input = CloneParameterAndValueNode(cnode, i, mirror_graph, flags);
@@ -177,7 +202,8 @@ FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *f
       }
       node_inputs.push_back(mirror_input);
     }
-    auto mirror_cnode = mirror_graph->NewCNode(mirrro_prim, node_inputs);
+    auto mirror_cnode =
+      mirror_prim == nullptr ? mirror_graph->NewCNode(node_inputs) : mirror_graph->NewCNode(mirror_prim, node_inputs);
     MS_CHECK_TRUE_RET(mirror_cnode != nullptr, nullptr);
     mirror_cnode->set_fullname_with_scope(cnode->fullname_with_scope());
     if (cnode->abstract() != nullptr) {
@@ -191,17 +217,24 @@ FuncGraphPtr CloneFuncGraph(const FuncGraphPtr &graph, const converter::Flags *f
   }
   return mirror_graph;
 }
-}  // namespace
 
 STATUS ExportModel(const FuncGraphPtr &graph, const converter::Flags *flags) {
-  MS_ASSERT(graph != nullptr && flags != nullptr);
-  auto mirror_graph = CloneFuncGraph(graph, flags);
+  CHECK_NULL_RETURN(graph);
+  CHECK_NULL_RETURN(flags);
+  std::map<FuncGraphPtr, FuncGraphPtr> cloned_func_graph;
+  auto mirror_graph = CloneFuncGraph(graph, flags, &cloned_func_graph);
   if (mirror_graph == nullptr) {
     MS_LOG(ERROR) << "Clone funcGraph failed.";
     return RET_ERROR;
   }
-  (void)Manage(mirror_graph, true);
-  if (!RunOptimizerPass(mirror_graph, {"ToNHWCFormat", "InferShapePass", "DecreaseTransposeAlgo"})) {
+  auto manager = Manage(mirror_graph, true);
+  MS_CHECK_TRUE_RET(manager != nullptr, RET_ERROR);
+  std::set<FuncGraphPtr> all_func_graphs;
+  GetAllFuncGraph(mirror_graph, &all_func_graphs);
+  for (auto &func_graph : all_func_graphs) {
+    manager->AddFuncGraph(func_graph);
+  }
+  if (!RunOptimizerPass(mirror_graph, {"ToNHWCFormat", "InferShapePass", "SpecialNodePostProcess"})) {
     MS_LOG(ERROR) << "Run transpose opt pass failed.";
     return RET_ERROR;
   }
@@ -224,15 +257,34 @@ STATUS ExportModel(const FuncGraphPtr &graph, const converter::Flags *flags) {
     return RET_ERROR;
   }
   auto metagraph_transform = std::make_unique<GraphDefTransform>();
-  CHECK_NULL_RETURN(metagraph_transform);
+  if (metagraph_transform == nullptr) {
+    MS_LOG(ERROR) << "Create metagraph_transform return nullptr";
+    delete meta_graph;
+    return RET_ERROR;
+  }
   metagraph_transform->SetGraphDef(meta_graph);
   auto status = metagraph_transform->Transform(*flags);
   if (status != RET_OK) {
     MS_LOG(ERROR) << "Transform meta graph failed " << status;
+    delete meta_graph;
     return RET_ERROR;
   }
+  // set output tensor names to the original names, the output_names is null in nnie converter.
+  auto output_names = ConverterInnerContext::GetInstance()->GetGraphOutputTensorNames();
+  if (output_names.size() > meta_graph->outputIndex.size()) {
+    MS_LOG(ERROR) << "the num of setting output_names is greater than actual, " << output_names.size() << " > "
+                  << meta_graph->outputIndex.size() << ".";
+    ReturnCode::GetSingleReturnCode()->UpdateReturnCode(RET_ERROR);
+    delete meta_graph;
+    return RET_ERROR;
+  }
+  for (size_t idx = 0; idx < output_names.size(); idx++) {
+    auto &tensor = meta_graph->allTensors.at(meta_graph->outputIndex.at(idx));
+    tensor->name = output_names.at(idx);
+  }
   meta_graph->version = Version();
-  status = Storage::Save(*meta_graph, "model");
+  status = MetaGraphSerializer::Save(*meta_graph, "model");
+  delete meta_graph;
   std::ostringstream oss;
   if (status != RET_OK) {
     oss << "SAVE GRAPH FAILED:" << status << " " << lite::GetErrorInfo(status);
@@ -240,8 +292,6 @@ STATUS ExportModel(const FuncGraphPtr &graph, const converter::Flags *flags) {
     std::cout << oss.str() << std::endl;
     return status;
   }
-
-  delete meta_graph;
   return status;
 }
 }  // namespace lite

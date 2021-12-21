@@ -24,7 +24,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_CustomExtractFeatures;
 
 namespace mindspore::kernel {
-int ExtractFeatureCPUKernel::Init() {
+int ExtractFeatureCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), C2NUM);
   CHECK_NULL_RETURN(in_tensors_[0]);
@@ -60,7 +60,7 @@ int ExtractFeatureCPUKernel::Run() {
   CHECK_NULL_RETURN(weight_data);
   int string_num = lite::GetStringCount(input_tensor);
   std::vector<lite::StringPack> all_string_pack = ParseTensorBuffer(input_tensor);
-
+  CHECK_LESS_RETURN(all_string_pack.size(), static_cast<uint32_t>(string_num));
   for (int i = 0; i < string_num; i++) {
     lite::StringPack str = all_string_pack[i];
     if (IsInBlacklist(str)) {

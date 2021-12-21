@@ -22,7 +22,6 @@
 
 #ifdef OFFLINE_DBG_MODE
 #include "base/float16.h"
-#include "debugger/offline_debug/offline_logger.h"
 #endif
 
 #include <math.h>
@@ -90,7 +89,9 @@ class DebugServices {
     bool hit;
     double_t actual_value;
     void Evaluate(double_t actualValue, std::string inequality_type) {
-      if (std::isnan(actualValue)) return;
+      if (std::isnan(actualValue)) {
+        return;
+      }
 
       actual_value = actualValue;
       // if cannot extract inequality type from watchpoint
@@ -164,17 +165,6 @@ class DebugServices {
              condition.type == SD_LT || condition.type == MAX_MIN_LT;
     }
 
-    bool min_max_enabled() const {
-      return condition.type == MAX_LT || condition.type == MAX_GT || condition.type == MIN_LT ||
-             condition.type == MIN_GT || condition.type == MAX_MIN_LT || condition.type == MAX_MIN_GT ||
-             (condition.type == INIT && (!parameter_list[1].disabled || !parameter_list[2].disabled)) ||
-             (condition.type == TOO_LARGE && (!parameter_list[1].disabled || !parameter_list[2].disabled)) ||
-             (condition.type == TOO_SMALL && (!parameter_list[1].disabled || !parameter_list[2].disabled));
-    }
-    // inf or nan related condition set
-    bool inf_nan_enabled() const {
-      return condition.type == HAS_INF || condition.type == HAS_NAN || condition.type == GENERAL_OVERFLOW;
-    }
     // mean or sd related condition set
     bool mean_sd_enabled() const {
       return condition.type == MEAN_LT || condition.type == MEAN_GT || condition.type == SD_LT ||
@@ -185,7 +175,6 @@ class DebugServices {
       return (condition.type == TOO_LARGE && !parameter_list[0].disabled) ||
              (condition.type == TOO_SMALL && !parameter_list[0].disabled);
     }
-    bool zero_percentage_enabled() const { return condition.type == ALL_ZERO || condition.type == INIT; }
 
     bool tensor_update_ratio_mean_enabled() const {
       return condition.type == CHANGE_TOO_LARGE || condition.type == CHANGE_TOO_SMALL;
@@ -247,7 +236,7 @@ class DebugServices {
     int zero_count = 0;
   };
 
-  TensorStat GetTensorStatistics(const std::shared_ptr<TensorData> &tensor);
+  static TensorStat GetTensorStatistics(const std::shared_ptr<TensorData> &tensor);
 
   void AddWatchpoint(
     unsigned int id, unsigned int watch_condition, float parameter,
@@ -256,6 +245,24 @@ class DebugServices {
     const std::vector<std::tuple<std::string, std::vector<uint32_t>>> *check_node_graph_list = nullptr);
 
   void RemoveWatchpoint(unsigned int id);
+
+#ifdef OFFLINE_DBG_MODE
+  void CheckOutofMemoryandNoValue(
+    const bool no_mem_to_read, const bool error_on_no_value, const std::vector<watchpoint_t> watchpoints_to_check,
+    const int chunk_id, partitioned_names *const chunk_names, partitioned_names *const chunk_slots,
+    partitioned_numbers *const chunk_conditions, partitioned_id *const chunk_watchpoint_id,
+    partitioned_parameters *const chunk_parameters, partitioned_error_code *const chunk_error_codes,
+    partitioned_numbers *const chunk_exec_orders, partitioned_names *const chunk_time_stamp,
+    partitioned_id *const chunk_device_id, partitioned_id *const chunk_root_graph_id,
+    std::vector<unsigned int> *const device_id, std::vector<unsigned int> *const root_graph_id, const int exec_order,
+    const std::string time_stamp, const std::string &qualified_tensor_name, const std::string &tensor_slot,
+    const unsigned int device_id_val, const unsigned int root_graph_id_val,
+    const std::vector<parameter_t> &parameter_list);
+#endif
+
+  const void *PreparePrevTensor(uint32_t *prev_num_elements, const std::string &tensor_name);
+
+  void CheckHistoryErrorCode(int *error_code, bool history_not_found);
 
   void CheckWatchpointsForTensor(partitioned_names *chunk_names, partitioned_names *chunk_slots,
                                  partitioned_numbers *chunk_conditions, partitioned_id *const chunk_watchpoint_id,
@@ -267,7 +274,10 @@ class DebugServices {
                                  int chunk_id, const bool init_dbg_suspend, const bool step_end, const bool recheck,
                                  partitioned_id *chunk_device_id, partitioned_id *chunk_root_graph_id,
                                  std::vector<uint64_t> *chunk_tensor_byte_size, partitioned_names *chunk_time_stamp,
-                                 std::vector<unsigned int> *device_id, std::vector<unsigned int> *root_graph_id);
+                                 std::vector<unsigned int> *device_id, std::vector<unsigned int> *root_graph_id,
+                                 bool error_on_no_value = false);
+
+  void AddOpOverflowOpNames(const std::string overflow_bin_path, std::vector<std::string> *op_names);
 
   void CheckWatchpoints(std::vector<std::string> *name, std::vector<std::string> *slot, std::vector<int> *condition,
                         std::vector<unsigned int> *const watchpoint_id,
@@ -275,7 +285,7 @@ class DebugServices {
                         const std::vector<std::string> &op_overflows, const std::vector<std::string> &async_file_pool,
                         std::vector<std::shared_ptr<TensorData>> *tensor_list, bool init_dbg_suspend,
                         const bool step_end, const bool recheck, std::vector<unsigned int> *device_id = nullptr,
-                        std::vector<unsigned int> *root_graph_id = nullptr);
+                        std::vector<unsigned int> *root_graph_id = nullptr, bool error_on_no_value = false);
 
   void SortWatchpointsInfo(std::vector<std::future<void>> *tensor_future_vec, std::vector<int> *exec_order,
                            std::vector<std::string> *time_stamps, uint64_t *tensor_list_byte_size,
@@ -289,6 +299,9 @@ class DebugServices {
                            std::vector<uint64_t> *chunk_tensor_byte_size, partitioned_id *chunk_device_id,
                            partitioned_id *chunk_root_graph_id, std::vector<unsigned int> *device_id,
                            std::vector<unsigned int> *root_graph_id);
+#ifdef OFFLINE_DBG_MODE
+  void SetTensorToNotInUse(const std::shared_ptr<TensorData> &tensor, const void *previous_tensor_ptr);
+#endif
 
   void AddWatchPointsToCheck(bool init_dbg_suspend, bool step_end, bool recheck,
                              const std::shared_ptr<TensorData> &tensor, bool *previous_iter_tensor_needed,
@@ -310,16 +323,27 @@ class DebugServices {
                        const unsigned int iteration, const unsigned int device_id, const unsigned int root_graph_id,
                        const bool is_output, const std::size_t data_size, const std::string &type_name,
                        const std::vector<int64_t> &shape, std::vector<char> *buffer,
-                       std::vector<std::shared_ptr<TensorData>> *result_list);
+                       std::vector<std::shared_ptr<TensorData>> *const result_list);
 
-  void SetPrefixToCheck(std::string *prefix_dump_file_name, std::string *slot_string_to_check,
-                        std::string *dump_style_kernel_name, size_t slot, bool is_output);
+  void SetPrefixToCheck(std::string *const prefix_dump_file_name, std::string *const slot_string_to_check,
+                        std::string *const dump_style_kernel_name, size_t slot, bool is_output);
 
   void ReadDumpedTensor(std::vector<std::string> backend_name, std::vector<size_t> slot,
                         std::vector<unsigned int> device_id, std::vector<unsigned int> iteration,
                         std::vector<unsigned int> root_graph_id, const std::vector<bool> &is_output,
                         const std::vector<std::string> &async_file_pool,
-                        std::vector<std::shared_ptr<TensorData>> *result_list, bool *no_mem_to_read = nullptr);
+                        std::vector<std::shared_ptr<TensorData>> *const result_list, bool *no_mem_to_read = nullptr);
+
+  void ProcessTensorDataSync(const std::vector<std::tuple<std::string, std::string>> &proto_to_dump,
+                             const std::string &specific_dump_dir, unsigned int iteration, unsigned int device_id,
+                             unsigned int root_graph_id, std::vector<std::shared_ptr<TensorData>> *const tensor_list,
+                             bool error_on_no_value = false);
+
+  void ReadFileAndAddToTensor(const bool found, const std::vector<std::string> &matched_paths,
+                              const std::string &backend_name, const unsigned int device_id,
+                              const unsigned int root_graph_id, const bool &is_output, size_t slot,
+                              bool *no_mem_to_read, unsigned int iteration,
+                              std::vector<std::shared_ptr<TensorData>> *result_list);
 
   void ReadDumpedTensorSync(const std::string &prefix_dump_file_name, const std::string &specific_dump_dir,
                             const std::string &backend_name, size_t slot, unsigned int device_id,
@@ -333,36 +357,58 @@ class DebugServices {
                              std::vector<std::shared_ptr<TensorData>> *result_list, bool *no_mem_to_read);
 
   std::vector<std::shared_ptr<TensorData>> ReadNeededDumpedTensors(unsigned int iteration,
-                                                                   std::vector<std::string> *async_file_pool);
+                                                                   std::vector<std::string> *const async_file_pool,
+                                                                   bool error_on_no_value = false);
 
-  void *GetPrevTensor(const std::shared_ptr<TensorData> &tensor, bool previous_iter_tensor_needed,
-                      uint32_t *prev_num_elements);
+  const void *GetPrevTensor(const std::shared_ptr<TensorData> &tensor, bool previous_iter_tensor_needed,
+                            uint32_t *prev_num_elements, bool *history_not_found);
 
-  void ReadTensorFromNpy(const std::string &tensor_name, const std::string &file_name, std::string *tensor_type,
-                         std::size_t *size, std::vector<int64_t> *shape, std::vector<char> **data_buffer,
-                         bool *no_mem_to_read);
+  void ReadTensorFromNpy(const std::string &tensor_name, const std::string &file_name, std::string *const tensor_type,
+                         std::size_t *const size, std::vector<int64_t> *const shape,
+                         std::vector<char> **const data_buffer, bool *no_mem_to_read);
 
   void ConvertToHostFormat(const std::map<std::string, std::vector<std::string>> &dir_to_files_map,
-                           std::vector<std::string> *result_list);
+                           std::vector<std::string> *const result_list);
+
+  void ProcessConvertToHostFormat(const std::vector<std::string> &files_after_convert_in_dir,
+                                  const std::string &dump_key, std::vector<std::string> *const result_list,
+                                  const std::string &file_format);
 
   void ConvertReadTensors(std::vector<std::string> backend_name, std::vector<size_t> slot,
                           std::vector<unsigned int> device_id, std::vector<unsigned int> iteration,
-                          std::vector<unsigned int> root_graph_id, std::vector<std::string> *result_list);
+                          std::vector<unsigned int> root_graph_id, std::vector<std::string> *const result_list);
 
   void ConvertWatchPointNodes(const std::vector<std::tuple<std::string, std::string>> &proto_dump,
-                              const std::string &specific_dump_dir, std::vector<std::string> *result_list);
+                              const std::string &specific_dump_dir, std::vector<std::string> *const result_list);
+
+  void ProcessConvertList(const std::string &prefix_dump_file_name, const std::string &file_format,
+                          const std::string &specific_dump_dir,
+                          std::map<std::string, std::vector<std::string>> *dir_to_files_map,
+                          std::vector<std::string> *const result_list);
 
   void GetTensorDataInfoAsync(const std::vector<std::tuple<std::string, std::string>> &proto_dump,
                               const std::string &specific_dump_dir, uint32_t iteration, uint32_t device_id,
                               uint32_t root_graph_id, const std::vector<std::string> &async_file_pool,
-                              std::vector<std::shared_ptr<TensorData>> *tensor_list);
+                              std::vector<std::shared_ptr<TensorData>> *const tensor_list);
+
+  void SetGraphsHistory();
+
+  std::vector<uint32_t> GetDumpRankIdList();
+
+  void CheckDumpGraphIdList(std::vector<uint32_t> rank_id_list);
+
+  void ReadGraphsHistory(uint32_t rank_id, uint32_t root_graph_id);
+
+  std::map<std::tuple<uint32_t, uint32_t>, std::vector<std::tuple<std::string, bool>>> GetAllWpNodes();
+
+  void ReadGraphRunIter(std::string file_path, std::tuple<uint32_t, uint32_t> rank_and_graph);
 
   std::string GetStrippedFilename(const std::string &file_name);
 
   std::string IterationString(unsigned int iteration);
 #endif
   void ReadNodesTensors(const std::vector<std::string> &name, std::vector<std::string> *ret_name,
-                        std::vector<char *> *data_ptr, std::vector<ssize_t> *data_size,
+                        std::vector<const char *> *data_ptr, std::vector<ssize_t> *data_size,
                         std::vector<unsigned int> *dtype, std::vector<std::vector<int64_t>> *const shape);
 
   void SearchNodesTensors(const std::vector<std::string> &name,
@@ -371,16 +417,15 @@ class DebugServices {
   bool IsWatchPoint(const std::string &kernel_name, const CNodePtr &kernel = nullptr) const;
 
   bool IsWatchPointNodeInput(const std::string &w_name, const CNodePtr &kernel) const;
+
+  bool CompareCurrentRootGraph(uint32_t id);
 #endif
-  void EmptyTensor();
 
   std::vector<std::shared_ptr<TensorData>> GetTensor() const;
 
+  std::shared_ptr<TensorData> GetTensor(const std::string &tensor_name) const;
+
   void AddAnalyzedTensorToCache(const bool recheck, const unsigned int id, const std::string &tensor_name);
-
-  uint32_t GetTensorLoaderIterNum() const;
-
-  void SetTensorLoaderIterNum(uint32_t iter_num);
 
   void EmptyCurrentTensor();
 
@@ -392,7 +437,7 @@ class DebugServices {
 
   bool LoadNewTensor(const std::shared_ptr<TensorData> &tensor, bool keep_prev);
 
-  std::unordered_map<unsigned int, watchpoint_t> GetWatchpointTable();
+  uint32_t GetPrevIteration(const std::shared_ptr<TensorData> &tensor);
 
   void ResetLoadedTensors();
 #ifdef ONLINE_DBG_MODE
@@ -403,8 +448,13 @@ class DebugServices {
   bool CheckOpOverflow(std::string node_name_to_find, unsigned int device_id = 0, unsigned int root_graph_id = 0,
                        unsigned int iteration = 0);
 
-  bool GetAttrsFromAsyncFilename(const std::string &file_name, std::string *node_name, uint64_t *task_id,
-                                 uint64_t *stream_id);
+  std::string RemoveKernelGraphPrefix(std::string node_name_to_find);
+
+  bool GetTaskIdStreamId(std::string file_name, std::string overflow_file_prefix, uint64_t *task_id,
+                         uint64_t *stream_id);
+
+  bool GetAttrsFromFilename(const std::string &file_name, std::string *const node_name, uint64_t *task_id,
+                            uint64_t *stream_id);
 
   std::string RealPath(const std::string &input_path);
 
@@ -442,7 +492,9 @@ class DebugServices {
   std::unordered_map<std::string, std::vector<std::string>> overflow_ops_;
   std::string net_name_;
   std::string dump_dir_;
-  bool is_sync_mode_;
+  // store history of graphs that have been run (rank_id, graph_id)
+  std::map<std::tuple<uint32_t, uint32_t>, std::vector<uint32_t>> graphs_run_history_;
+  bool is_sync_mode_{false};
 
   std::shared_ptr<TensorLoader> tensor_loader_;
 };

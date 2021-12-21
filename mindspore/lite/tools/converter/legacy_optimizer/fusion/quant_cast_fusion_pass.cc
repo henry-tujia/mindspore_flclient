@@ -20,6 +20,7 @@
 #include "tools/converter/legacy_optimizer/fusion/quant_cast_fusion_pass.h"
 #include "src/common/log_adapter.h"
 #include "tools/common/graph_util.h"
+#include "tools/common/meta_graph_utils.h"
 #include "include/errorcode.h"
 #include "schema/inner/model_generated.h"
 
@@ -100,9 +101,9 @@ STATUS QuantCastFusionPass::DefinePattern() {
 
     auto fusionPattern = std::make_unique<FusionPattern>(kQuantCastFusionPattern);
     MS_CHECK_TRUE_MSG(fusionPattern != nullptr, RET_NULL_PTR, "create FusionPattern return nullptr");
-    fusionPattern->AddPatternOp(srcOp);
-    fusionPattern->AddPatternOp(dstOp);
-    fusionPattern->Finish();
+    (void)fusionPattern->AddPatternOp(srcOp);
+    (void)fusionPattern->AddPatternOp(dstOp);
+    (void)fusionPattern->Finish();
 
     this->patterns.emplace_back(fusionPattern.release());
   }
@@ -125,10 +126,10 @@ STATUS QuantCastFusionPass::DefinePattern() {
 
     auto fusionPattern = std::make_unique<FusionPattern>(kQuantCastPassFusionPattern);
     MS_CHECK_TRUE_MSG(fusionPattern != nullptr, RET_NULL_PTR, "create FusionPattern return nullptr");
-    fusionPattern->AddPatternOp(srcOp);
-    fusionPattern->AddPatternOp(formatOp);
-    fusionPattern->AddPatternOp(dstOp);
-    fusionPattern->Finish();
+    (void)fusionPattern->AddPatternOp(srcOp);
+    (void)fusionPattern->AddPatternOp(formatOp);
+    (void)fusionPattern->AddPatternOp(dstOp);
+    (void)fusionPattern->Finish();
 
     this->patterns.emplace_back(fusionPattern.release());
   }

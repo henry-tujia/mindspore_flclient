@@ -6,10 +6,6 @@ set(BUILD_LITE "on")
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/secure_option.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/compile_link_option.cmake)
 
-if(TARGET_HIMIX200)
-    set(CMAKE_CXX_FLAGS "-Wno-error=maybe-uninitialized ${CMAKE_CXX_FLAGS}")
-endif()
-
 if(PLATFORM_ARM64 OR PLATFORM_ARM32)
     set(PLATFORM_ARM "on")
     add_compile_definitions(PLATFORM_ARM)
@@ -22,9 +18,6 @@ if(PLATFORM_ARM32 OR PLATFORM_ARM64)
         -fdata-sections -ffast-math -fno-rtti -fno-exceptions")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -fomit-frame-pointer -fstrict-aliasing -ffunction-sections \
         -fdata-sections -ffast-math -fno-rtti -fno-exceptions")
-        if(TARGET_HIMIX200)
-            string(REPLACE "-fno-rtti " "" CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
-        endif()
     endif()
 endif()
 
@@ -55,6 +48,7 @@ endif()
 
 set(TOP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../..)
 set(LITE_DIR ${TOP_DIR}/mindspore/lite)
+set(NEW_NATIVE_DIR ${LITE_DIR}/java/src/main/native)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${LITE_DIR}) ## lite include
@@ -76,6 +70,12 @@ set(JNI_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/runtime/ms_tensor.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/runtime/lite_session.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/common/jni_utils.cpp
+        ${NEW_NATIVE_DIR}/graph.cpp
+        ${NEW_NATIVE_DIR}/model.cpp
+        ${NEW_NATIVE_DIR}/ms_context.cpp
+        ${NEW_NATIVE_DIR}/ms_tensor.cpp
+        ${NEW_NATIVE_DIR}/train_config.cpp
+        ${NEW_NATIVE_DIR}/version.cpp
   )
 
 set(LITE_SO_NAME mindspore-lite)

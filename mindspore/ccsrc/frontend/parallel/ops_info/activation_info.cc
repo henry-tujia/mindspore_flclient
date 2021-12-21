@@ -204,6 +204,79 @@ std::vector<StrategyPtr> Softmax::GenerateOpStrategies(int64_t stage_id) {
   return sp_vector;
 }
 
+Status CumSumInfo::GetAttrs() {
+  if (input_value_.size() != CUMSUM_INPUT_SIZE) {
+    MS_LOG(ERROR) << name_ << ": Invalid inputs size " << input_value_.size();
+    return FAILED;
+  }
+
+  if (!input_value_.back()->isa<Int64Imm>()) {
+    MS_LOG(ERROR) << name_ << ": The type of axis is not int64_t";
+    return FAILED;
+  }
+
+  int64_t axis = GetValue<int64_t>(input_value_.back());
+
+  if (inputs_shape_.empty()) {
+    MS_LOG(ERROR) << name_ << ": The inputs shape is empty";
+    return FAILED;
+  }
+
+  int64_t dim = SizeToLong(inputs_shape_[0].size());
+  if ((axis > dim - 1) || (axis < -dim)) {
+    MS_LOG(ERROR) << name_ << ": The axis(" << axis << ") is out of range [" << -dim << ", " << dim << ")";
+    return FAILED;
+  }
+
+  if (axis < 0) {
+    axis_ = dim + axis;
+  } else {
+    axis_ = axis;
+  }
+  MS_LOG(INFO) << name_ << ": The axis is " << axis;
+  return SUCCESS;
+}
+
+Status CumSumInfo::CheckStrategy(const StrategyPtr &strategy) {
+  if (CheckStrategyValue(strategy, inputs_shape_) != SUCCESS) {
+    MS_LOG(ERROR) << name_ << ": Invalid strategy.";
+    return FAILED;
+  }
+
+  Strategys stra = strategy->GetInputDim();
+  Dimensions input_strategy = stra.at(0);
+  if (input_strategy.size() <= IntToSize(axis_)) {
+    MS_LOG(ERROR) << "The " << name_ << " input strategy length: " << input_strategy.size() << ", is less ot equal to "
+                  << axis_;
+    return FAILED;
+  }
+  auto axis_split = input_strategy[axis_];
+  if (axis_split > 1) {
+    MS_LOG(ERROR) << "Currently, CumSum does not support the sharding strategies which splits axis.";
+    return FAILED;
+  }
+
+  return SUCCESS;
+}
+
+std::vector<StrategyPtr> CumSumInfo::GenerateOpStrategies(int64_t stage_id) {
+  Shape input0_split(inputs_shape_[0].size(), 1);
+  if (axis_ < 0 || IntToSize(axis_) >= inputs_shape_[0].size()) {
+    MS_LOG(EXCEPTION) << "Wrong axis value: " << axis_;
+  }
+  // Currently, CumSum does not support the sharding strategies which splits axis.
+  input0_split[axis_] = 0;
+  Shapes splittable_inputs = {input0_split};
+
+  std::vector<StrategyPtr> sp_vector;
+  if (GenerateStrategiesForIndependentInputs(stage_id, inputs_shape_, splittable_inputs, &sp_vector) != SUCCESS) {
+    MS_LOG(EXCEPTION) << name_ << " : Generate strategies for independent inputs() failed.";
+  }
+  return sp_vector;
+}
+
+Status CumSumInfo::SetCostUnderStrategy(const StrategyPtr &strategy) { return SetCostUnderStrategyBase(strategy); }
+
 Status ActivationBase::InferDevMatrixShape() {
   Strategys stra = strategy_->GetInputDim();
   Dimensions input_strategy = stra.at(0);
@@ -305,9 +378,9 @@ Status DropoutInfo::InferAsLossDivisor() {
   return SUCCESS;
 }
 
-Status DropoutInfo::InferReplaceOps() {
+void DropoutInfo::InferReplaceOps() {
   if ((seed0_ != 0) || (seed1_ != 0) || (repeated_calc_num_ == 1)) {
-    return SUCCESS;
+    return;
   }
   int64_t seed = get_seed();
   ValuePtr new_seed0 = MakeValue(seed);
@@ -319,38 +392,6 @@ Status DropoutInfo::InferReplaceOps() {
   OperatorParams params;
   OperatorArgs args = std::make_pair(attrs, params);
   replace_op_ = {std::make_pair(DROPOUT, args)};
-  return SUCCESS;
-}
-
-Status DropoutInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init failed";
-    return FAILED;
-  }
-  (void)InferReplaceOps();
-
-  MS_LOG(INFO) << name_ << " : Init success";
-  return SUCCESS;
-}
-
-Status ActivationBase::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << " : Init success.";
-  return SUCCESS;
-}
-
-Status ActivationBase::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << " : Init for cost model success.";
-  return SUCCESS;
 }
 
 Status CastInfo::InferMirrorOps() {
@@ -441,28 +482,6 @@ Status ExpandDimsInfo::InferTensorMap() {
   return SUCCESS;
 }
 
-Status ExpandDimsInfo::InferTensorStrategy() {
-  if (strategy_ == nullptr) {
-    MS_LOG(ERROR) << name_ << ": The strategy is null";
-    return FAILED;
-  }
-
-  inputs_strategy_ = strategy_->GetInputDim();
-  if (inputs_strategy_.empty()) {
-    MS_LOG(ERROR) << name_ << ": The strategy is empty";
-    return FAILED;
-  }
-
-  Shape output_strategy = inputs_strategy_[0];
-  if ((positive_axis_ < 0) || (positive_axis_ > SizeToLong(output_strategy.size()))) {
-    MS_LOG(ERROR) << name_ << ": Invalid positive axis " << positive_axis_;
-    return FAILED;
-  }
-  (void)output_strategy.insert(output_strategy.begin() + positive_axis_, NO_SPLIT_STRATEGY);
-  outputs_strategy_ = {output_strategy};
-  return SUCCESS;
-}
-
 Status ExpandDimsInfo::InferMirrorOps() {
   mirror_ops_.clear();
 
@@ -538,13 +557,12 @@ Status SqueezeInfo::GetAttrs() {
   return SUCCESS;
 }
 
-Status SqueezeInfo::InferReplaceOps() {
+void SqueezeInfo::InferReplaceOps() {
   Attr attr = std::make_pair(AXIS, axis_);
   OperatorAttrs attrs = {attr};
   OperatorParams params;
   OperatorArgs args = std::make_pair(attrs, params);
   replace_op_ = {std::make_pair(SQUEEZE, args)};
-  return SUCCESS;
 }
 
 Status SqueezeInfo::InferTensorMap() {
@@ -570,17 +588,6 @@ Status SqueezeInfo::InferTensorMap() {
   MS_LOG(INFO) << name_ << ": The tensor map of input is " << ShapeToString(input_tensor_map)
                << ", and the tensor map of output is " << ShapeToString(output_tensor_map);
 
-  return SUCCESS;
-}
-
-Status SqueezeInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << " : Init failed.";
-  }
-
-  (void)InferReplaceOps();
-
-  MS_LOG(INFO) << name_ << " : Init success.";
   return SUCCESS;
 }
 }  // namespace parallel

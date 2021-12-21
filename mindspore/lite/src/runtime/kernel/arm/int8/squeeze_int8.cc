@@ -37,7 +37,7 @@ SqueezeInt8CPUKernel::~SqueezeInt8CPUKernel() {
   }
 }
 
-int SqueezeInt8CPUKernel::Init() {
+int SqueezeInt8CPUKernel::Prepare() {
   quant_squeeze_param_ = new (std::nothrow) SqueezeQuantArg;
   if (quant_squeeze_param_ == nullptr) {
     MS_LOG(ERROR) << "new quant_squeeze_param_ failed.";
@@ -76,7 +76,7 @@ int SqueezeInt8CPUKernel::Init() {
     }
     return RET_ERROR;
   }
-  quant_squeeze_param_->out_quant_args_->scale_ = quant_params.front().scale;
+  quant_squeeze_param_->out_quant_args_->scale_ = static_cast<float>(quant_params.front().scale);
   quant_squeeze_param_->out_quant_args_->zp_ = quant_params.front().zeroPoint;
   if (!InferShapeDone()) {
     return RET_OK;

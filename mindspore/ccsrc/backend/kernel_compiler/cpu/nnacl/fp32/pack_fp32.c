@@ -29,6 +29,68 @@ void PackHWCToWHC(const float *src, float *dst, int height, int width, int chann
   }
 }
 
+void PackNHWCToNC4HW4NotAlignedFp32(const float *src, float *dst, const int batch, const int plane, const int channel) {
+  if (channel <= C4NUM) {
+    memcpy(dst, src, batch * plane * channel * sizeof(float));
+    return;
+  }
+  int tmp = DOWN_DIV(channel, C4NUM);
+  int c_res = channel - tmp * C4NUM;
+  int c4_block = tmp * plane * C4NUM;
+  for (int b = 0; b < batch; b++) {
+    int batch_oc_offset = b * plane * channel;
+    for (int k = 0; k < plane; k++) {
+      int src_kernel_offset = batch_oc_offset + k * channel;
+      int dst_kernel_offset = batch_oc_offset + k * C4NUM;
+      int c = 0;
+      for (; c <= channel - C4NUM; c += C4NUM) {
+#if defined(ENABLE_SSE) || defined(ENABLE_ARM)
+        MS_FLOAT32X4 src_data = MS_LDQ_F32(src + src_kernel_offset + c);
+        MS_STQ_F32(dst + dst_kernel_offset + c * plane, src_data);
+#else
+        for (int k1 = 0; k1 < C4NUM; ++k1) {
+          (dst + dst_kernel_offset + c * plane)[k1] = (src + src_kernel_offset + c)[k1];
+        }
+#endif
+      }
+      for (; c < channel; ++c) {
+        dst[batch_oc_offset + c4_block + k * c_res + c - tmp * C4NUM] = src[src_kernel_offset + c];
+      }
+    }
+  }
+}
+
+void PackNHWCToNC8HW8NotAlignedFp32(const float *src, float *dst, const int batch, const int plane, const int channel) {
+  if (channel <= C8NUM) {
+    memcpy(dst, src, batch * plane * channel * sizeof(float));
+    return;
+  }
+  int tmp = DOWN_DIV(channel, C8NUM);
+  int c_res = channel - tmp * C8NUM;
+  int c8_block = tmp * plane * C8NUM;
+  for (int b = 0; b < batch; b++) {
+    int batch_oc_offset = b * plane * channel;
+    for (int k = 0; k < plane; k++) {
+      int src_kernel_offset = batch_oc_offset + k * channel;
+      int dst_kernel_offset = batch_oc_offset + k * C8NUM;
+      int c = 0;
+      for (; c <= channel - C8NUM; c += C8NUM) {
+#ifdef ENABLE_AVX
+        MS_FLOAT32X8 src_data = MS_LD256_F32(src + src_kernel_offset + c);
+        MS_ST256_F32(dst + dst_kernel_offset + c * plane, src_data);
+#else
+        for (int k1 = 0; k1 < C8NUM; ++k1) {
+          (dst + dst_kernel_offset + c * plane)[k1] = (src + src_kernel_offset + c)[k1];
+        }
+#endif
+      }
+      for (; c < channel; ++c) {
+        dst[batch_oc_offset + c8_block + k * c_res + c - tmp * C8NUM] = src[src_kernel_offset + c];
+      }
+    }
+  }
+}
+
 void Im2ColPackUnitFp32(const float *input_data, const ConvParameter *conv_param, float *packed_input, int real_cal_num,
                         int block_index) {
   // input format : nhwc
@@ -47,6 +109,9 @@ void Im2ColPackUnitFp32(const float *input_data, const ConvParameter *conv_param
     int block_start = block_index + i;
     int input_h = block_start / out_w * conv_param->stride_h_ - conv_param->pad_u_;
     int input_w = block_start % out_w * conv_param->stride_w_ - conv_param->pad_l_;
+    if (conv_param->input_h_ - input_h < 0 || in_w - input_w < 0) {
+      continue;
+    }
     int input_stride = (input_h * in_w + input_w) * in_channel;
     int kh_s = MSMAX(0, UP_DIV(-input_h, dilation_h));
     int kh_e = MSMIN(kernel_h, UP_DIV(conv_param->input_h_ - input_h, dilation_h));
@@ -196,35 +261,36 @@ void PackNHWCToNXHWCXFp32(int kernel_h, int kernel_w, int output_channel, int oc
         tmp_weight[oc_remainder + oc_remainder_step * ic] = src[ic + oc_remainder * input_channel];
       }
     }
-  } else {
-    for (; oc < oc_block8; oc += (oc_block / C8NUM)) {
-      oc_block = MSMIN(C4NUM, oc_block8 - oc) * C8NUM;  // max_tile = 32 ==> 24 ==> 16 ==> 8
-      for (int oc_tmp = 0; oc_tmp < oc_block; oc_tmp += C8NUM) {
-        for (int hw = 0; hw < plane; ++hw) {
-          int ic = 0;
-          for (; ic < ic8; ic += C8NUM) {
-            Transpose8X8Fp32Avx(src + hw * input_channel + ic,
-                                tmp_weight + hw * oc_block * input_channel + ic * oc_block + oc_tmp,
-                                input_channel * plane, oc_block);
-          }
-          for (; ic < input_channel; ++ic) {
-            for (int j = 0; j < C8NUM; ++j) {
-              tmp_weight[ic * oc_block + oc_tmp + j + hw * oc_block * input_channel] =
-                src[ic + input_channel * j * plane + hw * input_channel];
-            }
-          }
-        }
-        src += C8NUM * plane * input_channel;
-      }
-      tmp_weight += oc_block * input_channel * plane;
-    }
-    oc = output_channel - oc_block8 * C8NUM;
-    for (int oc_remainder = 0; oc_remainder < oc; ++oc_remainder) {
+    return;
+  }
+
+  for (; oc < oc_block8; oc += (oc_block / C8NUM)) {
+    oc_block = MSMIN(C4NUM, oc_block8 - oc) * C8NUM;  // max_tile = 32 ==> 24 ==> 16 ==> 8
+    for (int oc_tmp = 0; oc_tmp < oc_block; oc_tmp += C8NUM) {
       for (int hw = 0; hw < plane; ++hw) {
-        for (int ic = 0; ic < input_channel; ++ic) {
-          tmp_weight[oc_remainder + oc_remainder_step * ic + hw * input_channel * oc_remainder_step] =
-            src[ic + (oc_remainder * plane + hw) * input_channel];
+        int ic = 0;
+        for (; ic < ic8; ic += C8NUM) {
+          Transpose8X8Fp32Avx(src + hw * input_channel + ic,
+                              tmp_weight + hw * oc_block * input_channel + ic * oc_block + oc_tmp,
+                              input_channel * plane, oc_block);
         }
+        for (; ic < input_channel; ++ic) {
+          for (int j = 0; j < C8NUM; ++j) {
+            tmp_weight[ic * oc_block + oc_tmp + j + hw * oc_block * input_channel] =
+              src[ic + input_channel * j * plane + hw * input_channel];
+          }
+        }
+      }
+      src += C8NUM * plane * input_channel;
+    }
+    tmp_weight += oc_block * input_channel * plane;
+  }
+  oc = output_channel - oc_block8 * C8NUM;
+  for (int oc_remainder = 0; oc_remainder < oc; ++oc_remainder) {
+    for (int hw = 0; hw < plane; ++hw) {
+      for (int ic = 0; ic < input_channel; ++ic) {
+        tmp_weight[oc_remainder + oc_remainder_step * ic + hw * input_channel * oc_remainder_step] =
+          src[ic + (oc_remainder * plane + hw) * input_channel];
       }
     }
   }

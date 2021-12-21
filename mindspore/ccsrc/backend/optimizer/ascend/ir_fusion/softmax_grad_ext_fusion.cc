@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 #include "ir/primitive.h"
 #include "utils/utils.h"
 #include "backend/optimizer/common/helper.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
@@ -56,10 +55,6 @@ const AnfNodePtr SoftmaxGradExtFusion::Process(const FuncGraphPtr &graph, const 
   MS_EXCEPTION_IF_NULL(equiv);
   MS_EXCEPTION_IF_NULL(node);
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::SoftmaxGradExtFusion)) {
-    return node;
-  }
-
   auto input0 = GetAnfNodeByVar(equiv, input0_);
   auto input1 = GetAnfNodeByVar(equiv, input1_);
   auto input2 = GetAnfNodeByVar(equiv, input2_);
@@ -70,7 +65,7 @@ const AnfNodePtr SoftmaxGradExtFusion::Process(const FuncGraphPtr &graph, const 
   }
 
   auto prim = std::make_shared<Primitive>(kSoftmaxGradExtOpName);
-  auto fusion_node = graph->NewCNode({NewValueNode(prim), input0, input1, input2});
+  auto fusion_node = NewCNode({NewValueNode(prim), input0, input1, input2}, graph);
   MS_EXCEPTION_IF_NULL(fusion_node);
   fusion_node->set_scope(node->scope());
   fusion_node->set_abstract(node->abstract());

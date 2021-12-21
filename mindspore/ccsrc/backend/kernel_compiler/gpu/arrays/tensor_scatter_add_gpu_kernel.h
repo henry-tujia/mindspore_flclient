@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_TENSOR_SCATTER_ADD_GPU_KERNEL_H
 
 #include <vector>
+#include <string>
 #include <algorithm>
 #include "backend/kernel_compiler/gpu/cuda_impl/tensor_scatter_add.cuh"
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
@@ -38,7 +39,9 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
         work_shape_(nullptr),
         indices_dim_0_(0),
         indices_dim_1_(0),
-        memcpy_flag_(false) {}
+        memcpy_flag_(false),
+        is_null_input_(false),
+        kernel_name_("TensorScatterAdd") {}
   ~TensorScatterAddGpuFwdKernel() {
     if (indices_stride_ != nullptr) {
       device::gpu::GPUMemoryAllocator::GetInstance().FreeTensorMem(static_cast<void *>(indices_stride_));
@@ -54,6 +57,9 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input = GetDeviceAddress<T>(inputs, 0);
     S *indices = GetDeviceAddress<S>(inputs, 1);
@@ -77,10 +83,10 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
     const size_t update_size = update_size_ / sizeof(T);
     const size_t output_size = output_size_ / sizeof(T);
 
-    CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
-                               cudaMemcpyAsync(&output[0], &input[0], input_size_, cudaMemcpyDeviceToDevice,
-                                               reinterpret_cast<cudaStream_t>(stream_ptr)),
-                               "cudaMemcpyAsync output failed");
+    CHECK_CUDA_RET_WITH_EXCEPT(
+      kernel_node_,
+      cudaMemcpyAsync(output, input, input_size_, cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(stream_ptr)),
+      "cudaMemcpyAsync output failed");
 
     TensorScatterAdd(input, indices, update, output, block_size_, update_size, output_size, indices_dim_0_,
                      indices_dim_1_, indices_stride_, work_shape_, reinterpret_cast<cudaStream_t>(stream_ptr));
@@ -89,23 +95,32 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     memcpy_flag_ = false;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 3) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but TensorScatterAdd needs 3 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 3, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but TensorScatterAdd has 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
 
     update_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     indices_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     input_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     output_shapes_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(update_shapes_) || CHECK_NULL_INPUT(indices_shapes_) ||
+                     CHECK_NULL_INPUT(input_shapes_) || CHECK_NULL_INPUT(output_shapes_);
+    is_null_input_ = CHECK_SHAPE_NULL(update_shapes_, kernel_name_, "updates") ||
+                     CHECK_SHAPE_NULL(indices_shapes_, kernel_name_, "indices") ||
+                     CHECK_SHAPE_NULL(input_shapes_, kernel_name_, "input_x") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name_, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
 
     std::vector<size_t> shape_me = input_shapes_;
     (void)std::transform(shape_me.begin(), shape_me.end(), std::back_inserter(vec_work_shape_),
@@ -116,16 +131,24 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
     const size_t indices_len = sizeof(S) * vec_indices_stride_.size();
     void *indices_stride_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(indices_len);
     if (indices_stride_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc indices_stride_work, size: " << indices_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the memory alloc of indices_stride_work should be successful, but failed, got size: "
+                        << indices_len;
     }
     indices_stride_ = static_cast<S *>(indices_stride_work);
 
     const size_t vec_work_len = sizeof(S) * vec_work_shape_.size();
     void *work_shape_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(vec_work_len);
     if (work_shape_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc work_shape_work, size: " << vec_work_len;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the memory alloc of work_shape_work should be successful, but failed, got size: "
+                        << vec_work_len;
     }
     work_shape_ = static_cast<S *>(work_shape_work);
+    if (vec_work_shape_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of vec work cannot be less than 1, but got "
+                        << vec_work_shape_.size();
+    }
 
     InitSizeLists();
 
@@ -160,6 +183,10 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
       output_size_ *= output_shapes_[i];
     }
 
+    if (indices_shapes_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of indices cannot be less than 1, but got "
+                        << indices_shapes_.size();
+    }
     // calculate indices dim 0/1
     indices_dim_0_ = indices_shapes_[0];
     indices_dim_1_ = indices_shapes_[indices_shapes_.size() - 1];
@@ -169,6 +196,11 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
       block_size_ *= output_shapes_[i];
     }
 
+    if (indices_dim_1_ < 1 || indices_dim_1_ > output_shapes_.size()) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', indices_shapes[-1] cannot be less than 1 and greater than "
+                        << "the dimension of output_shapes, but got indices_shapes[-1]: " << indices_dim_1_
+                        << ", dimension of output_shapes: " << output_shapes_.size();
+    }
     // calculate indices_stride
     vec_indices_stride_.resize(indices_dim_1_, 0);
     vec_indices_stride_[indices_dim_1_ - 1] = block_size_;
@@ -201,6 +233,8 @@ class TensorScatterAddGpuFwdKernel : public GpuKernel {
   size_t indices_dim_0_;
   size_t indices_dim_1_;
   bool memcpy_flag_;
+  bool is_null_input_;
+  std::string kernel_name_;
 };
 }  // namespace kernel
 }  // namespace mindspore

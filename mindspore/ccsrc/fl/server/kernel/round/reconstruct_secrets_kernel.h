@@ -30,6 +30,9 @@ namespace mindspore {
 namespace fl {
 namespace server {
 namespace kernel {
+// results of signature verification
+enum sigVerifyResult { FAILED, TIMEOUT, PASSED };
+
 class ReconstructSecretsKernel : public RoundKernel {
  public:
   ReconstructSecretsKernel() = default;
@@ -46,6 +49,7 @@ class ReconstructSecretsKernel : public RoundKernel {
   Executor *executor_;
   size_t iteration_time_window_{0};
   armour::CipherReconStruct cipher_reconstruct_;
+  sigVerifyResult VerifySignature(const schema::SendReconstructSecret *reconstruct_secret_req);
 };
 }  // namespace kernel
 }  // namespace server

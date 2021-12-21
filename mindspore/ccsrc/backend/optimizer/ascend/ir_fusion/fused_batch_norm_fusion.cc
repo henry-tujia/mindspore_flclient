@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "utils/utils.h"
 #include "utils/trace_base.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
@@ -44,7 +43,7 @@ void GetBNOutput(const FuncGraphPtr &func_graph, const AnfNodePtr &bn, std::vect
   MS_EXCEPTION_IF_NULL(manager);
   if (manager->node_users().find(bn) == manager->node_users().end()) {
     MS_LOG(EXCEPTION) << "The bn node " << bn->DebugString() << " should has some outputs"
-                      << " trace: " << trace::DumpSourceLines(bn);
+                      << trace::DumpSourceLines(bn);
   }
   for (const auto &node_index : manager->node_users()[bn]) {
     const AnfNodePtr &output = node_index.first;
@@ -93,7 +92,7 @@ AnfNodePtr FusedBatchNormFusion::CreateBNTrainingReduce(const FuncGraphPtr &func
   // Set input to create node
   std::vector<AnfNodePtr> bn_training_reduce_inputs = {
     NewValueNode(std::make_shared<Primitive>(kBNTrainingReduceOpName)), GetAnfNodeByVar(equiv, data_input0_var_)};
-  auto bn_training_reduce = func_graph->NewCNode(bn_training_reduce_inputs);
+  auto bn_training_reduce = NewCNode(bn_training_reduce_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(bn_training_reduce);
   bn_training_reduce->set_scope(node->scope());
   // Set abstract
@@ -133,7 +132,7 @@ void FusedBatchNormFusion::GetBNTrainingUpdateAbstractList(const EquivPtr &equiv
   MS_EXCEPTION_IF_NULL(bn_abstract_tuple);
   if (bn_abstract_tuple->elements().size() < kBnOutputNum) {
     MS_LOG(EXCEPTION) << "The abstract size of node bn must not be less than " << kBnOutputNum << ", but it is "
-                      << bn_abstract_tuple->elements().size() << " trace: " << trace::DumpSourceLines(bn);
+                      << bn_abstract_tuple->elements().size() << trace::DumpSourceLines(bn);
   }
   auto variable_input0 = GetAnfNodeByVar(equiv, variable_input0_var_);
   auto variable_input1 = GetAnfNodeByVar(equiv, variable_input1_var_);
@@ -152,7 +151,7 @@ AnfNodePtr FusedBatchNormFusion::CreateBNTrainingUpdate(
   // Set input
   std::vector<AnfNodePtr> bn_training_update_inputs;
   GetBNTrainingUpdateInputs(equiv, bn_training_reduce_outputs, &bn_training_update_inputs);
-  auto bn_training_update = func_graph->NewCNode(bn_training_update_inputs);
+  auto bn_training_update = NewCNode(bn_training_update_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(bn_training_update);
   // Set abstract
   AnfNodePtr bn = GetAnfNodeByVar(equiv, batch_norm_var_);
@@ -195,10 +194,6 @@ const AnfNodePtr FusedBatchNormFusion::Process(const FuncGraphPtr &func_graph, c
   MS_EXCEPTION_IF_NULL(equiv);
   MS_EXCEPTION_IF_NULL(node);
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::FusedBatchNormFusion)) {
-    return node;
-  }
-
   AnfNodePtr bn_training_reduce = CreateBNTrainingReduce(func_graph, node, equiv);
   std::vector<AnfNodePtr> bn_training_reduce_outputs;
   CreateMultipleOutputsOfAnfNode(func_graph, bn_training_reduce, kBNTrainingReduceOutputNum,
@@ -213,7 +208,7 @@ const AnfNodePtr FusedBatchNormFusion::Process(const FuncGraphPtr &func_graph, c
                                  &bn_training_update_outputs);
   if (bn_training_update_outputs.size() < kBNTrainingUpdateOutputNum) {
     MS_LOG(EXCEPTION) << "The output size of node bn must be " << kBNTrainingUpdateOutputNum << ", but it is "
-                      << bn_training_update_outputs.size() << " trace: " << trace::DumpSourceLines(node);
+                      << bn_training_update_outputs.size() << trace::DumpSourceLines(node);
   }
   // Replace old bn outputs with new outputs
   std::vector<AnfNodePtr> bn_outputs;

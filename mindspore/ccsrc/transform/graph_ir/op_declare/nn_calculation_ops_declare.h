@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_NN_CALCULATION_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 #include "ops/nn_calculation_ops.h"
 
@@ -34,6 +34,9 @@ DECLARE_OP_ADAPTER(Conv2DBackpropInputD)
 DECLARE_OP_USE_ENUM(Conv2DBackpropInputD)
 DECLARE_OP_USE_INPUT_ATTR(Conv2DBackpropInputD)
 DECLARE_OP_USE_OUTPUT(Conv2DBackpropInputD)
+
+DECLARE_OP_ADAPTER(Conv2DBackpropInput)
+DECLARE_OP_USE_OUTPUT(Conv2DBackpropInput)
 
 DECLARE_OP_ADAPTER(Conv2DBackpropFilterD)
 DECLARE_OP_USE_ENUM(Conv2DBackpropFilterD)
@@ -72,5 +75,8 @@ DECLARE_OP_USE_OUTPUT(DepthwiseConv2DBackpropInputD)
 
 DECLARE_OP_ADAPTER(Deconvolution)
 DECLARE_OP_USE_OUTPUT(Deconvolution)
+
+DECLARE_OP_ADAPTER(Conv2DTransposeD)
+DECLARE_OP_USE_OUTPUT(Conv2DTransposeD)
 }  // namespace mindspore::transform
 #endif  // MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_NN_CALCULATION_OPS_DECLARE_H_

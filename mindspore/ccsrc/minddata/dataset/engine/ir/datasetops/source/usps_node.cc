@@ -27,8 +27,7 @@
 
 namespace mindspore {
 namespace dataset {
-
-USPSNode::USPSNode(std::string dataset_dir, std::string usage, int32_t num_samples, ShuffleMode shuffle,
+USPSNode::USPSNode(const std::string &dataset_dir, const std::string &usage, int32_t num_samples, ShuffleMode shuffle,
                    int32_t num_shards, int32_t shard_id, std::shared_ptr<DatasetCache> cache)
     : NonMappableSourceNode(std::move(cache)),
       dataset_dir_(dataset_dir),
@@ -57,16 +56,10 @@ void USPSNode::Print(std::ostream &out) const {
 
 Status USPSNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  RETURN_IF_NOT_OK(ValidateDatasetDirParam("USPSNode", dataset_dir_));
-  RETURN_IF_NOT_OK(ValidateStringValue("USPSNode", usage_, {"train", "test", "all"}));
-
-  if (num_samples_ < 0) {
-    std::string err_msg = "USPSNode: Invalid number of samples: " + std::to_string(num_samples_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
-  }
-
-  RETURN_IF_NOT_OK(ValidateDatasetShardParams("USPSNode", num_shards_, shard_id_));
+  RETURN_IF_NOT_OK(ValidateDatasetDirParam("USPSDataset", dataset_dir_));
+  RETURN_IF_NOT_OK(ValidateStringValue("USPSDataset", usage_, {"train", "test", "all"}));
+  RETURN_IF_NOT_OK(ValidateScalar("USPSDataset", "num_samples", num_samples_, {0}, false));
+  RETURN_IF_NOT_OK(ValidateDatasetShardParams("USPSDataset", num_shards_, shard_id_));
   return Status::OK();
 }
 
@@ -98,12 +91,12 @@ Status USPSNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) 
 
     // Add the shuffle op after this op
     RETURN_IF_NOT_OK(AddShuffleOp(op->FileNames().size(), num_shards_, num_rows, 0, connector_que_size_, &shuffle_op));
-    shuffle_op->set_total_repeats(GetTotalRepeats());
-    shuffle_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+    shuffle_op->SetTotalRepeats(GetTotalRepeats());
+    shuffle_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
     node_ops->push_back(shuffle_op);
   }
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -168,6 +161,5 @@ Status USPSNode::MakeSimpleProducer() {
   num_samples_ = 0;
   return Status::OK();
 }
-
 }  // namespace dataset
 }  // namespace mindspore

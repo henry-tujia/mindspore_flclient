@@ -57,23 +57,24 @@ void RepeatOp::Print(std::ostream &out, bool show_all) const {
 // a row from our child.
 // This function sets the `retryIfEoe` flag when popping from the child connector. This way,
 // this function will retry to pop the connector again and will get the non-EOE row if any.
-Status RepeatOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
+Status RepeatOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   if (child_.empty()) {
-    RETURN_STATUS_UNEXPECTED("Pipeline init failed, RepeatOp can't be the first op in pipeline.");
+    RETURN_STATUS_UNEXPECTED("[Internal ERROR] Pipeline init failed, RepeatOp can't be the first op in pipeline.");
   }
 
-  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, true));
+  RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
   // Loop until non EOE is received
   while (row->eoe()) {
-    RETURN_IF_NOT_OK(EoeReceived(worker_id));
+    RETURN_IF_NOT_OK(EoeReceived(0));
     if (state_ == OpState::kDeOpIdle) {
       return Status::OK();
     }
-    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, true));
+    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
   }
   // Check if the last buf is next eof
   if (row->eof()) {
-    RETURN_IF_NOT_OK(EofReceived(worker_id));
+    RETURN_IF_NOT_OK(EofReceived(0));
   }
   return Status::OK();
 }
@@ -107,24 +108,12 @@ Status RepeatOp::EoeReceived(int32_t worker_id) {
 // However, the RepeatOp is defined as a inlined operator, so it is invalid to launch the
 // functor since this op runs inlined inside another operator.  The function is overloaded to
 // ensure that it is not called by mistake (it will generate an error).
-Status RepeatOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. RepeatOp is an inlined operator."); }
+Status RepeatOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] RepeatOp is an inlined operator."); }
 
 // Base-class override for handling cases when an eof is received.
 Status RepeatOp::EofReceived(int32_t worker_id) {
   MS_LOG(DEBUG) << "Repeat operator EOF received, do nothing now.";
   return Status::OK();
-}
-
-int32_t RepeatOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Repeat operator, no parent node, assuming it's root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Repeat operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
 }
 
 // Drive reset actions if needed
@@ -138,15 +127,6 @@ Status RepeatOp::Reset() {
   }
   state_ = OpState::kDeOpRunning;
   return Status::OK();
-}
-
-int32_t RepeatOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Repeat operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
-  }
 }
 
 int64_t RepeatOp::GetTreeRepeatCount() { return num_repeats_; }

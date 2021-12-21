@@ -28,16 +28,19 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSoftMarginLoss = "SoftMarginLoss";
+/// \brief SoftMarginLoss operation.
+/// Refer to Python API @ref mindspore.ops.SoftMarginLoss for more details.
 class MS_CORE_API SoftMarginLoss : public PrimitiveC {
  public:
+  /// \brief Constructor.
   SoftMarginLoss() : PrimitiveC(kNameSoftMarginLoss) { InitIOName({"predict", "label"}, {"loss"}); }
+  /// \brief Destructor.
   ~SoftMarginLoss() = default;
   MS_DECLARE_PARENT(SoftMarginLoss, PrimitiveC);
 };
 
 AbstractBasePtr SoftMarginLossInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                     const std::vector<AbstractBasePtr> &input_args);
-using PrimSoftMarginLossPtr = std::shared_ptr<SoftMarginLoss>;
 }  // namespace ops
 }  // namespace mindspore
 

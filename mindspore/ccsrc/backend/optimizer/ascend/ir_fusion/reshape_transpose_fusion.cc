@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@
 #include "utils/utils.h"
 #include "backend/optimizer/common/helper.h"
 #include "base/core_ops.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
@@ -68,13 +67,9 @@ const AnfNodePtr ReshapeTransposeFusion::Process(const FuncGraphPtr &func_graph,
     return nullptr;
   }
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::ReshapeTransposeFusion)) {
-    return node;
-  }
-
   auto prim = std::make_shared<Primitive>(kConfusionTransposeDOpName);
   std::vector<AnfNodePtr> inputs = {NewValueNode(prim), utils::cast<AnfNodePtr>((*equiv)[input_varptr_])};
-  auto new_node = func_graph->NewCNode(inputs);
+  auto new_node = NewCNode(inputs, func_graph);
   MS_EXCEPTION_IF_NULL(new_node);
   new_node->set_abstract(node->abstract());
 

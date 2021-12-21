@@ -19,9 +19,9 @@
 
 #include <string>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "ir/value.h"
 #include "frontend/parallel/graph_util/generate_graph.h"
 #include "frontend/parallel/auto_parallel/operator_costmodel.h"
@@ -37,8 +37,6 @@ class Conv2DInfo : public OperatorInfo {
       : OperatorInfo(operator_name, inputs_shape, outputs_shape, attrs, std::make_shared<BatchParallelCost>()) {}
   ~Conv2DInfo() override = default;
 
-  Status Init(const StrategyPtr &strategy) override;
-  Status InitForCostModel(const StrategyPtr &strategy) override;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t) override;
   Status SetCostUnderStrategy(const StrategyPtr &) override;
   void ReComputeBatchSplitFlagList() override;

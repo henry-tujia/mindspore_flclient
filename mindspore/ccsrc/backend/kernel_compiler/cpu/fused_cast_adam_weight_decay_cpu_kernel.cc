@@ -22,9 +22,10 @@
 
 namespace mindspore {
 namespace kernel {
+static constexpr size_t BATCH_SIZE = 10000;
+static constexpr float MIN_GLOBAL_NORM = 1e-10;
 void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp32(const std::vector<AddressPtr> &inputs,
                                                                 const std::vector<AddressPtr> &) {
-  auto var = reinterpret_cast<float *>(inputs[VAR]->addr);
   auto m = reinterpret_cast<float *>(inputs[M]->addr);
   auto v = reinterpret_cast<float *>(inputs[V]->addr);
   auto lr = reinterpret_cast<float *>(inputs[LR]->addr)[kScalarIndex];
@@ -33,6 +34,12 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp32(const std::vecto
   auto epsilon = reinterpret_cast<float *>(inputs[EPSILON]->addr)[kScalarIndex];
   auto decay = reinterpret_cast<float *>(inputs[DECAY]->addr)[kScalarIndex];
   auto gradient16 = reinterpret_cast<float16 *>(inputs[GRAD]->addr);
+  auto var = reinterpret_cast<float *>(inputs[VAR]->addr);
+  auto global_norm = reinterpret_cast<float *>(inputs[GLOBAL_NORM]->addr)[kScalarIndex];
+  if (global_norm < MIN_GLOBAL_NORM) {
+    global_norm = 1.0f;
+  }
+  auto global_norm_reciprocal = 1.0f / global_norm;
   const auto beta1_minus = 1 - beta1;
   const auto beta2_minus = 1 - beta2;
 
@@ -42,10 +49,10 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp32(const std::vecto
 
   task = [&](size_t start, size_t end) {
     size_t i = FusedCastAdamFp32(var, m, v, lr, beta1, beta2, epsilon, decay, reinterpret_cast<int16_t *>(gradient16),
-                                 start, end);
+                                 global_norm_reciprocal, start, end);
     // remaining
     for (; i < end; i++) {
-      auto temp = static_cast<float>(gradient16[i]);
+      auto temp = static_cast<float>(gradient16[i]) * global_norm_reciprocal;
       m[i] += (temp - m[i]) * beta1_minus;
       v[i] += (temp * temp - v[i]) * beta2_minus;
       auto update = m[i] / (std::sqrt(v[i]) + epsilon);
@@ -53,12 +60,11 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp32(const std::vecto
       var[i] -= lr * update;
     }
   };
-  ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
+  CPUKernelUtils::ParallelFor(task, lens, BATCH_SIZE);
 }
 
 void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp16(const std::vector<AddressPtr> &inputs,
                                                                 const std::vector<AddressPtr> &) {
-  auto var16 = reinterpret_cast<float16 *>(inputs[VAR]->addr);
   auto m = reinterpret_cast<float *>(inputs[M]->addr);
   auto v = reinterpret_cast<float *>(inputs[V]->addr);
   auto lr = reinterpret_cast<float *>(inputs[LR]->addr)[kScalarIndex];
@@ -67,6 +73,12 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp16(const std::vecto
   auto epsilon = reinterpret_cast<float *>(inputs[EPSILON]->addr)[kScalarIndex];
   auto decay = reinterpret_cast<float *>(inputs[DECAY]->addr)[kScalarIndex];
   auto gradient16 = reinterpret_cast<float16 *>(inputs[GRAD]->addr);
+  auto var16 = reinterpret_cast<float16 *>(inputs[VAR]->addr);
+  auto global_norm = reinterpret_cast<float *>(inputs[GLOBAL_NORM]->addr)[kScalarIndex];
+  if (global_norm < MIN_GLOBAL_NORM) {
+    global_norm = 1.0f;
+  }
+  auto global_norm_reciprocal = 1.0f / global_norm;
   const auto beta1_minus = 1 - beta1;
   const auto beta2_minus = 1 - beta2;
 
@@ -76,11 +88,11 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp16(const std::vecto
 
   task = [&](size_t start, size_t end) {
     size_t i = FusedCastAdamFp16(reinterpret_cast<int16_t *>(var16), m, v, lr, beta1, beta2, epsilon, decay,
-                                 reinterpret_cast<int16_t *>(gradient16), start, end);
+                                 reinterpret_cast<int16_t *>(gradient16), global_norm_reciprocal, start, end);
     // remaining
     for (; i < end; i++) {
       auto temp_var = static_cast<float>(var16[i]);
-      auto temp_grad = static_cast<float>(gradient16[i]);
+      auto temp_grad = static_cast<float>(gradient16[i]) * global_norm_reciprocal;
       m[i] += (temp_grad - m[i]) * beta1_minus;
       v[i] += (temp_grad * temp_grad - v[i]) * beta2_minus;
       auto update = m[i] / (std::sqrt(v[i]) + epsilon);
@@ -89,55 +101,89 @@ void FusedCastAdamWeightDecayCPUKernel::LaunchFusedCastAdamFp16(const std::vecto
       var16[i] = static_cast<float16>(temp_var);
     }
   };
-  ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
+  CPUKernelUtils::ParallelFor(task, lens, BATCH_SIZE);
 }
 
 void FusedCastAdamWeightDecayCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   std::vector<size_t> var_shape = AnfAlgo::GetInputDeviceShape(kernel_node, VAR);
   var_dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, VAR);
   gradient_dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, GRAD);
   size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
   if (input_num != kFusedCastAdamWeightDecayInputNum) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but AdamWeightDecay needs 9 inputs.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be "
+                      << kFusedCastAdamWeightDecayInputNum << ", but got: " << input_num;
   }
   size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
   if (output_num != kFusedCastAdamWeightDecayOutputNum) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but AdamWeightDecay needs 3 outputs.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be "
+                      << kFusedCastAdamWeightDecayOutputNum << ", but got: " << output_num;
   }
   elem_num_ = 1;
   for (size_t i : var_shape) {
     elem_num_ *= i;
   }
   if (elem_num_ < 1) {
-    MS_LOG(EXCEPTION) << "Invalid parameter shape";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of 'var' should not be zero.";
   }
   if (gradient_dtype_ != kNumberTypeFloat16) {
-    MS_LOG(EXCEPTION) << "The dtype of gradient must be float16!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dtype of 'gradient' should be float16, but got "
+                      << TypeIdToType(gradient_dtype_)->ToString();
   }
   if (var_dtype_ != kNumberTypeFloat32 && var_dtype_ != kNumberTypeFloat16) {
-    MS_LOG(EXCEPTION) << "The dtype of parameter must be float32 or float16!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dtype of 'var' should be float16 or float32, but got "
+                      << TypeIdToType(var_dtype_)->ToString();
   }
 }
 
 void FusedCastAdamWeightDecayCPUKernel::CheckParam(const std::vector<kernel::AddressPtr> &inputs,
-                                                   const std::vector<kernel::AddressPtr> &outputs) {
+                                                   const std::vector<kernel::AddressPtr> &outputs) const {
   if (inputs.size() != kFusedCastAdamWeightDecayInputNum) {
-    MS_LOG(EXCEPTION) << "Input number is " << inputs.size() << ", but AdamWeightDecay needs 9 inputs.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be "
+                      << kFusedCastAdamWeightDecayInputNum << ", but got: " << inputs.size();
   }
   if (outputs.size() != kFusedCastAdamWeightDecayOutputNum) {
-    MS_LOG(EXCEPTION) << "Output number is " << outputs.size() << ", but AdamWeightDecay needs 3 outputs.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be "
+                      << kFusedCastAdamWeightDecayOutputNum << ", but got: " << outputs.size();
   }
   size_t elem_size_fp32 = elem_num_ * kSizeFloat32;
   size_t elem_size_fp16 = elem_num_ * kSizeFloat16;
   size_t var_size = var_dtype_ == kNumberTypeFloat16 ? elem_size_fp16 : elem_size_fp32;
-  if (inputs[VAR]->size != var_size || inputs[M]->size != elem_size_fp32 || inputs[V]->size != elem_size_fp32 ||
-      inputs[GRAD]->size != elem_size_fp16) {
-    MS_LOG(EXCEPTION) << "Error input data size!";
+  if (inputs[VAR]->size != var_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'var' should be " << var_size
+                      << ", but got " << inputs[VAR]->size;
   }
-  if (inputs[LR]->size != kSizeFloat32 || inputs[BETA1]->size != kSizeFloat32 || inputs[BETA2]->size != kSizeFloat32 ||
-      inputs[EPSILON]->size != kSizeFloat32 || inputs[DECAY]->size != kSizeFloat32) {
-    MS_LOG(EXCEPTION) << "The attribute beta, lr, epsilon and weight decay must be float!";
+  if (inputs[M]->size != elem_size_fp32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'm' should be " << elem_size_fp32
+                      << ", but got " << inputs[M]->size;
+  }
+  if (inputs[V]->size != elem_size_fp32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'v' should be " << elem_size_fp32
+                      << ", but got " << inputs[V]->size;
+  }
+  if (inputs[GRAD]->size != elem_size_fp16) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'gradient' should be " << elem_size_fp16
+                      << ", but got " << inputs[GRAD]->size;
+  }
+  if (inputs[LR]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the type of 'lr' should be float, but got 'lr': " << inputs[LR];
+  }
+  if (inputs[BETA1]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the type of 'beta1' should be float, but got 'beta1': " << inputs[BETA1];
+  }
+  if (inputs[BETA2]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the type of 'beta2' should be float, but got 'beta2': " << inputs[BETA2];
+  }
+  if (inputs[EPSILON]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the type of 'epsilon' should be float, but got 'epsilon': " << inputs[EPSILON];
+  }
+  if (inputs[DECAY]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the type of 'decay' should be float, but got 'decay': " << inputs[DECAY];
   }
 }
 

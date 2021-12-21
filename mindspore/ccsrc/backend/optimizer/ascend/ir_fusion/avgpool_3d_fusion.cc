@@ -23,6 +23,7 @@
 #include "backend/optimizer/common/helper.h"
 #include "base/core_ops.h"
 #include "utils/utils.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace opt {
@@ -51,6 +52,9 @@ int64_t GetInterSection(int64_t start_1, int64_t end_1, int64_t start_2, int64_t
 
 bool GetKernelSize(const AnfNodePtr &node, int64_t *kd, int64_t *kh, int64_t *kw) {
   MS_EXCEPTION_IF_NULL(node);
+  MS_EXCEPTION_IF_NULL(kd);
+  MS_EXCEPTION_IF_NULL(kh);
+  MS_EXCEPTION_IF_NULL(kw);
   if (AnfAlgo::HasNodeAttr("kernel_size", node->cast<CNodePtr>())) {
     auto kernel_size = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "kernel_size");
     if (kernel_size.size() == 1) {
@@ -67,7 +71,7 @@ bool GetKernelSize(const AnfNodePtr &node, int64_t *kd, int64_t *kh, int64_t *kw
       *kh = kernel_size[kDim3];
       *kw = kernel_size[kDim4];
     } else {
-      MS_LOG(EXCEPTION) << "Unknown kernel size " << kernel_size.size();
+      MS_LOG(EXCEPTION) << "Unknown kernel size " << kernel_size.size() << trace::DumpSourceLines(node);
     }
     return true;
   }
@@ -76,23 +80,26 @@ bool GetKernelSize(const AnfNodePtr &node, int64_t *kd, int64_t *kh, int64_t *kw
 
 bool GetStrideSize(const AnfNodePtr &node, int64_t *sd, int64_t *sh, int64_t *sw) {
   MS_EXCEPTION_IF_NULL(node);
+  MS_EXCEPTION_IF_NULL(sd);
+  MS_EXCEPTION_IF_NULL(sh);
+  MS_EXCEPTION_IF_NULL(sw);
   if (AnfAlgo::HasNodeAttr("strides", node->cast<CNodePtr>())) {
-    auto kernel_size = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "strides");
-    if (kernel_size.size() == 1) {
-      *sd = kernel_size[kDim0];
-      *sh = kernel_size[kDim0];
-      *sw = kernel_size[kDim0];
-    } else if (kernel_size.size() == kDHWDimNum) {
-      *sd = kernel_size[kDim0];
-      *sh = kernel_size[kDim1];
-      *sw = kernel_size[kDim2];
-    } else if (kernel_size.size() == kNCDHWDimNum) {
+    auto stride_size = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "strides");
+    if (stride_size.size() == 1) {
+      *sd = stride_size[kDim0];
+      *sh = stride_size[kDim0];
+      *sw = stride_size[kDim0];
+    } else if (stride_size.size() == kDHWDimNum) {
+      *sd = stride_size[kDim0];
+      *sh = stride_size[kDim1];
+      *sw = stride_size[kDim2];
+    } else if (stride_size.size() == kNCDHWDimNum) {
       // NCDHW
-      *sd = kernel_size[kDim2];
-      *sh = kernel_size[kDim3];
-      *sw = kernel_size[kDim4];
+      *sd = stride_size[kDim2];
+      *sh = stride_size[kDim3];
+      *sw = stride_size[kDim4];
     } else {
-      MS_LOG(EXCEPTION) << "Unknown strides size " << kernel_size.size();
+      MS_LOG(EXCEPTION) << "Unknown strides size " << stride_size.size() << trace::DumpSourceLines(node);
     }
     return true;
   }
@@ -103,7 +110,7 @@ void GetAttrs(const AnfNodePtr &node, std::vector<int64_t> *pad_list, bool *coun
               int64_t *divisor_override) {
   MS_EXCEPTION_IF_NULL(node);
   if (!AnfAlgo::HasNodeAttr("pad_list", node->cast<CNodePtr>())) {
-    MS_LOG(EXCEPTION) << "AvgPool3D should has attr pad_list";
+    MS_LOG(EXCEPTION) << "AvgPool3D should has attr pad_list" << trace::DumpSourceLines(node);
   }
   *pad_list = AnfAlgo::GetNodeAttr<std::vector<int64_t>>(node, "pad_list");
   if (AnfAlgo::HasNodeAttr("count_include_pad", node->cast<CNodePtr>())) {
@@ -137,7 +144,7 @@ AnfNodePtr ConstructFilter(const FuncGraphPtr &func_graph, const std::vector<int
   // assist tensor 1
   int64_t c1 = (fc + kC0 - 1) / kC0;
   std::vector<int64_t> assist_shape = {c1 * kd * kh * kw, 1, kC0, kC0};  // frac_z_3d
-  auto infer_shape = {IntToSize(1), LongToSize(fc), LongToSize(kd), LongToSize(kh), LongToSize(kw)};
+  std::vector<size_t> infer_shape = {IntToSize(1), LongToSize(fc), LongToSize(kd), LongToSize(kh), LongToSize(kw)};
   float val = 1.0 / (kd * kh * kw);
   if (divisor_override) {
     val = 1.0 / divisor_override;
@@ -145,29 +152,8 @@ AnfNodePtr ConstructFilter(const FuncGraphPtr &func_graph, const std::vector<int
     val = 1.0;
   }
   // create value node
-  tensor::TensorPtr assist_tensor = std::make_shared<tensor::Tensor>(kNumberTypeFloat16, assist_shape);
-  MS_EXCEPTION_IF_NULL(assist_tensor);
-  TensorTypePtr tensor_type = std::make_shared<TensorType>(kFloat16);
-  tensor::DeviceInfo device_info{kOpFormat_FRACTAL_Z_3D, tensor_type, kOpFormat_FRACTAL_Z_3D};
-  assist_tensor->set_device_info(device_info);
-  auto tensor_data = reinterpret_cast<float16 *>(assist_tensor->data_c());
   int64_t cnt = c1 * kd * kh * kw;
-  for (int64_t i = 0; i < cnt; ++i) {
-    for (int64_t j = 0; j < kC0; ++j) {
-      for (int64_t k = 0; k < kC0; ++k) {
-        float t = j == k ? val : 0;
-        *tensor_data = float16(t);
-        ++tensor_data;
-      }
-    }
-  }
-
-  auto x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat16, assist_shape);
-  auto kernel_graph = func_graph->cast<KernelGraphPtr>();
-  auto value_node = kernel_graph->NewValueNode(x_abstract, assist_tensor);
-  kernel_graph->AddValueNodeToGraph(value_node);
-  AnfAlgo::SetOutputInferTypeAndShape({kNumberTypeFloat16}, {infer_shape}, value_node.get());
-  return value_node;
+  return ConstructFilterValueNode(func_graph, val, assist_shape, infer_shape, cnt);
 }
 
 AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, int64_t fn, int64_t fc, int64_t fd, int64_t fh,
@@ -179,6 +165,7 @@ AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, int64_t fn, int64
   std::vector<int64_t> assist_shape = {fn, fc, dd, dh, dw};  // NCDHW
   auto infer_shape = {LongToSize(fn), LongToSize(fc), LongToSize(dd), LongToSize(dh), LongToSize(dw)};
   tensor::TensorPtr tensor = std::make_shared<tensor::Tensor>(kNumberTypeFloat16, assist_shape);
+  MS_EXCEPTION_IF_NULL(tensor);
   auto tensor_data = reinterpret_cast<float16 *>(tensor->data_c());
   auto pad_d = pad_list[kDim0] + pad_list[kDim1];
   auto pad_h = pad_list[kDim2] + pad_list[kDim3];
@@ -227,6 +214,33 @@ AnfNodePtr ConstructMultiplier(const FuncGraphPtr &func_graph, int64_t fn, int64
 }
 }  // namespace
 
+AnfNodePtr ConstructFilterValueNode(const FuncGraphPtr &func_graph, float val, const std::vector<int64_t> &assist_shape,
+                                    const std::vector<size_t> &infer_shape, int64_t cnt) {
+  tensor::TensorPtr assist_tensor = std::make_shared<tensor::Tensor>(kNumberTypeFloat16, assist_shape);
+  MS_EXCEPTION_IF_NULL(assist_tensor);
+  TensorTypePtr tensor_type = std::make_shared<TensorType>(kFloat16);
+  tensor::DeviceInfo device_info{kOpFormat_FRACTAL_Z_3D, tensor_type, kOpFormat_FRACTAL_Z_3D};
+  assist_tensor->set_device_info(device_info);
+  auto tensor_data = reinterpret_cast<float16 *>(assist_tensor->data_c());
+  for (int64_t i = 0; i < cnt; ++i) {
+    for (int64_t j = 0; j < kC0; ++j) {
+      for (int64_t k = 0; k < kC0; ++k) {
+        float t = j == k ? val : 0;
+        *tensor_data = float16(t);
+        ++tensor_data;
+      }
+    }
+  }
+
+  auto x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat16, assist_shape);
+  auto kernel_graph = func_graph->cast<KernelGraphPtr>();
+  MS_EXCEPTION_IF_NULL(kernel_graph);
+  auto value_node = kernel_graph->NewValueNode(x_abstract, assist_tensor);
+  kernel_graph->AddValueNodeToGraph(value_node);
+  AnfAlgo::SetOutputInferTypeAndShape({kNumberTypeFloat16}, {infer_shape}, value_node.get());
+  return value_node;
+}
+
 const BaseRef AvgPool3DFusion::DefinePattern() const {
   VarPtr Xs = std::make_shared<SeqVar>();
   return VectorRef({prim::kPrimAvgPool3D, Xs});
@@ -246,7 +260,9 @@ const AnfNodePtr AvgPool3DFusion::Process(const FuncGraphPtr &func_graph, const 
   auto dims_in = AnfAlgo::GetPrevNodeOutputInferShape(avg_pool_3d_node, 0);
   auto dims_out = AnfAlgo::GetOutputInferShape(avg_pool_3d_node, 0);
   if (dims_in.size() < k5DInferDims || dims_out.size() < k5DInferDims) {
-    MS_LOG(EXCEPTION) << "AvgPool3D's in_out infer shape dims can not be less " << k5DInferDims;
+    MS_LOG(EXCEPTION) << "AvgPool3D's in_out infer shape dims can not be less " << k5DInferDims
+                      << ", but got in_shape is " << dims_in.size() << "-D, out_shape is " << dims_out.size()
+                      << trace::DumpSourceLines(node);
   }
   auto fn = SizeToLong(dims_in[kDim0]);
   auto fc = SizeToLong(dims_in[kDim1]);
@@ -261,14 +277,14 @@ const AnfNodePtr AvgPool3DFusion::Process(const FuncGraphPtr &func_graph, const 
   int64_t kh;
   int64_t kw;
   if (!GetKernelSize(avg_pool_3d_node, &kd, &kh, &kw)) {
-    MS_LOG(EXCEPTION) << "GetK kernel size failed";
+    MS_LOG(EXCEPTION) << "Get kernel size failed" << trace::DumpSourceLines(node);
   }
   // strides
   int64_t sd;
   int64_t sh;
   int64_t sw;
   if (!GetStrideSize(avg_pool_3d_node, &sd, &sh, &sw)) {
-    MS_LOG(EXCEPTION) << "GetK stride size failed";
+    MS_LOG(EXCEPTION) << "Get stride size failed" << trace::DumpSourceLines(node);
   }
   std::vector<int64_t> pad_list;
   bool count_include_pad = false;
@@ -291,7 +307,7 @@ const AnfNodePtr AvgPool3DFusion::Process(const FuncGraphPtr &func_graph, const 
                                           pad_list, count_include_pad);
     new_inputs.push_back(multiplier);
   }
-  auto new_3d = func_graph->NewCNode(new_inputs);
+  auto new_3d = NewCNode(new_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(new_3d);
   new_3d->set_scope(avg_pool_3d_node->scope());
   new_3d->set_abstract(avg_pool_3d_node->abstract());

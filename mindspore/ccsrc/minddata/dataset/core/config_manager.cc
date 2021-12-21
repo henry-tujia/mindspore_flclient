@@ -41,18 +41,19 @@ ConfigManager::ConfigManager()
       seed_(kCfgDefaultSeed),
       numa_enable_(false),
       monitor_sampling_interval_(kCfgMonitorSamplingInterval),
-      stop_profiler_(false),
-      file_ready_(true),
       callback_timout_(kCfgCallbackTimeout),
       cache_host_(kCfgDefaultCacheHost),
       cache_port_(kCfgDefaultCachePort),
       num_connections_(kDftNumConnections),
-      prefetch_size_(kDftPrefetchSize),
+      cache_prefetch_size_(kDftCachePrefetchSize),
       auto_num_workers_(kDftAutoNumWorkers),
       num_cpu_threads_(std::thread::hardware_concurrency()),
       auto_num_workers_num_shards_(1),
       auto_worker_config_(0),
-      enable_shared_mem_(true) {
+      enable_shared_mem_(true),
+      auto_offload_(false),
+      enable_autotune_(false),
+      autotune_interval_(kCfgAutoTuneInterval) {
   num_cpu_threads_ = num_cpu_threads_ > 0 ? num_cpu_threads_ : std::numeric_limits<uint16_t>::max();
   num_parallel_workers_ = num_parallel_workers_ < num_cpu_threads_ ? num_parallel_workers_ : num_cpu_threads_;
   std::string env_cache_host = common::GetEnv("MS_CACHE_HOST");
@@ -90,7 +91,7 @@ Status ConfigManager::FromJson(const nlohmann::json &j) {
   set_cache_host(j.value("cacheHost", cache_host_));
   set_cache_port(j.value("cachePort", cache_port_));
   set_num_connections(j.value("numConnections", num_connections_));
-  set_prefetch_size(j.value("prefetchSize", prefetch_size_));
+  set_cache_prefetch_size(j.value("cachePrefetchSize", cache_prefetch_size_));
   return Status::OK();
 }
 
@@ -98,7 +99,8 @@ Status ConfigManager::FromJson(const nlohmann::json &j) {
 Status ConfigManager::LoadFile(const std::string &settingsFile) {
   Status rc;
   if (!Path(settingsFile).Exists()) {
-    RETURN_STATUS_UNEXPECTED("File is not found.");
+    RETURN_STATUS_UNEXPECTED("Invalid file: settings file:" + settingsFile +
+                             " is not exist, check input path of config 'load' API.");
   }
   // Some settings are mandatory, others are not (with default).  If a setting
   // is optional it will set a default value if the config is missing from the file.
@@ -150,10 +152,6 @@ void ConfigManager::set_seed(uint32_t seed) { seed_ = seed; }
 
 void ConfigManager::set_monitor_sampling_interval(uint32_t interval) { monitor_sampling_interval_ = interval; }
 
-void ConfigManager::stop_dataset_profiler(bool stop_profiler) { stop_profiler_ = stop_profiler; }
-
-void ConfigManager::set_profiler_file_status(bool file_ready) { file_ready_ = file_ready; }
-
 void ConfigManager::set_callback_timeout(uint32_t timeout) { callback_timout_ = timeout; }
 
 void ConfigManager::set_cache_host(std::string cache_host) { cache_host_ = std::move(cache_host); }
@@ -162,7 +160,7 @@ void ConfigManager::set_cache_port(int32_t cache_port) { cache_port_ = cache_por
 
 void ConfigManager::set_num_connections(int32_t num_connections) { num_connections_ = num_connections; }
 
-void ConfigManager::set_prefetch_size(int32_t prefetch_size) { prefetch_size_ = prefetch_size; }
+void ConfigManager::set_cache_prefetch_size(int32_t cache_prefetch_size) { cache_prefetch_size_ = cache_prefetch_size; }
 
 }  // namespace dataset
 }  // namespace mindspore

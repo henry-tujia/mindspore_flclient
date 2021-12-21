@@ -21,6 +21,7 @@
 #include "include/api/types.h"
 #include "include/api/delegate.h"
 #include "include/api/model.h"
+#include "src/common/file_utils.h"
 
 namespace mindspore {
 class DelegateTest : public mindspore::CommonTest {
@@ -62,10 +63,10 @@ class CustomDelegate : public Delegate {
 
   Status Init() override { return mindspore::kSuccess; }
 
-  Status Build(DelegateModel *model) override;
+  Status Build(DelegateModel<schema::Primitive> *model) override;
 };
 
-Status CustomDelegate::Build(DelegateModel *model) {
+Status CustomDelegate::Build(DelegateModel<schema::Primitive> *model) {
   auto graph_kernel = new (std::nothrow) CustomSubgraph(model->inputs(), model->outputs());
   if (graph_kernel == nullptr) {
     return mindspore::kLiteNullptr;

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_EMBEDDING_LOOK_UP_PS_KERNEL_H_
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_EMBEDDING_LOOK_UP_PS_KERNEL_H_
 
@@ -40,6 +41,7 @@ class EmbeddingLookUpPSKernel : public EmbeddingLookUpCPUKernel, public PServerK
   const std::vector<size_t> &input_sizes() const override;
   const std::vector<size_t> &output_sizes() const override;
   const std::vector<size_t> &workspace_sizes() const override;
+  int64_t offset() const override;
 
  private:
   std::vector<size_t> input_shape_;

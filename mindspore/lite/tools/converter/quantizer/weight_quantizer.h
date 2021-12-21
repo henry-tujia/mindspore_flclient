@@ -23,10 +23,13 @@
 #include <map>
 #include <list>
 #include <string>
+#include <utility>
 #include <vector>
+#include <set>
 #include "tools/converter/quantizer/quantizer.h"
 #include "tools/converter/quantizer/quantize_util.h"
 #include "tools/converter/quantizer/quant_params.h"
+#include "tools/converter/quantizer/quant_strategy.h"
 #include "tools/converter/preprocess/preprocess_param.h"
 #include "ir/func_graph.h"
 #include "ir/anf.h"
@@ -34,37 +37,52 @@
 #include "base/base.h"
 #include "abstract/dshape.h"
 #include "src/lite_session.h"
+#include "src/common/quant_utils.h"
 
 namespace mindspore::lite::quant {
 class WeightQuantizer : public Quantizer {
  public:
-  WeightQuantizer(FuncGraphPtr graph, const converter::Flags &config);
+  explicit WeightQuantizer(const converter::Flags &flags) : Quantizer(flags) {
+    bit_num_ = flags.commonQuantParam.bit_num;
+    if (bit_num_ == 0) {
+      type_id_ = kNumberTypeInt16;
+      is_mixed_bit_ = true;
+      mixed_bit_init_scale_ = flags.mixedBitWeightQuantParam.init_scale;
+    }
+    // parse param for fixed bit quant.
+    if (!is_mixed_bit_) {
+      quant_max_ = QuantMax(bit_num_, false);
+      quant_min_ = QuantMin(bit_num_, false, false);
+      // parse type_id_
+      MS_ASSERT(bit_num_ > 0 && bit_num_ <= k16Bit);
+      if (bit_num_ > 0 && bit_num_ <= k8Bit) {
+        type_id_ = kNumberTypeInt8;
+      } else if (bit_num_ <= k16Bit) {
+        type_id_ = kNumberTypeInt16;
+      }
+    }
+  }
   ~WeightQuantizer() override;
 
-  STATUS DoQuantize(FuncGraphPtr func_graph) override;
-  STATUS DoConvQuantize(const CNodePtr &cnode);
-  STATUS DoMulQuantize(const CNodePtr &cnode);
-  STATUS DoOptimizerQuantize(const CNodePtr &cnode);
-  STATUS DoLstmQuantize(const CNodePtr &cnode);
-  STATUS DoGatherQuantize(const CNodePtr &cnode);
+  int DoQuantize(FuncGraphPtr func_graph) override;
+  int DoQuantize(const FuncGraphPtr &func_graph, double init_scale);
 
-  STATUS ProcessLstmWeightByIndex(const CNodePtr &cnode, const PrimitivePtr &primitive, const int &index);
+ private:
+  int DoWeightQuantize(const FuncGraphPtr &func_graph, const CNodePtr &cnode);
+  int MarkWeightQuantizationInNodes(const FuncGraphPtr &);
+  int DoMarkWeightQuantizeIfQuantized(const CNodePtr &);
+
+ private:
+  size_t bit_num_{8};
+  // delete it in the future.
+  std::set<tensor::TensorPtr> weight_quantized_tensors_;
+  std::vector<std::unordered_map<std::string, mindspore::tensor::MSTensor *>> fp32_output_tensors_;
+  bool is_mixed_bit_ = false;
+  double mixed_bit_init_scale_ = 0.02;
 
   int quant_max_{127};
   int quant_min_{-128};
   TypeId type_id_{kNumberTypeInt8};
-
- private:
-  std::unique_ptr<QuantStrategy> quant_strategy_;
-  size_t bit_num_{8};
-  std::map<tensor::TensorPtr, ParameterPtr> weight_quantized_tensors_;
-  std::vector<std::unordered_map<std::string, mindspore::tensor::MSTensor *>> fp32_output_tensors_;
-  bool is_mixed_bit_ = false;
-
-  STATUS SetAbstract(const tensor::TensorPtr &tensor_info, const ParameterPtr &param_node,
-                     const PrimitivePtr &primitive);
-  STATUS MarkWeightQuantizationInNodes(const FuncGraphPtr &);
-  STATUS DoMarkWeightQuantizeIfQuantized(const CNodePtr &);
 };
 }  // namespace mindspore::lite::quant
 #endif  // MINDSPORE_LITE_TOOLS_CONVERTER_QUANTIZER_WEIGHT_QUANTIZER_H_

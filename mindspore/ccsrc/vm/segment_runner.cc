@@ -22,12 +22,12 @@
 #include <functional>
 #include <memory>
 #include <set>
-#include <unordered_set>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <string>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "utils/log_adapter.h"
 #include "utils/utils.h"
 #include "ir/manager.h"
@@ -43,7 +43,7 @@ namespace {
 //   users: dict mapping each node to its users (globally)
 //   seen: set of nodes that are part of the segment
 AnfNodePtrList GetOutput(const AnfNodePtrList &nodes, const NodeUsersMap &users,
-                         const std::unordered_set<AnfNodePtr> &seen) {
+                         const mindspore::HashSet<AnfNodePtr> &seen) {
   AnfNodePtrList output;
   if (users.size() == 0) {
     return output;
@@ -97,6 +97,8 @@ std::tuple<FuncGraphPtr, AnfNodePtrList, AnfNodePtrList> TransformSegmentToAnfGr
   FuncGraphPtr fg = nullptr;
   {
     // limit the lifetime of guard.
+    MS_EXCEPTION_IF_NULL(lst[0]->cast<CNodePtr>());
+    MS_EXCEPTION_IF_NULL(lst[0]->cast<CNodePtr>()->func_graph());
     TraceGuard guard(std::make_shared<TraceSegmentTransform>(lst[0]->cast<CNodePtr>()->func_graph()->debug_info()));
     fg = std::make_shared<FuncGraph>();
   }
@@ -136,10 +138,13 @@ std::tuple<FuncGraphPtr, AnfNodePtrList, AnfNodePtrList> TransformSegmentToAnfGr
     eqv[n]->set_abstract(n->abstract());
     eqv[n]->set_kernel_info(n->kernel_info_ptr());
   }
-  std::unordered_set<AnfNodePtr> eqv_keys;
-  (void)std::transform(std::begin(eqv), std::end(eqv), std::inserter(eqv_keys, eqv_keys.end()),
-                       [](const std::pair<AnfNodePtr, AnfNodePtr> &elem) -> AnfNodePtr { return elem.first; });
-  auto outputs = GetOutput(lst, lst[0]->func_graph()->manager()->node_users(), eqv_keys);
+  mindspore::HashSet<AnfNodePtr> eqv_keys;
+  for (auto &e : eqv) {
+    eqv_keys.emplace(e.first);
+  }
+  auto mgr = lst[0]->func_graph()->manager();
+  MS_EXCEPTION_IF_NULL(mgr);
+  auto outputs = GetOutput(lst, mgr->node_users(), eqv_keys);
   AnfNodePtr fg_output;
   if (outputs.size() > 1) {
     std::vector<AnfNodePtr> output_args;
@@ -149,6 +154,9 @@ std::tuple<FuncGraphPtr, AnfNodePtrList, AnfNodePtrList> TransformSegmentToAnfGr
     // Set output for AnfGraph
     fg_output = fg->NewCNode(output_args);
   } else {
+    if (outputs.empty()) {
+      MS_LOG(EXCEPTION) << "Output is empty.";
+    }
     fg_output = eqv[outputs[0]];
   }
   fg->set_output(fg_output);

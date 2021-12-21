@@ -46,8 +46,7 @@ bool IsPartOutputsOfHcclOp(const AnfNodePtr &node, const CNodePtr &cur_hccl, con
   auto &node_users = manager->node_users();
   auto iter = node_users.find(prev_hccl_op);
   if (iter == node_users.end()) {
-    MS_LOG(EXCEPTION) << "node has no output in manager"
-                      << " trace: " << trace::DumpSourceLines(cur_hccl);
+    MS_LOG(EXCEPTION) << "Node has no output in manager" << trace::DumpSourceLines(cur_hccl);
   }
   for (const auto &node_index : iter->second) {
     AnfNodePtr output = node_index.first;
@@ -81,8 +80,7 @@ AnfNodePtr InsertTensorMoveForCascade::InsertTensorMove(const FuncGraphPtr &grap
     if (IsPartOutputsOfHcclOp(input, hccl_node, graph)) {
       auto tensor_move = CreateTensorMoveOp(graph, input);
       if (tensor_move == nullptr) {
-        MS_LOG(EXCEPTION) << "Create tensor_move op failed."
-                          << " trace: " << trace::DumpSourceLines(hccl_node);
+        MS_LOG(EXCEPTION) << "Create tensor_move op failed." << trace::DumpSourceLines(hccl_node);
       }
       if (AnfAlgo::IsNodeDynamicShape(input)) {
         AnfAlgo::SetNodeAttr(kAttrIsDynamicShape, MakeValue(true), tensor_move);
@@ -100,6 +98,7 @@ AnfNodePtr InsertTensorMoveForCascade::InsertTensorMove(const FuncGraphPtr &grap
 
   if (!tensor_move_list.empty()) {
     CNodePtr new_hccl_node = std::make_shared<CNode>(*hccl_node);
+    MS_EXCEPTION_IF_NULL(new_hccl_node);
     new_hccl_node->set_inputs(new_inputs);
     return new_hccl_node;
   }

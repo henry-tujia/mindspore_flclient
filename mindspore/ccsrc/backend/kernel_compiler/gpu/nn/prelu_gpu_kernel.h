@@ -38,6 +38,9 @@ class PReLUGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     auto *input = GetDeviceAddress<T>(inputs, 0);
     auto *weight = GetDeviceAddress<T>(inputs, 1);
     auto *output = GetDeviceAddress<T>(outputs, 0);
@@ -48,19 +51,25 @@ class PReLUGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     ResetResource();
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(ERROR) << "PReLU needs 2 inputs, but got " << input_num;
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "ReLU should have 1 output, but got " << input_num;
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
 
     auto input_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
+    auto weight_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
+    is_null_input_ =
+      CHECK_SHAPE_NULL(input_shape, kernel_name, "x") || CHECK_SHAPE_NULL(weight_shape, kernel_name, "weight");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     input_length_ = std::accumulate(input_shape.begin(), input_shape.end(), size_t(1), std::multiplies<>());
     size_t input_rank = input_shape.size();
     size_t channel_num;
@@ -75,11 +84,11 @@ class PReLUGpuKernel : public GpuKernel {
       per_channel_length_ = std::accumulate(input_shape.begin() + 2, input_shape.end(), size_t(1), std::multiplies<>());
     }
 
-    auto weight_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
-    if (weight_shape.size() != 1 && weight_shape[0] != 1 && weight_shape[0] != channel_num) {
-      MS_LOG(EXCEPTION) << "PReLU requires the rank of weight should be 1, and the elements number should be "
-                           "1 or channels number "
-                        << channel_num << ", but got weight shape " << weight_shape;
+    if (weight_shape.size() != 1 || (weight_shape[0] != 1 && weight_shape[0] != channel_num)) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of weight should be equal to 1 and "
+                        << "weight.shape[0] should be equal to 1 or the channel number, but got the dimension of "
+                        << "weight: " << weight_shape.size() << ", weight.shape[0]: " << weight_shape[0]
+                        << ", the channel num: " << channel_num;
     }
     weight_length_ = weight_shape[0];
     InitSizeLists();
@@ -90,6 +99,7 @@ class PReLUGpuKernel : public GpuKernel {
     input_length_ = 0;
     weight_length_ = 0;
     per_channel_length_ = 0;
+    is_null_input_ = false;
     input_size_list_.clear();
     output_size_list_.clear();
     workspace_size_list_.clear();
@@ -104,6 +114,7 @@ class PReLUGpuKernel : public GpuKernel {
   }
 
  private:
+  bool is_null_input_{false};
   size_t input_length_{0};
   size_t weight_length_{0};
   size_t per_channel_length_{0};

@@ -31,6 +31,7 @@
 #include "minddata/dataset/engine/ir/datasetops/skip_node.h"
 #include "minddata/dataset/engine/ir/datasetops/zip_node.h"
 
+#include "minddata/dataset/engine/tree_modifier.h"
 
 using namespace mindspore::dataset;
 using mindspore::dataset::Tensor;
@@ -50,25 +51,28 @@ TEST_F(MindDataTestTreeAdapter, TestSimpleTreeAdapter) {
   ds = ds->Batch(2);
   EXPECT_NE(ds, nullptr);
 
-  mindspore::dataset::TreeAdapter tree_adapter;
+  auto tree_adapter = std::make_shared<TreeAdapter>();
 
-  Status rc = tree_adapter.Compile(ds->IRNode(), 1);
+  // Disable IR optimization pass
+  tree_adapter->SetOptimize(false);
+
+  Status rc = tree_adapter->Compile(ds->IRNode(), 1);
 
   EXPECT_TRUE(rc.IsOk());
 
   const std::unordered_map<std::string, int32_t> map = {{"label", 1}, {"image", 0}};
-  EXPECT_EQ(tree_adapter.GetColumnNameMap(), map);
+  EXPECT_EQ(tree_adapter->GetColumnNameMap(), map);
 
   std::vector<size_t> row_sizes = {2, 2, 0};
 
   TensorRow row;
   for (size_t sz : row_sizes) {
-    rc = tree_adapter.GetNext(&row);
+    rc = tree_adapter->GetNext(&row);
     EXPECT_TRUE(rc.IsOk());
     EXPECT_EQ(row.size(), sz);
   }
 
-  rc = tree_adapter.GetNext(&row);
+  rc = tree_adapter->GetNext(&row);
   EXPECT_TRUE(rc.IsError());
   const std::string err_msg = rc.ToString();
   EXPECT_TRUE(err_msg.find("EOF buffer encountered.") != err_msg.npos);
@@ -85,23 +89,23 @@ TEST_F(MindDataTestTreeAdapter, TestTreeAdapterWithRepeat) {
   ds = ds->Batch(2, false);
   EXPECT_NE(ds, nullptr);
 
-  mindspore::dataset::TreeAdapter tree_adapter;
+  auto tree_adapter = std::make_shared<TreeAdapter>();
 
-  Status rc = tree_adapter.Compile(ds->IRNode(), 2);
+  Status rc = tree_adapter->Compile(ds->IRNode(), 2);
   EXPECT_TRUE(rc.IsOk());
 
-  const std::unordered_map<std::string, int32_t> map = tree_adapter.GetColumnNameMap();
-  EXPECT_EQ(tree_adapter.GetColumnNameMap(), map);
+  const std::unordered_map<std::string, int32_t> map = tree_adapter->GetColumnNameMap();
+  EXPECT_EQ(tree_adapter->GetColumnNameMap(), map);
 
   std::vector<size_t> row_sizes = {2, 2, 0, 2, 2, 0};
 
   TensorRow row;
   for (size_t sz : row_sizes) {
-    rc = tree_adapter.GetNext(&row);
+    rc = tree_adapter->GetNext(&row);
     EXPECT_TRUE(rc.IsOk());
     EXPECT_EQ(row.size(), sz);
   }
-  rc = tree_adapter.GetNext(&row);
+  rc = tree_adapter->GetNext(&row);
   const std::string err_msg = rc.ToString();
   EXPECT_TRUE(err_msg.find("EOF buffer encountered.") != err_msg.npos);
 }
@@ -122,24 +126,82 @@ TEST_F(MindDataTestTreeAdapter, TestProjectMapTreeAdapter) {
   ds = ds->Map({one_hot}, {"label"}, {"label"}, {"label"});
   EXPECT_NE(ds, nullptr);
 
-  mindspore::dataset::TreeAdapter tree_adapter;
+  auto tree_adapter = std::make_shared<TreeAdapter>();
 
-  Status rc = tree_adapter.Compile(ds->IRNode(), 2);
+  Status rc = tree_adapter->Compile(ds->IRNode(), 2);
 
   EXPECT_TRUE(rc.IsOk());
 
   const std::unordered_map<std::string, int32_t> map = {{"label", 0}};
-  EXPECT_EQ(tree_adapter.GetColumnNameMap(), map);
+  EXPECT_EQ(tree_adapter->GetColumnNameMap(), map);
 
   std::vector<size_t> row_sizes = {1, 1, 0, 1, 1, 0};
   TensorRow row;
 
   for (size_t sz : row_sizes) {
-    rc = tree_adapter.GetNext(&row);
+    rc = tree_adapter->GetNext(&row);
     EXPECT_TRUE(rc.IsOk());
     EXPECT_EQ(row.size(), sz);
   }
-  rc = tree_adapter.GetNext(&row);
+  rc = tree_adapter->GetNext(&row);
   const std::string err_msg = rc.ToString();
   EXPECT_TRUE(err_msg.find("EOF buffer encountered.") != err_msg.npos);
+}
+
+// Feature: Basic test for TreeModifier
+// Description: Create simple tree and modify the tree by adding workers, change queue size and then removing workers
+// Expectation: No failures.
+TEST_F(MindDataTestTreeAdapter, TestSimpleTreeModifier) {
+  MS_LOG(INFO) << "Doing MindDataTestTreeAdapter-TestSimpleTreeModifier.";
+
+  // Create a CSVDataset, with single CSV file
+  std::string train_file = datasets_root_path_ + "/testCSV/1.csv";
+  std::vector<std::string> column_names = {"col1", "col2", "col3", "col4"};
+  std::shared_ptr<Dataset> ds = CSV({train_file}, ',', {}, column_names, 0, ShuffleMode::kFalse);
+  ASSERT_NE(ds, nullptr);
+  ds = ds->Project({"col1"});
+  ASSERT_NE(ds, nullptr);
+  ds = ds->Repeat(2);
+  ASSERT_NE(ds, nullptr);
+  auto to_number = std::make_shared<text::ToNumber>(mindspore::DataType::kNumberTypeInt32);
+  ASSERT_NE(to_number, nullptr);
+  ds = ds->Map({to_number}, {"col1"}, {"col1"});
+  ds->SetNumWorkers(1);
+  ds = ds->Batch(1);
+  ds->SetNumWorkers(1);
+
+  auto tree_adapter = std::make_shared<TreeAdapter>();
+  // Disable IR optimization pass
+  tree_adapter->SetOptimize(false);
+  ASSERT_OK(tree_adapter->Compile(ds->IRNode(), 1));
+
+  auto tree_modifier = std::make_unique<TreeModifier>(tree_adapter.get());
+  tree_modifier->AddChangeRequest(1, std::make_shared<ChangeNumWorkersRequest>(2));
+  tree_modifier->AddChangeRequest(1, std::make_shared<ChangeNumWorkersRequest>());
+  tree_modifier->AddChangeRequest(1, std::make_shared<ChangeNumWorkersRequest>(10));
+
+  tree_modifier->AddChangeRequest(1, std::make_shared<ResizeConnectorRequest>(20));
+  tree_modifier->AddChangeRequest(0, std::make_shared<ResizeConnectorRequest>(100));
+
+  tree_modifier->AddChangeRequest(0, std::make_shared<ChangeNumWorkersRequest>(2));
+  tree_modifier->AddChangeRequest(0, std::make_shared<ChangeNumWorkersRequest>());
+  tree_modifier->AddChangeRequest(0, std::make_shared<ChangeNumWorkersRequest>(10));
+
+  std::vector<int32_t> expected_result = {1, 5, 9, 1, 5, 9};
+  TensorRow row;
+
+  uint64_t i = 0;
+  ASSERT_OK(tree_adapter->GetNext(&row));
+
+  while (row.size() != 0) {
+    auto tensor = row[0];
+    int32_t num;
+    ASSERT_OK(tensor->GetItemAt(&num, {0}));
+    EXPECT_EQ(num, expected_result[i]);
+    ASSERT_OK(tree_adapter->GetNext(&row));
+    i++;
+  }
+
+  // Expect 6 samples
+  EXPECT_EQ(i, 6);
 }

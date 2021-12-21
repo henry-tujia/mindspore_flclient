@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,10 +55,10 @@ void TestSoftmaxInfo::SetUp() {
   g_device_manager->Init(dev_list, local_dev, stage_map, "hccl");
 
   ValuePtr axis1 = MakeValue(static_cast<int64_t>(-2));
-  std::unordered_map<std::string, ValuePtr> attr1 = {{"axis", axis1}};
+  mindspore::HashMap<std::string, ValuePtr> attr1 = {{"axis", axis1}};
 
   ValuePtr axis2 = MakeValue(static_cast<int64_t>(4));
-  std::unordered_map<std::string, ValuePtr> attr2 = {{"axis", axis2}};
+  mindspore::HashMap<std::string, ValuePtr> attr2 = {{"axis", axis2}};
 
   Shapes inputs_shape = {{2, 4, 8, 16}};
   Shapes outputs_shape = {{2, 4, 8, 16}};
@@ -71,7 +71,7 @@ TEST_F(TestSoftmaxInfo, InferDevMatrixShape1) {
   Strategys inputs = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  softmax->Init(strategy);
+  softmax->Init(strategy, nullptr);
   Shape dev_matrix_shape = softmax->dev_matrix_shape();
 
   Shape expect = {2, 4, 1, 16};
@@ -82,7 +82,7 @@ TEST_F(TestSoftmaxInfo, InferSliceShape1) {
   Strategys str = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, str);
 
-  softmax->Init(strategy);
+  softmax->Init(strategy, nullptr);
   std::vector<TensorInfo> inputs = softmax->inputs_tensor_info();
   std::vector<TensorInfo> outputs = softmax->outputs_tensor_info();
 
@@ -103,7 +103,7 @@ TEST_F(TestSoftmaxInfo, GetTensorLayout1) {
   Strategys str = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, str);
 
-  softmax->Init(strategy);
+  softmax->Init(strategy, nullptr);
   std::vector<TensorInfo> inputs = softmax->inputs_tensor_info();
   std::vector<TensorInfo> outputs = softmax->outputs_tensor_info();
 
@@ -124,7 +124,7 @@ TEST_F(TestSoftmaxInfo, GetForwardOp1) {
   Strategys inputs = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  softmax->Init(strategy);
+  softmax->Init(strategy, nullptr);
   OperatorVector forward_op = softmax->forward_op();
   size_t size = forward_op.size();
 
@@ -135,7 +135,7 @@ TEST_F(TestSoftmaxInfo, GetMirrorOPs1) {
   Strategys inputs = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  softmax->Init(strategy);
+  softmax->Init(strategy, nullptr);
   MirrorOps mirror_ops = softmax->mirror_ops();
 
   size_t size = mirror_ops.size();
@@ -148,7 +148,7 @@ TEST_F(TestSoftmaxInfo, CheckStrategy1) {
   Strategys inputs = {{2, 2, 8, 16}, {2, 4, 16, 1}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = softmax->Init(strategy);
+  Status ret = softmax->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -157,7 +157,7 @@ TEST_F(TestSoftmaxInfo, CheckStrategy2) {
   Strategys inputs = {{2, 4, 8}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = softmax->Init(strategy);
+  Status ret = softmax->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -166,7 +166,7 @@ TEST_F(TestSoftmaxInfo, CheckStrategy3) {
   Strategys inputs = {{2, 4, 8, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = softmax->Init(strategy);
+  Status ret = softmax->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -175,7 +175,7 @@ TEST_F(TestSoftmaxInfo, InitFailed1) {
   Strategys inputs = {{2, 4, 1, 16}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = softmax2->Init(strategy);
+  Status ret = softmax2->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 
@@ -184,7 +184,7 @@ TEST_F(TestSoftmaxInfo, InitFailed2) {
   Strategys inputs = {{2, 4, 1, 100}};
   StrategyPtr strategy = NewStrategy(0, inputs);
 
-  Status ret = softmax2->Init(strategy);
+  Status ret = softmax2->Init(strategy, nullptr);
   ASSERT_EQ(ret, FAILED);
 }
 

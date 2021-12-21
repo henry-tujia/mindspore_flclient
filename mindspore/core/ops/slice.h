@@ -27,13 +27,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSlice = "Slice";
+/// \brief Slices a tensor in the specified shape. Refer to Python API @ref mindspore.ops.Slice for more details.
 class MS_CORE_API Slice : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Slice() : PrimitiveC(kNameSlice) { InitIOName({"x", "begin", "size"}, {"output"}); }
+  /// \brief Destructor.
   ~Slice() = default;
   MS_DECLARE_PARENT(Slice, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
+AbstractBasePtr SliceInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                           const std::vector<AbstractBasePtr> &input_args);
+using PrimSlicePtr = std::shared_ptr<Slice>;
 }  // namespace ops
 }  // namespace mindspore
 

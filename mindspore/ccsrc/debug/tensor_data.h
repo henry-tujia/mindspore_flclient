@@ -21,11 +21,9 @@
 #include <string>
 #include <cstring>
 #include <iostream>
-#ifdef OFFLINE_DBG_MODE
-#include "debugger/offline_debug/offline_logger.h"
-#else
-#include "ir/tensor.h"
 #include "mindspore/core/utils/log_adapter.h"
+#ifdef ONLINE_DBG_MODE
+#include "ir/tensor.h"
 #endif
 
 #ifdef ONLINE_DBG_MODE
@@ -213,7 +211,7 @@ class TensorData {
 
   void SetSlot(size_t slot) { this->slot_ = slot; }
 
-  char *GetDataPtr() const { return this->data_ptr_; }
+  const char *GetDataPtr() const { return this->data_ptr_; }
 
   void SetDataPtr(char *data_ptr) { this->data_ptr_ = data_ptr; }
 
@@ -230,6 +228,10 @@ class TensorData {
   unsigned int GetIteration() const { return this->iteration_; }
 
   void SetIteration(unsigned int iteration) { this->iteration_ = iteration; }
+
+  unsigned int GetPrevIteration() const { return this->prev_iteration_; }
+
+  void SetPrevIteration(unsigned int prev_iteration) { this->prev_iteration_ = prev_iteration; }
 
   unsigned int GetDeviceId() const { return this->device_id_; }
 
@@ -424,22 +426,23 @@ class TensorData {
   }
 
  private:
-  char *data_ptr_;         // pointer to the pre-allocated memory
-  uint64_t size_;          // size_ in bytes
-  DbgDataType data_type_;  // internal debugger type
-  unsigned int data_type_size_;
+  char *data_ptr_{nullptr};                           // pointer to the pre-allocated memory
+  uint64_t size_{0};                                  // size_ in bytes
+  DbgDataType data_type_{DbgDataType::DT_UNDEFINED};  // internal debugger type
+  unsigned int data_type_size_{0};
   std::vector<int64_t> shape_;
   std::string name_;
   uint64_t slot_;
-  unsigned int iteration_;
-  unsigned int device_id_;
-  unsigned int root_graph_id_;
-  bool is_output_;
-  int execution_order_;
+  unsigned int iteration_{0};
+  unsigned int prev_iteration_{0};
+  unsigned int device_id_{0};
+  unsigned int root_graph_id_{0};
+  bool is_output_{true};
+  int execution_order_{-1};
   std::string time_stamp_;
 
 #ifdef ONLINE_DBG_MODE
-  mindspore::tensor::TensorPtr tensor_ptr_;
+  mindspore::tensor::TensorPtr tensor_ptr_{nullptr};
 #endif
 };
 #ifdef ONLINE_DBG_MODE

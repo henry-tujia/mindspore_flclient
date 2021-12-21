@@ -35,20 +35,21 @@ namespace dataset {
 MapNode::MapNode(std::shared_ptr<DatasetNode> child, std::vector<std::shared_ptr<TensorOperation>> operations,
                  std::vector<std::string> input_columns, std::vector<std::string> output_columns,
                  const std::vector<std::string> &project_columns, std::shared_ptr<DatasetCache> cache,
-                 std::vector<std::shared_ptr<DSCallback>> callbacks)
+                 std::vector<std::shared_ptr<DSCallback>> callbacks, ManualOffloadMode offload)
     : operations_(operations),
       input_columns_(input_columns),
       output_columns_(output_columns),
       project_columns_(project_columns),
       DatasetNode(std::move(cache)),
-      callbacks_(callbacks) {
+      callbacks_(callbacks),
+      offload_(offload) {
   this->AddChild(child);
 }
 
 std::shared_ptr<DatasetNode> MapNode::Copy() {
   std::vector<std::shared_ptr<TensorOperation>> operations = operations_;
   auto node = std::make_shared<MapNode>(nullptr, operations, input_columns_, output_columns_, project_columns_, cache_,
-                                        callbacks_);
+                                        callbacks_, offload_);
   return node;
 }
 
@@ -89,12 +90,12 @@ Status MapNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
 
   if (!project_columns_.empty()) {
     auto project_op = std::make_shared<ProjectOp>(project_columns_);
-    project_op->set_total_repeats(GetTotalRepeats());
-    project_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+    project_op->SetTotalRepeats(GetTotalRepeats());
+    project_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
     node_ops->push_back(project_op);
   }
-  map_op->set_total_repeats(GetTotalRepeats());
-  map_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  map_op->SetTotalRepeats(GetTotalRepeats());
+  map_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(map_op);
   return Status::OK();
 }
@@ -102,29 +103,27 @@ Status MapNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
 Status MapNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (operations_.empty()) {
-    std::string err_msg = "MapNode: No operation is specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Map: No 'operations' are specified.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   for (const auto &op : operations_) {
     if (op == nullptr) {
-      std::string err_msg = "MapNode: operation must not be nullptr.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = "Map: 'operations' must not be nullptr.";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     } else {
       RETURN_IF_NOT_OK(op->ValidateParams());
     }
   }
   if (!input_columns_.empty()) {
-    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("MapNode", "input_columns", input_columns_));
+    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("Map", "input_columns", input_columns_));
   }
 
   if (!output_columns_.empty()) {
-    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("MapNode", "output_columns", output_columns_));
+    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("Map", "output_columns", output_columns_));
   }
 
   if (!project_columns_.empty()) {
-    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("MapNode", "project_columns", project_columns_));
+    RETURN_IF_NOT_OK(ValidateDatasetColumnParam("Map", "project_columns", project_columns_));
   }
 
   return Status::OK();
@@ -150,6 +149,8 @@ void MapNode::setOperations(const std::vector<std::shared_ptr<TensorOperation>> 
   operations_ = operations;
 }
 std::vector<std::shared_ptr<TensorOperation>> MapNode::operations() { return operations_; }
+
+void MapNode::SetOffload(ManualOffloadMode offload) { offload_ = offload; }
 
 Status MapNode::to_json(nlohmann::json *out_json) {
   RETURN_UNEXPECTED_IF_NULL(out_json);
@@ -182,6 +183,7 @@ Status MapNode::to_json(nlohmann::json *out_json) {
   (void)std::transform(callbacks_.begin(), callbacks_.end(), std::back_inserter(cbs),
                        [](std::shared_ptr<DSCallback> cb) -> int32_t { return cb != nullptr ? cb->step_size() : 0; });
   args["callback"] = cbs;
+
   *out_json = args;
   return Status::OK();
 }
@@ -189,12 +191,11 @@ Status MapNode::to_json(nlohmann::json *out_json) {
 #ifndef ENABLE_ANDROID
 Status MapNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> ds,
                           std::shared_ptr<DatasetNode> *result) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_parallel_workers") != json_obj.end(),
-                               "Failed to find num_parallel_workers");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("input_columns") != json_obj.end(), "Failed to find input_columns");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("output_columns") != json_obj.end(), "Failed to find output_columns");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("project_columns") != json_obj.end(), "Failed to find project_columns");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("operations") != json_obj.end(), "Failed to find operations");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_parallel_workers", kMapNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "input_columns", kMapNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "output_columns", kMapNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "project_columns", kMapNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "operations", kMapNode));
   std::vector<std::string> input_columns = json_obj["input_columns"];
   std::vector<std::string> output_columns = json_obj["output_columns"];
   std::vector<std::string> project_columns = json_obj["project_columns"];

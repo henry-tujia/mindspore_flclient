@@ -34,10 +34,10 @@ void TransStrideTo4D(const PrimitivePtr &primitive, const std::vector<AbstractBa
   auto prim_name = primitive->name();
   auto x_shape = CheckAndConvertUtils::GetTensorInputShape(prim_name, input_args, kInputIndex);
   auto dout_shape = CheckAndConvertUtils::GetTensorInputShape(prim_name, input_args, kDoutIndex);
-
   if (!x_shape->IsDynamic() && !dout_shape->IsDynamic()) {
     return;
   }
+
   auto stride = primitive->GetAttr(kStride);
   MS_EXCEPTION_IF_NULL(stride);
   auto stride_value = GetValue<std::vector<int64_t>>(stride);
@@ -56,7 +56,6 @@ abstract::ShapePtr Conv2DBackpropFilterInferShape(const PrimitivePtr &primitive,
   std::vector<int64_t> out_shape;
   abstract::ShapePtr ret_shape;
   TransStrideTo4D(primitive, input_args);
-
   auto filter_size = input_args[kFilterSizeIdex];
   auto filter_size_v = filter_size->BuildValue();
   MS_EXCEPTION_IF_NULL(filter_size_v);
@@ -77,10 +76,10 @@ abstract::ShapePtr Conv2DBackpropFilterInferShape(const PrimitivePtr &primitive,
       MS_EXCEPTION_IF_NULL(abstract_tensor);
       auto shape_max_value = abstract_tensor->get_max_value();
       auto shape_min_value = abstract_tensor->get_min_value();
-
-      if (shape_max_value == nullptr && shape_min_value == nullptr) {
+      if (shape_max_value == nullptr || shape_min_value == nullptr) {
         MS_LOG(EXCEPTION) << "Max_value or min value of filter size can not be empty when its value is dynamic.";
       }
+
       auto shape_max = GetValue<std::vector<int64_t>>(shape_max_value);
       auto shape_min = GetValue<std::vector<int64_t>>(shape_min_value);
 
@@ -100,11 +99,13 @@ abstract::ShapePtr Conv2DBackpropFilterInferShape(const PrimitivePtr &primitive,
     }
   } else if (filter_size->isa<abstract::AbstractTuple>()) {
     // check tensor, tuple or int to raise error.
-    out_shape = CheckAndConvertUtils::CheckAttrIntOrTupleInt("filter_size", filter_size_v, prim_name);
+    out_shape = CheckAndConvertUtils::CheckTupleInt("input[filter_size]", filter_size_v, prim_name);
     ret_shape = std::make_shared<abstract::Shape>(out_shape);
   } else {
-    MS_EXCEPTION(TypeError) << "Conv2DBackpropFilter filter_size must be a tuple or tensor, but "
-                            << filter_size->ToString();
+    auto size_type = filter_size->BuildType();
+    MS_EXCEPTION_IF_NULL(size_type);
+    MS_EXCEPTION(TypeError) << "The primitive[" << prim_name << "]'s input[filter size] must be a tuple or Tensor, "
+                            << "but got " << size_type->ToString();
   }
   return ret_shape;
 }

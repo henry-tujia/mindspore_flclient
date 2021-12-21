@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
+#include "utils/hash_map.h"
 #include "base/core_ops.h"
 #include "frontend/operator/ops.h"
 #include "frontend/optimizer/optimizer.h"
@@ -62,9 +62,9 @@ static const std::set<std::string> INVALID_LOSS_OPS = {GET_NEXT, VIRTUALLOSS, LO
 static const std::set<std::string> NO_INPUT_TENSOR_OPS = {UNIFORM_REAL};
 // g_RefMap, for CNode B input i is a RefKey[Parameter C],
 // it will be one item in map with key: C, and value: (B, i)
-static std::map<AnfNodePtr, std::pair<AnfNodePtr, int64_t>> g_RefMap;
+std::map<AnfNodePtr, std::pair<AnfNodePtr, int64_t>> g_RefMap;
 
-void SetMiniStepOpDoMirrorLabel(std::vector<AnfNodePtr> new_node_input, bool accu_flag) {
+void SetMiniStepOpDoMirrorLabel(std::vector<AnfNodePtr> new_node_input, bool do_mirror, bool accu_flag) {
   if (new_node_input.empty()) {
     return;
   }
@@ -73,7 +73,8 @@ void SetMiniStepOpDoMirrorLabel(std::vector<AnfNodePtr> new_node_input, bool acc
   MS_EXCEPTION_IF_NULL(prim);
 
   auto attrs = prim->attrs();
-  attrs[DO_MIRROR] = MakeValue<bool>(!accu_flag);
+  attrs[DO_MIRROR] = MakeValue<bool>(do_mirror);
+  attrs[ADD_ACCU] = MakeValue<bool>(accu_flag);
   prim->SetAttrs(attrs);
 }
 
@@ -101,7 +102,7 @@ void SetAllReduceRecomputeFlag(const std::vector<AnfNodePtr> &new_node_input, co
 std::vector<AnfNodePtr> CreateInput(const Operator &op, const AnfNodePtr &node, const std::string &instance_name) {
   MS_EXCEPTION_IF_NULL(node);
   OperatorArgs arg_forward = op.second;
-  ValuePtr pyop_instance = CreatOpInstance(arg_forward.first, op.first, instance_name);
+  ValuePtr pyop_instance = CreateOpInstance(arg_forward.first, op.first, instance_name);
   MS_EXCEPTION_IF_NULL(pyop_instance);
   OperatorParams params = arg_forward.second;
 
@@ -120,39 +121,40 @@ std::vector<AnfNodePtr> CreateInput(const Operator &op, const AnfNodePtr &node, 
   return new_node_input;
 }
 
+AnfNodePtr GetAccuGrad(const std::vector<AnfNodePtr> &parameters, const std::string &weight_name) {
+  for (auto &param : parameters) {
+    if (!ParameterIsCloned(param)) {
+      continue;
+    }
+
+    auto param_ptr = param->cast<ParameterPtr>();
+    MS_EXCEPTION_IF_NULL(param_ptr);
+    if (param_ptr->name().find(weight_name) != std::string::npos &&
+        param_ptr->name().find(ACCU_GRADS) != std::string::npos) {
+      MS_LOG(INFO) << "Find the accumulation grad node: " << param_ptr->name();
+      return param;
+    }
+  }
+  return nullptr;
+}
+
 std::vector<AnfNodePtr> CreateMirrorInput(const FuncGraphPtr &root, const Operator &op, const AnfNodePtr &node,
                                           const std::string &instance_name, const std::string &weight_name) {
   MS_EXCEPTION_IF_NULL(root);
   MS_EXCEPTION_IF_NULL(node);
   MS_EXCEPTION_IF_NULL(root->manager());
 
-  AnfNodePtr grad_accu = nullptr;
   std::string op_name = op.first;
   OperatorArgs arg_forward = op.second;
+  AnfNodePtr grad_accu = nullptr;
 
   int64_t grad_accumulation_step = ParallelContext::GetInstance()->grad_accumulation_step();
   int64_t split_stage_num = ParallelContext::GetInstance()->pipeline_stage_split_num();
 
   if (grad_accumulation_step > 1 || split_stage_num > 1) {
     auto parameters = root->parameters();
-    bool find_grad_accu_node = false;
-    for (auto &param : parameters) {
-      if (!ParameterIsCloned(param)) {
-        continue;
-      }
-
-      auto param_ptr = param->cast<ParameterPtr>();
-      MS_EXCEPTION_IF_NULL(param_ptr);
-      if (param_ptr->name().find(weight_name) != std::string::npos &&
-          param_ptr->name().find(ACCU_GRADS) != std::string::npos) {
-        find_grad_accu_node = true;
-        grad_accu = param;
-        MS_LOG(INFO) << "Find the accumulation grad node: " << param_ptr->name();
-        break;
-      }
-    }
-
-    if (!find_grad_accu_node) {
+    grad_accu = GetAccuGrad(parameters, weight_name);
+    if (!grad_accu) {
       if (op_name == MIRROR_MINI_STEP_OPERATOR) {
         op_name = MIRROR_OPERATOR;
         arg_forward.first.pop_back();
@@ -163,7 +165,7 @@ std::vector<AnfNodePtr> CreateMirrorInput(const FuncGraphPtr &root, const Operat
     }
   }
 
-  ValuePtr pyop_instance = CreatOpInstance(arg_forward.first, op_name, instance_name);
+  ValuePtr pyop_instance = CreateOpInstance(arg_forward.first, op_name, instance_name);
   MS_EXCEPTION_IF_NULL(pyop_instance);
   OperatorParams params = arg_forward.second;
 
@@ -189,7 +191,9 @@ std::vector<AnfNodePtr> CreateMirrorInput(const FuncGraphPtr &root, const Operat
   SetCommunicationOpGroupLabel(new_node_input);
   // gradient accumulation
   if (grad_accumulation_step > 1) {
-    SetMiniStepOpDoMirrorLabel(new_node_input, root->has_flag(ACCUMULATION));
+    bool add_accu = root->has_flag(ACCUMULATION);
+    // MiniStep need to do mirror at each micro step as we use the gradient accumulation sharding,
+    SetMiniStepOpDoMirrorLabel(new_node_input, !add_accu, !add_accu);
   }
   return new_node_input;
 }
@@ -223,7 +227,7 @@ void InsertNode(const Operator &op, const CNodePtr &node, size_t index, const An
   }
   new_node->set_scope(scope);
   node_input[0]->set_scope(scope);
-  manager->SetEdge(node, SizeToLong(index), new_node);
+  manager->SetEdge(node, SizeToInt(index), new_node);
   MS_LOG(INFO) << "Insert " << instance_name << " success";
 }
 
@@ -351,10 +355,10 @@ void InsertRedistribution(const RedistributionOpListPtr &redistribution_oplist_p
     if (prim_out != nullptr && prim_in != nullptr) {
       auto prim_out_attr = prim_out->attrs();
       auto prim_in_attr = prim_in->attrs();
-      if (prim_out_attr.find(RECOMPUTE_COMM_OP) != prim_out_attr.end() &&
-          !GetValue<bool>(prim_out_attr[RECOMPUTE_COMM_OP]) &&
-          prim_in_attr.find(RECOMPUTE_COMM_OP) != prim_in_attr.end() &&
-          !GetValue<bool>(prim_in_attr[RECOMPUTE_COMM_OP]) &&
+      if (((prim_out_attr.find(RECOMPUTE_COMM_OP) != prim_out_attr.end() &&
+            !GetValue<bool>(prim_out_attr[RECOMPUTE_COMM_OP])) ||
+           (prim_in_attr.find(RECOMPUTE_COMM_OP) != prim_in_attr.end() &&
+            !GetValue<bool>(prim_in_attr[RECOMPUTE_COMM_OP]))) &&
           COMMUNICATION_OPS.find(op_name) != COMMUNICATION_OPS.end()) {
         MS_LOG(INFO) << "The redistribution node would not be recomputed.";
         instance_name = instance_name + "_" + NOT_RECOMPUTE;
@@ -454,7 +458,7 @@ void Redistribution(const std::pair<AnfNodePtr, int64_t> &node_pair, const Opera
   }
 
   if (LongToSize(index - 1) >= next_distribute_operator->inputs_tensor_info().size()) {
-    MS_LOG(WARNING) << "The index is out of range, the index is " << index - 1 << ", the vector size is "
+    MS_LOG(WARNING) << "The index is out of range, the index is " << (index - 1) << ", the vector size is "
                     << next_distribute_operator->inputs_tensor_info().size() << "next operator name is "
                     << next_distribute_operator->name();
     return;
@@ -483,8 +487,13 @@ void Redistribution(const std::pair<AnfNodePtr, int64_t> &node_pair, const Opera
   }
 }
 
-bool StrategyFound(std::unordered_map<std::string, ValuePtr> attrs) {
-  auto iter = attrs.find(STRATEGY);
+bool StrategyFound(const mindspore::HashMap<std::string, ValuePtr> &attrs) {
+  auto iter = attrs.find(IN_STRATEGY);
+  return !((iter == attrs.end()) || (iter->second->type_name() == NONE));
+}
+
+bool AttrFound(const mindspore::HashMap<std::string, ValuePtr> &attrs, const std::string &target) {
+  auto iter = attrs.find(target);
   return !((iter == attrs.end()) || (iter->second->type_name() == NONE));
 }
 
@@ -612,7 +621,7 @@ void SplitTensor(const AnfNodePtr &node, const CNodePtr &next_node, int64_t inde
 
   // extract tensor layout
   if (LongToSize(index - 1) >= op_info->inputs_tensor_info().size()) {
-    MS_LOG(EXCEPTION) << "The index is out of range, index is  " << index - 1 << ", vector size is  "
+    MS_LOG(EXCEPTION) << "The index is out of range, index is  " << (index - 1) << ", vector size is  "
                       << op_info->inputs_tensor_info().size();
   }
   TensorInfo tensor_info = op_info->inputs_tensor_info()[LongToSize(index - 1)];
@@ -638,7 +647,7 @@ void SplitTensorList(const AnfNodePtr &node, const CNodePtr &next_node, int inde
   MS_EXCEPTION_IF_NULL(next_node);
   if (next_node->inputs().size() != 2 || index != 1) {
     MS_LOG(INFO) << next_node->fullname_with_scope() << " Inputs must have only one input, get "
-                 << next_node->inputs().size() - 1 << " index should be 1, get " << index;
+                 << (next_node->inputs().size() - 1) << " index should be 1, get " << index;
     return;
   }
   OperatorInfoPtr op_info = next_node->user_data<OperatorInfo>();
@@ -724,9 +733,21 @@ void StepReplaceOp(OperatorVector replace_op, const CNodePtr &node) {
   if (manager == nullptr) {
     MS_LOG(EXCEPTION) << "Failure:AddNode error since manager is nullptr";
   }
+
+  // When reshape(bool), insert cast in the begin and end of op_list to avoid AllGather(bool).
+  auto reshape_type_str = node->abstract()->BuildType()->ToString();
+  auto replace_op_info = distribute_operator->replace_op_info();
+  if (reshape_type_str.find(BOOL) != std::string::npos) {
+    auto cast_int = CreateCastOp(kInt32);
+    auto cast_bool = CreateCastOp(kBool);
+    replace_op.insert(replace_op.begin(), cast_int);
+    replace_op.insert(replace_op.end(), cast_bool);
+    replace_op_info.insert(replace_op_info.begin(), {false, 1});
+    replace_op_info.insert(replace_op_info.end(), {false, 1});
+  }
+
   // step2:traverse op_list and insert node
   std::reverse(replace_op.begin(), replace_op.end());
-  auto replace_op_info = distribute_operator->replace_op_info();
   std::reverse(replace_op_info.begin(), replace_op_info.end());
   if (!replace_op_info.empty() && replace_op_info.size() != replace_op.size()) {
     MS_LOG(EXCEPTION) << "replace_op_info is not empty and size not equal to replace_op!";
@@ -788,7 +809,7 @@ void StepReplaceGraph(const ReplaceGraphPtr &replace_graph, const CNodePtr &node
   // However, the segment_sum operation needs two inputs, To solve this
   // We maintain a dict to count the times of the same operations,
   // and bind the inputs according to the times of the op appears.
-  static std::unordered_map<AnfNodePtr, int> input_map = {};
+  mindspore::HashMap<AnfNodePtr, int> input_map = {};
   static int appear_count = 0;
   for (auto &replace_input : replace_graph->first) {
     auto pre_node = node->input(LongToSize(replace_input.second));
@@ -886,7 +907,7 @@ void InsertVirtualOutput(const FuncGraphPtr &root, const std::vector<AnfNodePtr>
           MS_LOG(EXCEPTION) << "the output of tuple_get_item is not a cnode";
         }
         cnode = node_pair.first->cast<CNodePtr>();
-        last_indexs[last_node_index] = size_t(node_pair.second);
+        last_indexs[last_node_index] = IntToSize(node_pair.second);
       }
       auto pre_node = cnode->input(last_indexs[last_node_index]);
       Shapes shape_outputs = GetNodeShape(pre_node);
@@ -925,7 +946,7 @@ static std::pair<AnfNodePtr, bool> FindParameterByValueNode(const AnfNodePtr &no
   return std::make_pair(nullptr, false);
 }
 
-static std::pair<AnfNodePtr, bool> FindParameterByParameter(const AnfNodePtr &node, const FuncGraphPtr &func_graph) {
+static std::pair<AnfNodePtr, bool> FindParameterByParameter(const AnfNodePtr &node) {
   auto param_ptr = node->user_data<parallel::TensorLayout>();
   if (param_ptr && !param_ptr->opt_shard_group().empty() && param_ptr->opt_shard_mirror_group().empty()) {
     return std::make_pair(nullptr, false);
@@ -940,7 +961,7 @@ std::pair<AnfNodePtr, bool> FindParameter(const AnfNodePtr &node, const FuncGrap
   }
 
   if (node->isa<Parameter>()) {
-    return FindParameterByParameter(node, func_graph);
+    return FindParameterByParameter(node);
   }
 
   if (node->isa<ValueNode>()) {
@@ -983,7 +1004,7 @@ std::pair<AnfNodePtr, bool> FindParameter(const AnfNodePtr &node, const FuncGrap
 }
 
 // only used for FindCNode
-CNodePtr SkipTrivialNodesMoveDown(FuncGraphManagerPtr manager, CNodePtr node) {
+CNodePtr SkipTrivialNodesMoveDown(const FuncGraphManagerPtr &manager, CNodePtr node) {
   MS_EXCEPTION_IF_NULL(node);
   while (IsInTrivialNodeList(node) || IsSomePrimitive(node, LOAD)) {
     node = manager->node_users()[node].begin()->first->cast<CNodePtr>();
@@ -991,11 +1012,15 @@ CNodePtr SkipTrivialNodesMoveDown(FuncGraphManagerPtr manager, CNodePtr node) {
   return node;
 }
 
-std::pair<bool, CNodePtr> FindCNode(const AnfNodePtr &anode, const std::string &name, const FuncGraphPtr &func_graph) {
+std::pair<bool, CNodePtr> FindCNode(const AnfNodePtr &anode, const std::string &name, const FuncGraphPtr &func_graph,
+                                    size_t max_depth) {
   MS_EXCEPTION_IF_NULL(anode);
   MS_EXCEPTION_IF_NULL(anode->func_graph());
   FuncGraphManagerPtr manager = anode->func_graph()->manager();
   MS_EXCEPTION_IF_NULL(manager);
+  if (max_depth > MAX_RECURSIVE_DEPTH) {
+    MS_LOG(EXCEPTION) << "Recursive call is larger than 100000.";
+  }
   AnfNodeIndexSet node_set = manager->node_users()[anode];
   bool result = false;
   CNodePtr cnode_return = nullptr;
@@ -1021,7 +1046,7 @@ std::pair<bool, CNodePtr> FindCNode(const AnfNodePtr &anode, const std::string &
       MS_LOG(INFO) << "Find Primitive " << name << " in different func_graph";
     }
     if (ParallelContext::GetInstance()->enable_parallel_optimizer() && IsInAllGatherNodeList(use_apply)) {
-      return FindCNode(node_pair.first, name, func_graph);
+      return FindCNode(node_pair.first, name, func_graph, max_depth + 1);
     }
   }
   return std::make_pair(result, cnode_return);
@@ -1060,12 +1085,13 @@ static bool CheckInsertMirrorOps(const MirrorOps &mirror_ops, const CNodePtr &no
   if (IsPrimitiveCNode(node, prim::kPrimSend)) {
     return true;
   }
-  if ((node->inputs().size() == 2) && (IsValueNode<ValueSequeue>(node->input(1)))) {
+  constexpr size_t kSingleArgCNodeSize = 2;
+  if ((node->inputs().size() == kSingleArgCNodeSize) && (IsValueNode<ValueSequence>(node->input(1)))) {
     MS_LOG(INFO) << "Input is ValueList, skip it.";
     return false;
   }
 
-  if ((node->inputs().size() == 2) &&
+  if ((node->inputs().size() == kSingleArgCNodeSize) &&
       (AnfNodeIsPrimitive(node->input(1), MAKE_TUPLE) || AnfNodeIsPrimitive(node->input(1), MAKE_LIST))) {
     MS_LOG(INFO) << "The mirror for " << GetPrimName(node) << " has handle by make_tuple node";
     return false;
@@ -1073,7 +1099,7 @@ static bool CheckInsertMirrorOps(const MirrorOps &mirror_ops, const CNodePtr &no
 
   if (mirror_ops.size() != node_size - 1) {
     MS_LOG(EXCEPTION) << "Mirrorops's size is wrong! mirror_ops size is " << mirror_ops.size() << ", node_size is "
-                      << node_size - 1;
+                      << (node_size - 1);
   }
   return true;
 }
@@ -1084,6 +1110,16 @@ CNodePtr SkipTrivialNodesMoveUp(CNodePtr node) {
   while (!IsSomePrimitive(node, LOAD)) {
     if (IsInTrivialNodeList(node) || IsInAllGatherNodeList(node)) {
       node = node->input(1)->cast<CNodePtr>();
+    }
+  }
+  auto prev_node = node->input(1)->cast<CNodePtr>();
+  if (prev_node != nullptr) {
+    if (IsSomePrimitive(prev_node, DEPEND)) {
+      auto prev_prev_node = prev_node->input(1)->cast<CNodePtr>();
+      if (IsSomePrimitive(node, LOAD)) {
+        node = prev_prev_node;
+        MS_LOG(INFO) << "Moving to the Load node before Depend node.";
+      }
     }
   }
   return node;
@@ -1103,22 +1139,12 @@ std::string MirrorOpName() {
   return mirror_op_name;
 }
 
-void InsertMirrorOps(const FuncGraphPtr &root, const MirrorOps &mirror_ops, const CNodePtr &node) {
-  MS_EXCEPTION_IF_NULL(node);
-  size_t node_size = node->inputs().size();
+static void DoInsertMirrorOps(const FuncGraphPtr &root, const MirrorOps &mirror_ops, const CNodePtr &node,
+                              size_t node_size) {
   FuncGraphPtr func_graph = node->func_graph();
   MS_EXCEPTION_IF_NULL(func_graph);
   FuncGraphManagerPtr manager = func_graph->manager();
   MS_EXCEPTION_IF_NULL(manager);
-  for (auto input : node->inputs()) {
-    if (HasAbstractMonad(input)) {
-      node_size--;
-    }
-  }
-
-  if (!CheckInsertMirrorOps(mirror_ops, node, node_size)) {
-    return;
-  }
 
   for (size_t index = 1; index < node_size; ++index) {
     OperatorVector backward_op = mirror_ops[index - 1];
@@ -1157,7 +1183,7 @@ void InsertMirrorOps(const FuncGraphPtr &root, const MirrorOps &mirror_ops, cons
     std::string mirror_op_name = MirrorOpName();
     AnfNodePtr pre_node = node->input(index);
     if (!param_node_pair.second) {
-      auto next_cnode = FindCNode(param_node_pair.first, mirror_op_name, func_graph);
+      auto next_cnode = FindCNode(param_node_pair.first, mirror_op_name, func_graph, 0);
       // if there is already a MirrorOp in the same graph, use MirrorOp CNode as a input instead
       if (next_cnode.first) {
         MS_EXCEPTION_IF_NULL(next_cnode.second);
@@ -1204,6 +1230,22 @@ void InsertMirrorOps(const FuncGraphPtr &root, const MirrorOps &mirror_ops, cons
   }
 }
 
+void InsertMirrorOps(const FuncGraphPtr &root, const MirrorOps &mirror_ops, const CNodePtr &node) {
+  MS_EXCEPTION_IF_NULL(node);
+  size_t node_size = node->inputs().size();
+  for (auto input : node->inputs()) {
+    if (HasAbstractMonad(input)) {
+      node_size--;
+    }
+  }
+
+  if (!CheckInsertMirrorOps(mirror_ops, node, node_size)) {
+    return;
+  }
+
+  DoInsertMirrorOps(root, mirror_ops, node, node_size);
+}
+
 void BackwardCommunication(const FuncGraphPtr &root, const OperatorInfoPtr &distribute_operator, const CNodePtr &node,
                            const std::vector<std::pair<CNodePtr, LossNodeInfo>> &sens_loss_pairs) {
   MS_EXCEPTION_IF_NULL(distribute_operator);
@@ -1248,20 +1290,6 @@ OperatorInfoPtr OperatorInstanceByName(const std::string &name, const PrimitiveA
     MS_LOG(EXCEPTION) << "Length of name is zero!";
   }
   std::string distribute_opname = GetDisOpName(name);
-  if (name == GATHERV2) {
-    distribute_opname = name + "PInfo";
-    auto data_parallel_iter = attrs.find(DATA_PARALLEL);
-    if (data_parallel_iter != attrs.end()) {
-      MS_EXCEPTION_IF_NULL(data_parallel_iter->second);
-      if (!data_parallel_iter->second->isa<BoolImm>()) {
-        MS_LOG(EXCEPTION) << ": data_parallel flag's type is not a bool.";
-      }
-      bool data_parallel = data_parallel_iter->second->cast<BoolImmPtr>()->value();
-      if (data_parallel) {
-        distribute_opname = name + "Info";
-      }
-    }
-  }
   OperatorInfoPtr operator_ =
     (OperatorInfoPtr)DynCreator::Instance().Create(distribute_opname, shape_list[0], shape_list[1], attrs, TOTAL_OPS);
   if (operator_ == nullptr) {
@@ -1300,21 +1328,26 @@ OperatorInfoPtr NewOperatorInstance(const PrimitivePtr &prim, const PrimitiveAtt
 }
 
 StrategyPtr ExtractStrategy(const ValuePtr &stra) {
-  ValueTuplePtr var = stra->cast<ValueTuplePtr>();
+  if (stra == nullptr) {
+    return nullptr;
+  }
+
+  auto var = stra->cast<ValueTuplePtr>();
+  if (var == nullptr) {
+    return nullptr;
+  }
+
   StrategyPtr strategyPtr;
   int64_t stage_id = g_device_manager->stage_id();
 
   MS_LOG(INFO) << "Extract information: strategy " << stra->ToString();
-  if (var == nullptr) {
-    MS_LOG(EXCEPTION) << "Strategy value is nullptr";
-  }
   if (var->size() > 0) {
     std::vector<ValuePtr> elements = var->value();
     Strategys strategy;
     for (uint64_t index = 0; index < elements.size(); ++index) {
       Dimensions dim;
-      if (elements[index]->isa<ValueSequeue>()) {
-        ValueTuplePtr value_tuple = elements[index]->cast<ValueTuplePtr>();
+      if (elements[index]->isa<ValueSequence>()) {
+        auto value_tuple = elements[index]->cast<ValueTuplePtr>();
         std::vector<ValuePtr> value_vector = value_tuple->value();
         (void)std::transform(value_vector.begin(), value_vector.end(), std::back_inserter(dim),
                              [](const ValuePtr &value) { return static_cast<int64_t>(GetValue<int64_t>(value)); });
@@ -1356,7 +1389,6 @@ std::vector<Shapes> ExtractShape(const CNodePtr &node) {
   Shapes shape_inputs, shape_outputs;
   std::vector<Shapes> shape_all;
   std::vector<AnfNodePtr> all_inputs = node->inputs();
-  std::vector<AnfNodePtr> node_inputs{all_inputs.begin() + 1, all_inputs.end()};
 
   size_t inputs_size = all_inputs.size();
   for (size_t i = 1; i < inputs_size; ++i) {
@@ -1459,7 +1491,7 @@ std::pair<AnfNodePtr, int64_t> FindSubGraph(const FuncGraphPtr &graph, const Anf
       FuncGraphPtr graph_sub = GetValueNode<FuncGraphPtr>(graph_value_node);
       auto parameters = graph_sub->parameters();
       if (LongToSize(param_pair.second - 1) >= parameters.size()) {
-        MS_LOG(EXCEPTION) << "The index is out of range, index is " << param_pair.second - 1 << ", vector size is "
+        MS_LOG(EXCEPTION) << "The index is out of range, index is: " << (param_pair.second - 1) << ", vector size is "
                           << parameters.size();
       }
       std::pair<AnfNodePtr, int64_t> res = FindSubGraph(graph_sub, parameters[LongToSize(param_pair.second - 1)]);
@@ -1506,6 +1538,7 @@ static void InsertAllGatherOp(const FuncGraphPtr &root, const std::string &group
                               const AnfNodePtr &node, const std::string &op_name, bool is_shared_param) {
   MS_EXCEPTION_IF_NULL(res.first);
   MS_EXCEPTION_IF_NULL(node);
+  bool grad_accumulation_shard = ParallelContext::GetInstance()->grad_accumulation_shard();
   auto cnode = res.first->cast<CNodePtr>();
   auto graph = cnode->func_graph();
   MS_EXCEPTION_IF_NULL(graph);
@@ -1524,6 +1557,12 @@ static void InsertAllGatherOp(const FuncGraphPtr &root, const std::string &group
     op = CreateAllGatherOp(group);
   }
   CNodePtr cast_node = InsertAllGatherAfterCast(cnode);
+  std::string opt_shard_mirror_group;
+  auto param_ptr = node->cast<ParameterPtr>();
+  MS_EXCEPTION_IF_NULL(param_ptr);
+  if (param_ptr->user_data<TensorLayout>()) {
+    opt_shard_mirror_group = param_ptr->user_data<TensorLayout>()->opt_shard_mirror_group();
+  }
   if (!is_shared_param && cast_node) {
     allgather = ReplaceNode(op, cast_node, graph, PARALLEL_OPTIMIZER_ALLGATHER_NOT_COMPUTE, param_name, root);
     MS_LOG(INFO) << "Parallel optimizer is applied before Cast for " << param_name;
@@ -1537,6 +1576,17 @@ static void InsertAllGatherOp(const FuncGraphPtr &root, const std::string &group
   AddCommOpFusionType(allgather, node);
   // add gradients mean
   AddCommOpMeanFlag(allgather);
+  if (op_name == MICRO_STEP_ALL_GATHER) {
+    // When grad_accumulation_shard is enabled, the ReduceScatter is inserted at each micro step
+    // so no need to do backward for the micro_step_allgather
+    AddCommOpMirrorFlag(allgather, !grad_accumulation_shard);
+  } else if (op_name == MINI_STEP_ALL_GATHER) {
+    // We need to manually set the add_accu to be false if it's father node is MirrorMiniStep
+    bool add_accu = root->has_flag(ACCUMULATION);
+    bool is_with_mirror = opt_shard_mirror_group.size() > 1;
+    AddCommOpAddAccuFlag(allgather, !add_accu && !is_with_mirror);
+    AddCommOpMirrorFlag(allgather, grad_accumulation_shard || !add_accu);
+  }
 }
 
 static void ApplyParallelOptOnParam(const FuncGraphPtr &root, const AnfNodePtr &parameter,
@@ -1568,14 +1618,14 @@ static void ApplyParallelOptOnParam(const FuncGraphPtr &root, const AnfNodePtr &
       if (distribute_operator == nullptr) {
         MS_LOG(DEBUG) << "Parallel optimizer: " << GetPrimName(cnode) << " 's OperatorInfoPtr is nullptr";
       } else if (IntToSize(param_pair.second - 1) >= distribute_operator->inputs_tensor_info().size()) {
-        MS_LOG(EXCEPTION) << "The index is out of range, index is  " << param_pair.second - 1 << ", vector size is  "
+        MS_LOG(EXCEPTION) << "The index is out of range, index is  " << (param_pair.second - 1) << ", vector size is  "
                           << distribute_operator->inputs_tensor_info().size();
       }
       if (insert_flag) {
         // if there are multiple node users, they share one same allgather
-        auto next_cnode = FindCNode(parameter, op_name, cnode->func_graph());
+        auto next_cnode = FindCNode(parameter, op_name, cnode->func_graph(), 0);
         if (next_cnode.first) {
-          manager->SetEdge(cnode, SizeToLong(param_pair.second), next_cnode.second);
+          manager->SetEdge(cnode, param_pair.second, next_cnode.second);
           MS_LOG(INFO) << "Parallel optimizer is shared between " << parameter->ToString() << " and "
                        << GetPrimName(cnode);
         } else {
@@ -1660,7 +1710,7 @@ std::string SetParallelShape(const AnfNodePtr &parameter, const std::pair<AnfNod
     MS_LOG(EXCEPTION) << "Failure:node " << cnode->ToString() << " 's OperatorInfoPtr is nullptr";
   }
   if (LongToSize(res.second - 1) >= distribute_operator->inputs_tensor_info().size()) {
-    MS_LOG(EXCEPTION) << "The index is out of range, index is  " << res.second - 1 << ", vector size is  "
+    MS_LOG(EXCEPTION) << "The index is out of range, index is  " << (res.second - 1) << ", vector size is  "
                       << distribute_operator->inputs_tensor_info().size();
   }
   TensorInfo tensorinfo_in = distribute_operator->inputs_tensor_info()[LongToSize(res.second - 1)];
@@ -1730,18 +1780,25 @@ void SetVirtualDatasetStrategy(const CNodePtr &node) {
     if (!ParallelContext::GetInstance()->dataset_strategy().empty() && prim->name() == VIRTUAL_DATA_SET) {
       std::vector<ValuePtr> elements;
       auto dataset_strategy = ParallelContext::GetInstance()->dataset_strategy();
-      std::transform(dataset_strategy.begin(), dataset_strategy.end(), std::back_inserter(elements),
-                     [](auto input_stra) { return MakeValue(input_stra); });
+      (void)std::transform(dataset_strategy.begin(), dataset_strategy.end(), std::back_inserter(elements),
+                           [](auto input_stra) { return MakeValue(input_stra); });
       ValueTuplePtr strategy = std::make_shared<ValueTuple>(elements);
-      attrs_temp[STRATEGY] = strategy;
+      attrs_temp[IN_STRATEGY] = strategy;
       (void)prim->SetAttrs(attrs_temp);
+      if (prim->HasAttr(REPEAT_DIM_DIRECT) && GetValue<std::string>(prim->GetAttr(REPEAT_DIM_DIRECT)) == RIGHT) {
+        ParallelContext::GetInstance()->set_dataset_repeat_dim_right(true);
+        MS_LOG(INFO) << "dataset repeat dim is right";
+      }
       return;
     }
     int64_t dev_num;
     if (full_batch) {
       dev_num = 1;
     } else {
-      dev_num = SizeToLong(g_device_manager->stage_device_num());
+      dev_num = g_device_manager->stage_device_num();
+    }
+    if (dev_num == 0) {
+      MS_LOG(EXCEPTION) << "Device Num must be larger than 0, but got 0.";
     }
     std::vector<Shapes> shape_list = ExtractShape(node);
     if (shape_list.empty()) {
@@ -1764,7 +1821,7 @@ void SetVirtualDatasetStrategy(const CNodePtr &node) {
       elements.push_back(MakeValue(input_strategy));
     }
     ValueTuplePtr strategy = std::make_shared<ValueTuple>(elements);
-    attrs_temp[STRATEGY] = strategy;
+    attrs_temp[IN_STRATEGY] = strategy;
     (void)prim->SetAttrs(attrs_temp);
   }
 }
@@ -1856,7 +1913,10 @@ static bool CheckExtractInfomation(const CNodePtr &cnode) {
   return true;
 }
 
-void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes, bool is_training) {
+static void ExtractStrategyAndInit(const CNodePtr &cnode, const PrimitivePtr &prim, const OperatorInfoPtr &op_info) {
+  StrategyPtr in_strategy = nullptr, out_strategy = nullptr;
+  auto attrs = prim->attrs();
+
   // load strategy map from checkpoint
   StrategyMap stra_map;
   if (StrategyCheckpoint::GetInstance().LoadCheckPointOn() &&
@@ -1864,6 +1924,35 @@ void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes, bool is_traini
     MS_LOG(EXCEPTION) << "Load strategy checkpoint failed";
   }
 
+  std::string strategy_key_name = "";
+  auto param_names = NodeParameterName(cnode, -1, 0);
+  if (!param_names.empty()) {
+    strategy_key_name = prim->name() + "_" + param_names[0].first;
+  }
+  bool load_strategy_from_ckpt =
+    StrategyCheckpoint::GetInstance().LoadCheckPointOn() && stra_map.find(strategy_key_name) != stra_map.end();
+  if ((!StrategyFound(attrs) && !load_strategy_from_ckpt) && !cnode->HasPrimalAttr(IN_STRATEGY)) {
+    MS_LOG(INFO) << "ExtractInformation: the strategy of node " << cnode->ToString() << " prim " << prim->name()
+                 << " is empty, using batch parallel";
+    in_strategy = GenerateBatchParallelStrategy(op_info, prim);
+  } else if (cnode->HasPrimalAttr(IN_STRATEGY)) {
+    in_strategy = ExtractStrategy(cnode->GetPrimalAttr(IN_STRATEGY));
+    out_strategy = ExtractStrategy(cnode->GetPrimalAttr(OUT_STRATEGY));
+  } else if (StrategyFound(attrs)) {
+    in_strategy = ExtractStrategy(attrs[IN_STRATEGY]);
+    out_strategy = ExtractStrategy(attrs[OUT_STRATEGY]);
+  } else {
+    in_strategy = stra_map[strategy_key_name];
+  }
+
+  MS_EXCEPTION_IF_NULL(in_strategy);
+  if (op_info->Init(in_strategy, out_strategy) == FAILED) {
+    MS_LOG(EXCEPTION) << "Failure:operator " << prim->name() << " init failed" << trace::DumpSourceLines(cnode);
+  }
+}
+
+void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes) {
+  SetStridedSliceSplitStrategy(all_nodes);
   for (auto &node : all_nodes) {
     auto cnode = node->cast<CNodePtr>();
     if (!CheckExtractInfomation(cnode) || IsPrimitiveCNode(node, prim::kPrimSend)) {
@@ -1893,7 +1982,7 @@ void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes, bool is_traini
       }
       input_value.emplace_back(nullptr);
     }
-    StrategyPtr strategyPtr = nullptr;
+
     (*operator_).set_input_value(input_value);
     (*operator_).set_outputs_dtype(cnode->Type());
     (*operator_).set_cnode(cnode);
@@ -1901,32 +1990,8 @@ void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes, bool is_traini
       cnode->set_user_data<OperatorInfo>(operator_);
       continue;
     }
-    // load strategy checkpoint
-    // key of strategy map
-    std::string strategy_key_name = "";
-    auto param_names = NodeParameterName(cnode, -1, 0);
-    if (!param_names.empty()) {
-      strategy_key_name = prim->name() + "_" + param_names[0].first;
-    }
-    bool load_strategy_from_ckpt =
-      StrategyCheckpoint::GetInstance().LoadCheckPointOn() && stra_map.find(strategy_key_name) != stra_map.end();
-    if ((!StrategyFound(attrs) && !load_strategy_from_ckpt) && !cnode->HasPrimalAttr(STRATEGY)) {
-      MS_LOG(INFO) << "ExtractInformation: the strategy of node " << node->ToString() << " prim " << prim->name()
-                   << " is empty, using batch parallel";
-      strategyPtr = GenerateBatchParallelStrategy(operator_, prim);
-    } else if (cnode->HasPrimalAttr(STRATEGY)) {
-      strategyPtr = ExtractStrategy(cnode->GetPrimalAttr(STRATEGY));
-    } else if (StrategyFound(attrs)) {
-      strategyPtr = ExtractStrategy(attrs[STRATEGY]);
-    } else {
-      strategyPtr = stra_map[strategy_key_name];
-    }
 
-    MS_EXCEPTION_IF_NULL(strategyPtr);
-    if (operator_->Init(strategyPtr) == FAILED) {
-      MS_LOG(EXCEPTION) << "Failure:operator " << prim->name() << " init failed"
-                        << " trace: " << trace::DumpSourceLines(cnode);
-    }
+    ExtractStrategyAndInit(cnode, prim, operator_);
     cnode->set_user_data<OperatorInfo>(operator_);
   }
 }
@@ -1938,8 +2003,8 @@ TensorLayout GetInputLayoutFromCNode(const std::pair<AnfNodePtr, int64_t> &node_
   MS_EXCEPTION_IF_NULL(distribute_operator);
   int64_t index = node_pair.second;
   if (index > SizeToLong(distribute_operator->inputs_tensor_info().size())) {
-    MS_LOG(EXCEPTION) << "The index is out of range, the node_pair.second is  " << index - 1 << ", the vector size is  "
-                      << distribute_operator->inputs_tensor_info().size();
+    MS_LOG(EXCEPTION) << "The index is out of range, the node_pair.second is  " << (index - 1)
+                      << ", the vector size is  " << distribute_operator->inputs_tensor_info().size();
   }
   TensorInfo tensorinfo_in = distribute_operator->inputs_tensor_info()[LongToSize(index - 1)];
   TensorLayout tensorlayout_in = tensorinfo_in.tensor_layout();
@@ -2203,7 +2268,7 @@ void ReshapeInit(const std::vector<AnfNodePtr> &all_nodes) {
       auto reshape_info_ptr = std::dynamic_pointer_cast<ReshapeInfo>(operator_info);
       reshape_info_ptr->SetOutputLayout(*prev_layout_ptr);
     }
-    if (operator_info->Init(nullptr) == FAILED) {
+    if (operator_info->Init(nullptr, nullptr) == FAILED) {
       MS_LOG(EXCEPTION) << "Failure:operator " << prim->ToString() << " init failed";
     }
   }
@@ -2225,7 +2290,10 @@ CNodePtr HandleDependLoss(const CNodePtr &cnode, size_t curr_depth) {
   return cnode;
 }
 
-LossNodeInfo FindLossCNode(const FuncGraphPtr &func_graph) {
+LossNodeInfo FindLossCNode(const FuncGraphPtr &func_graph, size_t max_depth) {
+  if (max_depth > MAX_RECURSIVE_DEPTH) {
+    MS_LOG(EXCEPTION) << "Recursive call is larger than 100000.";
+  }
   LossNodeInfo loss_node_info;
   MS_EXCEPTION_IF_NULL(func_graph);
   CNodePtr return_node = func_graph->get_return();
@@ -2242,7 +2310,7 @@ LossNodeInfo FindLossCNode(const FuncGraphPtr &func_graph) {
     if (IsPrimitiveCNode(switch_cnode, prim::kPrimSwitch)) {
       MS_EXCEPTION_IF_NULL(switch_cnode);
       auto switch_graph = GetValueNode<FuncGraphPtr>(switch_cnode->input(2));
-      return FindLossCNode(switch_graph);
+      return FindLossCNode(switch_graph, max_depth + 1);
     }
   }
   if (pre_cnode == nullptr || !IsValueNode<Primitive>(pre_cnode->input(0))) {
@@ -2511,7 +2579,7 @@ std::vector<std::pair<CNodePtr, LossNodeInfo>> GetSensLossPairs(const FuncGraphP
       MS_LOG(EXCEPTION) << "Sens can't find the corresponding graph.";
     }
     auto func_graph = GetValueNode<FuncGraphPtr>(expect_j_cnode->input(1));
-    auto loss_node_info = FindLossCNode(func_graph);
+    auto loss_node_info = FindLossCNode(func_graph, 0);
     if (loss_node_info.loss_node == nullptr) {
       MS_LOG(WARNING) << "Can not find the loss cnode";
       continue;
@@ -2603,11 +2671,11 @@ ParameterMap NodeParameterName(const CNodePtr &node, int64_t index, size_t curr_
   ParameterMap param_names;
   for (int64_t i = 0; i < UlongToLong(node_inputs.size()); ++i) {
     int64_t idx = index > i ? index : i;
-    auto input = node_inputs[i];
+    auto input = node_inputs[LongToSize(i)];
     if (input->isa<Parameter>()) {
       auto input_parameter = input->cast<ParameterPtr>();
       if (input_parameter->has_default() && ParameterRequireGrad(input_parameter)) {
-        param_names.push_back({input_parameter->name(), input_parameter});
+        (void)param_names.emplace_back(std::make_pair(input_parameter->name(), input_parameter));
       }
     } else if (input->isa<CNode>()) {
       CNodePtr cnode = input->cast<CNodePtr>();
@@ -2623,9 +2691,9 @@ ParameterMap NodeParameterName(const CNodePtr &node, int64_t index, size_t curr_
   return param_names;
 }
 
-bool IsGatherPInfo(const std::string &name) {
-  std::vector<std::string> gather_p_info_names = {"GatherPInfo", "SparseGatherV2Info", "EmbeddingLookupInfo"};
-  for (std::string info_name : gather_p_info_names) {
+bool IsGatherInfo(const std::string &name) {
+  std::vector<std::string> gather_info_names = {"GatherInfo", "SparseGatherV2Info", "EmbeddingLookupInfo"};
+  for (std::string info_name : gather_info_names) {
     if (name.find(info_name) != std::string::npos) {
       return true;
     }
@@ -2655,22 +2723,22 @@ void CheckpointStrategy(const std::vector<AnfNodePtr> &all_nodes, const FuncGrap
       if (operator_info->name().find(RESHAPEINFO) != std::string::npos) {
         continue;
       }
-      std::vector<TensorInfo> input_tensor_info = operator_info->inputs_tensor_info();
       std::string stratey_key_name = prim->name() + "_" + param_name;
       stra_map[stratey_key_name] = operator_info->strategy();
       for (auto param_name_pair : param_names) {
         tensor_info_map[param_name_pair.first] = param_name_pair.second->user_data<TensorLayout>();
       }
-      if (IsGatherPInfo(operator_info->name())) {
-        auto gatherv2_info = std::dynamic_pointer_cast<GatherPInfo>(operator_info);
-        auto param_split_shapes = gatherv2_info->param_split_shapes();
-        auto index_offsets = gatherv2_info->index_offsets();
+      if (IsGatherInfo(operator_info->name())) {
+        auto gather_info = std::dynamic_pointer_cast<GatherInfo>(operator_info);
+        auto param_split_shapes = gather_info->param_split_shapes();
+        auto index_offsets = gather_info->index_offsets();
         if (param_split_shapes.size() != index_offsets.size()) {
           MS_LOG(EXCEPTION) << "In manual split, the param_split_shapes and index_offsets length should be same.";
         }
         std::vector<std::pair<int64_t, int64_t>> manual_shape;
         for (int64_t i = 0; i < UlongToLong(param_split_shapes.size()); ++i) {
-          manual_shape.push_back({param_split_shapes[i], index_offsets[i]});
+          (void)manual_shape.emplace_back(
+            std::make_pair(param_split_shapes[LongToSize(i)], index_offsets[LongToSize(i)]));
         }
         manual_shape_map[param_name] = manual_shape;
       }
@@ -2739,7 +2807,7 @@ std::set<FuncGraphPtr> ForwardGraph(const FuncGraphPtr &root) {
 std::vector<AnfNodePtr> FindRootForwardCNode(const FuncGraphPtr &graph, const AnfNodeSet &all_nodes) {
   MS_EXCEPTION_IF_NULL(graph);
   std::vector<AnfNodePtr> root_forward_nodes;
-  auto loss_cnode = FindLossCNode(graph).loss_node;
+  auto loss_cnode = FindLossCNode(graph, 0).loss_node;
   if (loss_cnode == nullptr) {
     MS_LOG(WARNING) << "Can not find the loss cnode";
     return root_forward_nodes;
@@ -2765,7 +2833,7 @@ void InsertShapeOp(const CNodePtr &node, const AnfNodePtr &pre_node, const FuncG
   // shape op doesn't have params and attrs.
   OperatorParams params;
   OperatorAttrs attrs;
-  auto shape_value = GetValueNode(node->input(2))->cast<ValueSequeuePtr>();
+  auto shape_value = GetValueNode(node->input(2))->cast<ValueSequencePtr>();
   MS_EXCEPTION_IF_NULL(shape_value);
   auto shape = shape_value->value();
   if (shape.empty()) {
@@ -2883,15 +2951,15 @@ CommInfo GetCommInfo() {
     device_num = UintToInt(world_rank_size);
     MS_LOG(INFO) << "Get device num from communication model, the device num is  " << device_num;
   }
-#if defined(ENABLE_GPU)
-  if (ParallelContext::GetInstance()->device_num_is_set() && backend == kGPUDevice) {
-    if (world_rank_size != device_num) {
-      MS_LOG(EXCEPTION) << "The device_num " << device_num
-                        << " set in the context is not consist with the word group size " << world_rank_size;
-    }
+#if ENABLE_D || ENABLE_GPU
+  if (ParallelContext::GetInstance()->device_num_is_set() && world_rank_size != device_num &&
+      !ParallelContext::GetInstance()->hccl_test_available()) {
+    // hccl_test_available is used when we compile graphs in real ascend card environment, but with hccl_test.
+    MS_LOG(EXCEPTION) << "The device_num " << device_num << " set in the context is not consist with "
+                      << world_rank_size << " devices you have"
+                      << ". Please check your rank_table file(for Ascend) or host file(for GPU).";
   }
 #endif
-
   uint32_t rank_id = 0;
   if (!ParallelContext::GetInstance()->global_rank_is_set()) {
     if (!CommManager::GetInstance().GetRankID(world_group, &rank_id)) {
@@ -2909,25 +2977,31 @@ Status ParallelInit() {
   int32_t split_stage_num = ParallelContext::GetInstance()->pipeline_stage_split_num();
   std::string parallel_mode = ParallelContext::GetInstance()->parallel_mode();
   if (split_stage_num <= 0) {
-    MS_LOG(ERROR) << "Invalid stage num " << split_stage_num << ", expected a positive stage number";
+    MS_LOG(ERROR) << "The parameter 'split_stage_num' must be a positive number, but got the value : "
+                  << split_stage_num;
     return FAILED;
   }
   auto comm_info = GetCommInfo();
   int64_t device_num = comm_info.device_num;
   int64_t global_rank = comm_info.global_rank;
   if ((device_num <= 0) || (device_num > MAX_DEVICE_NUM)) {
-    MS_LOG(ERROR) << "Invalid device num " << device_num;
+    MS_LOG(ERROR) << "The context configuration parameter 'device_num' must be positive, "
+                     "but got the value of device_num: "
+                  << device_num;
     return FAILED;
   }
 
   // the device_num maybe get from communication interface
   if (device_num % split_stage_num != 0) {
-    MS_LOG(ERROR) << "Device num " << device_num << "  can't be divided by stage num " << split_stage_num;
+    MS_LOG(ERROR) << "The parameter 'device_num' must be divided by 'split_stage_num', but got the device_num : "
+                  << device_num << "and the split_stage_num : " << split_stage_num;
     return FAILED;
   }
 
   if ((global_rank < 0) || (global_rank >= device_num)) {
-    MS_LOG(ERROR) << "Global rank " << global_rank << " is out of range, the device num is " << device_num;
+    MS_LOG(ERROR) << "The parameter 'global_rank' must be  greater than 0 and less equal 'device num', "
+                     "but got the global_rank : "
+                  << global_rank << "and the device_num : " << device_num;
     return FAILED;
   }
 
@@ -2946,7 +3020,7 @@ Status ParallelInit() {
     return FAILED;
   }
 
-  MS_LOG(INFO) << "The parallel context: dev num: " << device_num << ", global rank: " << global_rank
+  MS_LOG(INFO) << "The parallel context: device_num: " << device_num << ", global_rank: " << global_rank
                << ", communication_backend: " << comm_info.communication_backend
                << ", gradients_mean: " << ParallelContext::GetInstance()->gradients_mean()
                << ", gradient_fp32_sync: " << ParallelContext::GetInstance()->gradient_fp32_sync();
@@ -2970,11 +3044,11 @@ void HandleForwardMakeTupleAndMakeList(const std::vector<AnfNodePtr> &all_nodes)
     MS_EXCEPTION_IF_NULL(manager);
     std::string op_type = AnfNodeIsPrimitive(node, MAKE_TUPLE) ? MAKE_TUPLE : MAKE_LIST;
 
-    auto make_tuple_list_user = manager->node_users()[cnode];
+    auto &make_tuple_list_user = manager->node_users()[cnode];
     if (make_tuple_list_user.size() != 1) {
       MS_LOG(EXCEPTION) << "Now the " << op_type << "'s user must be 1, but got " << make_tuple_list_user.size();
     }
-    CNodePtr make_tuple_list_next_cnode = make_tuple_list_user.pop().first->cast<CNodePtr>();
+    CNodePtr make_tuple_list_next_cnode = make_tuple_list_user.front().first->cast<CNodePtr>();
     MS_EXCEPTION_IF_NULL(make_tuple_list_next_cnode);
 
     std::string make_tuple__list_user_prim_name = GetPrimName(make_tuple_list_next_cnode);
@@ -2985,7 +3059,7 @@ void HandleForwardMakeTupleAndMakeList(const std::vector<AnfNodePtr> &all_nodes)
     }
     if (make_tuple_list_next_cnode->inputs().size() != 2) {
       MS_LOG(EXCEPTION) << "Now the " << op_type << "'s user only support 1 input, but got "
-                        << make_tuple_list_next_cnode->inputs().size() - 1;
+                        << (make_tuple_list_next_cnode->inputs().size() - 1);
     }
 
     MS_LOG(INFO) << "Set the " << op_type << "'s operator info, and the op name is " << make_tuple__list_user_prim_name;
@@ -3012,7 +3086,7 @@ void ReorderForPipelineSplit(const FuncGraphPtr &root, const FuncGraphManagerPtr
   if (!root->has_flag(BACKWARD) && pipeline_stages > 1) {
     root->set_flag(BACKWARD, true);
     if (root->has_flag(TRAINING)) {
-      Reorder(root, manager);
+      Reorder(root);
     } else {
       ReorderForPredict(root, manager);
     }
@@ -3022,9 +3096,9 @@ void ReorderForPipelineSplit(const FuncGraphPtr &root, const FuncGraphManagerPtr
 bool IsInsertVirtualOutput(const FuncGraphPtr &root) {
   MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
   auto comm_info = GetCommInfo();
-  int32_t split_stage_num = ParallelContext::GetInstance()->pipeline_stage_split_num();
-  int32_t per_stage_device_num = comm_info.device_num / split_stage_num;
-  int32_t current_stage = comm_info.global_rank / per_stage_device_num;
+  int64_t split_stage_num = ParallelContext::GetInstance()->pipeline_stage_split_num();
+  int64_t per_stage_device_num = comm_info.device_num / split_stage_num;
+  int64_t current_stage = comm_info.global_rank / per_stage_device_num;
   MS_LOG(INFO) << "The current stage is: " << current_stage;
   if (!root->has_flag(TRAINING) && !ParallelContext::GetInstance()->dataset_strategy().empty()) {
     MS_LOG(WARNING) << "In eval/predict net, the output parallel strategy would not follow "
@@ -3035,8 +3109,50 @@ bool IsInsertVirtualOutput(const FuncGraphPtr &root) {
           current_stage == split_stage_num - 1);
 }
 
+static void HandleGroupInfo(const FuncGraphPtr &root) {
+  auto group_info = g_device_manager->group_info();
+  auto group_info_save_path = common::GetEnv("GROUP_INFO_FILE");
+  if (!group_info_save_path.empty()) {
+    ParallelContext::GetInstance()->set_group_ckpt_save_file(group_info_save_path);
+  }
+
+  if (StrategyCheckpoint::GetInstance().group_info_save_on()) {
+    RankList comm_group = FindCommonMirrorGroup(root);
+    if (StrategyCheckpoint::GetInstance().SaveGroupInfo(group_info, comm_group) != SUCCESS) {
+      MS_LOG(EXCEPTION) << "Save group info failed";
+    }
+  }
+}
+
+static void HandleDataParallel() {
+  std::string parallel_mode = ParallelContext::GetInstance()->parallel_mode();
+  if (parallel_mode == DATA_PARALLEL) {
+    auto group_info_save_path = common::GetEnv("GROUP_INFO_FILE");
+    if (!group_info_save_path.empty()) {
+      std::vector<std::pair<std::string, std::vector<uint32_t>>> group_info;
+      int64_t device_num = GetCommInfo().device_num;
+      RankList comm_group;
+      for (size_t i = 0; i < size_t(device_num); ++i) {
+        comm_group.push_back(i);
+      }
+      ParallelContext::GetInstance()->set_group_ckpt_save_file(group_info_save_path);
+      if (StrategyCheckpoint::GetInstance().SaveGroupInfo(group_info, comm_group) != SUCCESS) {
+        MS_LOG(EXCEPTION) << "Save group info failed";
+      }
+    }
+  }
+}
+
+static void PipelinePostProcess(const FuncGraphPtr &root, const std::vector<AnfNodePtr> &all_nodes) {
+  auto pipeline_stages = ParallelContext::GetInstance()->pipeline_stage_split_num();
+  if (pipeline_stages > 1) {
+    AddVirtualAssignAdd(root);
+    HandleReceiveParam(root, all_nodes);
+  }
+}
+
 bool StepParallel(const FuncGraphPtr &root, const opt::OptimizerPtr &optimizer) {
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   if (ps::PSContext::instance()->is_server() || ps::PSContext::instance()->is_scheduler()) {
     return false;
   }
@@ -3045,6 +3161,7 @@ bool StepParallel(const FuncGraphPtr &root, const opt::OptimizerPtr &optimizer) 
   MS_EXCEPTION_IF_NULL(optimizer);
   MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
   std::string parallel_mode = ParallelContext::GetInstance()->parallel_mode();
+  HandleDataParallel();
   pipeline::ResourceBasePtr res = optimizer->resource();
   MS_EXCEPTION_IF_NULL(res);
   FuncGraphManagerPtr manager = res->manager();
@@ -3085,7 +3202,7 @@ bool StepParallel(const FuncGraphPtr &root, const opt::OptimizerPtr &optimizer) 
     if (pipeline_stages > 1) {
       HandleMicroBatch(all_nodes, manager);
       ParameterStartNode(all_nodes, manager);
-      LastStageEndNode(all_nodes, manager);
+      LastStageEndNode(all_nodes, manager, root);
     }
 
     // mark the forward cnodes, parallel only care these nodes
@@ -3104,7 +3221,7 @@ bool StepParallel(const FuncGraphPtr &root, const opt::OptimizerPtr &optimizer) 
     }
 
     // extract shape and strategy, set operator_info
-    ExtractInformation(all_nodes, root->has_flag(TRAINING));
+    ExtractInformation(all_nodes);
     ReshapeInit(all_nodes);
   }
 
@@ -3135,16 +3252,9 @@ bool StepParallel(const FuncGraphPtr &root, const opt::OptimizerPtr &optimizer) 
   // ForwardCommunication BackwardCommunication TensorRedistribution
   ParallelCommunication(root, all_nodes, manager);
 
-  if (pipeline_stages > 1) {
-    AddVirtualAssignAdd(root);
-    HandleReceiveParam(root, all_nodes);
-  }
+  PipelinePostProcess(root, all_nodes);
 
-  auto group_info = g_device_manager->group_info();
-  if (StrategyCheckpoint::GetInstance().group_info_save_on() &&
-      StrategyCheckpoint::GetInstance().SaveGroupInfo(group_info) != SUCCESS) {
-    MS_LOG(EXCEPTION) << "Save group info failed";
-  }
+  HandleGroupInfo(root);
 
   // handle full split parammeters in grad accumulation, do not contain optimizer-sharding's parameter
   HandleFullySplitParameters(root);

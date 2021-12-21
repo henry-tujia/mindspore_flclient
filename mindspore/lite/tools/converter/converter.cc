@@ -20,7 +20,7 @@
 #include <set>
 #include "tools/converter/converter_flags.h"
 #include "src/common/log_adapter.h"
-#include "tools/common/storage.h"
+#include "tools/common/meta_graph_serializer.h"
 #include "tools/anf_exporter/anf_exporter.h"
 #include "include/version.h"
 #ifdef SUPPORT_TRAIN
@@ -36,7 +36,7 @@ namespace mindspore {
 namespace lite {
 namespace {
 void InitConverterParameters(const converter::Flags &flag, converter::ConverterParameters *converter_parameters) {
-  MS_ASSERT(converter_parameters);
+  MS_ASSERT(converter_parameters != nullptr);
   converter_parameters->fmk = flag.fmk;
   converter_parameters->model_file = flag.modelFile;
   converter_parameters->weight_file = flag.weightFile;
@@ -77,6 +77,36 @@ FuncGraphPtr Converter::BuildFuncGraph(const converter::Flags &flag) {
   return func_graph;
 }
 
+FuncGraphPtr Converter::BuildFuncGraph(const converter::Flags &flag, const void *buf, const size_t &size) {
+  MindsporeImporter ms_import;
+  FuncGraphPtr func_graph = ms_import.ImportMindIR(flag, buf, size);
+  if (func_graph == nullptr) {
+    MS_LOG(ERROR) << "Get funcGraph failed.";
+    return nullptr;
+  }
+
+  if (UpdateFuncGraphInputsAndOutputsDtype(func_graph) != RET_OK) {
+    MS_LOG(ERROR) << "Update graph inputs and outputs dtype failed.";
+    return nullptr;
+  }
+
+  return func_graph;
+}
+
+schema::MetaGraphT *Converter::Convert(const std::unique_ptr<converter::Flags> &flag, const void *buf,
+                                       const size_t &size) {
+  if (flag == nullptr || buf == nullptr) {
+    MS_LOG(ERROR) << "Input flag is nullptr";
+    return nullptr;
+  }
+  auto graph = BuildFuncGraph(*flag, buf, size);
+  if (graph == nullptr) {
+    MS_LOG(ERROR) << "Parser/Import model return nullptr";
+    return nullptr;
+  }
+  return TransferFuncGraph(flag, graph);
+}
+
 schema::MetaGraphT *Converter::Convert(const std::unique_ptr<converter::Flags> &flag) {
   if (flag == nullptr) {
     MS_LOG(ERROR) << "Input flag is nullptr";
@@ -104,15 +134,23 @@ schema::MetaGraphT *Converter::Convert(const std::unique_ptr<converter::Flags> &
     return nullptr;
   }
 
+  return TransferFuncGraph(flag, graph);
+}
+
+schema::MetaGraphT *Converter::TransferFuncGraph(const std::unique_ptr<converter::Flags> &flag,
+                                                 FuncGraphPtr func_graph) {
+  MS_CHECK_TRUE_MSG(funcgraph_transform_ != nullptr, nullptr, "funcgraph_transform init failed");
+  MS_CHECK_TRUE_MSG(metagraph_transform_ != nullptr, nullptr, "metagraph_transform_ init failed");
+
   // funcgraph compile
-  graph = funcgraph_transform_->Transform(graph, flag.get());
-  if (graph == nullptr) {
+  func_graph = funcgraph_transform_->Transform(func_graph, flag.get());
+  if (func_graph == nullptr) {
     MS_LOG(ERROR) << "Transform anf graph return nullptr";
     return nullptr;
   }
 
   // protobuf -> flatbuffer
-  auto meta_graph = Export(graph, false, false, flag->trainModel);
+  auto meta_graph = Export(func_graph, false, false, flag->trainModel);
   if (meta_graph == nullptr) {
     MS_LOG(ERROR) << "Export to meta graph return nullptr";
     return nullptr;
@@ -124,16 +162,18 @@ schema::MetaGraphT *Converter::Convert(const std::unique_ptr<converter::Flags> &
   if (status != RET_OK) {
     MS_LOG(ERROR) << "Transform meta graph failed " << status;
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
+    delete meta_graph;
     return nullptr;
   }
 
-  // set output tensor names to the original names, the output_names is null in nnie converter.
-  auto output_names = ConverterContext::GetInstance()->GetGraphOutputTensorNames();
-  MS_ASSERT(output_names.size() == meta_graphT->outputIndex.size());
-  for (size_t idx = 0; idx < output_names.size(); idx++) {
-    auto &tensor = meta_graph->allTensors.at(meta_graph->outputIndex.at(idx));
-    tensor->name = output_names.at(idx);
+  status = UpdateGraphOutputName(meta_graph);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "UpdateGraphOutputName failed.";
+    ReturnCode::GetSingleReturnCode()->UpdateReturnCode(RET_ERROR);
+    delete meta_graph;
+    return nullptr;
   }
+
   return meta_graph;
 }
 
@@ -174,7 +214,7 @@ int RunConverter(int argc, const char **argv) {
 
   //   save graph to file
   meta_graph->version = Version();
-  status = Storage::Save(*meta_graph, flags->outputFile);
+  status = MetaGraphSerializer::Save(*meta_graph, flags->outputFile);
   if (status != RET_OK) {
     oss.clear();
     oss << "SAVE GRAPH FAILED:" << status << " " << GetErrorInfo(status);

@@ -33,7 +33,9 @@ namespace mindspore {
 /*
  * Methods of Graph
  */
-FuncGraph::FuncGraph()
+FuncGraph::FuncGraph() : FuncGraph(std::make_shared<GraphDebugInfo>()) {}
+
+FuncGraph::FuncGraph(GraphDebugInfoPtr &&debug_info)
     : attrs_(),
       transforms_(),
       parameter_default_value_(),
@@ -46,13 +48,12 @@ FuncGraph::FuncGraph()
       is_generated_(false),
       is_bprop_(false),
       return_(nullptr),
-      manager_(std::weak_ptr<FuncGraphManager>()),
+      manager_(),
+      debug_info_(std::move(debug_info)),
       stub_(false),
-      stage_(-1) {
-  debug_info_ = std::make_shared<GraphDebugInfo>();
-  switch_input_ = std::make_shared<bool>(false);
-  switch_layer_input_ = std::make_shared<bool>(false);
-}
+      switch_input_(std::make_shared<bool>(false)),
+      switch_layer_input_(std::make_shared<bool>(false)),
+      stage_(-1) {}
 
 abstract::AbstractBasePtr FuncGraph::ToAbstract() {
   auto temp_context = abstract::AnalysisContext::DummyContext();
@@ -86,6 +87,13 @@ const std::vector<AnfNodePtr> FuncGraph::get_inputs() const {
 ParameterPtr FuncGraph::add_parameter() {
   FuncGraphPtr this_func_graph = shared_from_base<FuncGraph>();
   ParameterPtr p = std::make_shared<Parameter>(this_func_graph);
+  add_parameter(p);
+  return p;
+}
+
+ParameterPtr FuncGraph::add_parameter(NodeDebugInfoPtr &&debug_info) {
+  FuncGraphPtr this_func_graph = shared_from_base<FuncGraph>();
+  ParameterPtr p = std::make_shared<Parameter>(this_func_graph, std::move(debug_info));
   add_parameter(p);
   return p;
 }
@@ -150,8 +158,18 @@ ValuePtr FuncGraph::get_attr(const std::string &key) const {
   return iter == attrs_.cend() ? nullptr : iter->second;
 }
 
+CNodePtr FuncGraph::NewCNode(std::vector<AnfNodePtr> &&inputs) {
+  return std::make_shared<CNode>(std::move(inputs), shared_from_base<FuncGraph>());
+}
+
 CNodePtr FuncGraph::NewCNode(const std::vector<AnfNodePtr> &inputs) {
   return std::make_shared<CNode>(inputs, shared_from_base<FuncGraph>());
+}
+
+CNodePtr FuncGraph::NewCNodeInOrder(std::vector<AnfNodePtr> &&inputs) {
+  CNodePtr cnode = NewCNode(std::move(inputs));
+  order_.push_back(cnode);
+  return cnode;
 }
 
 CNodePtr FuncGraph::NewCNodeInOrder(const std::vector<AnfNodePtr> &inputs) {
@@ -218,11 +236,11 @@ void FuncGraph::ClearNodes() { nodes_.clear(); }
 void FuncGraph::AddNode(const AnfNodePtr &node) { nodes_.add(node); }
 
 void FuncGraph::DropNode(const AnfNodePtr &node) {
-  nodes_.erase(node);
   if (node == nullptr) {
     MS_LOG(ERROR) << "Node is nullptr";
     return;
   }
+  nodes_.erase(node);
   auto graph = node->func_graph();
   if (node->isa<Parameter>()) {
     (void)parameters_.erase(std::remove(parameters_.begin(), parameters_.end(), node), parameters_.end());
@@ -237,7 +255,7 @@ const AnfNodeCounterMap &FuncGraph::value_nodes() const { return value_nodes_; }
 
 void FuncGraph::CopyValueNodes(const FuncGraphPtr &source) {
   auto &others = source->value_nodes();
-  for (auto it = others.begin(); it != others.end(); it++) {
+  for (auto it = others.begin(); it != others.end(); ++it) {
     AddValueNode(it->first, it->second);
   }
 }
@@ -270,7 +288,7 @@ const AnfNodeCounterMap &FuncGraph::free_variables() const { return free_variabl
 
 void FuncGraph::CopyFreeVariables(const FuncGraphPtr &source) {
   auto &others = source->free_variables();
-  for (auto it = others.begin(); it != others.end(); it++) {
+  for (auto it = others.begin(); it != others.end(); ++it) {
     const auto &free_var = it->first;
     MS_EXCEPTION_IF_NULL(free_var);
     if (free_var->func_graph().get() != this) {
@@ -343,7 +361,7 @@ const FuncGraphCounterMap &FuncGraph::func_graphs_used() const { return func_gra
 
 void FuncGraph::CopyFuncGraphsUsed(const FuncGraphPtr &source) {
   auto &others = source->func_graphs_used();
-  for (auto it = others.begin(); it != others.end(); it++) {
+  for (auto it = others.begin(); it != others.end(); ++it) {
     (void)AddFuncGraphUsed(it->first, it->second);
   }
   func_graphs_used_.erase(source);
@@ -388,7 +406,7 @@ const CNodeIndexCounterMap &FuncGraph::func_graph_cnodes_index() const { return 
 
 void FuncGraph::CopyFuncGraphCNodesIndex(const FuncGraphPtr &source) {
   auto &others = source->func_graph_cnodes_index();
-  for (auto it = others.begin(); it != others.end(); it++) {
+  for (auto it = others.begin(); it != others.end(); ++it) {
     // Ignore the user graph who may own itself.
     auto fg = it->first->first->func_graph();
     MS_EXCEPTION_IF_NULL(fg);
@@ -422,7 +440,7 @@ void FuncGraph::DropFuncGraphCNodeIndex(const CNodeIndexPairPtr &pair) {
   }
 }
 
-const std::unordered_map<AnfNodePtr, int> &FuncGraph::j_value_nodes() const { return j_value_nodes_; }
+const mindspore::HashMap<AnfNodePtr, int> &FuncGraph::j_value_nodes() const { return j_value_nodes_; }
 
 void FuncGraph::CopyJValueNodes(const FuncGraphPtr &source) {
   MS_EXCEPTION_IF_NULL(source);
@@ -639,11 +657,11 @@ std::list<CNodePtr> FuncGraph::GetOrderedCnodes() {
   auto SuccDepends = std::bind(SuccIncludeFV, this_ptr, std::placeholders::_1);
 
   std::list<CNodePtr> cnodes;
-  auto nodes = mindspore::TopoSort(get_return(), SuccDepends, BelongSameGraph);
+  auto nodes = mindspore::TopoSort(return_node(), SuccDepends, BelongSameGraph);
   for (const auto &node : nodes) {
     auto cnode = dyn_cast<CNode>(node);
-    if (cnode) {
-      cnodes.push_back(cnode);
+    if (cnode != nullptr) {
+      cnodes.emplace_back(std::move(cnode));
     }
   }
   return cnodes;
@@ -714,12 +732,12 @@ static std::vector<AnfNodePtr> MakeInputNodes(const PrimitivePtr &primitive, con
 
 CNodePtr FuncGraph::NewCNode(const PrimitivePtr &primitive, const std::vector<AnfNodePtr> &inputs) {
   auto input_node_list = MakeInputNodes(primitive, inputs);
-  return NewCNode(input_node_list);
+  return NewCNode(std::move(input_node_list));
 }
 
 CNodePtr FuncGraph::NewCNodeInOrder(const PrimitivePtr &primitive, const std::vector<AnfNodePtr> &inputs) {
   auto input_node_list = MakeInputNodes(primitive, inputs);
-  return NewCNodeInOrder(input_node_list);
+  return NewCNodeInOrder(std::move(input_node_list));
 }
 
 ParameterPtr FuncGraph::add_weight(const tensor::MetaTensorPtr &meta_tensor) {
@@ -743,9 +761,9 @@ bool FuncGraph::ContainMultiTarget() const {
 }
 
 void FuncGraph::set_used_forward_nodes(const std::vector<AnfNodePtr> &used_forward_nodes) {
-  std::for_each(used_forward_nodes.begin(), used_forward_nodes.end(), [this](const AnfNodePtr &node) {
+  (void)std::for_each(used_forward_nodes.begin(), used_forward_nodes.end(), [this](const AnfNodePtr &node) {
     MS_EXCEPTION_IF_NULL(node);
-    used_forward_nodes_.emplace(node);
+    (void)used_forward_nodes_.emplace(node);
   });
 }
 

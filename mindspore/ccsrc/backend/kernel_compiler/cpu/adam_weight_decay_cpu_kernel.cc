@@ -13,16 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "backend/kernel_compiler/cpu/adam_weight_decay_cpu_kernel.h"
+
 #include <cmath>
-#include "backend/kernel_compiler/cpu/mkldnn/mkl_kernel_engine.h"
+
+#include "backend/kernel_compiler/cpu/nnacl/errorcode.h"
+#include "backend/kernel_compiler/cpu/nnacl/fp32/adam_fp32.h"
 #include "runtime/device/cpu/cpu_device_address.h"
-#include "nnacl/errorcode.h"
-#include "nnacl/fp32/adam_fp32.h"
 #include "utils/ms_utils.h"
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kSizeFloat32 = sizeof(float);
+constexpr size_t kScalarIndex = 0;
+constexpr size_t kAdamWeightDecayInputsNum = 9;
+constexpr size_t kAdamWeightDecayOutputsNum = 3;
+}  // namespace
+
 template <typename T>
 void AdamWeightDecayCPUKernel::LaunchAdamWeightDecay(const std::vector<AddressPtr> &inputs,
                                                      const std::vector<AddressPtr> &) {
@@ -52,7 +61,7 @@ void AdamWeightDecayCPUKernel::LaunchAdamWeightDecay(const std::vector<AddressPt
       var[i] -= lr * update;
     }
   };
-  CPUKernelUtils::ParallelFor(task, lens);
+  ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
 }
 
 void AdamWeightDecayCPUKernel::LaunchAdamWeightDecayNnacl(const std::vector<AddressPtr> &inputs,
@@ -73,7 +82,7 @@ void AdamWeightDecayCPUKernel::LaunchAdamWeightDecayNnacl(const std::vector<Addr
   task = [&](size_t start, size_t end) {
     int ret = AdamWeightDecayFp32(var, m, v, lr, beta1, beta2, epsilon, decay, gradient, start, end);
     if (ret != NNACL_OK) {
-      MS_LOG(EXCEPTION) << "AdamWeightDecayFp32 failed.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', AdamWeightDecayFp32 failed. Error no: " << ret;
     }
   };
   ParallelLaunchAutoSearch(task, lens, this, &parallel_search_info_);
@@ -81,41 +90,57 @@ void AdamWeightDecayCPUKernel::LaunchAdamWeightDecayNnacl(const std::vector<Addr
 
 void AdamWeightDecayCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
-  if (input_num != kAdamWeightDecayInputNum) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but AdamWeightDecay needs 9 inputs.";
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != kAdamWeightDecayOutputNum) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but AdamWeightDecay needs 3 outputs.";
-  }
 }
 
 bool AdamWeightDecayCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                       const std::vector<kernel::AddressPtr> &,
                                       const std::vector<kernel::AddressPtr> &outputs) {
-  if (inputs.size() != kAdamWeightDecayInputNum) {
-    MS_LOG(EXCEPTION) << "Input number is " << inputs.size() << ", but AdamWeightDecay needs 9 inputs.";
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kAdamWeightDecayInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kAdamWeightDecayOutputsNum, kernel_name_);
+  if (inputs[VAR]->size != inputs[M]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype and shape of 'm' and 'var' should be same, but got the memory size of 'm': "
+                      << inputs[M]->size << " and 'var': " << inputs[VAR]->size;
   }
-  if (outputs.size() != kAdamWeightDecayOutputNum) {
-    MS_LOG(EXCEPTION) << "Output number is " << outputs.size() << ", but AdamWeightDecay needs 3 outputs.";
+  if (inputs[VAR]->size != inputs[V]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype and shape of 'v' and 'var' should be same, but got the memory size of 'v': "
+                      << inputs[V]->size << " and 'var': " << inputs[VAR]->size;
   }
-  if (inputs[VAR]->size != inputs[M]->size || inputs[VAR]->size != inputs[V]->size ||
-      inputs[VAR]->size != inputs[GRAD]->size) {
-    MS_LOG(EXCEPTION) << "Var, m, v, grad input data size must be same!";
+  if (inputs[VAR]->size != inputs[GRAD]->size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype and shape of 'grad' and 'var' should be same, "
+                         "but got the memory size of 'grad': "
+                      << inputs[GRAD]->size << " and 'var': " << inputs[VAR]->size;
   }
-  if (inputs[LR]->size != kSizeFloat32 || inputs[BETA1]->size != kSizeFloat32 || inputs[BETA2]->size != kSizeFloat32 ||
-      inputs[EPSILON]->size != kSizeFloat32 || inputs[DECAY]->size != kSizeFloat32) {
-    MS_LOG(EXCEPTION) << "The attribute beta, lr, epsilon and weight decay must be float!";
+  if (inputs[LR]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'lr' should be float, but got 'lr': " << inputs[LR];
   }
-
+  if (inputs[BETA1]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta1' should be float, but got 'beta1': " << inputs[BETA1];
+  }
+  if (inputs[BETA2]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'beta2' should be float, but got 'beta2': " << inputs[BETA2];
+  }
+  if (inputs[EPSILON]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'epsilon' should be float, but got 'epsilon': " << inputs[EPSILON];
+  }
+  if (inputs[DECAY]->size != kSizeFloat32) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'decay' should be float, but got 'decay': " << inputs[DECAY];
+  }
   if (dtype_ == kNumberTypeFloat32) {
     LaunchAdamWeightDecayNnacl(inputs, outputs);
   } else if (dtype_ == kNumberTypeFloat16) {
     LaunchAdamWeightDecay<float16>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "AdamWeightDecay not support " << dtype_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dtype of 'var' should be Float16 or Float32, but got "
+                      << TypeIdToType(dtype_)->ToString();
   }
   return true;
 }

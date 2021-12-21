@@ -16,7 +16,6 @@
 
 import pytest
 import numpy as onp
-
 import mindspore.numpy as mnp
 from mindspore import context
 

@@ -32,21 +32,20 @@ size_t MemoryManager::GetCommonAlignSize(size_t input_size) {
 }
 
 size_t MemoryManager::GetCommunicationAlignSize(size_t input_size) {
-  return (input_size + kMemAlignSize - 1) / kMemAlignSize * kMemAlignSize + 2 * kMemAlignSize;
+  return (input_size + kMemAlignSize - 1) / kMemAlignSize * kMemAlignSize + kTwiceMemAlignSize;
 }
 
-void MemoryManager::MallocSomasDynamicMem(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+void MemoryManager::MallocSomasDynamicMem(const session::KernelGraph &graph) {
   SomasPtr somas_reuse_util_ptr = std::make_shared<somas::Somas>();
   MS_EXCEPTION_IF_NULL(somas_reuse_util_ptr);
   somas_reuse_util_ptr_ = somas_reuse_util_ptr;
 
-  if (!(somas_reuse_util_ptr->Allocate(graph))) {
+  if (!(somas_reuse_util_ptr->Allocate(&graph))) {
     MS_LOG(EXCEPTION) << "Somas Allocate Failed.";
   }
 
   size_t total_allocated_size = somas_reuse_util_ptr->GetTotalMemSize();
-  MS_LOG(INFO) << "Graph " << graph->graph_id() << ": TotalSomasReuseDynamicSize [" << total_allocated_size << "]";
+  MS_LOG(INFO) << "Graph " << graph.graph_id() << ": TotalSomasReuseDynamicSize [" << total_allocated_size << "]";
   if (total_allocated_size > 0) {
     auto base_ptr = MallocDynamicMem(total_allocated_size, false);
     MS_LOG(INFO) << "Somas Reuse Memory Base Address [" << static_cast<void *>(base_ptr) << "], End Address ["
@@ -59,18 +58,18 @@ void MemoryManager::MallocSomasDynamicMem(const session::KernelGraph *graph) {
 #ifdef ENABLE_DUMP_IR
   SubModuleId module = SubModuleId::SM_OPTIMIZER;
 
-  std::string name = "somas_allocate_info." + std::to_string(graph->graph_id());
+  std::string name = "somas_allocate_info." + std::to_string(graph.graph_id());
   (void)mindspore::RDR::RecordString(module, name, somas_reuse_util_ptr_->SomasInfo());
 
-  name = "somas_mem_info." + std::to_string(graph->graph_id());
+  name = "somas_mem_info." + std::to_string(graph.graph_id());
   (void)mindspore::RDR::RecordString(module, name, somas_reuse_util_ptr_->SomasMemory());
 #endif
   bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
   if (save_graphs) {
-    std::string file_path = GetSaveGraphsPathName("somas_allocate_info_" + std::to_string(graph->graph_id()) + ".ir");
+    std::string file_path = GetSaveGraphsPathName("somas_allocate_info_" + std::to_string(graph.graph_id()) + ".ir");
     somas_reuse_util_ptr_->DumpSomasInfoIR(file_path);
 
-    std::string mem_file_path = GetSaveGraphsPathName("somas_mem_info_" + std::to_string(graph->graph_id()) + ".ir");
+    std::string mem_file_path = GetSaveGraphsPathName("somas_mem_info_" + std::to_string(graph.graph_id()) + ".ir");
     somas_reuse_util_ptr_->DumpSomasMemoryIR(mem_file_path);
   }
 }
@@ -137,21 +136,25 @@ uint8_t *MemoryManager::MallocMem(MemType type, size_t size, const DeviceAddress
   return ptr;
 }
 
-uint8_t *MemoryManager::MallocDynamicMem(size_t size, bool communication_mem) { return nullptr; }
+uint8_t *MemoryManager::MallocDynamicMem(size_t size, bool communication_mem) {
+  MS_LOG(INFO) << "Call default dynamic malloc " << size << " v " << communication_mem;
+  return nullptr;
+}
 
-bool MemoryManager::MallocMemFromMemPool(const DeviceAddressPtr address, size_t size) {
+bool MemoryManager::MallocMemFromMemPool(const DeviceAddressPtr &address, size_t size) {
   MS_EXCEPTION_IF_NULL(address);
-  auto device_ptr = MallocMemFromMemPool(size);
+  auto device_ptr = MallocMemFromMemPool(size, address->from_persistent_mem_);
   if (!device_ptr) {
     return false;
   }
+  MS_EXCEPTION_IF_NULL(address);
   address->ptr_ = device_ptr;
   address->size_ = size;
   address->from_mem_pool_ = true;
   return true;
 }
 
-void *MemoryManager::MallocMemFromMemPool(size_t size) {
+void *MemoryManager::MallocMemFromMemPool(size_t size, bool from_persistent_mem) {
   if (size == 0) {
     MS_LOG(ERROR) << "MallocMemFromMemPool size is 0.";
   }

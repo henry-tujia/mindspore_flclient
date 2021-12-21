@@ -63,14 +63,9 @@ void GPUDeviceContext::Initialize() {
   }
 
   // Set device id
-  const void *collective_handle_ = CollectiveInitializer::instance().collective_handle();
-  bool collective_inited = CollectiveInitializer::instance().collective_inited();
-  if (collective_inited && collective_handle_ != nullptr) {
+  if (CollectiveInitializer::instance().collective_inited()) {
     DeviceContextKey old_key = device_context_key_;
-    auto get_local_rank_funcptr =
-      reinterpret_cast<GetLocalRankId>(dlsym(const_cast<void *>(collective_handle_), "local_rank_id"));
-    MS_EXCEPTION_IF_NULL(get_local_rank_funcptr);
-    device_context_key_.device_id_ = IntToUint((*get_local_rank_funcptr)());
+    device_context_key_.device_id_ = CollectiveInitializer::instance().local_rank_id();
 
     DeviceContextManager::GetInstance().UpdateDeviceContextKey(old_key, device_context_key_);
 
@@ -79,6 +74,7 @@ void GPUDeviceContext::Initialize() {
     ms_context->set_param<uint32_t>(MS_CTX_DEVICE_ID, device_context_key_.device_id_);
   }
 
+  MS_LOG(INFO) << "Set GPU device id index " << device_context_key_.device_id_;
   // Set device id and initialize device resource.
   if (!InitDevice()) {
     MS_LOG(EXCEPTION) << "GPU InitDevice failed.";
@@ -90,11 +86,16 @@ void GPUDeviceContext::Initialize() {
   mem_manager_->MallocDeviceMemory();
 
   // Initialize NCCL.
-  if (collective_inited && collective_handle_ != nullptr) {
-    auto init_nccl_comm_funcptr =
-      reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle_), "InitNCCLComm"));
-    MS_EXCEPTION_IF_NULL(init_nccl_comm_funcptr);
-    (*init_nccl_comm_funcptr)();
+  if (CollectiveInitializer::instance().collective_inited()) {
+    auto collective_handle = CollectiveInitializer::instance().collective_handle();
+    if (collective_handle != nullptr) {
+      MS_LOG(INFO) << "Start initializing NCCL communicator for device " << device_context_key_.device_id_;
+      auto init_nccl_comm_funcptr =
+        reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle), "InitNCCLComm"));
+      MS_EXCEPTION_IF_NULL(init_nccl_comm_funcptr);
+      (*init_nccl_comm_funcptr)();
+      MS_LOG(INFO) << "End initializing NCCL communicator.";
+    }
   }
 
 #ifndef ENABLE_SECURITY
@@ -102,7 +103,7 @@ void GPUDeviceContext::Initialize() {
   auto rank_id = GetRankID();
   auto &json_parser = DumpJsonParser::GetInstance();
   json_parser.Parse();
-  json_parser.CopyJsonToDir(rank_id);
+  json_parser.CopyDumpJsonToDir(rank_id);
   json_parser.CopyMSCfgJsonToDir(rank_id);
 #endif
   initialized_ = true;
@@ -148,9 +149,9 @@ void GPUDeviceContext::Destroy() {
 
   if (GpuBufferMgr::GetInstance().IsInit()) {
     if (!GpuBufferMgr::GetInstance().IsClosed() && !GpuBufferMgr::GetInstance().CloseNotify()) {
-      MS_LOG(EXCEPTION) << "Could not close gpu data queue.";
+      MS_LOG(ERROR) << "Could not close gpu data queue.";
     }
-    CHECK_OP_RET_WITH_EXCEPT(GpuBufferMgr::GetInstance().Destroy(), "Could not destroy gpu data queue.");
+    CHECK_OP_RET_WITH_ERROR(GpuBufferMgr::GetInstance().Destroy(), "Could not destroy gpu data queue.");
   }
 
   // Release stream, cudnn and cublas handle, etc.
@@ -165,10 +166,14 @@ void GPUDeviceContext::Destroy() {
 
 bool GPUDeviceContext::AllocateMemory(DeviceAddress *const &address, size_t size) const {
   MS_EXCEPTION_IF_NULL(address);
+  if (address->DeviceType() != DeviceAddressType::kGPU) {
+    MS_LOG(EXCEPTION) << "The device address type is wrong: " << address->DeviceType();
+  }
+
   if (!BindDeviceToCurrentThread()) {
     return false;
   }
-  auto device_ptr = mem_manager_->MallocMemFromMemPool(size);
+  auto device_ptr = mem_manager_->MallocMemFromMemPool(size, address->from_persistent_mem_);
   if (!device_ptr) {
     return false;
   }
@@ -181,6 +186,10 @@ bool GPUDeviceContext::AllocateMemory(DeviceAddress *const &address, size_t size
 void GPUDeviceContext::FreeMemory(DeviceAddress *const &address) const {
   MS_EXCEPTION_IF_NULL(address);
   MS_EXCEPTION_IF_NULL(address->ptr_);
+  if (address->DeviceType() != DeviceAddressType::kGPU) {
+    MS_LOG(EXCEPTION) << "The device address type is wrong: " << address->DeviceType();
+  }
+
   if (!address->from_mem_pool()) {
     return;
   }
@@ -198,7 +207,8 @@ bool GPUDeviceContext::AllocateContinuousMemory(const std::vector<DeviceAddressP
 
 DeviceAddressPtr GPUDeviceContext::CreateDeviceAddress(void *const device_ptr, size_t device_size, const string &format,
                                                        TypeId type_id) const {
-  return std::make_shared<GPUDeviceAddress>(device_ptr, device_size, format, type_id);
+  return std::make_shared<GPUDeviceAddress>(device_ptr, device_size, format, type_id, device_context_key_.device_name_,
+                                            device_context_key_.device_id_);
 }
 
 void GPUDeviceContext::OptimizeGraph(const KernelGraphPtr &graph) const {
@@ -216,8 +226,8 @@ void GPUDeviceContext::OptimizeGraph(const KernelGraphPtr &graph) const {
   opt::CommonFinalOptimization(graph);
 
   // Graph kernel fusion optimization
-  if (context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
-    opt::GraphKernelOptimize(graph);
+  if (graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+    graphkernel::GraphKernelOptimize(graph);
     graph->SetExecOrderByDefault();
   }
 
@@ -231,10 +241,11 @@ void GPUDeviceContext::OptimizeGraphWithoutDeviceInfo(const KernelGraphPtr &grap
   FuseOperators(graph);
 
   // Update Graph Dynamic Shape Attr.
-  UpdateGraphDynamicShapeAttr(NOT_NULL(graph));
+  opt::AddDynamicShapeAttrPass(graph);
 }
 
 void GPUDeviceContext::OptimizeGraphWithDeviceInfo(const KernelGraphPtr &graph) const {
+  MS_EXCEPTION_IF_NULL(graph);
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   // Graph optimization relevant to device data format
@@ -257,6 +268,8 @@ void GPUDeviceContext::OptimizeGraphWithDeviceInfo(const KernelGraphPtr &graph) 
   pm->AddPass(std::make_shared<opt::AddReluV2Fusion>());
   pm->AddPass(std::make_shared<opt::AddReluGradV2Fusion>());
   pm->AddPass(std::make_shared<opt::AllReduceFusion>());
+  pm->AddPass(std::make_shared<opt::AdjustDependForParallelOptimizerRecomputeAllGatherFusion>(
+    "adjust_depend_for_parallel_optimizer_recompute_all_gather_fusion"));
   pm->AddPass(std::make_shared<opt::AllGatherFusion>());
   pm->AddPass(std::make_shared<opt::ConcatOutputsForAllGather>());
   pm->AddPass(std::make_shared<opt::GetitemTuple>());
@@ -267,15 +280,17 @@ void GPUDeviceContext::OptimizeGraphWithDeviceInfo(const KernelGraphPtr &graph) 
 }
 
 void GPUDeviceContext::FuseOperators(const KernelGraphPtr &graph) const {
+  MS_EXCEPTION_IF_NULL(graph);
   auto optimizer = std::make_shared<opt::GraphOptimizer>();
   auto pm = std::make_shared<opt::PassManager>();
   pm->AddPass(std::make_shared<opt::MatMulBiasAddFusion>());
   pm->AddPass(std::make_shared<opt::AdamWeightDecayFusion>());
   pm->AddPass(std::make_shared<opt::AdamFusion>());
+  pm->AddPass(std::make_shared<opt::AllToAllFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumWeightDecayScaleFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumScaleFusion>());
   pm->AddPass(std::make_shared<opt::ApplyMomentumWeightDecayFusion>());
-  if (!context::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+  if (!graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
     pm->AddPass(std::make_shared<opt::CastAllFusion>("cast_all"));
   }
   pm->AddPass(std::make_shared<opt::CombineMomentumFusion>("combine_momentum"));
@@ -287,16 +302,6 @@ void GPUDeviceContext::FuseOperators(const KernelGraphPtr &graph) const {
   optimizer->AddPassManager(pm);
   (void)optimizer->Optimize(graph);
   graph->SetExecOrderByDefault();
-}
-
-void GPUDeviceContext::UpdateGraphDynamicShapeAttr(const NotNull<KernelGraphPtr> &graph) const {
-  for (const auto &cnode : graph->execution_order()) {
-    if (AnfAlgo::IsNodeDynamicShape(cnode)) {
-      AnfAlgo::SetNodeAttr(kAttrIsDynamicShape, MakeValue(true), cnode);
-      MS_LOG(INFO) << "Set Dynamic Shape Attr to Node:" << cnode->fullname_with_scope();
-    }
-  }
-  graph->UpdateGraphDynamicAttr();
 }
 
 namespace {
@@ -312,6 +317,7 @@ void RunOpOptimize(const KernelGraphPtr &kernel_graph) {
 }
 
 void RunOpHardwareOptimize(const KernelGraphPtr &kernel_graph) {
+  MS_EXCEPTION_IF_NULL(kernel_graph);
   auto optimizer = std::make_shared<opt::GraphOptimizer>();
   auto pm = std::make_shared<opt::PassManager>();
   pm->AddPass(std::make_shared<opt::ReducePrecisionFusion>("reduce_precision"));
@@ -364,7 +370,8 @@ void GPUDeviceContext::UpdateDynamicShape(const CNodePtr &kernel) const {
   MS_EXCEPTION_IF_NULL(ms_context);
   bool is_pynative_infer = ms_context->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER);
   bool is_pynative_mode = ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode;
-  if (is_pynative_infer || is_pynative_mode) {
+  auto dynamic_shape_depends = abstract::GetDependsFormMap(kernel);
+  if ((is_pynative_infer || is_pynative_mode) && dynamic_shape_depends.empty()) {
     return;
   }
 
@@ -388,24 +395,29 @@ bool GPUDeviceContext::LaunchKernel(const CNodePtr &kernel, const std::vector<Ad
                                     const std::vector<AddressPtr> &workspace, const std::vector<AddressPtr> &outputs,
                                     bool is_dynamic_shape) const {
   MS_EXCEPTION_IF_NULL(kernel);
-  MS_LOG(DEBUG) << "Launch kernel: " << kernel->fullname_with_scope();
   if (!BindDeviceToCurrentThread()) {
     return false;
   }
 
   auto kernel_mod = AnfAlgo::GetKernelMod(kernel);
   MS_EXCEPTION_IF_NULL(kernel_mod);
+  bool ret = true;
+#ifndef ENABLE_SECURITY
   const auto &profiler_inst = profiler::gpu::GPUProfiler::GetInstance();
   MS_EXCEPTION_IF_NULL(profiler_inst);
-  bool ret = true;
+
   if (!profiler_inst->GetEnableFlag()) {
+#endif
     std::lock_guard<std::mutex> locker(launch_mutex_);
+    MS_LOG(DEBUG) << "Launch kernel: " << kernel->fullname_with_scope();
     ret = DoLaunchKernel(kernel_mod, inputs, workspace, outputs);
+#ifndef ENABLE_SECURITY
   } else {
     std::lock_guard<std::mutex> locker(launch_mutex_);
+    MS_LOG(DEBUG) << "Launch kernel: " << kernel->fullname_with_scope();
     ret = LaunchKernelWithProfiling(kernel, inputs, workspace, outputs);
   }
-
+#endif
   if (!ret) {
     MS_LOG(ERROR) << "Launch kernel failed, kernel full name: " << kernel->fullname_with_scope();
     return false;
@@ -427,7 +439,7 @@ bool GPUDeviceContext::LaunchKernel(const CNodePtr &kernel, const std::vector<Ad
   }
   return ret;
 }
-
+#ifndef ENABLE_SECURITY
 bool GPUDeviceContext::LaunchKernelWithProfiling(const CNodePtr &kernel, const std::vector<AddressPtr> &inputs,
                                                  const std::vector<AddressPtr> &workspace,
                                                  const std::vector<AddressPtr> &outputs) const {
@@ -463,7 +475,7 @@ bool GPUDeviceContext::LaunchKernelWithProfiling(const CNodePtr &kernel, const s
   }
   return ret;
 }
-
+#endif
 bool GPUDeviceContext::DoLaunchKernel(KernelMod *kernel_mod, const std::vector<AddressPtr> &inputs,
                                       const std::vector<AddressPtr> &workspace,
                                       const std::vector<AddressPtr> &outputs) const {
@@ -487,10 +499,9 @@ bool GPUDeviceContext::SyncStream(size_t stream_id) const {
 }
 
 uint32_t GPUDeviceContext::GetRankID() const {
-  const void *collective_handle_ = CollectiveInitializer::instance().collective_handle();
   bool collective_inited = CollectiveInitializer::instance().collective_inited();
   uint32_t rank_id = 0;
-  if (collective_inited && collective_handle_ != nullptr) {
+  if (collective_inited) {
     if (!CommManager::GetInstance().GetRankID(kNcclWorldGroup, &rank_id)) {
       MS_LOG(EXCEPTION) << "Failed to get rank id.";
     }
@@ -501,9 +512,35 @@ uint32_t GPUDeviceContext::GetRankID() const {
 std::shared_ptr<Bucket> GPUDeviceContext::CreateBucket(uint32_t bucket_id, uint32_t bucket_size) const {
   auto bucket = std::make_shared<GPUBucket>(bucket_id, bucket_size);
   MS_EXCEPTION_IF_NULL(bucket);
+  // One computation stream, one communication stream.
+  const size_t min_num_of_stream = 2;
+  if (min_num_of_stream > streams_.size()) {
+    MS_LOG(EXCEPTION) << "The total stream num: " << streams_.size() << " is less than: " << min_num_of_stream;
+  }
 
   bucket->Init({streams_[0]}, {streams_[1]});
   return bucket;
+}
+
+bool GPUDeviceContext::LoadCollectiveCommLib() {
+#ifdef ENABLE_MPI
+  std::string nvidia_comm_lib_name = "libnvidia_collective.so";
+  auto loader = std::make_shared<CollectiveCommLibLoader>(nvidia_comm_lib_name);
+  MS_EXCEPTION_IF_NULL(loader);
+  if (!loader->Initialize()) {
+    MS_LOG(EXCEPTION) << "Loading NCCL collective library failed.";
+    return false;
+  }
+  void *collective_comm_lib_handle = loader->collective_comm_lib_ptr();
+  MS_EXCEPTION_IF_NULL(collective_comm_lib_handle);
+
+  auto instance_func = DlsymFuncObj(communication_lib_instance, collective_comm_lib_handle);
+  collective_comm_lib_ = instance_func();
+  MS_EXCEPTION_IF_NULL(collective_comm_lib_);
+  return true;
+#else
+  return false;
+#endif
 }
 
 bool GPUDeviceContext::BindDeviceToCurrentThread() const {

@@ -20,7 +20,7 @@
 #include <utility>
 #include "include/errorcode.h"
 #include "tools/anf_exporter/fetch_content.h"
-#include "tools/converter/ops/ops_def.h"
+#include "ops/make_tuple.h"
 #include "ops/depend.h"
 #include "ops/fusion/pad_fusion.h"
 #include "ops/op_utils.h"
@@ -34,11 +34,13 @@ int ProcessInputIsMonad(const FuncGraphPtr &func_graph, const CNodePtr &cnode) {
   MS_ASSERT(first_input != nullptr);
   if (CheckPrimitiveType(first_input, prim::kPrimTranspose)) {
     first_input = cnode->input(1)->cast<CNodePtr>()->input(1);
+    MS_CHECK_TRUE_MSG(first_input != nullptr, RET_ERROR, "first_input is nullptr");
   }
   auto second_input = cnode->input(kInputIndexTwo);
   MS_ASSERT(seconde_input != nullptr);
   if (CheckPrimitiveType(second_input, prim::kPrimTranspose)) {
     second_input = cnode->input(kInputIndexTwo)->cast<CNodePtr>()->input(1);
+    MS_CHECK_TRUE_MSG(second_input != nullptr, RET_ERROR, "second_input is nullptr");
   }
   AnfNodePtr must_monad = nullptr;
   AnfNodePtr not_must_monad = nullptr;
@@ -83,9 +85,11 @@ int ProcessDependencyWithTwoNodes(const FuncGraphPtr &func_graph, const CNodePtr
   }
   if (CheckPrimitiveType(pre_node, prim::kPrimTranspose)) {
     pre_node = cnode->input(1)->cast<CNodePtr>()->input(1);
+    MS_CHECK_TRUE_MSG(pre_node != nullptr, RET_ERROR, "pre_node is nullptr");
   }
   if (CheckPrimitiveType(post_node, prim::kPrimTranspose)) {
     post_node = cnode->input(kInputIndexTwo)->cast<CNodePtr>()->input(1);
+    MS_CHECK_TRUE_MSG(post_node != nullptr, RET_ERROR, "post_node is nullptr");
   }
   auto manager = func_graph->manager();
   MS_ASSERT(manager != nullptr);
@@ -116,7 +120,7 @@ int ProcessInputHaveDependency(const FuncGraphPtr &func_graph, const CNodePtr &c
   if (ProcessDependencyWithTwoNodes(func_graph, cnode, false) == lite::RET_OK) {
     return lite::RET_OK;
   }
-  auto make_tuple_prim = NewValueNode(std::make_shared<lite::MakeTuple>());
+  auto make_tuple_prim = NewValueNode(std::make_shared<ops::MakeTuple>());
   auto manager = func_graph->manager();
   MS_CHECK_TRUE_MSG(make_tuple_prim != nullptr, lite::RET_NULL_PTR, "NewCNode Failed");
   MS_ASSERT(manager != nullptr);
@@ -130,6 +134,8 @@ int ProcessInputHaveDependency(const FuncGraphPtr &func_graph, const CNodePtr &c
 }  // namespace
 
 int RemoveRedundantOpPass::ReplaceOp(const AnfNodePtr &anf_node, const FuncGraphManagerPtr &manager) {
+  MS_CHECK_TRUE_MSG(anf_node != nullptr, RET_ERROR, "anf_node is nullptr");
+  MS_CHECK_TRUE_MSG(manager != nullptr, RET_ERROR, "manager is nullptr");
   if (!utils::isa<CNodePtr>(anf_node)) {
     MS_LOG(DEBUG) << "anf node is node a cnode.";
     return lite::RET_NO_CHANGE;
@@ -203,6 +209,7 @@ int RemoveRedundantOpPass::ReplaceTupleGetItem(const AnfNodePtr &anf_node, const
     MS_LOG(ERROR) << "TupleGetItem's input 2 is not valuenode";
     return lite::RET_ERROR;
   }
+  MS_CHECK_TRUE_MSG(!CastToInt(index_vnode->cast<ValueNodePtr>()->value()).empty(), RET_ERROR, "value is empty");
   int index = CastToInt(index_vnode->cast<ValueNodePtr>()->value()).front();
   int input_cnode_inputs_size = get_item_input_cnode->inputs().size();
   if ((index + 1) >= input_cnode_inputs_size) {
@@ -257,6 +264,27 @@ int RemoveRedundantOpPass::RemoveDropoutOp(const AnfNodePtr &anf_node, const Fun
   return lite::RET_OK;
 }
 
+int RemoveRedundantOpPass::GetConstDataFromInputNode(const CNodePtr &cnode, lite::DataInfo *data_info) {
+  MS_ASSERT(cnode != nullptr);
+  MS_ASSERT(data_info != nullptr);
+  auto padding_node = cnode->input(kInputIndexTwo);
+  MS_ASSERT(padding_node != nullptr);
+  if (utils::isa<Parameter>(padding_node)) {
+    auto status = lite::FetchDataFromParameterNode(cnode, 2, converter::kFmkTypeMs, false, data_info, true);
+    if (status != lite::RET_OK && status != lite::RET_NO_CHANGE) {
+      MS_LOG(ERROR) << "fetch data from parameter node failed.";
+      return lite::RET_ERROR;
+    }
+  } else if (utils::isa<ValueNode>(padding_node)) {
+    auto status = lite::FetchDataFromValueNode(cnode, 2, converter::kFmkTypeMs, false, data_info, true);
+    if (status != lite::RET_OK && status != lite::RET_NO_CHANGE) {
+      MS_LOG(ERROR) << "fetch data from value node failed.";
+      return lite::RET_ERROR;
+    }
+  }
+  return lite::RET_OK;
+}
+
 int RemoveRedundantOpPass::RemoveInvalidPadOp(const AnfNodePtr &anf_node, const FuncGraphManagerPtr &manager) {
   if (!utils::isa<CNodePtr>(anf_node)) {
     MS_LOG(DEBUG) << "anf node is node a cnode.";
@@ -271,20 +299,10 @@ int RemoveRedundantOpPass::RemoveInvalidPadOp(const AnfNodePtr &anf_node, const 
   }
   auto is_invalid = true;
   if (cnode->size() > kInputSizeTwo) {
-    auto padding_node = cnode->input(kInputIndexTwo);
     lite::DataInfo data_info;
-    if (utils::isa<Parameter>(padding_node)) {
-      auto status = lite::FetchDataFromParameterNode(cnode, 2, converter::kFmkTypeMs, false, &data_info);
-      if (status != lite::RET_OK && status != lite::RET_NO_CHANGE) {
-        MS_LOG(ERROR) << "fetch data from parameter node failed.";
-        return lite::RET_ERROR;
-      }
-    } else if (utils::isa<ValueNode>(padding_node)) {
-      auto status = lite::FetchDataFromValueNode(cnode, 2, converter::kFmkTypeMs, false, &data_info);
-      if (status != lite::RET_OK && status != lite::RET_NO_CHANGE) {
-        MS_LOG(ERROR) << "fetch data from value node failed.";
-        return lite::RET_ERROR;
-      }
+    if (GetConstDataFromInputNode(cnode, &data_info) != RET_OK) {
+      MS_LOG(ERROR) << "Get pad data failed.";
+      return lite::RET_ERROR;
     }
     if (!data_info.data_.empty()) {
       auto pad_data = reinterpret_cast<int *>(data_info.data_.data());
@@ -301,18 +319,17 @@ int RemoveRedundantOpPass::RemoveInvalidPadOp(const AnfNodePtr &anf_node, const 
   } else {
     auto pad_prim = utils::cast<std::shared_ptr<mindspore::ops::PadFusion>>(primitive);
     MS_ASSERT(pad_prim != nullptr);
-    if (pad_prim->GetAttr(ops::kPadding) != nullptr) {
-      auto pad_data = pad_prim->get_paddings();
-      for (size_t i = 0; i < pad_data.size(); i++) {
-        for (size_t j = 0; j < pad_data[i].size(); j++) {
-          if (pad_data[i][j] != 0) {
-            is_invalid = false;
-            break;
-          }
-        }
-        if (is_invalid == false) {
+    MS_CHECK_TRUE_RET(pad_prim->GetAttr(ops::kPadding) != nullptr, lite::RET_ERROR);
+    auto pad_data = pad_prim->get_paddings();
+    for (size_t i = 0; i < pad_data.size(); i++) {
+      for (size_t j = 0; j < pad_data[i].size(); j++) {
+        if (pad_data[i][j] != 0) {
+          is_invalid = false;
           break;
         }
+      }
+      if (is_invalid == false) {
+        break;
       }
     }
   }

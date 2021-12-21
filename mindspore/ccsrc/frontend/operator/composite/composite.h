@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,14 @@
 
 #include <vector>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <map>
 #include <set>
 #include <memory>
+#include "utils/hash_map.h"
 #include "frontend/operator/composite/zip_operation.h"
 #include "frontend/operator/composite/list_append_operation.h"
+#include "frontend/operator/composite/list_insert_operation.h"
 #include "frontend/operator/composite/do_signature.h"
 #include "frontend/operator/composite/unpack_call.h"
 #include "frontend/operator/composite/multitype_funcgraph.h"
@@ -43,7 +44,7 @@ namespace prim {
 using AbstractSlicePtr = abstract::AbstractSlicePtr;
 using AbstractScalarPtr = abstract::AbstractScalarPtr;
 using AbstractTensorPtr = abstract::AbstractTensorPtr;
-using ElemwiseMap = std::unordered_map<std::string, PrimitivePtr>;
+using ElemwiseMap = mindspore::HashMap<std::string, PrimitivePtr>;
 using ArgsPairList = std::vector<std::pair<AnfNodePtr, TypePtr>>;
 
 class HyperMap : public MetaFuncGraph {
@@ -99,16 +100,18 @@ using HyperMapPyPtr = std::shared_ptr<HyperMapPy>;
 
 extern ValuePtr kCompositeHyperMap;
 
-enum TailType { kGradAll, kGradFirst, kNotGrad };
+enum TailType { kGradAll, kGradFirst, kGradByPosition, kNotGrad };
 
 class Tail : public MetaFuncGraph {
  public:
-  explicit Tail(const std::string &name, TailType tail_type = kNotGrad) : MetaFuncGraph(name), tail_type_(tail_type) {}
+  explicit Tail(const std::string &name, TailType tail_type = kNotGrad)
+      : MetaFuncGraph(name), tail_type_(tail_type), enable_tuple_grad_(false) {}
   ~Tail() override = default;
   MS_DECLARE_PARENT(Tail, MetaFuncGraph)
 
   FuncGraphPtr GenerateFuncGraph(const AbstractBasePtrList &args_spec_list) override;
-  FuncGraphPtr GenerateSequeueFuncGraph(const abstract::AbstractSequeuePtr &sequeue) const;
+  FuncGraphPtr GenerateSequenceFuncGraph(const abstract::AbstractSequencePtr &sequeue,
+                                         const abstract::AbstractSequencePtr &pos = nullptr) const;
 
   friend bool operator==(const Tail &lhs, const Tail &rhs) { return lhs.name_ == rhs.name_; }
   void set_enable_tuple_grad(bool enable_tuple_grad) { enable_tuple_grad_ = enable_tuple_grad; }
@@ -142,23 +145,27 @@ using MakeListGradientPtr = std::shared_ptr<MakeListGradient>;
 class GradOperation : public MetaFuncGraph {
  public:
   explicit GradOperation(const std::string &name, bool get_all = false, bool get_by_list = false,
-                         bool sens_param = false);
+                         bool sens_param = false, bool get_by_position = false);
   ~GradOperation() override = default;
   MS_DECLARE_PARENT(GradOperation, MetaFuncGraph)
 
-  FuncGraphPtr GetGrad(const AnfNodePtr &k, const AnfNodePtr &weights,
+  FuncGraphPtr GetGrad(const AnfNodePtr &k, const AnfNodePtr &weights, const AnfNodePtr &position,
                        const std::vector<AnfNodePtr> &forward_graph_params, bool enable_tuple_grad,
                        const std::vector<AnfNodePtr> &weight_args = {});
 
   FuncGraphPtr GenerateFuncGraph(const AbstractBasePtrList &args_spec_list) override;
+
+  void set_grad_position(const std::string &grad_position) { grad_position_ = grad_position; }
   bool sens_param() const { return sens_param_; }
   bool get_all_;
   bool get_by_list_;
   bool sens_param_;
+  bool get_by_position_;
+  std::string grad_position_;
 
  private:
   void GradByParameter(const FuncGraphPtr &k_child, const AnfNodePtr &f_app, const AnfNodePtr &bprop,
-                       const AnfNodePtr &weights, bool enable_tuple_grad);
+                       const AnfNodePtr &weights, const AnfNodePtr &position, bool enable_tuple_grad);
 };
 using GradOperationPtr = std::shared_ptr<GradOperation>;
 
@@ -206,6 +213,23 @@ class TupleGetItemTensor : public MetaFuncGraph {
   }
 };
 using TupleGetItemTensorPtr = std::shared_ptr<TupleGetItemTensor>;
+
+class Shard : public MetaFuncGraph {
+ public:
+  explicit Shard(const string &name) : MetaFuncGraph(name) {
+    signatures_ =
+      // def shard(func:read, weight_list:read, in_axes:read, out_axes:read, device:read, level:read):
+      std::vector<Signature>({{"func", SignatureEnumRW::kRWRead, SignatureEnumKind::kKindDefault},
+                              {"in_axes", SignatureEnumRW::kRWRead, SignatureEnumKind::kKindDefault},
+                              {"out_axes", SignatureEnumRW::kRWRead, SignatureEnumKind::kKindDefault},
+                              {"device", SignatureEnumRW::kRWRead, SignatureEnumKind::kKindDefault},
+                              {"level", SignatureEnumRW::kRWRead, SignatureEnumKind::kKindDefault}});
+  }
+  ~Shard() override = default;
+  MS_DECLARE_PARENT(Shard, MetaFuncGraph)
+
+  FuncGraphPtr GenerateFuncGraph(const AbstractBasePtrList &args_spec_list) override;
+};
 }  // namespace prim
 }  // namespace mindspore
 

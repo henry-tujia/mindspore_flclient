@@ -20,29 +20,24 @@
 
 namespace mindspore {
 namespace dataset {
-
 Status DCShiftOp::Compute(const std::shared_ptr<Tensor> &input, std::shared_ptr<Tensor> *output) {
   IO_CHECK(input, output);
   // input <..., time>.
-  CHECK_FAIL_RETURN_UNEXPECTED(input->Rank() > 0, "ComplexNorm: input tensor is not in shape of <..., time>.");
+  RETURN_IF_NOT_OK(ValidateLowRank("DCShift", input, kMinAudioDim, "<..., time>"));
   // If datatype is not a numeric type, then we cannot deal with the data.
-  CHECK_FAIL_RETURN_UNEXPECTED(
-    input->type().IsNumeric(),
-    "DCShift: input tensor type should be int, float or double, but got: " + input->type().ToString());
+  RETURN_IF_NOT_OK(ValidateTensorNumeric("DCShift", input));
   if (input->type() == DataType(DataType::DE_FLOAT64)) {
     return DCShift<double>(input, output, shift_, limiter_gain_);
   } else {
     std::shared_ptr<Tensor> tmp;
-    TypeCast(input, &tmp, DataType(DataType::DE_FLOAT32));
+    RETURN_IF_NOT_OK(TypeCast(input, &tmp, DataType(DataType::DE_FLOAT32)));
     return DCShift<float>(tmp, output, shift_, limiter_gain_);
   }
 }
 
 Status DCShiftOp::OutputType(const std::vector<DataType> &inputs, std::vector<DataType> &outputs) {
   RETURN_IF_NOT_OK(TensorOp::OutputType(inputs, outputs));
-  CHECK_FAIL_RETURN_UNEXPECTED(
-    inputs[0].IsNumeric(),
-    "DCShift: input tensor type should be int, float or double, but got: " + inputs[0].ToString());
+  RETURN_IF_NOT_OK(ValidateTensorType("DCShift", inputs[0].IsNumeric(), "[int, float, double]", inputs[0].ToString()));
   if (inputs[0] == DataType(DataType::DE_FLOAT64)) {
     outputs[0] = DataType(DataType::DE_FLOAT64);
   } else {
@@ -50,6 +45,5 @@ Status DCShiftOp::OutputType(const std::vector<DataType> &inputs, std::vector<Da
   }
   return Status::OK();
 }
-
 }  // namespace dataset
 }  // namespace mindspore

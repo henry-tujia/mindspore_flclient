@@ -34,7 +34,7 @@ static const std::map<std::string, Optype> kOpTypeMap = {
 template <typename T>
 class FloatStatusGpuKernel : public GpuKernel {
  public:
-  FloatStatusGpuKernel() : kernel_name_(OP_INVALID), input_size_(0), output_size_(0) {}
+  FloatStatusGpuKernel() : kernel_name_(OP_INVALID), input_size_(0), output_size_(0), is_null_input_(false) {}
   ~FloatStatusGpuKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -42,6 +42,9 @@ class FloatStatusGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
 
     switch (kernel_name_) {
@@ -78,6 +81,12 @@ class FloatStatusGpuKernel : public GpuKernel {
       return false;
     }
     auto shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'FloatStatusGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     input_size_ = sizeof(T);
     for (size_t x : shape) {
       input_size_ = input_size_ * x;
@@ -86,9 +95,9 @@ class FloatStatusGpuKernel : public GpuKernel {
     auto iter = kOpTypeMap.find(kernel_name);
     if (iter == kOpTypeMap.end()) {
       MS_LOG(EXCEPTION) << "FloatStatus kernel " << kernel_name << " is not supported.";
-    } else {
-      kernel_name_ = iter->second;
     }
+    kernel_name_ = iter->second;
+
     if (kernel_name_ == OP_STATUS) {
       output_size_ = sizeof(float);
     } else {
@@ -125,6 +134,7 @@ class FloatStatusGpuKernel : public GpuKernel {
   Optype kernel_name_;
   size_t input_size_;
   size_t output_size_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

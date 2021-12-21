@@ -30,9 +30,6 @@ constexpr int kTFlitePaddingIndex = 1;
 ops::PrimitiveC *TflitePadParser::Parse(const std::unique_ptr<tflite::OperatorT> &tflite_op,
                                         const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                         const std::unique_ptr<tflite::ModelT> &tflite_model) {
-  MS_CHECK_TRUE_RET(tflite_op != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_subgraph != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_model != nullptr, nullptr);
   auto prim = std::make_unique<ops::PadFusion>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
 
@@ -43,16 +40,19 @@ ops::PrimitiveC *TflitePadParser::Parse(const std::unique_ptr<tflite::OperatorT>
   }
   auto tflite_op_type = opcode->builtin_code;
   if (tflite_op_type == tflite::BuiltinOperator_PAD) {
+    MS_CHECK_GE(tflite_op->inputs.size(), kInputSize1, nullptr);
     prim->set_padding_mode(mindspore::PaddingMode::CONSTANT);
     prim->set_constant_value(0.0);
 
     std::vector<std::vector<int64_t>> paddings;
-    if (TransTfliteDataToVec2D(tflite_op->inputs.at(1), tflite_subgraph->tensors, tflite_model->buffers, paddings)) {
+    if (TransTfliteDataToVec2D(tflite_op->inputs.at(SECOND_INPUT), tflite_subgraph->tensors, tflite_model->buffers,
+                               &paddings)) {
       MS_LOG(ERROR) << "get Pad -> paddings failed";
       return nullptr;
     }
     prim->set_paddings(paddings);
   } else if (tflite_op_type == tflite::BuiltinOperator_PADV2) {
+    MS_CHECK_GE(tflite_op->inputs.size(), kInputSize2, nullptr);
     prim->set_padding_mode(mindspore::PaddingMode::CONSTANT);
     if (tflite_op->inputs.size() < kTFlitePadInputSize) {
       MS_LOG(ERROR) << "tflite padv2 input size less than 3, which is " << tflite_op->inputs.size();
@@ -60,7 +60,8 @@ ops::PrimitiveC *TflitePadParser::Parse(const std::unique_ptr<tflite::OperatorT>
     }
 
     std::vector<float> constant_value;
-    auto ret = GetTfliteData(tflite_op->inputs.at(2), tflite_subgraph->tensors, tflite_model->buffers, constant_value);
+    auto ret = GetTfliteData(tflite_op->inputs.at(THIRD_INPUT), tflite_subgraph->tensors, tflite_model->buffers,
+                             &constant_value);
     if (ret != RET_OK || constant_value.size() != kTFlitePaddingIndex) {
       MS_LOG(ERROR) << "get Pad -> constant_value failed";
       return nullptr;

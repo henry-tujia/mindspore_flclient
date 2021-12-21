@@ -17,21 +17,26 @@
 #define MINDSPORE_CCSRC_DEBUG_DUMP_PROTO_H_
 
 #include <string>
+#include <memory>
 
 #include "ir/func_graph.h"
 #include "proto/mind_ir.pb.h"
 #include "debug/common.h"
+#include "proto/anf_ir.pb.h"
 
 namespace mindspore {
+using ModelProtoPtr = std::shared_ptr<mind_ir::ModelProto>;
 std::string GetFuncGraphProtoString(const FuncGraphPtr &func_graph);
 
 std::string GetOnnxProtoString(const FuncGraphPtr &func_graph);
 
 std::string GetBinaryProtoString(const FuncGraphPtr &func_graph);
 
-mind_ir::ModelProto GetBinaryProto(const FuncGraphPtr &func_graph, bool save_tensor_data = false);
+ModelProtoPtr GetBinaryProto(const FuncGraphPtr &func_graph, const FuncGraphPtr &param_layout_fg = nullptr);
 
 void DumpIRProto(const FuncGraphPtr &func_graph, const std::string &suffix);
+
+void GetFuncGraphProto(const FuncGraphPtr &func_graph, irpb::GraphProto *graph_proto);
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CCSRC_DEBUG_DUMP_PROTO_H_

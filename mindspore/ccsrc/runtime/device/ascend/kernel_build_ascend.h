@@ -18,21 +18,29 @@
 #define MINDSPORE_CCSRC_RUNTIME_DEVICE_ASCEND_KERNEL_BUILD_ASCEND_H_
 
 #include <vector>
-
+#include <map>
 #include "backend/session/kernel_graph.h"
 
 namespace mindspore {
 namespace device {
 namespace ascend {
+using CommOpInputInfo = std::map<AnfNodePtr, std::vector<size_t>>;
+using CleanOpsMap = std::map<CNodePtr, std::vector<CNodePtr>>;
+
 /**
  * @brief kernel build for ascend.
  */
 bool KernelBuild(const std::vector<CNodePtr> &kernels);
+
 /**
- * @brief preporcess of kernel build for ascend, e.g. inserting clear_zero node for maxpool, bn.
- * Must DO these changes just before kernel build, and after all of other optimizations on AnfGraph
+ * @brief insert atomic
  */
-void KernelBuildPreprocess(mindspore::session::KernelGraph *kernel_graph);
+void InsertAtomicCleanOps(const KernelGraphPtr &kernel_graph);
+
+/**
+ *  @brief insert atomic for mind rt
+ * */
+void InsertAtomicCleanOps(const std::vector<CNodePtr> &nodes, CleanOpsMap *maps);
 }  // namespace ascend
 }  // namespace device
 }  // namespace mindspore

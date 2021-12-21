@@ -15,6 +15,7 @@
  */
 
 #include "tools/converter/config_parser/quant_param_parser.h"
+#include <vector>
 #include "src/common/log_adapter.h"
 #include "mindspore/lite/tools/common/string_util.h"
 #include "include/errorcode.h"
@@ -23,7 +24,59 @@ namespace lite {
 namespace {
 constexpr int kQuantBitNumInt16 = 16;
 constexpr int kQuantBitNumInt8 = 8;
+constexpr int kMinSize = 0;
+constexpr int kMaxSize = 65535;
 }  // namespace
+int QuantParamParser::ParseFilter(const CommonQuantString &common_quant_string, quant::CommonQuantParam *common_quant) {
+  if (!common_quant_string.min_quant_weight_size.empty()) {
+    if (!ConvertIntNum(common_quant_string.min_quant_weight_size, &common_quant->min_quant_weight_size)) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_size should be a valid number.";
+      return RET_INPUT_PARAM_INVALID;
+    }
+    if (common_quant->min_quant_weight_size < kMinSize || common_quant->min_quant_weight_size > kMaxSize) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_size should in [0,65535]." << std::endl;
+      return RET_INPUT_PARAM_INVALID;
+    }
+  }
+  if (!common_quant_string.min_quant_weight_channel.empty()) {
+    if (!ConvertIntNum(common_quant_string.min_quant_weight_channel, &common_quant->min_quant_weight_channel)) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_channel should be a valid number.";
+      return RET_INPUT_PARAM_INVALID;
+    }
+
+    if (common_quant->min_quant_weight_channel < kMinSize || common_quant->min_quant_weight_channel > kMaxSize) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_channel should in [0,65535]." << std::endl;
+      return RET_INPUT_PARAM_INVALID;
+    }
+  }
+  if (!common_quant_string.skip_quant_node.empty()) {
+    std::vector<std::string> nodes = SplitStringToVector(common_quant_string.skip_quant_node, ',');
+    for (const auto &node : nodes) {
+      common_quant->skip_quant_node.insert(node);
+    }
+  }
+  return RET_OK;
+}
+
+int QuantParamParser::ParseBitNum(const CommonQuantString &common_quant_string, quant::CommonQuantParam *common_quant) {
+  if (!common_quant_string.bit_num.empty() && !ConvertIntNum(common_quant_string.bit_num, &common_quant->bit_num)) {
+    MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be a valid number.";
+    return RET_INPUT_PARAM_INVALID;
+  }
+  if (common_quant->quant_type == schema::QuantType_QUANT_WEIGHT) {
+    if (common_quant->bit_num < 0 || common_quant->bit_num > kQuantBitNumInt16) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be [0,16].";
+      return RET_INPUT_PARAM_INVALID;
+    }
+  } else if (common_quant->quant_type == schema::QuantType_QUANT_ALL) {
+    if (common_quant->bit_num <= 0 || common_quant->bit_num > kQuantBitNumInt8) {
+      MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be [1,8].";
+      return RET_INPUT_PARAM_INVALID;
+    }
+  }
+  return RET_OK;
+}
+
 int QuantParamParser::ParseCommonQuant(const CommonQuantString &common_quant_string,
                                        quant::CommonQuantParam *common_quant) {
   if (!common_quant_string.quant_type.empty()) {
@@ -34,40 +87,23 @@ int QuantParamParser::ParseCommonQuant(const CommonQuantString &common_quant_str
     }
   }
 
-  if (!common_quant_string.bit_num.empty() && !ConvertIntNum(common_quant_string.bit_num, &common_quant->bit_num)) {
-    MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be a valid number.";
-    return RET_INPUT_PARAM_INVALID;
-  }
-  if (common_quant->quant_type == schema::QuantType_WeightQuant) {
-    if (common_quant->bit_num < 0 || common_quant->bit_num > kQuantBitNumInt16) {
-      MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be [0,16].";
-      return RET_INPUT_PARAM_INVALID;
-    }
-  } else if (common_quant->quant_type == schema::QuantType_PostTraining) {
-    if (common_quant->bit_num <= 0 || common_quant->bit_num > kQuantBitNumInt8) {
-      MS_LOG(ERROR) << "INPUT ILLEGAL: bit_num should be [1,8].";
-      return RET_INPUT_PARAM_INVALID;
-    }
-  }
-  if (!common_quant_string.min_quant_weight_size.empty() &&
-      !ConvertIntNum(common_quant_string.min_quant_weight_size, &common_quant->min_quant_weight_size)) {
-    MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_size should be a valid number.";
-    return RET_INPUT_PARAM_INVALID;
-  }
-  if (!common_quant_string.min_quant_weight_channel.empty() &&
-      !ConvertIntNum(common_quant_string.min_quant_weight_channel, &common_quant->min_quant_weight_channel)) {
-    MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_channel should be a valid number.";
-    return RET_INPUT_PARAM_INVALID;
-  }
-  if (common_quant->min_quant_weight_size < 0 || common_quant->min_quant_weight_size > 65535) {
-    MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_size should in [0,65535]." << std::endl;
-    return RET_INPUT_PARAM_INVALID;
+  auto ret = ParseBitNum(common_quant_string, common_quant);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Parse bit num failed.";
+    return ret;
   }
 
-  if (common_quant->min_quant_weight_channel < 0 || common_quant->min_quant_weight_size > 65535) {
-    MS_LOG(ERROR) << "INPUT ILLEGAL: min_quant_weight_channel should in [0,65535]." << std::endl;
-    return RET_INPUT_PARAM_INVALID;
+  ret = ParseFilter(common_quant_string, common_quant);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Parse filter failed.";
+    return ret;
   }
+
+  common_quant->debug_info_save_path = common_quant_string.debug_info_save_path;
+  if (!common_quant->debug_info_save_path.empty()) {
+    common_quant->is_debug = true;
+  }
+
   return RET_OK;
 }
 
@@ -82,6 +118,11 @@ int QuantParamParser::ParseMixedBitWeightQuant(const MixedBitWeightQuantString &
   }
   if (mixed_bit_weight_quant->init_scale <= 0 || mixed_bit_weight_quant->init_scale >= 1) {
     MS_LOG(ERROR) << "INPUT ILLEGAL: init_scale should at (0,1)";
+    return RET_INPUT_PARAM_INVALID;
+  }
+  if (!mixed_bit_weight_quant_string.auto_tune.empty() &&
+      !ConvertBool(mixed_bit_weight_quant_string.auto_tune, &mixed_bit_weight_quant->auto_tune)) {
+    MS_LOG(ERROR) << "INPUT ILLEGAL: auto_tune should be true or false.";
     return RET_INPUT_PARAM_INVALID;
   }
   return RET_OK;
@@ -99,21 +140,38 @@ int QuantParamParser::ParseFullQuant(const FullQuantString &full_quant_string, q
     MS_LOG(ERROR) << "INPUT ILLEGAL: bias_correction should be true or false.";
     return RET_INPUT_PARAM_INVALID;
   }
+  if (!full_quant_string.target_device.empty()) {
+    auto ret = ParseTargetDevice(full_quant_string.target_device, &full_quant->target_device);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "Parse device failed.";
+      return ret;
+    }
+  }
   return RET_OK;
 }
 
 int QuantParamParser::ParseQuantType(const std::string &quant_type_str, schema::QuantType *quant_type) {
   if (quant_type_str == "WEIGHT_QUANT") {
-    (*quant_type) = schema::QuantType_WeightQuant;
+    (*quant_type) = schema::QuantType_QUANT_WEIGHT;
     return RET_OK;
   } else if (quant_type_str == "FULL_QUANT") {
-    (*quant_type) = schema::QuantType_PostTraining;
+    (*quant_type) = schema::QuantType_QUANT_ALL;
     return RET_OK;
   } else if (quant_type_str.empty()) {
     (*quant_type) = schema::QuantType_QUANT_NONE;
     return RET_OK;
   } else {
     MS_LOG(ERROR) << "INPUT ILLEGAL: quant_type must be WEIGHT_QUANT|FULL_QUANT.";
+    return RET_INPUT_PARAM_INVALID;
+  }
+}
+
+int QuantParamParser::ParseTargetDevice(const std::string &target_device_str, quant::TargetDevice *target_device) {
+  if (target_device_str == "KIRIN") {
+    (*target_device) = quant::KIRIN;
+    return RET_OK;
+  } else {
+    MS_LOG(ERROR) << "INPUT ILLEGAL: target_device must be KIRIN.";
     return RET_INPUT_PARAM_INVALID;
   }
 }

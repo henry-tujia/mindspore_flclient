@@ -58,7 +58,6 @@ int OpenCLExecutor::RunOrTune(const std::vector<Tensor *> &inputs, const std::ve
     }
     if (kernel->IsBuiltin()) {
       auto *op_kernel = reinterpret_cast<kernel::OpenCLKernel *>(kernel->kernel());
-
       if (is_tune) {
         ret = Tune(op_kernel);
         if (ret != RET_OK) {
@@ -100,7 +99,7 @@ int OpenCLExecutor::RunOrTune(const std::vector<Tensor *> &inputs, const std::ve
 int OpenCLExecutor::Tune(kernel::OpenCLKernel *op_kernel) {
   auto ret = op_kernel->PreProcess();
   if (ret != RET_OK) {
-    MS_LOG(WARNING) << "PreProcess kernel failed, name: " << op_kernel->name() << " in tuning";
+    MS_LOG(ERROR) << "PreProcess kernel failed, name: " << op_kernel->name() << " in tuning";
     return ret;
   }
   ret = op_kernel->Tune();
@@ -110,7 +109,7 @@ int OpenCLExecutor::Tune(kernel::OpenCLKernel *op_kernel) {
   }
   ret = op_kernel->PostProcess();
   if (ret != RET_OK) {
-    MS_LOG(WARNING) << "PostProcess kernel failed, name: " << op_kernel->name() << " in tuning";
+    MS_LOG(ERROR) << "PostProcess kernel failed, name: " << op_kernel->name() << " in tuning";
     return ret;
   }
   return RET_OK;

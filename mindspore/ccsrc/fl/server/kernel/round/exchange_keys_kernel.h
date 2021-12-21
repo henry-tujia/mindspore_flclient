@@ -25,11 +25,15 @@
 #include "fl/server/kernel/round/round_kernel_factory.h"
 #include "fl/server/executor.h"
 #include "fl/armour/cipher/cipher_keys.h"
+#include "fl/armour/cipher/cipher_meta_storage.h"
 
 namespace mindspore {
 namespace fl {
 namespace server {
 namespace kernel {
+// results of signature verification
+enum sigVerifyResult { FAILED, TIMEOUT, PASSED };
+
 class ExchangeKeysKernel : public RoundKernel {
  public:
   ExchangeKeysKernel() = default;
@@ -43,9 +47,10 @@ class ExchangeKeysKernel : public RoundKernel {
   Executor *executor_;
   size_t iteration_time_window_;
   armour::CipherKeys *cipher_key_;
-  bool ReachThresholdForExchangeKeys(const std::shared_ptr<FBBuilder> &fbb, const int iter_num);
+  sigVerifyResult VerifySignature(const schema::RequestExchangeKeys *exchange_keys_req);
+  bool ReachThresholdForExchangeKeys(const std::shared_ptr<FBBuilder> &fbb, const size_t iter_num);
   bool CountForExchangeKeys(const std::shared_ptr<FBBuilder> &fbb, const schema::RequestExchangeKeys *exchange_keys_req,
-                            const int iter_num);
+                            const size_t iter_num);
 };
 }  // namespace kernel
 }  // namespace server

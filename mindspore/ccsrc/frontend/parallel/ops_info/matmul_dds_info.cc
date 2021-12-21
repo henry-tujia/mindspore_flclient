@@ -43,12 +43,7 @@ namespace parallel {
  *  Only bs and num_heads can be splited, thus the q[0] should at least be size_per_head,
  *  q[1] should at least be seq_len // 16. The strategy check can use bs/head from attrs.
  */
-Status MatmulDDSInfo::CheckStrategy(const StrategyPtr &strategy) {
-  if (CheckStrategyValue(strategy, inputs_shape_) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Invalid strategy.";
-    return FAILED;
-  }
-  Strategys stras = strategy->GetInputDim();
+Status MatmulDDSInfo::CheckStrategys(const Strategys &stras) {
   if (stras.size() != MATMUL_DDS_INPUTS_SIZE) {
     MS_LOG(ERROR) << name_ << ": Invalid strategy. The strategys size should be 4.";
     return FAILED;
@@ -102,6 +97,18 @@ Status MatmulDDSInfo::CheckStrategy(const StrategyPtr &strategy) {
       MS_LOG(ERROR) << name_ << ": Invalid strategy. The strategys[3][" << i << "] only support 1";
       return FAILED;
     }
+  }
+  return SUCCESS;
+}
+
+Status MatmulDDSInfo::CheckStrategy(const StrategyPtr &strategy) {
+  if (CheckStrategyValue(strategy, inputs_shape_) != SUCCESS) {
+    MS_LOG(ERROR) << name_ << ": Invalid strategy.";
+    return FAILED;
+  }
+  Strategys stras = strategy->GetInputDim();
+  if (CheckStrategys(stras) != SUCCESS) {
+    return FAILED;
   }
   return SUCCESS;
 }
@@ -263,25 +270,6 @@ ReplaceGraphPtr MatmulDDSInfo::replace_graph(const CNodePtr &cnode) {
     MS_LOG(EXCEPTION) << name_ << ": ComputeReplaceGraph failed.";
   }
   return replace_graph_;
-}
-
-Status MatmulDDSInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << ": Init success.";
-  return SUCCESS;
-}
-
-Status MatmulDDSInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success.";
-  return SUCCESS;
 }
 
 std::vector<StrategyPtr> MatmulDDSInfo::GenerateOpStrategies(int64_t stage_id) {

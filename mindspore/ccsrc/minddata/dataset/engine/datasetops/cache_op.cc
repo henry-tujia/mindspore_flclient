@@ -40,14 +40,13 @@ CacheOp::~CacheOp() = default;
 
 // This class functor will provide the master loop that drives the logic for performing the work
 Status CacheOp::operator()() {
+  RETURN_UNEXPECTED_IF_NULL(tree_);
   if (!sampler_) {
     return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
-                  "Invalid parameter, CacheOp requires a sampler before it can be executed, but got nullptr.");
+                  "Invalid sampler, CacheOp requires a sampler before it can be executed, but got nullptr.");
   }
   RETURN_IF_NOT_OK(RegisterResources());
-  // Kick off the workers
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&CacheOp::WorkerEntry, this, std::placeholders::_1), Name()));
+
   // required task group sync after launching workers
   TaskManager::FindMe()->Post();
   // Wait for the workers to finish caching the rows.
@@ -59,19 +58,14 @@ Status CacheOp::operator()() {
   RETURN_IF_NOT_OK(FetchSamplesToWorkers());
   return Status::OK();
 }
+
 Status CacheOp::CacheAllRows(int32_t worker_id) {
   // If the current phase is to fill the cache, do it then.
   if (phase_ == Phase::kBuildPhase) {
-    // We will take the chance to cache the schema at the server.
-    // Just do it once and pick one worker to do it.
-    if (worker_id == 0) {
-      RETURN_IF_NOT_OK(cache_client_->CacheSchema(column_name_id_map()));
-    }
     MS_LOG(INFO) << "CacheOp first epoch SAVE mode started. Worker: " << worker_id;
     // SAVE mode loop
     TensorRow row;
-    auto child_iterator = std::make_unique<ChildIterator>(this, worker_id, 0);
-    RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&row));
+    RETURN_IF_NOT_OK(cache_workers_in_queue_[worker_id]->PopFront(&row));
     while (!row.eof()) {
       if (!row.eoe()) {
         Status rc;
@@ -88,13 +82,13 @@ Status CacheOp::CacheAllRows(int32_t worker_id) {
         // the eoe to indicate the end of the epoch, we should next expect to get the eof.
         // Drain this eof so that we don't leave it sitting there on a connector that we'll never fetch
         // from again.
-        RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&row));
+        RETURN_IF_NOT_OK(cache_workers_in_queue_[worker_id]->PopFront(&row));
         if (!row.eof()) {
           RETURN_STATUS_UNEXPECTED("[Internal ERROR] Cache op expects to get an eof after eoe from child.");
         }
         break;
       }
-      RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&row));
+      RETURN_IF_NOT_OK(cache_workers_in_queue_[worker_id]->PopFront(&row));
     }
   }
   // Let the main guy know we are done.
@@ -108,6 +102,23 @@ Status CacheOp::CacheAllRows(int32_t worker_id) {
   return Status::OK();
 }
 Status CacheOp::WaitForCachingAllRows() {
+  // Fetch all rows and wait for workers to cache them
+
+  // We will take the chance to cache the schema at the server.
+  RETURN_IF_NOT_OK(cache_client_->CacheSchema(column_name_id_map()));
+  // SAVE mode loop
+  TensorRow new_row;
+  auto child_iterator = std::make_unique<ChildIterator>(this, 0, 0);
+  int64_t ctr = 0;
+  do {
+    RETURN_IF_NOT_OK(child_iterator->FetchNextTensorRow(&new_row));
+    RETURN_IF_NOT_OK(cache_workers_in_queue_[ctr++ % num_workers_]->EmplaceBack(std::move(new_row)));
+  } while (!new_row.eof());
+
+  for (int32_t i = 1; i < num_workers_; i++) {
+    RETURN_IF_NOT_OK(cache_workers_in_queue_[ctr++ % num_workers_]->EmplaceBack(TensorRow(TensorRow::kFlagEOF)));
+  }
+
   // Wait for the workers to finish caching the rows.
   RETURN_IF_NOT_OK(rows_cache_done_.Wait());
   // Move from build phase to fetch phase if we are the one to fill the cache
@@ -134,9 +145,9 @@ Status CacheOp::WaitForCachingAllRows() {
         BuildPhaseDone = true;
         break;
       case CacheServiceState::kOutOfMemory:
-        return Status(StatusCode::kMDOutOfMemory, "Cache server is running out of memory");
+        return Status(StatusCode::kMDOutOfMemory, "Cache server is running out of memory, check memory usage.");
       case CacheServiceState::kNoSpace:
-        return Status(StatusCode::kMDNoSpace, "Cache server is running of out spill storage");
+        return Status(StatusCode::kMDNoSpace, "Cache server is running of out spill storage, check memory usage.");
       case CacheServiceState::kNone:
       case CacheServiceState::kError:
       default:
@@ -166,6 +177,9 @@ Status CacheOp::WorkerEntry(int32_t worker_id) {
   return Status::OK();
 }
 Status CacheOp::RegisterResources() {
+  RETURN_UNEXPECTED_IF_NULL(tree_);
+  cache_workers_in_queue_.Init(num_workers_, oc_queue_size_);
+  RETURN_IF_NOT_OK(cache_workers_in_queue_.Register(tree_->AllTasks()));
   RETURN_IF_NOT_OK(CacheBase::RegisterResources());
   RETURN_IF_NOT_OK(rows_cache_done_.Register(tree_->AllTasks()));
   RETURN_IF_NOT_OK(keys_miss_->Register(tree_->AllTasks()));

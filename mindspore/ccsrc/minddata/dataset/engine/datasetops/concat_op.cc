@@ -20,7 +20,6 @@
 
 #include "minddata/dataset/core/config_manager.h"
 
-#include "minddata/dataset/engine/db_connector.h"
 #include "utils/ms_utils.h"
 
 namespace mindspore {
@@ -60,9 +59,9 @@ void ConcatOp::Print(std::ostream &out, bool show_all) const {
 // This definition is added to pass the cyclomatic complexity rule of <= 20 units
 // The NOLINT directive is to disable cpplint check.
 // Clang format and cpplint give conflicting recommendations on this line below.
-#define f(fv, sv, shard_index)                                                     \
-  ((fv == -1 && sv == -1) || (fv < sv && shard_index >= fv && shard_index < sv) || \
-   (fv > sv && (shard_index >= fv || shard_index < sv)))  // NOLINT
+#define f(fv, sv, shard_index)                                                                     \
+  (((fv) == -1 && (sv) == -1) || ((fv) < (sv) && (shard_index) >= (fv) && (shard_index) < (sv)) || \
+   ((fv) > (sv) && ((shard_index) >= (fv) || (shard_index) < (sv))))  // NOLINT
 
 Status ConcatOp::Verify(int32_t id, const TensorRow &new_row) {
   if (id == 0) {
@@ -75,9 +74,17 @@ Status ConcatOp::Verify(int32_t id, const TensorRow &new_row) {
     // Compare the data type and data rank with these in child[0]
     int32_t index = 0;
     for (auto item : new_row) {
-      if ((item->type() != data_type_[index]) || item->Rank() != data_rank_[index++]) {
-        RETURN_STATUS_UNEXPECTED("Invalid data, data type or data rank is not the same with previous dataset.");
+      if (item->type() != data_type_[index]) {
+        RETURN_STATUS_UNEXPECTED(
+          "Invalid datatype, the data type of two datasets concated should be the same, but got " +
+          item->type().ToString() + " and " + data_type_[index].ToString() + ".");
       }
+      if (item->Rank() != data_rank_[index]) {
+        RETURN_STATUS_UNEXPECTED(
+          "Invalid datatype, the data rank of two datasets concated should be the same, but got " +
+          std::to_string(item->Rank()) + " and " + std::to_string(data_rank_[index]) + ".");
+      }
+      index++;
     }
   }
   verified_ = true;
@@ -90,12 +97,13 @@ Status ConcatOp::ComputeColMap() {
     // Obtain columns_name_id_map from child_[0]
     column_name_id_map_ = child_[0]->column_name_id_map();
     if (column_name_id_map_.empty()) {
-      RETURN_STATUS_UNEXPECTED("Child column name map cannot be empty!");
+      RETURN_STATUS_UNEXPECTED("[Internal ERROR] Child column name map cannot be empty!");
     }
     // Verify all children have the same column name map
     for (size_t i = 0; i < child_.size(); ++i) {
       if (child_[i]->column_name_id_map() != column_name_id_map_) {
-        RETURN_STATUS_UNEXPECTED("Invalid data, column name or column order is not the same with previous dataset.");
+        RETURN_STATUS_UNEXPECTED(
+          "Invalid columns, 'column name' or 'column order' of concat datasets should be the same.");
       }
     }
   } else {
@@ -106,6 +114,7 @@ Status ConcatOp::ComputeColMap() {
 
 // Gets the number of classes
 Status ConcatOp::GetNumClasses(int64_t *num_classes) {
+  RETURN_UNEXPECTED_IF_NULL(num_classes);
   int64_t max_num_classes = -1;
   for (const auto &child : child_) {
     // Choose a dataset which can get valid num_classes
@@ -118,7 +127,7 @@ Status ConcatOp::GetNumClasses(int64_t *num_classes) {
   *num_classes = max_num_classes;
   return Status::OK();
 }
-Status ConcatOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. SkipOp is an inlined operator."); }
+Status ConcatOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] ConcatOp is an inlined operator."); }
 
 bool ConcatOp::IgnoreSample() {
   bool is_not_mappable_or_second_ne_zero = true;
@@ -147,20 +156,21 @@ bool ConcatOp::IgnoreSample() {
   return ret;
 }
 
-Status ConcatOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
+Status ConcatOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   bool is_not_mappable_or_second_ne_zero = true;
 
   if (!children_flag_and_nums_.empty()) {
     bool is_not_mappable = static_cast<bool>(children_flag_and_nums_[cur_child_].first);
     is_not_mappable_or_second_ne_zero = is_not_mappable || (!children_flag_and_nums_[cur_child_].second);
   }
-  RETURN_IF_NOT_OK(child_[cur_child_]->GetNextRow(row, worker_id, retry_if_eoe));
+  RETURN_IF_NOT_OK(child_[cur_child_]->GetNextRow(row));
 
   if (!row->eoe() && !row->eof()) {
     if (!verified_) RETURN_IF_NOT_OK(Verify(cur_child_, *row));
 
     if (IgnoreSample()) {
-      RETURN_IF_NOT_OK(GetNextRow(row, worker_id, retry_if_eoe));
+      RETURN_IF_NOT_OK(GetNextRow(row));
     }
 
     return Status::OK();
@@ -179,40 +189,19 @@ Status ConcatOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe
     }
     cur_child_++;
     verified_ = false;
-    RETURN_IF_NOT_OK(GetNextRow(row, worker_id, retry_if_eoe));
+    RETURN_IF_NOT_OK(GetNextRow(row));
     return Status::OK();
   }
   if (row->eof()) {
-    CHECK_FAIL_RETURN_UNEXPECTED(cur_child_ == 0, "Received an unexpected EOF.");
+    CHECK_FAIL_RETURN_UNEXPECTED(cur_child_ == 0, "[Internal ERROR] Received an unexpected EOF.");
     for (int32_t i = cur_child_ + 1; i < child_.size(); i++) {
-      RETURN_IF_NOT_OK(child_[i]->GetNextRow(row, worker_id, retry_if_eoe));
-      CHECK_FAIL_RETURN_UNEXPECTED(row->eof(), "Row must be an EOF.");
+      RETURN_IF_NOT_OK(child_[i]->GetNextRow(row));
+      CHECK_FAIL_RETURN_UNEXPECTED(row->eof(), "[Internal ERROR] Row must be an EOF.");
     }
     return Status::OK();
   }
 
   return Status::OK();
-}
-
-int32_t ConcatOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Return operator, no parent node, assuming it's the root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
-}
-
-int32_t ConcatOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
-  }
 }
 }  // namespace dataset
 }  // namespace mindspore

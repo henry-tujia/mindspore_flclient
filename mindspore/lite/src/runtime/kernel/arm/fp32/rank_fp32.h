@@ -19,7 +19,6 @@
 
 #include <vector>
 #include "src/inner_kernel.h"
-#include "nnacl/fp32/rank_fp32.h"
 
 namespace mindspore::kernel {
 class RankCPUKernel : public InnerKernel {
@@ -29,7 +28,7 @@ class RankCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~RankCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 };

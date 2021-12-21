@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H
-#define MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H
+#ifndef MINDSPORE_LITE_SRC_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H_
+#define MINDSPORE_LITE_SRC_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H_
 #include "src/delegate/tensorrt/tensorrt_allocator.h"
 #include <map>
 #include <string>
@@ -41,6 +41,8 @@ class TensorRTAllocator {
 
   void *GetDevicePtr(const std::string &tensor_name);
 
+  std::map<std::string, CudaTensorParam> GetAllDevicePtr();
+
   int SyncMemInHostAndDevice(mindspore::MSTensor host_tensor, const std::string &device_tensor_name,
                              bool is_host2device, bool sync = true);
 
@@ -51,8 +53,10 @@ class TensorRTAllocator {
 
   void MarkMemValid(const std::string &name, bool isValid);
 
+  bool GetMemIsValid(const std::string &name);
+
  private:
   std::map<std::string, CudaTensorParam> cuda_tensor_map_;
 };
 }  // namespace mindspore::lite
-#endif  // MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H
+#endif  // MINDSPORE_LITE_SRC_DELEGATE_TENSORRT_TENSORRT_ALLOCATOR_H_

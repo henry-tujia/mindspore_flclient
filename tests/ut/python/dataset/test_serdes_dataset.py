@@ -22,7 +22,6 @@ import os
 import pytest
 
 import numpy as np
-from test_minddataset_sampler import add_and_remove_cv_file, get_data, CV_DIR_NAME, CV_FILE_NAME
 from util import config_get_set_num_parallel_workers, config_get_set_seed
 
 import mindspore.common.dtype as mstype
@@ -103,7 +102,7 @@ def test_serdes_imagefolder_dataset(remove_json_files=True):
 
     # Remove the generated json file
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("imagenet_dataset_pipeline")
 
 
 def test_serdes_mnist_dataset(remove_json_files=True):
@@ -144,7 +143,7 @@ def test_serdes_mnist_dataset(remove_json_files=True):
     assert num == 10
 
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("mnist_dataset_pipeline")
 
 
 def test_serdes_cifar10_dataset(remove_json_files=True):
@@ -186,7 +185,7 @@ def test_serdes_cifar10_dataset(remove_json_files=True):
     ds.config.set_seed(original_seed)
     ds.config.set_num_parallel_workers(original_num_parallel_workers)
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("cifar10_dataset_pipeline")
 
 
 def test_serdes_celeba_dataset(remove_json_files=True):
@@ -212,7 +211,7 @@ def test_serdes_celeba_dataset(remove_json_files=True):
 
     assert num_samples == 8
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("celeba_dataset_pipeline")
 
 
 def test_serdes_csv_dataset(remove_json_files=True):
@@ -241,7 +240,7 @@ def test_serdes_csv_dataset(remove_json_files=True):
 
     assert num_samples == 3
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("csv_dataset_pipeline")
 
 
 def test_serdes_voc_dataset(remove_json_files=True):
@@ -277,7 +276,7 @@ def test_serdes_voc_dataset(remove_json_files=True):
     ds.config.set_seed(original_seed)
     ds.config.set_num_parallel_workers(original_num_parallel_workers)
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("voc_dataset_pipeline")
 
 
 def test_serdes_zip_dataset(remove_json_files=True):
@@ -307,8 +306,9 @@ def test_serdes_zip_dataset(remove_json_files=True):
     assert filecmp.cmp('zip_dataset_pipeline.json', 'zip_dataset_pipeline_1.json')
 
     rows = 0
-    for d0, d3, d4 in zip(ds0.create_tuple_iterator(output_numpy=True), data3.create_tuple_iterator(output_numpy=True),
-                          data4.create_tuple_iterator(output_numpy=True)):
+    for d0, d3, d4 in zip(ds0.create_tuple_iterator(num_epochs=1, output_numpy=True),
+                          data3.create_tuple_iterator(num_epochs=1, output_numpy=True),
+                          data4.create_tuple_iterator(num_epochs=1, output_numpy=True)):
         num_cols = len(d0)
         offset = 0
         for t1 in d0:
@@ -321,7 +321,7 @@ def test_serdes_zip_dataset(remove_json_files=True):
     assert rows == 12
 
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("zip_dataset_pipeline")
 
 
 def test_serdes_random_crop():
@@ -406,7 +406,7 @@ def test_serdes_pyvision(remove_json_files=True):
     assert validate_jsonfile("pyvision_dataset_pipeline.json") is True
 
     if remove_json_files:
-        delete_json_files()
+        delete_json_files("pyvision_dataset_pipeline")
 
 
 def test_serdes_uniform_augment(remove_json_files=True):
@@ -461,7 +461,7 @@ def test_serdes_exception():
         data2 = ds.deserialize(input_dict=data1_json)
         ds.serialize(data2, "filter_dataset_fail.json")
     assert "Invalid data, unsupported operation type: Filter" in str(msg)
-    delete_json_files()
+    delete_json_files("filter_dataset_fail")
 
 
 def util_check_serialize_deserialize_file(data_orig, filename, remove_json_files):
@@ -486,7 +486,7 @@ def util_check_serialize_deserialize_file(data_orig, filename, remove_json_files
 
     # Remove the generated json file
     if remove_json_files:
-        delete_json_files()
+        delete_json_files(filename)
     return data_changed
 
 
@@ -500,45 +500,13 @@ def validate_jsonfile(filepath):
     return file_exist and isinstance(loaded_json, dict)
 
 
-def delete_json_files():
-    file_list = glob.glob('*.json')
+def delete_json_files(filename):
+    file_list = glob.glob(filename + '.json') + glob.glob(filename + '_1.json')
     for f in file_list:
         try:
             os.remove(f)
         except IOError:
             logger.info("Error while deleting: {}".format(f))
-
-
-# Test save load minddataset
-def skip_test_minddataset(add_and_remove_cv_file=True):
-    """tutorial for cv minderdataset."""
-    columns_list = ["data", "file_name", "label"]
-    num_readers = 4
-    indices = [1, 2, 3, 5, 7]
-    sampler = ds.SubsetRandomSampler(indices)
-    data_set = ds.MindDataset(CV_FILE_NAME + "0", columns_list, num_readers,
-                              sampler=sampler)
-
-    # Serializing into python dictionary
-    ds1_dict = ds.serialize(data_set)
-    # Serializing into json object
-    ds1_json = json.dumps(ds1_dict, sort_keys=True)
-
-    # Reconstruct dataset pipeline from its serialized form
-    data_set = ds.deserialize(input_dict=ds1_dict)
-    ds2_dict = ds.serialize(data_set)
-    # Serializing into json object
-    ds2_json = json.dumps(ds2_dict, sort_keys=True)
-
-    assert ds1_json == ds2_json
-
-    _ = get_data(CV_DIR_NAME)
-    assert data_set.get_dataset_size() == 5
-    num_iter = 0
-    for _ in data_set.create_dict_iterator(num_epochs=1, output_numpy=True):
-        num_iter += 1
-    assert num_iter == 5
-
 
 if __name__ == '__main__':
     test_serdes_imagefolder_dataset()
@@ -554,4 +522,3 @@ if __name__ == '__main__':
     test_serdes_uniform_augment()
     skip_test_serdes_fill()
     test_serdes_exception()
-    skip_test_minddataset()

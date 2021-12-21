@@ -53,12 +53,13 @@ int SparseToDenseOpenCLKernel::InitOutputToDefault() {
   return RET_OK;
 }
 
+#ifdef ENABLE_FP16
 int SparseToDenseOpenCLKernel::InitWeights() {
   auto allocator = ocl_runtime_->GetAllocator();
-  MS_CHECK_GE(in_tensors_.size(), 3, RET_ERROR);
+  MS_CHECK_GE(in_tensors_.size(), DIMENSION_3D, RET_ERROR);
   auto weight_tensor = in_tensors_[2];
   size_t size = 1;
-  for (int i = 0; i < weight_tensor->shape().size(); ++i) {
+  for (size_t i = 0; i < weight_tensor->shape().size(); ++i) {
     size *= weight_tensor->shape()[i];
   }
   MS_ASSERT(weight_tensor->data());
@@ -87,7 +88,7 @@ int SparseToDenseOpenCLKernel::InitWeights() {
       } else {
         auto weight_fp32 = reinterpret_cast<float *>(weight_vector_);
         auto origin_bias_fp16 = reinterpret_cast<float16_t *>(weight_tensor->data());
-        for (int i = 0; i < size; ++i) {
+        for (size_t i = 0; i < size; ++i) {
           weight_fp32[i] = static_cast<float>(origin_bias_fp16[i]);
         }
       }
@@ -95,7 +96,7 @@ int SparseToDenseOpenCLKernel::InitWeights() {
       if (enable_fp16_) {
         auto weight_fp16 = reinterpret_cast<float16_t *>(weight_vector_);
         auto origin_bias_fp32 = reinterpret_cast<float *>(weight_tensor->data());
-        for (int i = 0; i < size; ++i) {
+        for (size_t i = 0; i < size; ++i) {
           weight_fp16[i] = static_cast<float16_t>(origin_bias_fp32[i]);
         }
       } else {
@@ -109,15 +110,49 @@ int SparseToDenseOpenCLKernel::InitWeights() {
   }
   return RET_OK;
 }
+#else
+int SparseToDenseOpenCLKernel::InitWeights() {
+  auto allocator = ocl_runtime_->GetAllocator();
+  MS_CHECK_GE(in_tensors_.size(), DIMENSION_3D, RET_ERROR);
+  auto weight_tensor = in_tensors_[2];
+  size_t size = 1;
+  for (size_t i = 0; i < weight_tensor->shape().size(); ++i) {
+    size *= weight_tensor->shape()[i];
+  }
+  MS_ASSERT(weight_tensor->data());
+  if (weight_scalar_) {
+    weight_scalar_ = *reinterpret_cast<float *>(weight_tensor->data());
+  } else {
+    auto sizeof_FLT = sizeof(float);
+    size_t weight_size = UP_ROUND(size, C4NUM) * sizeof_FLT;
+    weight_vector_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+    if (weight_vector_ == nullptr) {
+      MS_LOG(ERROR) << "Malloc failed.";
+      return RET_ERROR;
+    }
+    if (allocator->MapBuffer(weight_vector_, CL_MAP_WRITE, nullptr, true) == nullptr) {
+      MS_LOG(ERROR) << "Map Buffer failed.";
+      return RET_ERROR;
+    }
+    memset(weight_vector_, 0x00, weight_size);
+    memcpy(weight_vector_, weight_tensor->data(), size * sizeof_FLT);
+    if (allocator->UnmapBuffer(weight_vector_) != RET_OK) {
+      MS_LOG(ERROR) << "UnmapBuffer failed.";
+      return RET_ERROR;
+    }
+  }
+  return RET_OK;
+}
+#endif
 
 int SparseToDenseOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() < DIMENSION_3D || out_tensors_.at(0)->shape().size() > DIMENSION_4D) {
-    MS_LOG(ERROR) << " only support out_tensors_ dim <= 4 and in_tensors_.size >= 3";
+    MS_LOG(WARNING) << " only support out_tensors_ dim <= 4 and in_tensors_.size >= 3";
     return RET_ERROR;
   }
   if (in_tensors_.at(0)->shape().size() > DIMENSION_4D || out_tensors_.at(0)->shape().size() > DIMENSION_4D) {
-    MS_LOG(ERROR) << "Unsupported inputdim: " << in_tensors_[0]->shape().size() << "outdim"
-                  << out_tensors_[0]->shape().size();
+    MS_LOG(WARNING) << "Unsupported inputdim: " << in_tensors_[0]->shape().size() << "outdim"
+                    << out_tensors_[0]->shape().size();
     return RET_ERROR;
   }
   if (input_dim_ == DIMENSION_2D) {
@@ -129,7 +164,7 @@ int SparseToDenseOpenCLKernel::CheckSpecs() {
   }
   auto param = reinterpret_cast<SparseToDenseParameter *>(op_parameter_);
   if (param->validate_indices_) {
-    MS_LOG(ERROR) << "Unsupported unordered for in_tensors_indices";
+    MS_LOG(WARNING) << "Unsupported unordered for in_tensors_indices";
     return RET_ERROR;
   }
   return RET_OK;
@@ -176,7 +211,7 @@ void SparseToDenseOpenCLKernel::SetGlobalLocal() {
 int SparseToDenseOpenCLKernel::Prepare() {
   enable_fp16_ = ocl_runtime_->GetFp16Enable();
   input_dim_ = in_tensors_[0]->shape().size();
-  MS_CHECK_GE(input_dim_, 2, RET_ERROR);
+  MS_CHECK_GE(input_dim_, DIMENSION_2D, RET_ERROR);
   inshapeindex1_dim = in_tensors_[0]->shape()[1];
   weight_scalar_ = in_tensors_[2]->IsScalar();
   const std::string kernel_name = "SparseToDense" + std::string(weight_scalar_ ? "Scalar" : "Vector");
@@ -200,11 +235,15 @@ int SparseToDenseOpenCLKernel::Prepare() {
 
   if (in_tensors_.size() > INPUT_TENSOR_SIZE_3) {
     auto input_tensor3 = in_tensors_[3];
+#ifdef ENABLE_FP16
     if (input_tensor3->data_type() == kNumberTypeFloat16) {
       default_ = static_cast<float>(*reinterpret_cast<float16_t *>(input_tensor3->data()));
     } else {
       default_ = *reinterpret_cast<float *>(input_tensor3->data());
     }
+#else
+    default_ = *reinterpret_cast<float *>(input_tensor3->data());
+#endif
     MS_ASSERT(default_);
   }
   ret = InitWeights();

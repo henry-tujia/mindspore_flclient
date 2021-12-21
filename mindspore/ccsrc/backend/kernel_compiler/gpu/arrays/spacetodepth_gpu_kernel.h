@@ -37,6 +37,9 @@ class SpaceToDepthFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     // get device buffer ptr
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *output = GetDeviceAddress<T>(outputs, 0);
@@ -51,29 +54,34 @@ class SpaceToDepthFwdKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     block_size_ = static_cast<int64_t>(GetAttr<int64_t>(kernel_node, "block_size"));
-    if (block_size_ == 0) {
-      MS_LOG(ERROR) << "block_size_ can not be 0.";
-      return false;
+    if (block_size_ < 2) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the 'block_size' cannot be less than 2, but got "
+                        << block_size_;
     }
     // check input num and output num
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but SpaceToDepth needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 1, but got " << input_num;
     }
 
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", SpaceToDepth needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 2, but got " << output_num;
     }
     // check input_shape
     auto input_shape = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     shape_size_ = input_shape.size();
     if (shape_size_ != SPACETODEPTH_BUFFER_DIMENSION) {
-      MS_LOG(EXCEPTION) << "Input is " << shape_size_ << "-D, but SpaceToDepth supports 4-D tensor.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of input cannot be equal to "
+                        << SPACETODEPTH_BUFFER_DIMENSION << ", but got " << shape_size_;
     }
     // get input and out put information
     input_size_ = 1;
@@ -102,6 +110,7 @@ class SpaceToDepthFwdKernel : public GpuKernel {
     input_size_ = 0;
     output_size_ = 0;
     block_size_ = 0;
+    is_null_input_ = false;
     in_ = 0;
     ic_ = 0;
     ih_ = 0;
@@ -131,6 +140,7 @@ class SpaceToDepthFwdKernel : public GpuKernel {
   size_t input_size_;
   size_t output_size_;
   size_t block_size_;
+  bool is_null_input_;
   size_t in_;
   size_t ic_;
   size_t ih_;

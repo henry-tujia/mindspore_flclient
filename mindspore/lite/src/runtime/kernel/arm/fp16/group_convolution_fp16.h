@@ -34,9 +34,19 @@ class GroupConvolutionFP16CPUKernel : public GroupConvolutionBaseCPUKernel {
   }  // opParameter(in channel, out channel) in this kernel has been split to groups, if
   // you want to get real params, multiply in channel / out channel with group num
   ~GroupConvolutionFP16CPUKernel() override = default;
-  int Init() override;
+  int Prepare() override;
   int SeparateInput(int group_id) override;
   int PostConcat(int group_id) override;
+
+  int Separate(int task_id);
+  int Concat(int task_id);
+
+ private:
+  TypeId in_data_type_ = kTypeUnknown;
+  void *sub_in_src_ = nullptr;
+  void *sub_in_dst_ = nullptr;
+  float16_t *sub_out_src_ = nullptr;
+  float16_t *sub_out_dst_ = nullptr;
 };
 }  // namespace mindspore::kernel
 

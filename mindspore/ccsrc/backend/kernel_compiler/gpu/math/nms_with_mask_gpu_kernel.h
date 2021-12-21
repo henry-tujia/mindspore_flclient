@@ -31,7 +31,13 @@ template <typename T>
 class NMSWithMaskGpuFwdKernel : public GpuKernel {
  public:
   NMSWithMaskGpuFwdKernel()
-      : num_input_(0), iou_value_(0.5), input_size_(0), output_size_(0), workspace_size_(0), ceil_power_2(0) {}
+      : num_input_(0),
+        iou_value_(0.5),
+        is_null_input_(false),
+        input_size_(0),
+        output_size_(0),
+        workspace_size_(0),
+        ceil_power_2(0) {}
   ~NMSWithMaskGpuFwdKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -40,6 +46,9 @@ class NMSWithMaskGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *data_buff = GetDeviceAddress<T>(workspace, 0);
     int *index_buff = GetDeviceAddress<int>(workspace, 1);
@@ -71,8 +80,9 @@ class NMSWithMaskGpuFwdKernel : public GpuKernel {
     }
 
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
-    if (CHECK_NULL_INPUT(input_shape)) {
-      MS_LOG(WARNING) << "NMSWithMask input is null";
+    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'NMSWithMaskGpuKernel', input is null";
       InitSizeLists();
       return true;
     }
@@ -107,6 +117,7 @@ class NMSWithMaskGpuFwdKernel : public GpuKernel {
  private:
   int num_input_;
   float iou_value_;
+  bool is_null_input_;
   static const int box_size_ = 5;  // pre_defined box width
   // default values
   size_t input_size_;

@@ -36,8 +36,8 @@ SoftmaxInt8CPUKernel::~SoftmaxInt8CPUKernel() {
   }
 }
 
-int SoftmaxInt8CPUKernel::Init() {
-  auto ret = SoftmaxBaseCPUKernel::Init();
+int SoftmaxInt8CPUKernel::Prepare() {
+  auto ret = SoftmaxBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }
@@ -51,14 +51,16 @@ int SoftmaxInt8CPUKernel::Init() {
   MS_ASSERT(input_tensor != nullptr);
 
   auto in_quant_args = input_tensor->quant_params();
-  quant_param_->in_quant_args_.scale_ = in_quant_args.front().scale;
+  CHECK_LESS_RETURN(in_quant_args.size(), 1);
+  quant_param_->in_quant_args_.scale_ = static_cast<float>(in_quant_args.front().scale);
   quant_param_->in_quant_args_.zp_ = -in_quant_args.front().zeroPoint;
 
   auto *out_tensor = out_tensors_.at(kOutputIndex);
   MS_ASSERT(out_tensor != nullptr);
 
   auto out_quant_args = out_tensor->quant_params();
-  quant_param_->out_quant_arg_.scale_ = out_quant_args.front().scale;
+  CHECK_LESS_RETURN(out_quant_args.size(), 1);
+  quant_param_->out_quant_arg_.scale_ = static_cast<float>(out_quant_args.front().scale);
   quant_param_->out_quant_arg_.zp_ = -out_quant_args.front().zeroPoint;
   quant_param_->output_activation_min_ = std::numeric_limits<int8_t>::min();
   quant_param_->output_activation_max_ = std::numeric_limits<int8_t>::max();

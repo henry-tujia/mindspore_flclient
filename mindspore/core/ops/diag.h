@@ -24,15 +24,18 @@
 
 namespace mindspore {
 namespace ops {
+/// \brief Constructs a diagonal tensor with a given diagonal values.
+/// Refer to Python API @ref mindspore.ops.Diag for more details.
 class MS_CORE_API Diag : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Diag() : PrimitiveC(prim::kPrimDiag->name()) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~Diag() = default;
   MS_DECLARE_PARENT(Diag, PrimitiveC);
 };
 AbstractBasePtr DiagInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args);
-using PrimDiagPtr = std::shared_ptr<Diag>;
 }  // namespace ops
 }  // namespace mindspore
 

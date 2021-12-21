@@ -417,8 +417,8 @@ std::unique_ptr<schema::PrimitiveT> MaxPoolGradPrimitiveCreator(const AnfNodePtr
   auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::MaxPoolGrad>>(node);
   return ms_primc != nullptr ? ops::MSOp2SchemaOp(ms_primc.get()) : nullptr;
 }
-std::unique_ptr<schema::PrimitiveT> MergePrimitiveCreator(const AnfNodePtr &node) {
-  auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::Merge>>(node);
+std::unique_ptr<schema::PrimitiveT> SwitchLayerPrimitiveCreator(const AnfNodePtr &node) {
+  auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::SwitchLayer>>(node);
   return ms_primc != nullptr ? ops::MSOp2SchemaOp(ms_primc.get()) : nullptr;
 }
 std::unique_ptr<schema::PrimitiveT> MfccPrimitiveCreator(const AnfNodePtr &node) {
@@ -810,6 +810,16 @@ std::unique_ptr<schema::PrimitiveT> ScatterNdUpdatePrimitiveCreator(const AnfNod
   return ms_primc != nullptr ? ops::MSOp2SchemaOp(ms_primc.get()) : nullptr;
 }
 
+std::unique_ptr<schema::PrimitiveT> AllGatherPrimitiveCreator(const AnfNodePtr &node) {
+  auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::AllGather>>(node);
+  return ms_primc != nullptr ? ops::MSOp2SchemaOp(ms_primc.get()) : nullptr;
+}
+
+std::unique_ptr<schema::PrimitiveT> ReduceScatterPrimitiveCreator(const AnfNodePtr &node) {
+  auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::ReduceScatter>>(node);
+  return ms_primc != nullptr ? ops::MSOp2SchemaOp(ms_primc.get()) : nullptr;
+}
+
 RegistryMSOps g_absPrimitiveCreatorRegistry("Abs", AbsPrimitiveCreator);
 RegistryMSOps g_absGradPrimitiveCreatorRegistry("AbsGrad", AbsGradPrimitiveCreator);
 RegistryMSOps g_activationPrimitiveCreatorRegistry("Activation", ActivationPrimitiveCreator);
@@ -925,7 +935,7 @@ RegistryMSOps g_maximumGradPrimitiveCreatorRegistry("MaximumGrad", MaximumGradPr
 RegistryMSOps g_maxPoolPrimitiveCreatorRegistry("MaxPool", MaxPoolFusionPrimitiveCreator);
 RegistryMSOps g_maxPoolFusionPrimitiveCreatorRegistry("MaxPoolFusion", MaxPoolFusionPrimitiveCreator);
 RegistryMSOps g_maxPoolGradPrimitiveCreatorRegistry("MaxPoolGrad", MaxPoolGradPrimitiveCreator);
-RegistryMSOps g_mergePrimitiveCreatorRegistry("Merge", MergePrimitiveCreator);
+RegistryMSOps g_mergePrimitiveCreatorRegistry("switch_layer", SwitchLayerPrimitiveCreator);
 RegistryMSOps g_mfccPrimitiveCreatorRegistry("Mfcc", MfccPrimitiveCreator);
 RegistryMSOps g_minimumPrimitiveCreatorRegistry("Minimum", MinimumPrimitiveCreator);
 RegistryMSOps g_minimumGradPrimitiveCreatorRegistry("MinimumGrad", MinimumGradPrimitiveCreator);
@@ -1035,6 +1045,8 @@ RegistryMSOps g_TensorArrayWriteCreatorRegistry("TensorArrayWrite", TensorArrayW
 RegistryMSOps g_AffineCreatorRegistry("Affine", AffinePrimitiveCreator);
 RegistryMSOps g_AttentionCreatorRegistry("Attention", AttentionPrimitiveCreator);
 RegistryMSOps g_ScatterNdUpdateCreatorRegistry("ScatterNdUpdate", ScatterNdUpdatePrimitiveCreator);
+RegistryMSOps g_AllGatherCreatorRegistry("AllGather", AllGatherPrimitiveCreator);
+RegistryMSOps g_ReduceScatterCreatorRegistry("ReduceScatter", ReduceScatterPrimitiveCreator);
 
 std::unique_ptr<schema::PrimitiveT> CustomPrimitiveCreator(const AnfNodePtr &node) {
   auto ms_primc = GetValueNode<std::shared_ptr<mindspore::ops::Custom>>(node);

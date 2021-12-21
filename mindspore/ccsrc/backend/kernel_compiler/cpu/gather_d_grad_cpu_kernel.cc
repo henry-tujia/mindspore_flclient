@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,12 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "backend/kernel_compiler/cpu/gather_d_grad_cpu_kernel.h"
 #include "runtime/device/cpu/cpu_device_address.h"
 
 namespace mindspore {
 namespace kernel {
 namespace {
+constexpr size_t kGatherDGradInputsNum = 2;
+constexpr size_t kGatherDGradOutputsNum = 1;
+
 size_t get_element_num(const std::vector<size_t> &shape) {
   size_t size = 1;
   for (size_t i = 0; i < shape.size(); i++) {
@@ -59,10 +63,14 @@ void GatherDGradCopyTask(size_t cur, std::vector<size_t> *pos, T *input, I *inde
 
 template <typename I, typename T>
 void GatherDGradCPUKernel<I, T>::InitKernel(const CNodePtr &kernel_node) {
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   index_shape_ = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
   input_shape_ = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
   if (input_shape_ != index_shape_) {
-    MS_LOG(EXCEPTION) << "Invalid shape size, input and index shape should be equal";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', shape size of 'x' should be equal to 'index', but got shape size of 'x': "
+                      << input_shape_.size() << ", and shape size of 'index': " << index_shape_.size();
   }
   axis_ = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, DIM);
   output_shape_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
@@ -72,25 +80,32 @@ template <typename I, typename T>
 bool GatherDGradCPUKernel<I, T>::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                         const std::vector<kernel::AddressPtr> &,
                                         const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kGatherDGradInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kGatherDGradOutputsNum, kernel_name_);
   size_t input_size = get_element_num(input_shape_) * sizeof(T);
   size_t index_size = get_element_num(index_shape_) * sizeof(I);
   size_t output_size = get_element_num(output_shape_) * sizeof(T);
-  if (inputs[0]->size != index_size || inputs[1]->size != input_size || outputs[0]->size != output_size) {
-    MS_LOG(EXCEPTION) << "invalid input or output data size!";
-    return false;
+  if (inputs[0]->size != index_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'x' should be " << index_size
+                      << ", but got " << inputs[0]->size << ".";
+  }
+  if (inputs[1]->size != input_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of 'dim' should be " << input_size
+                      << ", but got " << inputs[1]->size << ".";
+  }
+  if (outputs[0]->size != output_size) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the address size of output should be " << output_size
+                      << ", but got " << outputs[0]->size << ".";
   }
 
-  auto index = reinterpret_cast<I *>(inputs[0]->addr);
-  auto input = reinterpret_cast<T *>(inputs[1]->addr);
+  auto *index = reinterpret_cast<I *>(inputs[0]->addr);
+  auto *input = reinterpret_cast<T *>(inputs[1]->addr);
   auto out = reinterpret_cast<T *>(outputs[0]->addr);
-
   int output_rank = SizeToInt(output_shape_.size());
   if (axis_ >= output_rank || axis_ < -output_rank) {
-    MS_LOG(EXCEPTION) << "The value of 'axis_' should be in [" << -output_rank << ", " << output_rank
-                      << "], but got: " << axis_;
-    return false;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'dim' should be in [" << -output_rank << ", "
+                      << output_rank << "), but got: " << axis_;
   }
-
   if (axis_ < 0) {
     axis_ = axis_ + SizeToInt(output_shape_.size());
   }
@@ -100,17 +115,17 @@ bool GatherDGradCPUKernel<I, T>::Launch(const std::vector<kernel::AddressPtr> &i
   int max_index = SizeToInt(output_shape_[axis_]);
   for (size_t i = 0; i < index_size; ++i) {
     if (index[i] >= max_index || index[i] < -max_index) {
-      MS_LOG(EXCEPTION) << "The value of index should be in [" << -max_index << ", " << max_index
-                        << "], but got: " << index[i];
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'index' should be in [" << -max_index << ", "
+                        << max_index << "), but got: " << index[i];
     }
     if (index[i] < 0) {
       index[i] = max_index + index[i];
     }
   }
   auto out_size = get_element_num(output_shape_);
-  if (memset_s(out, out_size * sizeof(T), 0x00, out_size * sizeof(T)) != EOK) {
-    MS_LOG(EXCEPTION) << "Memset Failed!";
+  auto ret = memset_s(out, out_size * sizeof(T), 0x00, out_size * sizeof(T));
+  if (ret != EOK) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', memset failed. Error no: " << ret;
   }
 
   // out_cargo_size

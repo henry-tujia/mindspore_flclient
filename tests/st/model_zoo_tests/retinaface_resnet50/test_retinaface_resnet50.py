@@ -23,7 +23,7 @@ from tests.st.model_zoo_tests import utils
 @pytest.mark.env_single
 def test_retinaface_resnet50():
     cur_path = os.path.dirname(os.path.abspath(__file__))
-    model_path = "{}/../../../../model_zoo/official/cv".format(cur_path)
+    model_path = "{}/../../../../tests/models/official/cv".format(cur_path)
     model_name = "retinaface_resnet50"
     utils.copy_files(model_path, cur_path, model_name)
     cur_model_path = os.path.join(cur_path, model_name)
@@ -51,6 +51,7 @@ def test_retinaface_resnet50():
     old_list = ["python train.py"]
     new_list = ["python train.py --distributed 1 --device_target GPU"]
     utils.exec_sed_command(old_list, new_list, os.path.join(cur_model_path, "scripts/run_distribute_gpu_train.sh"))
+    os.system("nvidia-smi")
     exec_network_shell = "cd retinaface_resnet50; bash scripts/run_distribute_gpu_train.sh 4 1,2,3,4"
     os.system(exec_network_shell)
     cmd = "ps -ef | grep train.py | grep distributed | grep device_target | grep -v grep"

@@ -1,11 +1,11 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
-// * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,16 +18,20 @@
 #include "nnacl/common_func.h"
 
 void WhereWithTripleInputs(const bool *condition, const float *x, const float *y, float *output,
-                           const WhereParameter *where_param_, int task_id) {
-  if (where_param_->op_parameter_.thread_num_ == 0) {
+                           const WhereParameter *param, int task_id) {
+  if (param->op_parameter_.thread_num_ == 0) {
     return;
   }
+  int stride = UP_DIV(param->max_num_, param->op_parameter_.thread_num_);
+  int begin = task_id * stride;
+  int end = MSMIN(begin + stride, param->max_num_);
 
-  for (int i = task_id; i < where_param_->max_num_; i += where_param_->op_parameter_.thread_num_) {
-    if (condition[where_param_->condition_num_ > 1 ? i : 0] == true) {
-      output[i] = x[where_param_->x_num_ > 1 ? i : 0];
+  for (int i = begin; i < end; ++i) {
+    bool cond = condition[param->condition_num_ > 1 ? i : 0];
+    if (cond) {
+      output[i] = x[param->x_num_ > 1 ? i : 0];
     } else {
-      output[i] = y[where_param_->y_num_ > 1 ? i : 0];
+      output[i] = y[param->y_num_ > 1 ? i : 0];
     }
   }
 }

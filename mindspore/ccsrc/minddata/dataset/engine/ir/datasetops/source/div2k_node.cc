@@ -26,10 +26,9 @@
 
 namespace mindspore {
 namespace dataset {
-
 // Constructor for DIV2KNode
 DIV2KNode::DIV2KNode(const std::string &dataset_dir, const std::string &usage, const std::string &downgrade,
-                     int32_t scale, bool decode, std::shared_ptr<SamplerObj> sampler,
+                     int32_t scale, bool decode, const std::shared_ptr<SamplerObj> &sampler,
                      std::shared_ptr<DatasetCache> cache)
     : MappableSourceNode(std::move(cache)),
       dataset_dir_(dataset_dir),
@@ -68,22 +67,19 @@ Status DIV2KNode::ValidateParams() {
   auto s_it = scale_arr.find(scale_);
   if (s_it == scale_arr.end()) {
     std::string err_msg = "DIV2KNode: " + std::to_string(scale_) + " does not match any mode in [2, 3, 4, 8].";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (scale_ == 8 && downgrade_ != "bicubic") {
     std::string err_msg = "DIV2KNode: scale equal to 8 is allowed only in bicubic downgrade.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   std::set<std::string> downgrade_2018 = {"mild", "difficult", "wild"};
   auto it = downgrade_2018.find(downgrade_);
   if (it != downgrade_2018.end() && scale_ != 4) {
     std::string err_msg = "DIV2KNode: " + downgrade_ + " downgrade requires scale equal to 4.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -101,15 +97,15 @@ Status DIV2KNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops)
 
   auto div2k_op = std::make_shared<DIV2KOp>(num_workers_, dataset_dir_, usage_, downgrade_, scale_, decode_,
                                             connector_que_size_, std::move(schema), std::move(sampler_rt));
-  div2k_op->set_total_repeats(GetTotalRepeats());
-  div2k_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  div2k_op->SetTotalRepeats(GetTotalRepeats());
+  div2k_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(div2k_op);
   return Status::OK();
 }
 
 // Get the shard id of node
 Status DIV2KNode::GetShardId(int32_t *shard_id) {
-  *shard_id = sampler_->ShardId();
+  *shard_id = static_cast<int32_t>(sampler_->ShardId());
   return Status::OK();
 }
 
@@ -126,7 +122,6 @@ Status DIV2KNode::GetDatasetSize(const std::shared_ptr<DatasetSizeGetter> &size_
   std::shared_ptr<SamplerRT> sampler_rt = nullptr;
   RETURN_IF_NOT_OK(sampler_->SamplerBuild(&sampler_rt));
   sample_size = sampler_rt->CalculateNumSamples(num_rows);
-
   if (sample_size == -1) {
     RETURN_IF_NOT_OK(size_getter->DryRun(shared_from_this(), &sample_size));
   }

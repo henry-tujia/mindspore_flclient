@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include <iterator>
 #include <memory>
 #include <list>
 #include <set>
+#include <queue>
 #include <algorithm>
 #include "frontend/parallel/graph_util/pipeline_split_utils.h"
 #include "frontend/parallel/graph_util/generate_graph.h"
@@ -27,15 +27,26 @@
 #include "frontend/parallel/device_manager.h"
 #include "frontend/parallel/context.h"
 #include "frontend/parallel/step_parallel.h"
+#include "frontend/parallel/graph_util/node_info.h"
+#include "utils/parallel_node_check.h"
 
 namespace mindspore {
 namespace parallel {
-const std::set<PrimitivePtr> END_NODE_BLACK_LIST = {prim::kPrimDepend, prim::kPrimTupleGetItem, prim::kPrimAdd,
-                                                    prim::kPrimSoftmaxCrossEntropyWithLogits};
+const std::set<PrimitivePtr> END_NODE_BLACK_LIST = {
+  prim::kPrimDepend,    prim::kPrimTupleGetItem, prim::kPrimAdd,    prim::kPrimSoftmaxCrossEntropyWithLogits,
+  prim::kPrimMakeTuple, prim::kPrimUpdateState,  prim::kPrimReshape};
 
 static bool IsInEndNodeBlackList(const CNodePtr &cnode) {
-  for (auto &prim : END_NODE_BLACK_LIST) {
-    if (IsPrimitiveCNode(cnode, prim)) {
+  MS_EXCEPTION_IF_NULL(cnode);
+  if (!IsValueNode<Primitive>(cnode->input(0))) {
+    return true;
+  }
+  auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
+  if (IsInParallelBlackList(prim)) {
+    return true;
+  }
+  for (auto &prim_node : END_NODE_BLACK_LIST) {
+    if (IsPrimitiveCNode(cnode, prim_node)) {
       return true;
     }
   }
@@ -44,7 +55,12 @@ static bool IsInEndNodeBlackList(const CNodePtr &cnode) {
 
 AnfNodePtr FindAccuGrad(const CNodePtr &cnode) {
   auto pre_node = cnode->input(1);
+  size_t depth = 0;
   while (true) {
+    if (depth > MAX_RECURSIVE_DEPTH) {
+      return nullptr;
+    }
+    depth += 1;
     if (pre_node->isa<Parameter>()) {
       return pre_node;
     } else {
@@ -73,7 +89,6 @@ void SetStridedSliceStrategy(const AnfNodePtr &node) {
   }
   auto cnode = node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(cnode);
-  int64_t dev_num = 1;
   std::vector<Shapes> shape_list = ExtractShape(cnode);
   if (shape_list.empty()) {
     MS_LOG(EXCEPTION) << "Failure:node " << cnode->ToString() << " failed to extract shape";
@@ -83,24 +98,47 @@ void SetStridedSliceStrategy(const AnfNodePtr &node) {
     if (shape_list[0][i].empty()) {
       MS_LOG(EXCEPTION) << "shape_list[ " << i << " ].size() is zero";
     }
-    Dimensions input_strategy = {dev_num};
-    for (size_t j = 1; j < shape_list[0][i].size(); j++) {
+    Dimensions input_strategy;
+    for (size_t j = 0; j < shape_list[0][i].size(); j++) {
       input_strategy.push_back(1);
     }
     elements.push_back(MakeValue(input_strategy));
   }
   ValueTuplePtr strategy = std::make_shared<ValueTuple>(elements);
-  cnode->AddPrimalAttr(STRATEGY, strategy);
+  cnode->AddPrimalAttr(IN_STRATEGY, strategy);
+}
+
+CNodePtr FindNodeWithMircoSize(const AnfNodePtr &node_user, const FuncGraphManagerPtr &manager,
+                               const NodeUsersMap &node_users_map) {
+  // Recursively find micro tags, this may takes much more time if layers are too much
+  std::queue<AnfNodePtr> visited;
+  visited.push(node_user);
+  while (!visited.empty()) {
+    auto cur_node = visited.front();
+    visited.pop();
+    auto users = node_users_map.at(cur_node);
+    for (auto &temp_user : users) {
+      auto cnode = temp_user.first->cast<CNodePtr>();
+      MS_EXCEPTION_IF_NULL(cnode);
+      if (!cnode->HasPrimalAttr(MICRO)) {
+        visited.push(temp_user.first);
+      } else {
+        return cnode;
+      }
+    }
+  }
+  return nullptr;
 }
 
 void InsertVirtualAssignAdd(const std::pair<AnfNodePtr, int> &node_user, const FuncGraphManagerPtr &manager,
-                            const AnfNodePtr &accu_parameter) {
+                            const AnfNodePtr &accu_parameter, const NodeUsersMap &node_user_map) {
   auto cnode = node_user.first->cast<CNodePtr>();
   if (IsPrimitiveCNode(cnode, prim::kPrimReceive) || !cnode->in_forward_flag()) {
     return;
   }
   MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
   bool enable_parallel_optimizer = ParallelContext::GetInstance()->enable_parallel_optimizer();
+  bool grad_accumulation_shard = ParallelContext::GetInstance()->grad_accumulation_shard();
   if (IsPrimitiveCNode(cnode, prim::kPrimDepend) && enable_parallel_optimizer) {
     return;
   }
@@ -109,10 +147,37 @@ void InsertVirtualAssignAdd(const std::pair<AnfNodePtr, int> &node_user, const F
     MS_LOG(WARNING) << cnode->DebugString() << " can not insert _VirtualAssignAdd.";
     return;
   }
-  OperatorAttrs attrs;
-  auto py_instance = CreatOpInstance(attrs, VIRTUAL_ASSIGN_ADD, VIRTUAL_ASSIGN_ADD);
+  auto param_ptr = accu_parameter->cast<ParameterPtr>();
+  MS_EXCEPTION_IF_NULL(param_ptr);
+  // If grad_accumulation_shard is ture, a ReduceScatter will be inserted at each micro step,
+  // So the fusion id should be different for each micro step
+  // otherwise they will be fused into the one ReduceScatter alone micro_steps.
+  // if grad_accumulation_shard is false, we pass an empty group, so no ReduceScatter will be inserted
+  ValuePtr args1 = nullptr;
+  ValuePtr args2 = nullptr;
+  ValuePtr micro = nullptr;
+  int64_t step = 0;
+  if (grad_accumulation_shard) {
+    auto cnode_with_micro_size = FindNodeWithMircoSize(cnode, manager, node_user_map);
+    if (cnode_with_micro_size && cnode_with_micro_size->HasPrimalAttr(MICRO)) {
+      micro = cnode_with_micro_size->GetPrimalAttr(MICRO);
+      step = GetValue<int64_t>(micro);
+    }
+  }
+  args1 = MakeValue(param_ptr->user_data<TensorLayout>()->opt_shard_group());
+  args2 = MakeValue(param_ptr->param_info()->comm_fusion() + step * PIPELINE_FUSTION_OFFSET);
+  OperatorAttrs attrs = {};
+  auto py_instance = CreateOpInstance(attrs, VIRTUAL_ASSIGN_ADD, VIRTUAL_ASSIGN_ADD);
   auto value_node = NewValueNode(py_instance);
-  std::vector<AnfNodePtr> virtual_node_input = {value_node, cnode->input(node_user.second), accu_parameter};
+  // Set the attribute of the reduce scatter
+  auto new_prim = GetValueNode<PrimitivePtr>(value_node);
+  MS_EXCEPTION_IF_NULL(new_prim);
+  auto attrs_prim = new_prim->attrs();
+  attrs_prim[GROUP] = args1;
+  attrs_prim[kAttrFusion] = args2;
+  new_prim->SetAttrs(attrs_prim);
+
+  std::vector<AnfNodePtr> virtual_node_input = {value_node, cnode->input(IntToSize(node_user.second)), accu_parameter};
   auto graph = cnode->func_graph();
   auto virtual_node = graph->NewCNode(virtual_node_input);
   manager->SetEdge(cnode, node_user.second, virtual_node);
@@ -122,13 +187,13 @@ void InsertVirtualAccuGrad(const AnfNodePtr &recv, const FuncGraphManagerPtr &ma
   auto cnode = recv->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(cnode);
   OperatorAttrs attrs;
-  auto py_instance = CreatOpInstance(attrs, VIRTUAL_ACCU_GRAD, VIRTUAL_ACCU_GRAD);
+  auto py_instance = CreateOpInstance(attrs, VIRTUAL_ACCU_GRAD, VIRTUAL_ACCU_GRAD);
   auto value_node = NewValueNode(py_instance);
   std::vector<AnfNodePtr> virtual_node_input = {value_node, recv, param};
   auto graph = cnode->func_graph();
   MS_EXCEPTION_IF_NULL(graph);
   auto virtual_node = graph->NewCNode(virtual_node_input);
-  manager->Replace(recv, virtual_node);
+  (void)manager->Replace(recv, virtual_node);
 }
 
 AnfNodePtr FindGradAccuParameter(const std::vector<AnfNodePtr> &parameters, const std::string &name) {
@@ -174,14 +239,45 @@ void HandleReceiveParam(const FuncGraphPtr &root, const std::vector<AnfNodePtr> 
           IsPrimitiveCNode(temp_node, prim::kPrimMicroStepAllGather)) {
         auto node_set = node_users_map[temp_node];
         for (auto &node_user : node_set) {
-          InsertVirtualAssignAdd(node_user, root->manager(), accu_parameter);
+          InsertVirtualAssignAdd(node_user, root->manager(), accu_parameter, node_users_map);
         }
       } else {
-        InsertVirtualAssignAdd(temp_user, root->manager(), accu_parameter);
+        InsertVirtualAssignAdd(temp_user, root->manager(), accu_parameter, node_users_map);
       }
     }
     InsertVirtualAccuGrad(node, root->manager(), accu_parameter);
   }
+}
+
+// If the graph likes the followings:
+// 1. MicroStepAllGather->MirrorMicro->load, we need to visit the param after the load
+std::vector<std::pair<AnfNodePtr, int>> FindNextNode(const std::pair<AnfNodePtr, int> &node_ptr,
+                                                     const FuncGraphPtr &root, const NodeUsersMap &node_users_map) {
+  std::vector<std::pair<AnfNodePtr, int>> to_be_visited_set;
+  if (!IsPrimitiveCNode(node_ptr.first, prim::kPrimMirrorMicroStep) &&
+      !IsPrimitiveCNode(node_ptr.first, prim::kPrimMicroStepAllGather)) {
+    to_be_visited_set.emplace_back(node_ptr);
+    return to_be_visited_set;
+  }
+  auto node_set = node_users_map.at(node_ptr.first);
+  std::queue<std::pair<std::shared_ptr<AnfNode>, int>> visited;
+  for (auto &node_user : node_set) {
+    visited.push(node_user);
+  }
+  while (visited.size() >= 1) {
+    auto node = visited.front();
+    visited.pop();
+    if (!IsPrimitiveCNode(node.first, prim::kPrimMirrorMicroStep) &&
+        !IsPrimitiveCNode(node.first, prim::kPrimMicroStepAllGather)) {
+      to_be_visited_set.emplace_back(node);
+    } else {
+      auto next_node_set = node_users_map.at(node.first);
+      for (auto &node_user : next_node_set) {
+        visited.push(node_user);
+      }
+    }
+  }
+  return to_be_visited_set;
 }
 
 void AddVirtualAssignAdd(const FuncGraphPtr &root) {
@@ -195,19 +291,14 @@ void AddVirtualAssignAdd(const FuncGraphPtr &root) {
     }
     auto node_users = node_users_map[parameter];
     for (auto &temp_user : node_users) {
-      auto temp_node = temp_user.first;
       // Micro virtual operator might be inserted after cast
-      if (IsPrimitiveCNode(temp_node, prim::kPrimCast)) {
-        temp_node = node_users_map[temp_node].begin()->first;
+      auto temp_node = temp_user;
+      if (IsPrimitiveCNode(temp_node.first, prim::kPrimCast)) {
+        temp_node = *node_users_map[temp_node.first].begin();
       }
-      if (IsPrimitiveCNode(temp_node, prim::kPrimMirrorMicroStep) ||
-          IsPrimitiveCNode(temp_node, prim::kPrimMicroStepAllGather)) {
-        auto node_set = node_users_map[temp_node];
-        for (auto &node_user : node_set) {
-          InsertVirtualAssignAdd(node_user, root->manager(), accu_parameter);
-        }
-      } else {
-        InsertVirtualAssignAdd(temp_user, root->manager(), accu_parameter);
+      auto node_set = FindNextNode(temp_node, root, node_users_map);
+      for (auto &node_user : node_set) {
+        InsertVirtualAssignAdd(node_user, root->manager(), accu_parameter, node_users_map);
       }
     }
   }
@@ -295,30 +386,30 @@ void ReorderForBackward(const PipelinePair &forward_start_pair, const PipelinePa
   auto stage_id = g_device_manager->stage_id();
   for (size_t i = LongToSize(stage_num - stage_id); i < (forward_start_pair.first.size()); ++i) {
     auto prior_node1 = forward_end_before_pair.second[i];
-    auto post_node1 = backward_start_pair.first[i - stage_num + stage_id + 1];
+    auto post_node1 = backward_start_pair.first[LongToSize(SizeToLong(i) - stage_num + stage_id + 1)];
     InsertDepend(prior_node1, post_node1, manager, root);
-    auto prior_node2 = backward_end_pair.second[i - stage_num + stage_id];
+    auto prior_node2 = backward_end_pair.second[LongToSize(SizeToLong(i) - stage_num + stage_id)];
     auto post_node2 = forward_start_pair.first[i];
     InsertDepend(prior_node2, post_node2, manager, root);
   }
-  for (size_t i = (stage_num - stage_id); i < (forward_start_pair.first.size() + 1); ++i) {
+  for (size_t i = LongToSize(stage_num - stage_id); i < (forward_start_pair.first.size() + 1); ++i) {
     if (!IsLastStage()) {
-      auto prior_node3 = backward_start_pair.second[i - stage_num + stage_id];
+      auto prior_node3 = backward_start_pair.second[LongToSize(SizeToLong(i) - stage_num + stage_id)];
       auto post_node3 = forward_end_pair.first[i - 1];
       InsertDepend(prior_node3, post_node3, manager, root);
       auto prior_node4 = forward_end_pair.second[i - 1];
-      auto post_node4 = backward_end_pair.first[i - stage_num + stage_id];
+      auto post_node4 = backward_end_pair.first[LongToSize(SizeToLong(i) - stage_num + stage_id)];
       InsertDepend(prior_node4, post_node4, manager, root);
     }
   }
-  for (size_t j = (backward_start_pair.first.size() - stage_num + stage_id + 1); j < backward_start_pair.first.size();
-       ++j) {
+  for (size_t j = LongToSize(SizeToLong(backward_start_pair.first.size()) - stage_num + stage_id + 1);
+       j < backward_start_pair.first.size(); ++j) {
     auto prior_node5 = backward_end_pair.second[j - 1];
     auto post_node5 = backward_start_pair.first[j];
     InsertDepend(prior_node5, post_node5, manager, root);
   }
   if (!IsLastStage()) {
-    auto prior_node6 = forward_end_before_pair.second[stage_num - 1 - stage_id];
+    auto prior_node6 = forward_end_before_pair.second[LongToSize(stage_num - 1 - stage_id)];
     auto post_node6 = backward_start_pair.first[0];
     InsertDepend(prior_node6, post_node6, manager, root);
   }
@@ -395,32 +486,80 @@ PipelinePair Deduplicate(const std::vector<AnfNodePtr> &node_vector, const FuncG
   return std::make_pair(out_vec_begin, out_vec_end);
 }
 
-void BroadCastMicroBatch(const CNodePtr &node, NodeUsersMap *node_users_map, const ValuePtr &value) {
+void BroadCastMicroBatch(const CNodePtr &node, NodeUsersMap *node_users_map, const ValuePtr &value, size_t max_depth) {
   auto node_users = (*node_users_map)[node];
+  if (max_depth > MAX_RECURSIVE_DEPTH) {
+    MS_LOG(EXCEPTION) << "Recursive call is larger than 100000.";
+  }
   for (auto &node_pair : node_users) {
     auto user_node = node_pair.first->cast<CNodePtr>();
     if (user_node->HasPrimalAttr(MICRO)) {
       continue;
     }
     user_node->AddPrimalAttr(MICRO, value);
-    BroadCastMicroBatch(user_node, node_users_map, value);
+    BroadCastMicroBatch(user_node, node_users_map, value, max_depth + 1);
+  }
+}
+
+void BroadCastNeedGrad(const AnfNodePtr &node, NodeUsersMap *node_user_map, const FuncGraphPtr &root) {
+  auto node_users = (*node_user_map)[node];
+  for (auto &node_user : node_users) {
+    auto cnode = node_user.first->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(cnode);
+    if (cnode->HasPrimalAttr(NEED_GRAD)) {
+      continue;
+    }
+    if (cnode->func_graph() == root) {
+      continue;
+    }
+    cnode->AddPrimalAttr(NEED_GRAD, MakeValue(1));
+    BroadCastNeedGrad(cnode, node_user_map, root);
+  }
+}
+
+// Label node that need backpropagation
+void LabelNeedGrad(const FuncGraphManagerPtr &manager, const FuncGraphPtr &root) {
+  auto parameters = root->parameters();
+  auto node_user_map = manager->node_users();
+  for (auto &parameter : parameters) {
+    if (!ParameterRequireGrad(parameter)) {
+      continue;
+    }
+    auto param_ptr = parameter->cast<ParameterPtr>();
+    MS_EXCEPTION_IF_NULL(param_ptr);
+    if (param_ptr->name().find(ACCU_GRADS) != std::string::npos) {
+      continue;
+    }
+    BroadCastNeedGrad(parameter, &node_user_map, root);
   }
 }
 
 AnfNodePtr GetPreNode(const AnfNodePtr &node) {
   auto cnode = node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(cnode);
-  if (IsInEndNodeBlackList(cnode)) {
-    return GetPreNode(cnode->input(1));
+  std::vector<AnfNodePtr> node_queue = {node};
+  while (!node_queue.empty()) {
+    auto cur_node = (*node_queue.begin())->cast<CNodePtr>();
+    if (!cur_node) {
+      (void)node_queue.erase(node_queue.begin());
+      continue;
+    }
+    (void)node_queue.erase(node_queue.begin());
+    if (!IsInEndNodeBlackList(cur_node) && cur_node->HasPrimalAttr(NEED_GRAD)) {
+      MS_LOG(INFO) << "Pipeline End node: " << cur_node->DebugString();
+      return cur_node;
+    }
+    (void)node_queue.insert(node_queue.end(), cur_node->inputs().begin() + 1, cur_node->inputs().end());
   }
-  return cnode;
+  MS_LOG(EXCEPTION) << "Get Pipeline End node failed.";
 }
 
-void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager) {
+void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager,
+                      const FuncGraphPtr &root) {
   if (!IsLastStage()) {
     return;
   }
-  auto node_users_map = manager->node_users();
+  LabelNeedGrad(manager, root);
   for (auto &node : all_nodes) {
     if (!node->isa<CNode>()) {
       continue;
@@ -435,20 +574,20 @@ void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphM
         if (!temp_node->isa<CNode>()) {
           continue;
         }
-        auto temp_cnode = temp_node->cast<CNodePtr>();
         auto temp_prim = GetCNodePrimitive(temp_node);
         if (!temp_prim || temp_prim->HasAttr(PIPELINE_END)) {
           continue;
         }
         auto end_node = GetPreNode(temp_node);
+        MS_EXCEPTION_IF_NULL(end_node);
         auto end_cnode = end_node->cast<CNodePtr>();
         MS_EXCEPTION_IF_NULL(end_cnode);
         auto end_prim = GetCNodePrimitive(end_node);
         OperatorAttrs attrs_;
-        auto op = CreatOpInstance(attrs_, end_prim->name(), "");
+        auto op = CreateOpInstance(attrs_, end_prim->name(), "");
         auto value_node = NewValueNode(op);
         auto new_prim = GetValueNode(value_node)->cast<PrimitivePtr>();
-        new_prim->SetAttrs(end_prim->attrs());
+        (void)new_prim->SetAttrs(end_prim->attrs());
         manager->SetEdge(end_node, 0, value_node);
         end_cnode->AddPrimalAttr(PIPELINE_END, end_cnode->GetPrimalAttr(MICRO));
       }
@@ -456,14 +595,17 @@ void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphM
   }
 }
 
-ValuePtr Micro(const CNodePtr &cnode, NodeUsersMap *node_users_map) {
+ValuePtr Micro(const CNodePtr &cnode, NodeUsersMap *node_users_map, size_t max_depth) {
+  if (max_depth > MAX_RECURSIVE_DEPTH) {
+    MS_LOG(EXCEPTION) << "Recursive call is larger than 100000.";
+  }
   if (cnode->HasPrimalAttr(MICRO)) {
     return cnode->GetPrimalAttr(MICRO);
   }
   auto node_users = (*node_users_map)[cnode];
   for (auto &node_pair : node_users) {
     auto user_node = node_pair.first->cast<CNodePtr>();
-    auto micro = Micro(user_node, node_users_map);
+    auto micro = Micro(user_node, node_users_map, max_depth + 1);
     if (micro) {
       return micro;
     }
@@ -480,7 +622,7 @@ void ParameterStartNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGrap
     auto cnode = node->cast<CNodePtr>();
     auto prim = GetCNodePrimitive(node);
     if (prim && prim->HasAttr(PARAMETER_START)) {
-      auto micro = Micro(cnode, &node_users_map);
+      auto micro = Micro(cnode, &node_users_map, 0);
       cnode->AddPrimalAttr(MICRO, micro);
       cnode->AddPrimalAttr(PARAMETER_START, micro);
     }
@@ -499,7 +641,7 @@ void HandleMicroBatch(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphM
     }
     auto micro = cnode->GetPrimalAttr(MICRO);
     MS_EXCEPTION_IF_NULL(micro);
-    BroadCastMicroBatch(cnode, &node_users_map, micro);
+    BroadCastMicroBatch(cnode, &node_users_map, micro, 0);
   }
 }
 
@@ -592,7 +734,7 @@ void CheckBorderNode(const PipelinePair &forward_start_pair, const PipelinePair 
   }
 }
 
-void Reorder(const FuncGraphPtr &root, const FuncGraphManagerPtr &manager) {
+void Reorder(const FuncGraphPtr &root) {
   std::vector<AnfNodePtr> forward_start;
   std::vector<AnfNodePtr> forward_end;
   std::vector<AnfNodePtr> forward_params;
@@ -672,6 +814,5 @@ void ReorderForPredict(const FuncGraphPtr &root, const FuncGraphManagerPtr &mana
     InsertDepend(forward_params_pair.second[0], forward_start_pair.first[0], manager, root);
   }
 }
-
 }  // namespace parallel
 }  // namespace mindspore

@@ -20,16 +20,13 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <functional>
 
+#include "utils/hash_map.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
-#include "backend/kernel_compiler/common_utils.h"
 #include "ir/dtype/type.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 #define CHECK_ATTR(attrs, attr_name)                                                              \
   do {                                                                                            \
     if (attrs.count(attr_name) == 0) {                                                            \
@@ -293,7 +290,5 @@ class StandardNormalOp : public OpaqueOp {
   TypeId InferType(const NodePtrList &inputs, const DAttrs &attrs) override { return TypeId::kNumberTypeFloat32; }
   DFormat InferFormat(const NodePtrList &inputs, const DAttrs &attrs) override { return kOpFormat_DEFAULT; }
 };
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner
 #endif

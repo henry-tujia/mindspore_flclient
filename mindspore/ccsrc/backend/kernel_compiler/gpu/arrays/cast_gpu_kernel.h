@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_CAST_GPU_KERNEL_H_
 
 #include <vector>
+#include <string>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/cast_impl.cuh"
@@ -36,6 +37,9 @@ class CastGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     S *input_addr = GetPossiblyNullDeviceAddress<S>(inputs, 0);
     T *output_addr = GetPossiblyNullDeviceAddress<T>(outputs, 0);
 
@@ -44,16 +48,23 @@ class CastGpuKernel : public GpuKernel {
     } else if (input_addr != nullptr && output_addr != nullptr) {
       Cast(input_size_, input_addr, output_addr, reinterpret_cast<cudaStream_t>(stream_ptr));
     } else {
-      MS_LOG(EXCEPTION)
-        << "The input and output device addresses for CastGpuKernel should be both null or both not null.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the input and output device addresses should be both null or both not null";
     }
 
     return true;
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     auto input_shapes = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     auto output_shapes = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ =
+      CHECK_SHAPE_NULL(input_shapes, kernel_name_, "input") || CHECK_SHAPE_NULL(output_shapes, kernel_name_, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     input_size_ = 1;
     for (size_t i = 0; i < input_shapes.size(); i++) {
       input_size_ *= input_shapes[i];
@@ -65,7 +76,9 @@ class CastGpuKernel : public GpuKernel {
     }
 
     if (input_size_ != output_size_) {
-      MS_LOG(EXCEPTION) << "Input size is not equal to output size.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the size of input and output should be the same, but got the size of input: "
+                        << input_size_ << ", the size of output: " << output_size_;
     }
     InitSizeLists();
     return true;
@@ -74,6 +87,8 @@ class CastGpuKernel : public GpuKernel {
   void ResetResource() noexcept override {
     input_size_ = 1;
     output_size_ = 1;
+    is_null_input_ = false;
+    kernel_name_ = "Cast";
     input_size_list_.clear();
     output_size_list_.clear();
     workspace_size_list_.clear();
@@ -88,10 +103,12 @@ class CastGpuKernel : public GpuKernel {
  private:
   int input_size_;
   int output_size_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
+  std::string kernel_name_;
 };
 }  // namespace kernel
 }  // namespace mindspore

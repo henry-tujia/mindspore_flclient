@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,9 @@
 #include <vector>
 #include "backend/session/anf_runtime_algorithm.h"
 #include "runtime/device/kernel_info.h"
+#include "utils/ms_utils.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 namespace {
 bool IsCNodePrimitveEqual(const CNodePtr &main, const CNodePtr &node, const std::vector<PrimitivePtr> &black_list) {
   auto main_primitive = AnfAlgo::GetCNodePrimitive(main);
@@ -38,34 +38,15 @@ bool IsCNodePrimitveEqual(const CNodePtr &main, const CNodePtr &node, const std:
                     [&node](const PrimitivePtr &prim) { return IsPrimitiveCNode(node, prim); })) {
       return false;
     }
-
     auto main_attrs = main_primitive->attrs();
     auto node_attrs = node_primitive->attrs();
-
     std::vector<std::string> exclude_attrs{"IsFeatureMapOutput", "IsFeatureMapInputList", "pri_format"};
     for (auto &attr : exclude_attrs) {
       main_attrs.erase(attr);
       node_attrs.erase(attr);
     }
-
-    if (main_attrs.size() != node_attrs.size()) {
-      return false;
-    }
-
-    auto all = std::all_of(main_attrs.begin(), main_attrs.end(),
-                           [&node_attrs](const std::pair<std::string, ValuePtr> &item) -> bool {
-                             if (item.second == nullptr) {
-                               return false;
-                             }
-                             auto iter = node_attrs.find(item.first);
-                             if (iter == node_attrs.end()) {
-                               return false;
-                             }
-                             return *item.second == *iter->second;
-                           });
-    return all;
+    return common::IsAttrsEqual(main_attrs, node_attrs);
   }
-
   return *main->inputs()[0] == *node->inputs()[0];
 }
 }  // namespace
@@ -136,5 +117,4 @@ bool GraphKernelCSE::Run(const FuncGraphPtr &func_graph) {
   auto graphkernel_backend_cse = std::make_shared<GraphKernelBackendCSE>(black_list_);
   return graphkernel_backend_cse->Cse(func_graph, func_graph->manager());
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

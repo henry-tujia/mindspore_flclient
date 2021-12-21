@@ -20,6 +20,31 @@ using mindspore::schema::PrimitiveType_Conv2dTransposeFusion;
 
 namespace mindspore {
 namespace lite {
+void SetPadAndAct(schema::PadMode pad_mode, schema::ActivationType act_type, ConvParameter *param) {
+  switch (pad_mode) {
+    case schema::PadMode_SAME:
+      param->pad_mode_ = Pad_same;
+      break;
+    case schema::PadMode_VALID:
+      param->pad_mode_ = Pad_valid;
+      break;
+    default:
+      param->pad_mode_ = Pad_pad;
+  }
+
+  switch (act_type) {
+    case schema::ActivationType_RELU:
+      param->act_type_ = ActType_Relu;
+      break;
+    case schema::ActivationType_RELU6:
+      param->act_type_ = ActType_Relu6;
+      break;
+    default:
+      param->act_type_ = ActType_No;
+      break;
+  }
+}
+
 OpParameter *PopulateDeconvParameter(const void *prim) {
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
 
@@ -65,32 +90,27 @@ OpParameter *PopulateDeconvParameter(const void *prim) {
     param->output_padding_h_ = static_cast<int>(*(output_paddings->begin()));
     param->output_padding_w_ = static_cast<int>(*(output_paddings->begin() + 1));
   }
+  if (param->output_padding_h_ < 0 || param->output_padding_w_ < 0) {
+    MS_LOG(ERROR) << "invalid output padding";
+    free(param);
+    return nullptr;
+  }
+
   if (stride == nullptr || dilation == nullptr) {
     MS_LOG(ERROR) << "nullptr";
     free(param);
     return nullptr;
   }
   if (stride->size() < kMinShapeSizeTwo || dilation->size() < kMinShapeSizeTwo) {
-    MS_LOG(ERROR) << "Invalid shape size!kernel_size size: " << kernel_size->size()
-                  << ", stride size: " << stride->size() << ", dilation size: " << dilation->size();
+    MS_LOG(ERROR) << "stride size: " << stride->size() << ", dilation size: " << dilation->size();
     free(param);
     return nullptr;
   }
-  param->kernel_h_ = static_cast<int>(*(kernel_size->begin()));
-  param->kernel_w_ = static_cast<int>(*(kernel_size->begin() + 1));
+
   param->group_ = static_cast<int>(value->group());
   param->stride_h_ = static_cast<int>(*(stride->begin()));
   param->stride_w_ = static_cast<int>(*(stride->begin() + 1));
-  switch (value->pad_mode()) {
-    case schema::PadMode_SAME:
-      param->pad_mode_ = Pad_same;
-      break;
-    case schema::PadMode_VALID:
-      param->pad_mode_ = Pad_valid;
-      break;
-    default:
-      param->pad_mode_ = Pad_pad;
-  }
+
   if (pad_list == nullptr || pad_list->size() < kMinShapeSizeFour) {
     param->pad_u_ = 0;
     param->pad_d_ = 0;
@@ -106,18 +126,11 @@ OpParameter *PopulateDeconvParameter(const void *prim) {
   param->dilation_w_ = static_cast<int>(*(dilation->begin() + 1));
   param->input_channel_ = static_cast<int>(value->in_channel());
   param->output_channel_ = static_cast<int>(value->out_channel());
+
   auto act_type = value->activation_type();
-  switch (act_type) {
-    case schema::ActivationType_RELU:
-      param->act_type_ = ActType_Relu;
-      break;
-    case schema::ActivationType_RELU6:
-      param->act_type_ = ActType_Relu6;
-      break;
-    default:
-      param->act_type_ = ActType_No;
-      break;
-  }
+  auto pad_mode = value->pad_mode();
+  SetPadAndAct(pad_mode, act_type, param);
+
   return reinterpret_cast<OpParameter *>(param);
 }
 REG_POPULATE(PrimitiveType_Conv2dTransposeFusion, PopulateDeconvParameter, SCHEMA_CUR)

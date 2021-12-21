@@ -26,7 +26,9 @@
 #include "schema/inner/model_generated.h"
 #include "src/train/train_utils.h"
 #include "src/common/quant_utils.h"
-#include "tools/common/storage.h"
+#include "tools/common/meta_graph_serializer.h"
+#include "src/train/graph_fusion.h"
+#include "src/weight_decoder.h"
 
 namespace mindspore {
 namespace lite {
@@ -103,7 +105,7 @@ void TrainExport::TagQuantizedNodes() {
   }
 }
 
-int TrainExport::QuantTensorData(schema::TensorT *dest_tensor, const lite::Tensor *src_tensor) {
+int TrainExport::QuantTensorData(schema::TensorT *dest_tensor, const lite::Tensor *src_tensor, int preferred_dim) {
   int channels = 1;
   int bit_num = 8;
 
@@ -115,22 +117,21 @@ int TrainExport::QuantTensorData(schema::TensorT *dest_tensor, const lite::Tenso
     MS_LOG(ERROR) << "Quant Params is empty";
     return RET_ERROR;
   }
-  int quant_max = QuantMax(bit_num, kNumberTypeInt8);
-  int quant_min = QuantMin(bit_num, kNumberTypeInt8);
+  int quant_max = QuantMax(bit_num, false);
+  int quant_min = QuantMin(bit_num, false);
   std::vector<int8_t> data(src_tensor->ElementsNum());
   std::vector<schema::QuantParamT> quant_params;
 
   STATUS ret = RET_OK;
   if (channels == kPerTensor) {
     ret = DoPerLayerQuant<int8_t>(reinterpret_cast<float *>(src_tensor->data()), src_tensor->ElementsNum(),
-                                  &(quant_params), quant_max, quant_min, bit_num, false, &data);
+                                  &(quant_params), quant_max, quant_min, bit_num, &data, false, false);
   } else {
-    bool channel_at_first = (src_tensor->shape().at(0) == channels);
     ret = DoPerChannelQuant<int8_t>(reinterpret_cast<float *>(src_tensor->data()), src_tensor->ElementsNum(),
-                                    schema::QuantType_WeightQuant, &(quant_params), quant_max, quant_min, bit_num,
-                                    false, &data, channels, channel_at_first);
+                                    schema::QuantType_QUANT_WEIGHT, &(quant_params), quant_max, quant_min, bit_num,
+                                    &data, dest_tensor->dims, preferred_dim, false, false);
   }
-  if (ret == RET_QUANT_CONTINUE) {
+  if (ret == RET_NO_CHANGE) {
     MS_LOG(DEBUG) << "No Need to quant per channel";
     return RET_OK;
   }
@@ -153,7 +154,7 @@ int TrainExport::QuantTensorData(schema::TensorT *dest_tensor, const lite::Tenso
 }
 
 std::unique_ptr<schema::TensorT> TrainExport::CreateTensor(const mindspore::lite::Tensor *tensor,
-                                                           schema::Tensor *scTensor) {
+                                                           schema::Tensor *scTensor, int preferred_dim) {
   auto tensorT = std::make_unique<schema::TensorT>();
   tensorT->nodeType = scTensor->nodeType();
   tensorT->dims = tensor->shape();
@@ -165,7 +166,7 @@ std::unique_ptr<schema::TensorT> TrainExport::CreateTensor(const mindspore::lite
   tensorT->enableHuffmanCode = false;
   if ((tensorT->nodeType == NodeType_ValueNode) && (scTensor->data() != nullptr) && (scTensor->data()->size() > 0)) {
     if (NeedQuantization(tensor)) {
-      QuantTensorData(tensorT.get(), tensor);
+      QuantTensorData(tensorT.get(), tensor, preferred_dim);
     } else {
       tensorT->data = CreateData(tensor);
     }
@@ -344,70 +345,17 @@ void TrainExport::PrepareRemap(int offset) {
   }
 }
 
-int TrainExport::ExportNet(const std::vector<mindspore::kernel::LiteKernel *> &kernels,
-                           const std::vector<mindspore::lite::Tensor *> &tensors,
-                           const std::vector<std::string> &output_names, const Model *model,
-                           QuantizationType quant_type) {
-  std::vector<size_t> map_index;
-  std::set<size_t> out_set;
-  int offset = meta_graph_->allTensors.size();
-  int tensor_idx = offset;
-  quant_type_ = quant_type;
-  if (meta_graph_ == nullptr) {
-    int status = ExportInit(model->name_, model->version_);
-    if (status != RET_OK) {
-      return status;
-    }
-  }
-  PrepareRemap(offset);
-
-  for (const auto kernel : kernels) {
-    std::vector<uint32_t> in_idx, out_idx;
-    for (const auto tensor : kernel->in_tensors()) {
-      size_t id = TSFindTensor(tensors, tensor) + offset;
-      if (id == tensors.size()) {
-        MS_LOG(ERROR) << "cannot find tensor " + tensor->ToString() + " in model";
-        return RET_ERROR;
-      }
-      auto it = remap_.find(id);
-      if (it == remap_.end()) {
-        remap_[id] = tensor_idx;
-        in_idx.push_back(tensor_idx);
-        map_index.push_back(id);
-        tensor_idx++;
-      } else {
-        in_idx.push_back(it->second);
-      }
-    }
-    for (const auto tensor : kernel->out_tensors()) {
-      size_t id = TSFindTensor(tensors, tensor) + offset;
-      if (id == tensors.size()) {
-        MS_LOG(ERROR) << "cannot find tensor " + tensor->ToString() + " in model";
-        return RET_ERROR;
-      }
-      auto it = remap_.find(id);
-      if (it == remap_.end()) {
-        remap_[id] = tensor_idx;
-        map_index.push_back(id);
-        out_idx.push_back(tensor_idx);
-        out_set.insert(tensor_idx);
-        tensor_idx++;
-      } else {
-        out_idx.push_back(it->second);
-        out_set.insert(it->second);
-      }
-    }
-    auto ret = CreateAndAddCNode(kernel, in_idx, out_idx, model);
-    if (ret != RET_OK) {
-      MS_LOG(ERROR) << "failed to create cnode";
-      return ret;
-    }
-  }
-  for (auto id : map_index) {
+int TrainExport::ExportTensor(const Model *model, const std::vector<mindspore::lite::Tensor *> &tensors, int offset,
+                              const std::vector<std::pair<size_t, tensor_info>> &map_index,
+                              const std::vector<std::string> &output_names, const std::set<size_t> &out_set) {
+  for (auto index : map_index) {
+    auto id = index.first;
     size_t pid = id - offset;
     mindspore::lite::Tensor *tensor = tensors.at(pid);
     schema::Tensor *scTensor = model->all_tensors_.at(pid);
-    auto tensorT = CreateTensor(tensor, scTensor);
+    auto preferred_dim =
+      WeightDecoder::GetPreferredDim(index.second.op_parameter, index.second.input_index, tensor->shape());
+    auto tensorT = CreateTensor(tensor, scTensor, preferred_dim);
     if (tensorT == nullptr) {
       MS_LOG(ERROR) << "error in tensor creation";
       return RET_ERROR;
@@ -432,8 +380,78 @@ int TrainExport::ExportNet(const std::vector<mindspore::kernel::LiteKernel *> &k
       meta_graph_->subGraph[0]->tensorIndices.push_back(meta_graph_->allTensors.size() - 1);
     }
   }
+  return RET_OK;
+}
+
+int TrainExport::ExportNet(const std::vector<mindspore::kernel::LiteKernel *> &kernels,
+                           const std::vector<mindspore::lite::Tensor *> &tensors,
+                           const std::vector<std::string> &output_names, const Model *model,
+                           QuantizationType quant_type) {
+  std::vector<std::pair<size_t, tensor_info>> map_index;
+  std::set<size_t> out_set;
+  int offset = meta_graph_->allTensors.size();
+  int tensor_idx = offset;
+  quant_type_ = quant_type;
+  if (meta_graph_ == nullptr) {
+    int status = ExportInit(model->name_, model->version_);
+    if (status != RET_OK) {
+      return status;
+    }
+  }
+  PrepareRemap(offset);
+
+  for (const auto kernel : kernels) {
+    std::vector<uint32_t> in_idx, out_idx;
+    size_t input_index = 0;
+    for (const auto tensor : kernel->in_tensors()) {
+      size_t id = TSFindTensor(tensors, tensor) + offset;
+      if (id == tensors.size()) {
+        MS_LOG(ERROR) << "cannot find tensor " + tensor->ToString() + " in model";
+        return RET_ERROR;
+      }
+      auto it = remap_.find(id);
+      if (it == remap_.end()) {
+        remap_[id] = tensor_idx;
+        in_idx.push_back(tensor_idx);
+        map_index.push_back({id, {input_index++, kernel->op_parameter()}});
+        tensor_idx++;
+      } else {
+        in_idx.push_back(it->second);
+      }
+    }
+    size_t output_index = 0;
+    for (const auto tensor : kernel->out_tensors()) {
+      size_t id = TSFindTensor(tensors, tensor) + offset;
+      if (id == tensors.size()) {
+        MS_LOG(ERROR) << "cannot find tensor " + tensor->ToString() + " in model";
+        return RET_ERROR;
+      }
+      auto it = remap_.find(id);
+      if (it == remap_.end()) {
+        remap_[id] = tensor_idx;
+        map_index.push_back({id, {output_index++, kernel->op_parameter()}});
+        out_idx.push_back(tensor_idx);
+        out_set.insert(tensor_idx);
+        tensor_idx++;
+      } else {
+        out_idx.push_back(it->second);
+        out_set.insert(it->second);
+      }
+    }
+    auto ret = CreateAndAddCNode(kernel, in_idx, out_idx, model);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "failed to create cnode";
+      return ret;
+    }
+  }
+
+  auto status = ExportTensor(model, tensors, offset, map_index, output_names, out_set);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "ExportTensor failed.";
+    return RET_ERROR;
+  }
   TagQuantizedNodes();  // do another loop to mark QUANT_WEIGHT_NODES
-  auto status = TopologicalSort();
+  status = TopologicalSort();
   if (status != RET_OK) {
     MS_LOG(ERROR) << "TopologicalSort failed.";
     return RET_ERROR;
@@ -523,11 +541,20 @@ int TrainExport::ExportInit(const std::string model_name, std::string version) {
   return RET_OK;
 }
 
-int TrainExport::SaveToFile() { return Storage::Save(*meta_graph_, file_name_); }
+int TrainExport::SaveToFile() { return MetaGraphSerializer::Save(*meta_graph_, file_name_); }
 
 int TrainExport::IsInputTensor(const schema::TensorT &t) {
   int total_dims = std::accumulate(t.dims.begin(), t.dims.end(), 1, std::multiplies<int>());
   return ((t.data.size() == 0) && (total_dims != 0));
+}
+
+int TrainExport::TrainModelFusion() {
+  GraphFusion graph_fusion;
+  auto status = graph_fusion.Run(meta_graph_);
+  if (status != RET_OK) {
+    return RET_ERROR;
+  }
+  return RET_OK;
 }
 
 TrainExport::~TrainExport() { delete meta_graph_; }

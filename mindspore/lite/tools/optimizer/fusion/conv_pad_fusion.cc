@@ -38,12 +38,18 @@ constexpr size_t kBottom = 1;
 constexpr size_t kLeft = 2;
 constexpr size_t kRight = 3;
 constexpr size_t kPadDims = 4;
+constexpr int kPadElementNum = 8;
 
 void ReplaceParamsAndNodes(const FuncGraphPtr &func_graph, const CNodePtr &conv_cnode, const CNodePtr &pad_cnode,
                            const std::string &pattern_name) {
   auto paddings = pad_cnode->input(kInputIndexTwo)->cast<ParameterPtr>();
+  MS_ASSERT(paddings != nullptr);
+  MS_ASSERT(paddings->default_param() != nullptr);
   auto pad_list = std::dynamic_pointer_cast<tensor::Tensor>(paddings->default_param());
+  MS_ASSERT(pad_list != nullptr);
+  MS_ASSERT(pad_list->ElementsNum() == kPadElementNum);
   auto pad_data = static_cast<int32_t *>(pad_list->data_c());
+  MS_ASSERT(pad_data != nullptr);
 
   std::vector<int64_t> pad_list_data;
   if (pattern_name == "PadConvPatternName") {
@@ -100,13 +106,28 @@ void ReplaceParamsAndNodes(const FuncGraphPtr &func_graph, const CNodePtr &conv_
 
   // delete padFusion
   auto manager = func_graph->manager();
+  MS_ASSERT(manager != nullptr);
   (void)manager->Replace(pad_cnode, pad_cnode->input(1));
 }
 
-bool IsPrimitiveProper(const CNodePtr &conv_cnode, const CNodePtr &pad_cnode) {
-  MS_ASSERT(conv_cnode != nullptr);
+bool IsPrimitiveProper(const CNodePtr &pad_cnode) {
   MS_ASSERT(pad_cnode != nullptr);
   if (!utils::isa<Parameter>(pad_cnode->input(kInputIndexTwo))) {
+    return false;
+  }
+  auto pad_list = pad_cnode->input(kInputIndexTwo)->cast<ParameterPtr>();
+  auto tensor_param = pad_list->default_param();
+  if (tensor_param == nullptr) {
+    return false;
+  }
+  auto tensor = tensor_param->cast<tensor::TensorPtr>();
+  if (tensor == nullptr) {
+    return false;
+  }
+  if (tensor->data_type() != kNumberTypeInt32 && tensor->data_type() != kNumberTypeInt) {
+    return false;
+  }
+  if (tensor->data_c() == nullptr || tensor->ElementsNum() != kPadElementNum) {
     return false;
   }
   auto pad_primitive = GetValueNode<std::shared_ptr<ops::PadFusion>>(pad_cnode->input(0));
@@ -171,7 +192,7 @@ std::unordered_map<std::string, VectorRef> ConvPadFusion::DefinePatterns() const
 
 AnfNodePtr ConvPadFusion::Process(const std::string &pattern_name, const FuncGraphPtr &func_graph,
                                   const AnfNodePtr &node, const EquivPtr &equiv) const {
-  if (func_graph == nullptr || node == nullptr || equiv != nullptr) {
+  if (func_graph == nullptr || node == nullptr) {
     lite::ReturnCode::GetSingleReturnCode()->UpdateReturnCode(lite::RET_NULL_PTR);
     return nullptr;
   }
@@ -218,7 +239,7 @@ AnfNodePtr ConvPadFusion::Process(const std::string &pattern_name, const FuncGra
     return nullptr;
   }
 
-  if (!IsPrimitiveProper(conv_cnode, pad_cnode)) {
+  if (!IsPrimitiveProper(pad_cnode)) {
     MS_LOG(WARNING) << conv_cnode->fullname_with_scope() << " is not match with previous "
                     << pad_cnode->fullname_with_scope() << " op. Fusion failed!";
     return nullptr;
@@ -227,6 +248,5 @@ AnfNodePtr ConvPadFusion::Process(const std::string &pattern_name, const FuncGra
   ReplaceParamsAndNodes(func_graph, conv_cnode, pad_cnode, pattern_name);
   return nullptr;
 }
-
 }  // namespace opt
 }  // namespace mindspore

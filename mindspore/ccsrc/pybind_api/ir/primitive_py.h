@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@
 #include <memory>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "abstract/abstract_value.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "ir/primitive.h"
@@ -54,12 +54,12 @@ class PrimitivePy : public Primitive {
 
   const std::vector<Signature> &signatures() const { return signatures_; }
 
-  void CopyHookFunction(const PrimitivePtr &primitive) override;
+  void CopyHookFunction(const PrimitivePtr &primitive);
 
   py::dict GetAttrDict();
   void set_hook(const py::function &hook) { hook_ = hook; }
   py::function hook() const { return hook_; }
-  BaseRef RunHookFunction(const VectorRef &args) const override;
+  BaseRef RunHookFunction(const VectorRef &args) const;
   BaseRef RunCellBpropFunction(const py::tuple &py_args) const;
   BaseRef RunCellHookFunction(const py::tuple &py_args) const;
   BaseRef RunVariableHookFunction(const py::tuple &py_args) const;
@@ -74,6 +74,7 @@ class PrimitivePy : public Primitive {
   bool HasPyObj() { return python_obj_.operator bool(); }
   PrimitivePtr Clone() override;
   PrimitivePyAdapterPtr adapter() const { return adapter_; }
+  void set_bprop_cls_name(const std::string &name) { bprop_cls_name_ = name; }
 
  private:
   py::function GetComputeFunction() const;
@@ -82,6 +83,7 @@ class PrimitivePy : public Primitive {
   py::object python_obj_;
   PrimitivePyAdapterPtr adapter_;
   py::function hook_;
+  std::string bprop_cls_name_;
   std::vector<Signature> signatures_;
   static std::map<std::string, py::object> hook_grad_;
 };
@@ -109,7 +111,7 @@ class PrimitivePyAdapter {
   friend PrimitivePy;
   std::string name_;
   PrimitivePyWeakPtr attached_primitive_;
-  std::unordered_map<std::string, ValuePtr> attrs_;
+  mindspore::HashMap<std::string, ValuePtr> attrs_;
   PrimType prim_type_{kPrimTypeBuiltIn};
   bool is_const_prim_{false};
   std::vector<size_t> const_input_indexes_;

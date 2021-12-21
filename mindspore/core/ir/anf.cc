@@ -22,8 +22,8 @@
 #include <sstream>
 #include <vector>
 #include <queue>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "base/core_ops.h"
 #include "ir/func_graph.h"
 #include "ir/primitive.h"
@@ -36,10 +36,27 @@ CNode::CNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &func_gra
       inputs_(inputs),
       stop_gradient_(false),
       output_value_(std::make_pair(nullptr, "")),
-      input_tensor_num_(-1) {
-  primal_attrs_ = PrimalAttrManager::GetInstance().GetCurrentPrimalAttr();
-  primal_debug_infos_ = PrimalDebugInfoManager::GetInstance().GetCurrentPrimalDebugInfo();
-}
+      primal_attrs_(PrimalAttrManager::GetInstance().GetCurrentPrimalAttr()),
+      primal_debug_infos_(PrimalDebugInfoManager::GetInstance().GetCurrentPrimalDebugInfo()),
+      input_tensor_num_(-1) {}
+
+CNode::CNode(std::vector<AnfNodePtr> &&inputs, const FuncGraphPtr &func_graph)
+    : AnfNode(func_graph),
+      inputs_(std::move(inputs)),
+      stop_gradient_(false),
+      output_value_(std::make_pair(nullptr, "")),
+      primal_attrs_(PrimalAttrManager::GetInstance().GetCurrentPrimalAttr()),
+      primal_debug_infos_(PrimalDebugInfoManager::GetInstance().GetCurrentPrimalDebugInfo()),
+      input_tensor_num_(-1) {}
+
+CNode::CNode(std::vector<AnfNodePtr> &&inputs, const FuncGraphPtr &func_graph, NodeDebugInfoPtr &&debug_info)
+    : AnfNode(func_graph, std::move(debug_info)),
+      inputs_(std::move(inputs)),
+      stop_gradient_(false),
+      output_value_(std::make_pair(nullptr, "")),
+      primal_attrs_(PrimalAttrManager::GetInstance().GetCurrentPrimalAttr()),
+      primal_debug_infos_(PrimalDebugInfoManager::GetInstance().GetCurrentPrimalDebugInfo()),
+      input_tensor_num_(-1) {}
 
 // Check if CNode is an apply with the specific Primitive.
 bool CNode::IsApply(const PrimitivePtr &value) const {
@@ -63,6 +80,9 @@ void CNode::add_input(const AnfNodePtr &input) {
 }
 
 void CNode::set_input(size_t i, const AnfNodePtr &new_input) {
+  if (i >= inputs_.size()) {
+    MS_LOG(EXCEPTION) << "i: " << i << " out of range: " << inputs_.size() << ", cnode: " << DebugString();
+  }
   inputs_[i] = new_input;
   input_tensor_num_ = -1;
 }
@@ -74,7 +94,7 @@ void CNode::set_inputs(const std::vector<AnfNodePtr> &inputs) {
 
 const AnfNodePtr &CNode::input(size_t i) const {
   if (i >= inputs_.size()) {
-    MS_LOG(EXCEPTION) << "i:" << i << "out of range:" << inputs_.size() << ",cnode:" << DebugString();
+    MS_LOG(EXCEPTION) << "i: " << i << " out of range: " << inputs_.size() << ", cnode: " << DebugString();
   }
   return inputs_.at(i);
 }
@@ -105,6 +125,55 @@ std::string CNode::DebugString(int recursive_level) const {
   return buffer.str();
 }
 
+void CNode::AddFusedDebugInfo(const AnfNodePtr &node) {
+  if (node == nullptr || !node->isa<CNode>()) {
+    return;
+  }
+  if (shared_from_this() == node) {
+    this->AddFusedDebugInfo(node->debug_info());
+    return;
+  }
+  auto cnode = node->cast<CNodePtr>();
+  auto node_fused_debug_infos = cnode->fused_debug_infos();
+  if (!node_fused_debug_infos.empty()) {
+    std::for_each(node_fused_debug_infos.begin(), node_fused_debug_infos.end(),
+                  [this](const NodeDebugInfoPtr &debug_info) { this->AddFusedDebugInfo(debug_info); });
+  } else {
+    this->AddFusedDebugInfo(cnode->debug_info());
+  }
+
+  auto primal_debug_infos = cnode->primal_debug_infos();
+  if (!primal_debug_infos.empty()) {
+    std::for_each(primal_debug_infos.begin(), primal_debug_infos.end(),
+                  [this](const NodeDebugInfoPtr &debug_info) { this->AddPrimalDebugInfo(debug_info); });
+  }
+}
+
+void CNode::AddFusedDebugInfoList(const std::vector<AnfNodePtr> &nodes) {
+  std::for_each(nodes.begin(), nodes.end(), [this](const AnfNodePtr &node) { this->AddFusedDebugInfo(node); });
+}
+
+void CNode::AddFusedDebugInfo(const NodeDebugInfoPtr &debug_info) {
+  if (debug_info == nullptr) {
+    return;
+  }
+  (void)fused_debug_infos_.emplace(debug_info);
+}
+
+void CNode::AddFusedDebugInfoList(const std::vector<NodeDebugInfoPtr> &debug_infos) {
+  std::for_each(debug_infos.begin(), debug_infos.end(),
+                [this](const NodeDebugInfoPtr &debug_info) { this->AddFusedDebugInfo(debug_info); });
+}
+
+NodeDebugInfoSet CNode::primal_debug_infos() const { return primal_debug_infos_; }
+
+void CNode::set_primal_debug_infos(const NodeDebugInfoSet &debug_infos) {
+  std::for_each(debug_infos.begin(), debug_infos.end(),
+                [this](const NodeDebugInfoPtr &debug_info) { this->AddPrimalDebugInfo(debug_info); });
+}
+
+void CNode::AddPrimalDebugInfo(const NodeDebugInfoPtr &debug_info) { (void)primal_debug_infos_.emplace(debug_info); }
+
 std::string Parameter::DebugString(int recursive_level) const {
   std::ostringstream buffer;
   if (recursive_level > 0) {
@@ -130,7 +199,7 @@ ParamInfoPtr Parameter::param_info() const {
 std::string ValueNode::ToString() const {
   MS_EXCEPTION_IF_NULL(value_);
   if (value_->isa<FuncGraph>()) {
-    return value_->cast<FuncGraphPtr>()->ToString();
+    return value_->ToString();
   }
   std::ostringstream buffer;
   buffer << AnfNode::ToString();
@@ -168,10 +237,7 @@ bool IsPrimitiveCNode(const AnfNodePtr &node, const PrimitivePtr &value) {
 }
 
 PrimitivePtr GetCNodePrimitive(const AnfNodePtr &node) {
-  if (node == nullptr) {
-    return nullptr;
-  }
-  auto cnode = node->cast<CNodePtr>();
+  auto cnode = dyn_cast<CNode>(node);
   if (cnode != nullptr) {
     if (cnode->size() > 0) {
       auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
@@ -187,8 +253,8 @@ std::string GetCNodeFuncName(const CNodePtr cnode) {
   }
 
   AnfNodePtr valuenode = cnode->input(0);
-  if (valuenode->isa<ValueNode>()) {
-    auto value = GetValueNode(valuenode);
+  auto value = GetValueNode(valuenode);
+  if (value != nullptr) {
     // check whether the valuenode is primitive
     if (value->isa<Primitive>()) {
       return value->cast<PrimitivePtr>()->name();
@@ -356,7 +422,7 @@ size_t NewSeenGeneration() {
 }
 
 namespace id_generator {
-static std::unordered_map<std::string, int> node_ids;
+static mindspore::HashMap<std::string, int> node_ids;
 std::string get_id(const AnfNodePtr &node) {
   auto type_name = node->type_name();
   if (node_ids.find(type_name) == node_ids.end()) {
@@ -387,17 +453,55 @@ PrimitivePtr GetPrimitiveFromValueNode(const AnfNodePtr &node) {
   return value->cast<PrimitivePtr>();
 }
 
+static std::string GetNodeTargetForVarInputNode(const CNodePtr &cnode) {
+  auto &inputs = cnode->inputs();
+  std::vector<AnfNodePtr> real_inputs;
+  const size_t update_state_valid_input_index = 2;
+  const size_t make_tuple_valid_input_index = 1;
+  if (cnode->IsApply(prim::kPrimUpdateState) && inputs.size() > update_state_valid_input_index) {
+    (void)std::copy(inputs.begin() + SizeToLong(update_state_valid_input_index), inputs.end(),
+                    std::back_inserter(real_inputs));
+  } else if (cnode->IsApply(prim::kPrimMakeTuple) && inputs.size() > make_tuple_valid_input_index) {
+    (void)std::copy(inputs.begin() + SizeToLong(make_tuple_valid_input_index), inputs.end(),
+                    std::back_inserter(real_inputs));
+  }
+  std::string first_input_target = kTargetUnDefined;
+  bool has_diff_target =
+    std::any_of(std::rbegin(real_inputs), std::rend(real_inputs), [&first_input_target](const AnfNodePtr &n) {
+      auto target = GetOriginNodeTarget(n);
+      if (target == kTargetUnDefined) {
+        return false;
+      }
+      if (first_input_target == kTargetUnDefined) {
+        first_input_target = target;
+      }
+      return target != first_input_target;
+    });
+  if (!has_diff_target) {
+    return first_input_target;
+  }
+  return kTargetUnDefined;
+}
+
+static inline bool IsSummaryPrimitiveCNode(const AnfNodePtr &node) {
+  return IsPrimitiveCNode(node, prim::kPrimImageSummary) || IsPrimitiveCNode(node, prim::kPrimScalarSummary) ||
+         IsPrimitiveCNode(node, prim::kPrimTensorSummary) || IsPrimitiveCNode(node, prim::kPrimHistogramSummary);
+}
+
 std::string GetVirtualNodeTargetFromInputs(const AnfNodePtr &node) {
   MS_EXCEPTION_IF_NULL(node);
   auto cnode = node->cast<CNodePtr>();
   MS_EXCEPTION_IF_NULL(cnode);
   auto &inputs = cnode->inputs();
-  if (IsPrimitiveCNode(node, prim::kPrimImageSummary) || IsPrimitiveCNode(node, prim::kPrimScalarSummary) ||
-      IsPrimitiveCNode(node, prim::kPrimTensorSummary) || IsPrimitiveCNode(node, prim::kPrimHistogramSummary)) {
+#ifndef ENABLE_SECURITY
+  if (IsSummaryPrimitiveCNode(node)) {
     if (inputs.size() > 1) {
       return GetOriginNodeTarget(inputs[1]);
     }
-  } else if (IsPrimitiveCNode(node, prim::kPrimDepend) || IsPrimitiveCNode(node, prim::kPrimLoad)) {
+    return kTargetUnDefined;
+  }
+#endif
+  if (IsPrimitiveCNode(node, prim::kPrimDepend) || IsPrimitiveCNode(node, prim::kPrimLoad)) {
     const size_t node_inputs_num = 3;
     if (inputs.size() >= node_inputs_num) {
       size_t use_index = 1;
@@ -407,31 +511,7 @@ std::string GetVirtualNodeTargetFromInputs(const AnfNodePtr &node) {
       return GetOriginNodeTarget(inputs[use_index]);
     }
   } else if (IsPrimitiveCNode(node, prim::kPrimMakeTuple) || IsPrimitiveCNode(node, prim::kPrimUpdateState)) {
-    std::vector<AnfNodePtr> real_inputs;
-    const size_t update_state_valid_input_index = 2;
-    const size_t make_tuple_valid_input_index = 1;
-    if (IsPrimitiveCNode(node, prim::kPrimUpdateState) && inputs.size() > update_state_valid_input_index) {
-      (void)std::copy(inputs.begin() + SizeToLong(update_state_valid_input_index), inputs.end(),
-                      std::back_inserter(real_inputs));
-    } else if (IsPrimitiveCNode(node, prim::kPrimMakeTuple) && inputs.size() > make_tuple_valid_input_index) {
-      (void)std::copy(inputs.begin() + SizeToLong(make_tuple_valid_input_index), inputs.end(),
-                      std::back_inserter(real_inputs));
-    }
-    std::string first_input_target = kTargetUnDefined;
-    bool has_diff_target =
-      std::any_of(std::rbegin(real_inputs), std::rend(real_inputs), [&first_input_target](const AnfNodePtr &n) {
-        auto target = GetOriginNodeTarget(n);
-        if (target == kTargetUnDefined) {
-          return false;
-        }
-        if (first_input_target == kTargetUnDefined) {
-          first_input_target = target;
-        }
-        return target != first_input_target;
-      });
-    if (!has_diff_target) {
-      return first_input_target;
-    }
+    return GetNodeTargetForVarInputNode(node->cast<CNodePtr>());
   } else if (IsPrimitiveCNode(node, prim::kPrimTupleGetItem)) {
     return GetOriginNodeTarget(cnode->input(1));
   }
@@ -521,6 +601,7 @@ std::string GetOriginNodeTarget(const AnfNodePtr &node) {
   if (target != kTargetUnDefined) {
     return target;
   }
+#ifndef ENABLE_SECURITY
   if (IsPrimitiveCNode(node, prim::kPrimImageSummary) || IsPrimitiveCNode(node, prim::kPrimScalarSummary) ||
       IsPrimitiveCNode(node, prim::kPrimTensorSummary) || IsPrimitiveCNode(node, prim::kPrimHistogramSummary) ||
       IsPrimitiveCNode(node, prim::kPrimDepend) || IsPrimitiveCNode(node, prim::kPrimLoad) ||
@@ -528,20 +609,49 @@ std::string GetOriginNodeTarget(const AnfNodePtr &node) {
       IsPrimitiveCNode(node, prim::kPrimTupleGetItem)) {
     return GetVirtualNodeTarget(node);
   }
+#else
+  if (IsPrimitiveCNode(node, prim::kPrimDepend) || IsPrimitiveCNode(node, prim::kPrimLoad) ||
+      IsPrimitiveCNode(node, prim::kPrimUpdateState) || IsPrimitiveCNode(node, prim::kPrimMakeTuple) ||
+      IsPrimitiveCNode(node, prim::kPrimTupleGetItem)) {
+    return GetVirtualNodeTarget(node);
+  }
+#endif
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
   return context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
 }
 
 std::string GetCNodeTarget(const AnfNodePtr &node) {
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-  std::string default_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-  auto target = GetOriginNodeTarget(node);
-  if (target != kTargetUnDefined) {
-    return target;
+  auto kernel_info = node->kernel_info();
+  if (kernel_info != nullptr) {
+    auto runtime_cache = kernel_info->runtime_cache();
+    MS_EXCEPTION_IF_NULL(runtime_cache);
+    if (runtime_cache->is_valid()) {
+      auto tmp_target = runtime_cache->device_target();
+      if (!tmp_target.empty()) {
+        return tmp_target;
+      }
+    }
   }
-  return default_target;
+
+  std::string target;
+  auto ori_target = GetOriginNodeTarget(node);
+  if (ori_target != kTargetUnDefined) {
+    target = ori_target;
+  } else {
+    auto context_ptr = MsContext::GetInstance();
+    MS_EXCEPTION_IF_NULL(context_ptr);
+    target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  }
+
+  if (kernel_info != nullptr) {
+    auto runtime_cache = kernel_info->runtime_cache();
+    MS_EXCEPTION_IF_NULL(runtime_cache);
+    if (runtime_cache->is_valid()) {
+      runtime_cache->set_device_target(target);
+    }
+  }
+  return target;
 }
 
 bool ContainMultiTarget(const std::vector<AnfNodePtr> &nodes) {
@@ -558,5 +668,19 @@ bool ContainMultiTarget(const std::vector<AnfNodePtr> &nodes) {
     }
   }
   return false;
+}
+
+bool IsOneOfPrimitive(const AnfNodePtr &node, const PrimitiveSet &prim_set) {
+  PrimitivePtr prim = GetValueNode<PrimitivePtr>(node);
+  return (prim && prim_set.find(prim) != prim_set.end());
+}
+
+bool IsOneOfPrimitiveCNode(const AnfNodePtr &node, const PrimitiveSet &prim_set) {
+  MS_EXCEPTION_IF_NULL(node);
+  auto cnode = node->cast<CNodePtr>();
+  if (cnode == nullptr || cnode->size() == 0) {
+    return false;
+  }
+  return IsOneOfPrimitive(cnode->input(0), prim_set);
 }
 }  // namespace mindspore

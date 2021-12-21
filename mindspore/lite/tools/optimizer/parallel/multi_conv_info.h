@@ -27,7 +27,7 @@ class MultiConvSplit : public MultiNodeSplit {
   explicit MultiConvSplit(const SplitStrategy &strategy, PrimitiveType primitive_type, int32_t fmk_type = -1,
                           int32_t num = 3)
       : MultiNodeSplit(), strategy_(strategy), primitive_type_(primitive_type), fmk_type_(fmk_type), num_(num) {}
-
+  ~MultiConvSplit() = default;
   AnfNodePtr DoSplit(const FuncGraphPtr &func_graph, const AnfNodePtr &node) override;
 
  protected:
@@ -41,14 +41,12 @@ class MultiConvSplit : public MultiNodeSplit {
   virtual AnfNodePtr MultiConvNHSplit(const AnfNodePtr &node);
 
   virtual void AdJustInputs(const AnfNodePtr &ori_node, const std::vector<AnfNodePtr> &new_inputs_node,
-                            const std::vector<AnfNodePtr> &weight_node, const std::vector<AnfNodePtr> &bias_nodes,
                             int output_conv_index, std::vector<AnfNodePtr> *conv_inputs);
 
   virtual bool CreateNewConvNode(const AnfNodePtr &ori_conv_node, const std::vector<AnfNodePtr> &conv_inputs,
                                  int output_conv_index, std::vector<AnfNodePtr> *outputs_node);
 
   virtual bool SplitSingleConv(const AnfNodePtr &ori_node, const std::vector<AnfNodePtr> &inputs_node,
-                               const std::vector<AnfNodePtr> &weight_node, const std::vector<AnfNodePtr> &bias_nodes,
                                std::vector<AnfNodePtr> *outputs_node);
 
  protected:
@@ -72,7 +70,7 @@ class MultiConvSplitN final : public MultiConvSplit {
  public:
   MultiConvSplitN(const SplitStrategy &strategy, PrimitiveType primitive_type, int32_t fmk_type = -1, int32_t num = 3)
       : MultiConvSplit(strategy, primitive_type, fmk_type, num) {}
-
+  ~MultiConvSplitN() = default;
   AnfNodePtr SplitMultiConv(const AnfNodePtr &node) override;
 
   void AdJustConvPrim(const std::shared_ptr<ops::Conv2DFusion> &ori_attr, const ShapeVector &input_shape,
@@ -83,7 +81,7 @@ class MultiConvSplitCIN final : public MultiConvSplit {
  public:
   MultiConvSplitCIN(const SplitStrategy &strategy, PrimitiveType primitive_type, int32_t fmk_type = -1, int32_t num = 3)
       : MultiConvSplit(strategy, primitive_type, fmk_type, num) {}
-
+  ~MultiConvSplitCIN() = default;
   AnfNodePtr SplitMultiConv(const AnfNodePtr &node) override;
 
   void AdJustConvPrim(const std::shared_ptr<ops::Conv2DFusion> &ori_attr, const ShapeVector &input_shape,
@@ -95,7 +93,7 @@ class MultiConvSplitCOUT final : public MultiConvSplit {
   MultiConvSplitCOUT(const SplitStrategy &strategy, PrimitiveType primitive_type, int32_t fmk_type = -1,
                      int32_t num = 3)
       : MultiConvSplit(strategy, primitive_type, fmk_type, num) {}
-
+  ~MultiConvSplitCOUT() = default;
   AnfNodePtr SplitMultiConv(const AnfNodePtr &node) override;
 
   void AdJustConvPrim(const std::shared_ptr<ops::Conv2DFusion> &ori_attr, const ShapeVector &input_shape,
@@ -106,7 +104,7 @@ class MultiConvSplitH final : public MultiConvSplit {
  public:
   MultiConvSplitH(const SplitStrategy &strategy, PrimitiveType primitive_type, int32_t fmk_type = -1, int32_t num = 3)
       : MultiConvSplit(strategy, primitive_type, fmk_type, num) {}
-
+  ~MultiConvSplitH() = default;
   AnfNodePtr SplitMultiConv(const AnfNodePtr &node) override;
 
   void AdJustConvPrim(const std::shared_ptr<ops::Conv2DFusion> &ori_attr, const ShapeVector &input_shape,

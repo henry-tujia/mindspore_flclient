@@ -36,7 +36,7 @@ void ReducePrecision(const FuncGraphPtr &graph, const AnfNodePtr &node, size_t i
   std::vector<AnfNodePtr> inputs = {NewValueNode(prim), AnfAlgo::GetInputNode(utils::cast<CNodePtr>(node), i)};
   auto cast = graph->NewCNode(inputs);
   MS_EXCEPTION_IF_NULL(cast);
-  prim->AddAttr("dst_type", TypeIdToType(cast_type));
+  prim->AddAttr(kAttrDstType, TypeIdToType(cast_type));
   auto cast_shape = {AnfAlgo::GetInputDeviceShape(node, i)};
   AnfAlgo::SetOutputInferTypeAndShape({cast_type}, cast_shape, cast.get());
   FuncGraphManagerPtr manager = graph->manager();
@@ -72,7 +72,7 @@ bool ReducePrecisionFusion::Run(const FuncGraphPtr &graph) {
   std::vector<AnfNodePtr> node_list = TopoSort(graph->get_return());
   for (auto node : node_list) {
     MS_EXCEPTION_IF_NULL(node);
-    if (node != nullptr && node->isa<CNode>() && AnfAlgo::IsRealKernel(node)) {
+    if (node != nullptr && node->isa<CNode>() && AnfUtils::IsRealKernel(node)) {
       size_t input_num = AnfAlgo::GetInputTensorNum(node);
       size_t output_num = AnfAlgo::GetOutputTensorNum(node);
       for (size_t i = 0; i < input_num; i++) {

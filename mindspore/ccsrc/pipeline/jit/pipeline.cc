@@ -21,41 +21,51 @@
 #include <memory>
 #include <sstream>
 #include <map>
-#include <unordered_map>
 #include <cstdlib>
 #include <algorithm>
 #include <iomanip>
+#include <unordered_map>
 
+#include "utils/hash_map.h"
+#include "pybind_api/pybind_patch.h"
 #include "ir/param_info.h"
 #include "pipeline/jit/pass.h"
 #include "pipeline/jit/parse/data_converter.h"
-#include "frontend/optimizer/ad/dfunctor.h"
 #include "pipeline/jit/static_analysis/async_eval_result.h"
-#include "debug/anf_ir_dump.h"
-#include "debug/dump_proto.h"
-#include "debug/anf_ir_utils.h"
-#include "debug/common.h"
+#include "pipeline/pynative/pynative_execute.h"
+#include "frontend/optimizer/py_pass_manager.h"
+#include "frontend/optimizer/ad/dfunctor.h"
+#include "frontend/optimizer/ad/prim_bprop_optimizer.h"
+#include "frontend/parallel/context.h"
+#include "frontend/parallel/graph_util/get_parallel_info.h"
 #include "utils/config_manager.h"
 #include "utils/convert_utils.h"
 #include "utils/convert_utils_py.h"
 #include "utils/context/context_extends.h"
-#include "vm/segment_runner.h"
-#include "frontend/parallel/context.h"
-#include "frontend/parallel/graph_util/get_parallel_info.h"
-#include "runtime/device/kernel_runtime_manager.h"
-#include "backend/session/executor_manager.h"
-#include "debug/trace.h"
-#include "debug/draw.h"
-#include "pipeline/pynative/pynative_execute.h"
-#include "frontend/optimizer/py_pass_manager.h"
-#include "pybind_api/pybind_patch.h"
 #include "utils/shape_utils.h"
 #include "utils/info.h"
-#include "load_mindir/load_model.h"
-#include "frontend/optimizer/ad/prim_bprop_optimizer.h"
-#include "runtime/hardware/device_context_manager.h"
 #include "utils/crypto.h"
 #include "utils/comm_manager.h"
+#include "utils/interpret_node_recorder.h"
+#include "debug/anf_ir_dump.h"
+#include "debug/dump_proto.h"
+#include "debug/anf_ir_utils.h"
+#include "debug/trace.h"
+#include "debug/draw.h"
+#include "debug/common.h"
+#include "load_mindir/load_model.h"
+#include "vm/segment_runner.h"
+#include "backend/session/executor_manager.h"
+#include "runtime/hardware/device_context_manager.h"
+#include "runtime/device/kernel_runtime_manager.h"
+#include "utils/system/sha256.h"
+
+#ifndef ENABLE_SECURITY
+#ifdef ENABLE_D
+#include "mindspore/ccsrc/profiler/device/ascend/parallel_strategy_profiling.h"
+#endif
+#endif
+
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
 #include "ps/constants.h"
 #include "ps/util.h"
@@ -64,6 +74,7 @@
 #include "ps/ps_cache/ps_cache_manager.h"
 #include "fl/server/server.h"
 #include "fl/worker/fl_worker.h"
+#include "distributed/cluster/cluster_context.h"
 #endif
 
 #if ((defined ENABLE_GE) || (defined ENABLE_D))
@@ -84,6 +95,7 @@ namespace mindspore {
 namespace pipeline {
 using Tensor = mindspore::tensor::Tensor;
 using MetaTensor = mindspore::tensor::MetaTensor;
+using CSRTensor = mindspore::tensor::CSRTensor;
 using TensorOrderMap = std::map<std::string, std::shared_ptr<Tensor>>;
 using mindspore::abstract::AbstractTensor;
 using mindspore::abstract::AbstractTensorPtr;
@@ -105,6 +117,7 @@ GraphExecutorPyPtr GraphExecutorPy::executor_ = nullptr;
 std::mutex GraphExecutorPy::instance_lock_;
 #ifdef ENABLE_DEBUGGER
 bool GraphExecutorPy::debugger_terminate_ = false;
+bool GraphExecutorPy::exit_success_ = false;
 #endif
 
 std::unordered_map<abstract::AbstractBasePtrList, uint64_t, abstract::AbstractBasePtrListHasher,
@@ -112,7 +125,11 @@ std::unordered_map<abstract::AbstractBasePtrList, uint64_t, abstract::AbstractBa
   g_args_cache;
 
 namespace {
-constexpr char kCompileCacheFilePath[] = "compile_cache.mindir";
+constexpr char kCompileCacheSubDir[] = "graph_cache";
+constexpr char kCompileCacheFileName[] = "compile_cache";
+constexpr char kCompileCacheFileSuffix[] = ".mindir";
+constexpr char kDepFilesHashPath[] = "compile_dependency.hash";
+
 #ifdef ENABLE_DUMP_IR
 std::string GetBaseNameForIR(int64_t stage_idx, const std::string &action_name) {
   std::ostringstream oss;
@@ -122,9 +139,21 @@ std::string GetBaseNameForIR(int64_t stage_idx, const std::string &action_name) 
 }
 #endif
 
-AbstractBasePtr ArgsToAbstract(const ValuePtr &value) {
+bool CheckAllTensor(const ValueTuplePtr &value_tuple) {
+  auto elements = value_tuple->value();
+  for (auto element : elements) {
+    if (!(element->isa<ValueTuple>() && CheckAllTensor(element->cast<ValueTuplePtr>())) &&
+        !(element->isa<MetaTensor>())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+AbstractBasePtr ArgsToAbstract(const ValuePtr &value, bool enable_tuple_broaden = false) {
   MS_EXCEPTION_IF_NULL(value);
   bool broaden = value->isa<MetaTensor>() ||
+                 (enable_tuple_broaden && value->isa<ValueTuple>() && CheckAllTensor(value->cast<ValueTuplePtr>())) ||
                  (MsContext::GetInstance()->get_param<bool>(MS_CTX_GRAD_FOR_SCALAR) && value->isa<Scalar>());
 
   return abstract::FromValue(value, broaden);
@@ -141,8 +170,9 @@ bool CheckArgValid(const py::handle &arg) {
     return std::all_of(dict_arg.begin(), dict_arg.end(), [](const auto &pair) { return CheckArgValid(pair.second); });
   }
 
-  return py::isinstance<py::int_>(arg) || py::isinstance<py::float_>(arg) || py::isinstance<Number>(arg) ||
-         (py::isinstance<Tensor>(arg) && !py::hasattr(arg, "__parameter__"));
+  return py::isinstance<py::int_>(arg) || py::isinstance<py::float_>(arg) || py::isinstance<py::none>(arg) ||
+         py::isinstance<Number>(arg) ||
+         ((py::isinstance<Tensor>(arg) || py::isinstance<CSRTensor>(arg)) && !py::hasattr(arg, "__parameter__"));
 }
 
 std::string GetCompileExceptionInfo() {
@@ -159,35 +189,167 @@ void SetLoopCount(const ResourcePtr &resource) {
     size_t graph_nums = manager->func_graphs().size();
     int64_t loop_size = ConfigManager::GetInstance().iter_num();
     const auto context_ptr = MsContext::GetInstance();
+    bool enable_mind_rt = context_ptr->get_param<bool>(MS_CTX_ENABLE_MINDRT);
     if (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice) {
-      resource->set_vm_loop(!context_ptr->get_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK), loop_size);
+      resource->set_vm_loop(!(context_ptr->get_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK) || enable_mind_rt), loop_size);
     } else if (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kGPUDevice) {
-      bool run_with_mind_rt = graph_nums == 1 || context_ptr->get_param<bool>(MS_CTX_ENABLE_MINDRT);
+      bool run_with_mind_rt = graph_nums == 1 || enable_mind_rt;
       resource->set_vm_loop(!run_with_mind_rt, loop_size);
     }
     MS_LOG(INFO) << "Change vm_loop_flag to " << resource->vm_loop_flag() << ", set loop_size to " << loop_size;
   }
 }
 
-void GetCachedFuncGraph(const ResourcePtr &resource, const std::string &queue_name) {
-  MS_EXCEPTION_IF_NULL(resource);
-  auto realpath = Common::CreatePrefixPath(kCompileCacheFilePath);
+std::string GetUserDefinedCachePath() {
+  auto user_defined_path = MsContext::GetInstance()->get_param<std::string>(MS_CTX_COMPILE_CACHE_PATH);
+  if (!user_defined_path.empty()) {
+    user_defined_path += "/";
+    return user_defined_path;
+  }
+  user_defined_path = common::GetEnv("MS_COMPILER_CACHE_PATH");
+  if (!user_defined_path.empty()) {
+    user_defined_path += "/";
+  }
+  return user_defined_path;
+}
+
+std::string GetCompileCacheDir() {
+  static const std::string user_defined_path = GetUserDefinedCachePath();
+  static uint32_t rank_id = IsStandAlone() ? 0 : GetRank();
+  static const std::string compile_cache_dir =
+    user_defined_path + "rank_" + std::to_string(rank_id) + "/" + kCompileCacheSubDir;
+  return compile_cache_dir;
+}
+
+std::string GetCompileCachePath(size_t idx) {
+  return GetCompileCacheDir() + "/" + kCompileCacheFileName + "_" + std::to_string(idx) + kCompileCacheFileSuffix;
+}
+
+std::string GetDepFilesHashPath() {
+  static const std::string dep_files_hash_path = GetCompileCacheDir() + "/" + kDepFilesHashPath;
+  return dep_files_hash_path;
+}
+
+size_t GetCompileCacheGraphId() {
+  static size_t idx = 0;
+  return idx++;
+}
+
+std::string GetCompileDepFilesHash(const py::list &dep_files) {
+  MS_LOG(DEBUG) << "Dependency files size: " << dep_files.size();
+  std::vector<std::string> dep_files_path;
+  for (auto dep_file : dep_files) {
+    auto file_path = py::cast<std::string>(dep_file);
+    MS_LOG(DEBUG) << "Dependency file path: " << file_path;
+    (void)dep_files_path.emplace_back(file_path);
+  }
+  std::sort(dep_files_path.begin(), dep_files_path.end());
+  std::string files_hash;
+  for (const auto &path : dep_files_path) {
+    std::string file_hash = system::sha256::GetHashFromFile(path);
+    files_hash += file_hash;
+  }
+  return files_hash;
+}
+
+bool CheckDepFilesHashConsistency(const std::string &current_dep_files_hash) {
+  if (current_dep_files_hash.empty()) {
+    MS_LOG(ERROR) << "Get current dependency files hash failed.";
+    return false;
+  }
+  std::string dep_files_hash_path = GetDepFilesHashPath();
+  auto realpath = Common::CreatePrefixPath(dep_files_hash_path, true);
   if (!realpath.has_value()) {
-    MS_LOG(EXCEPTION) << "Get real path failed. filename=" << kCompileCacheFilePath;
+    MS_LOG(ERROR) << "Get real path of file " << dep_files_hash_path << " failed.";
+    return false;
+  }
+  std::fstream input(realpath.value(), std::ios::in | std::ios::binary);
+  if (!input) {
+    MS_LOG(WARNING) << "Open the hash file " << realpath.value() << " failed. The file may not exist."
+                    << ErrnoToString(errno);
+    return false;
+  }
+  std::string checkpoint_hash;
+  input >> checkpoint_hash;
+  if (checkpoint_hash.empty()) {
+    MS_LOG(ERROR) << "Get the compilation dependency files hash from " << realpath.value() << " failed.";
+    return false;
+  }
+  if (checkpoint_hash != current_dep_files_hash) {
+    MS_LOG(WARNING) << "The compilation dependency files are changed.";
+    return false;
+  }
+  return true;
+}
+
+std::map<string, ValuePtr> GenerateWeightsValueMap(const py::dict &weights) {
+  std::map<string, ValuePtr> ret{};
+  for (auto weight = weights.begin(); weight != weights.end(); ++weight) {
+    auto weight_name = py::cast<std::string>(weight->first);
+    auto weight_value = parse::data_converter::PyDataToValue(py::cast<py::object>(weight->second));
+    ret[weight_name] = weight_value;
+  }
+  return ret;
+}
+
+std::map<string, string> GenerateJitConfigMap(const py::dict &jit_config) {
+  std::map<string, string> ret{};
+  for (auto jit_param = jit_config.begin(); jit_param != jit_config.end(); ++jit_param) {
+    auto param_name = py::cast<std::string>(jit_param->first);
+    auto param_value = py::cast<std::string>(jit_param->second);
+    ret[param_name] = param_value;
+  }
+  return ret;
+}
+
+FuncGraphPtr LoadFuncGraphFromMindIR(const ResourcePtr &resource, const py::dict &weights, bool has_parallel_info) {
+  const size_t idx = resource->compile_cache_id();
+  std::string compile_cache_path = GetCompileCachePath(idx);
+  auto realpath = Common::CreatePrefixPath(compile_cache_path, true);
+  if (!realpath.has_value()) {
+    MS_LOG(ERROR) << "Get real path of file " << compile_cache_path << " failed.";
+    return nullptr;
   }
   std::ifstream f(realpath.value());
-  bool cache_file_existed = f.good();
+  bool file_is_good = f.good();
   f.close();
-  if (!cache_file_existed) {
-    MS_LOG(WARNING) << "The compilation cache file '" << realpath.value()
-                    << "' dose not exist. Execute all the compilation actions.";
-    return;
+  if (!file_is_good) {
+    MS_LOG(WARNING) << "Open the compilation cache file " << realpath.value() << " failed.";
+    return nullptr;
   }
-  MS_LOG(INFO) << "Use the compilation cache \"" << realpath.value() << "\" and execute the backend actions only.";
-  FuncGraphPtr fg = mindspore::LoadMindIR(realpath.value());
+  MindIRLoader mindir_loader;
+  mindir_loader.set_need_renormalize(false);
+  mindir_loader.set_weights_value_map(GenerateWeightsValueMap(weights));
+  mindir_loader.set_has_parallel_info(has_parallel_info);
+  auto fg = mindir_loader.LoadMindIR(realpath.value());
+  if (has_parallel_info) {
+    resource->set_layout_map(mindir_loader.get_layout_map());
+  }
+  return fg;
+}
+
+FuncGraphPtr GetCachedFuncGraph(const ResourcePtr &resource, const py::dict &weights, const std::string &queue_name) {
+  MS_EXCEPTION_IF_NULL(resource);
+  // Compare the dependency files hash.
+  if (!CheckDepFilesHashConsistency(resource->compile_cache_dep_files_hash())) {
+    MS_LOG(WARNING) << "Check the consistency of dependency files hash failed. Execute all the compilation actions.";
+    return nullptr;
+  }
+
+  // Determine whether to load parallel information.
+  std::string parallel_mode = parallel::ParallelContext::GetInstance()->parallel_mode();
+  bool has_parallel_info = false;
+  if ((parallel_mode == parallel::AUTO_PARALLEL) || (parallel_mode == parallel::SEMI_AUTO_PARALLEL)) {
+    has_parallel_info = true;
+  }
+  // Load the compilation cache file.
+  FuncGraphPtr fg = LoadFuncGraphFromMindIR(resource, weights, has_parallel_info);
   if (fg == nullptr) {
-    MS_LOG(EXCEPTION) << "Failed to load the compilation cache file: " << realpath.value();
+    MS_LOG(WARNING) << "Failed to load the compilation cache file. Execute all the compilation actions.";
+    return nullptr;
   }
+
+  MS_LOG(WARNING) << "Use the compilation cache and execute the backend actions only. Be aware of correctness risks.";
   FuncGraphManagerPtr mng = fg->manager();
   if (mng == nullptr) {
     auto res_mng = resource->manager();
@@ -195,6 +357,7 @@ void GetCachedFuncGraph(const ResourcePtr &resource, const std::string &queue_na
     res_mng->AddFuncGraph(fg);
     fg->set_manager(res_mng);
   }
+  // The value of attr "shared_name" will changed every time.
   auto cnodes = fg->GetOrderedCnodes();
   for (auto cnode : cnodes) {
     auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
@@ -203,37 +366,100 @@ void GetCachedFuncGraph(const ResourcePtr &resource, const std::string &queue_na
       break;
     }
   }
-  resource->set_func_graph(fg);
+  if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
+    DumpIR("cache_loaded_graph_" + std::to_string(resource->compile_cache_id()) + ".ir", fg);
+  }
+  return fg;
 }
 
-void CacheFuncGraph(const ResourcePtr &resource) {
-  MS_EXCEPTION_IF_NULL(resource);
-  auto realpath = Common::CreatePrefixPath(kCompileCacheFilePath);
+bool ExportFuncGraphToMindIR(const FuncGraphPtr &fg, const FuncGraphPtr &layout_fg, size_t idx) {
+  std::string compile_cache_path = GetCompileCachePath(idx);
+  auto realpath = Common::CreatePrefixPath(compile_cache_path, true);
   if (!realpath.has_value()) {
-    MS_LOG(EXCEPTION) << "Get real path failed. filename=" << kCompileCacheFilePath;
+    MS_LOG(ERROR) << "Get real path of file " << compile_cache_path << " failed.";
+    return false;
   }
 
   ChangeFileMode(realpath.value(), S_IRWXU);
   std::ofstream fout(realpath.value());
   if (!fout.is_open()) {
-    MS_LOG(EXCEPTION) << "Open cache file '" << realpath.value() << "' failed!"
-                      << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+    MS_LOG(ERROR) << "Open cache file '" << realpath.value() << "' failed!" << ErrnoToString(errno);
+    return false;
   }
-  FuncGraphPtr fg = resource->func_graph();
-  mind_ir::ModelProto fg_model = GetBinaryProto(fg, true);
-  if (!fg_model.SerializeToOstream(&fout)) {
-    MS_LOG(EXCEPTION) << "Failed to cache the graph to file " << realpath.value();
+  ModelProtoPtr fg_model = GetBinaryProto(fg, layout_fg);
+  if (fg_model == nullptr) {
+    MS_LOG(ERROR) << "Get binary proto for graph " << fg->ToString() << " failed.";
+    fout.close();
+    return false;
+  }
+  if (!fg_model->SerializeToOstream(&fout)) {
+    MS_LOG(ERROR) << "Failed to write the graph compilation cache to file " << realpath.value();
+    fout.close();
+    return false;
   }
   fout.close();
   ChangeFileMode(realpath.value(), S_IRUSR);
+  return true;
 }
+
+bool ExportDepFilesHash(const ResourcePtr &resource) {
+  std::string dep_files_hash_path = GetDepFilesHashPath();
+  auto realpath = Common::CreatePrefixPath(dep_files_hash_path, true);
+  if (!realpath.has_value()) {
+    MS_LOG(ERROR) << "Get real path of file " << dep_files_hash_path << " failed.";
+    return false;
+  }
+
+  ChangeFileMode(realpath.value(), S_IRWXU);
+  std::ofstream fout(realpath.value());
+  if (!fout.is_open()) {
+    MS_LOG(ERROR) << "Open cache file '" << realpath.value() << "' failed!" << ErrnoToString(errno);
+    return false;
+  }
+  fout << resource->compile_cache_dep_files_hash();
+  fout.close();
+  ChangeFileMode(realpath.value(), S_IRUSR);
+  return true;
+}
+
+void CacheFuncGraph(const ResourcePtr &resource) {
+  MS_EXCEPTION_IF_NULL(resource);
+  auto fg = resource->func_graph();
+  if (fg == nullptr) {
+    MS_LOG(ERROR) << "The func_graph to be cached is null.";
+    return;
+  }
+  FuncGraphPtr layout_fg = nullptr;
+  std::string parallel_mode = parallel::ParallelContext::GetInstance()->parallel_mode();
+  if (fg->has_flag(parallel::AUTO_PARALLEL) &&
+      ((parallel_mode == parallel::AUTO_PARALLEL) || (parallel_mode == parallel::SEMI_AUTO_PARALLEL))) {
+    layout_fg = resource->results()[kStepParallelGraph].cast<FuncGraphPtr>();
+  }
+  if (!ExportFuncGraphToMindIR(fg, layout_fg, resource->compile_cache_id())) {
+    MS_LOG(ERROR) << "Failed to cache graph: " << fg->ToString();
+    return;
+  }
+  if (resource->compile_cache_id() == 0 && !ExportDepFilesHash(resource)) {
+    MS_LOG(ERROR) << "Failed to cache the dependency files hash";
+  }
+}
+
+void RecordInitStatus() {
+  static bool printed = false;
+  if (!printed) {
+    MS_LOG(INFO) << "Status record: system init.";
+    printed = true;
+  }
+}
+
+void RecordExitStatus() { MS_LOG(INFO) << "Status record: system exit."; }
 }  // namespace
 
 void CheckArgsValid(const py::tuple &args) {
   for (size_t i = 0; i < args.size(); i++) {
     if (!CheckArgValid(args[i])) {
       MS_EXCEPTION(TypeError)
-        << "The inputs types of the outermost network support bool, int, float, tensor, "
+        << "The inputs types of the outermost network support bool, int, float, None, tensor, "
            "mstype.Number(mstype.bool, mstype.int, mstype.float, mstype.uint), "
            "and tuple or list containing only these types, and dict whose values are these types, but the "
         << i << "th arg type is " << args[i].get_type() << ", value is '" << py::str(args[i]) << "'.";
@@ -241,7 +467,7 @@ void CheckArgsValid(const py::tuple &args) {
   }
 }
 
-py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object> &args) {
+py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object> &args, bool enable_tuple_broaden) {
   MS_LOG(DEBUG) << "GenerateArgumentsKey args size:" << args.size();
   abstract::AbstractBasePtrList args_spec;
 
@@ -253,7 +479,7 @@ py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object
     if (!parse::ConvertData(arg.second, &converted)) {
       MS_LOG(EXCEPTION) << "GenerateArgumentsKey convert arg failed";
     }
-    args_spec.push_back(ArgsToAbstract(converted));
+    args_spec.push_back(ArgsToAbstract(converted, enable_tuple_broaden));
   }
 
   uint64_t key;
@@ -320,7 +546,8 @@ ResourcePtr GraphExecutorPy::GetResource(const std::string &phase) {
 
 FuncGraphPtr GraphExecutorPy::GetFuncGraph(const std::string &phase) {
   if (info_.count(phase) == 0) {
-    MS_LOG(EXCEPTION) << "No executor info. found for phase: " << phase;
+    MS_LOG(INFO) << "No executor info. found for phase: " << phase;
+    return nullptr;
   }
   return info_[phase]->func_graph;
 }
@@ -410,11 +637,33 @@ py::bytes GraphExecutorPy::GetFuncGraphProto(const std::string &phase, const std
   MS_LOG(EXCEPTION) << "Unknown ir type: " << ir_type;
 }
 
+py::bytes GraphExecutorPy::GetOptimizeGraphProto(const std::string &phase) {
+  if (info_.count(phase) == 0) {
+    MS_LOG(EXCEPTION) << "No phase in executor: " << phase;
+  }
+  FuncGraphPtr fg_ptr = info_[phase]->resource->optimize_graph();
+  if (fg_ptr == nullptr) {
+    MS_LOG(WARNING) << "Can not find optimize graph.";
+    return "";
+  }
+  std::string proto_str = GetFuncGraphProtoString(fg_ptr);
+  if (proto_str.empty()) {
+    MS_LOG(EXCEPTION) << "Export optimize graph proto string failed.";
+  }
+  return proto_str;
+}
+
+void GraphExecutorPy::SetJitConfig(const py::dict &jit_config) { jit_config_ = GenerateJitConfigMap(jit_config); }
+
 py::dict GraphExecutorPy::GetParameterLayout(const std::string &phase) {
   MS_LOG(DEBUG) << "GetParameterLayout!";
   std::string layout_graph = phase + kStepParallelGraph;
   auto graph = GetFuncGraph(layout_graph);
-  return mindspore::parallel::GetParameterLayout(graph);
+  if (graph == nullptr) {
+    auto resource = info_[phase]->resource;
+    return mindspore::parallel::GetParameterLayoutFromResource(resource);
+  }
+  return mindspore::parallel::GetParameterLayoutFromGraph(graph);
 }
 
 py::dict GraphExecutorPy::GetCNodeStrategy(const std::string &phase) {
@@ -425,7 +674,11 @@ py::dict GraphExecutorPy::GetCNodeStrategy(const std::string &phase) {
 py::list GraphExecutorPy::GetParallelParameterNameList(const std::string &phase) {
   std::string param_graph = phase + kStepParallelGraph;
   auto graph = GetFuncGraph(param_graph);
-  return mindspore::parallel::GetParallelParameterNameList(graph);
+  if (graph == nullptr) {
+    auto resource = info_[phase]->resource;
+    return mindspore::parallel::GetParallelParameterNameListFromResource(resource);
+  }
+  return mindspore::parallel::GetParallelParameterNameListFromGraph(graph);
 }
 
 void GraphExecutorPy::SetCNodeStrategy(const std::string &name, const parallel::Strategys &strategy) {
@@ -451,40 +704,30 @@ py::dict GraphExecutorPy::GetAllreduceFusion(const std::string &phase) {
 
 // Not support multi thread, not support nested call too.
 // Here using nested_called flg to avoid nested call.
-void GraphExecutorPy::DelNetRes(const std::string &id) {
-  static bool nested_called = false;
-  if (nested_called) {
-    return;
-  }
-  nested_called = true;
+void GraphExecutorPy::DelNetRes(const py::set &id) {
 #ifdef ENABLE_GE
   FinalizeBackend();
 #else
   ConfigManager::GetInstance().ResetIterNum();
 #endif
-  if (executor_ != nullptr) {
-    bool flag = false;
-    auto tmp_info = info_;
-    for (auto &item : tmp_info) {
-      if (item.first.find(id) != string::npos) {
-        MS_LOG(DEBUG) << "Delete network res:" << item.first;
-        item.second = nullptr;
-        (void)info_.erase(item.first);
-        flag = true;
-      }
+  for (auto item : id) {
+    if (py::isinstance<py::str>(item)) {
+      auto phase = py::cast<std::string>(item);
+      info_.erase(phase);
+      MS_LOG(DEBUG) << "Delete phase: " << phase << ", info size: " << info_.size();
+    } else {
+      MS_LOG(ERROR) << "Expect string phase, but got " << py::str(item);
     }
-
-    MS_LOG(DEBUG) << "Delete flag:" << flag;
-#ifdef ENABLE_GE
-    if (flag && info_.size() == 0) {
-      // because Ge only support one Session exist at the same time ,so we delete the old one
-      transform::DfGraphManager::GetInstance().DeleteGraphRunner();
-      transform::DfGraphManager::GetInstance().EraseAnfGraph();
-      transform::DfGraphManager::GetInstance().DeleteGeSession();
-    }
-#endif
   }
-  nested_called = false;
+
+#ifdef ENABLE_GE
+  if (!id.empty() && info_.size() == 0) {
+    // because Ge only support one Session exist at the same time ,so we delete the old one
+    transform::DfGraphManager::GetInstance().DeleteGraphRunner();
+    transform::DfGraphManager::GetInstance().EraseAnfGraph();
+    transform::DfGraphManager::GetInstance().DeleteGeSession();
+  }
+#endif
 }
 
 void GraphExecutorPy::ClearRes() {
@@ -541,7 +784,8 @@ void GraphExecutorPy::GetWeightInfo(
     return;
   }
   cnode = x->cast<CNodePtr>();
-  if (cnode == nullptr || IsPrimitiveCNode(cnode, prim::kPrimLoad) || cnode->size() != 4) {
+  constexpr size_t expect_input_size = 4;
+  if (cnode == nullptr || IsPrimitiveCNode(cnode, prim::kPrimLoad) || cnode->size() != expect_input_size) {
     return;
   }
   const size_t fakequant_index = 2;
@@ -623,14 +867,19 @@ void GraphExecutorPy::SaveCompiledGraph(const std::string &phase) {
 
   MS_LOG(INFO) << "Save compiled func graph(" << func_graph->ToString() << ") phase(" << phase << ")!";
   info_[phase]->func_graph = func_graph;
+
   if ((func_graph != nullptr) && func_graph->has_flag(parallel::AUTO_PARALLEL) &&
       ((parallel_mode == parallel::AUTO_PARALLEL) || (parallel_mode == parallel::SEMI_AUTO_PARALLEL))) {
     MS_LOG(DEBUG) << "Save model parallel parameter layout graph!";
-    func_graph = info_[phase]->resource->results()[kStepParallelGraph].cast<FuncGraphPtr>();
-    ExecutorInfoPtr executor_info = std::make_shared<ExecutorInfo>();
-    std::string layout_graph = phase + kStepParallelGraph;
-    executor_info->func_graph = func_graph;
-    info_[layout_graph] = executor_info;
+    auto results = info_[phase]->resource->results();
+    // When using frontend compile cache, model parallel parameter layout graph is not saved.
+    if (results.find(kStepParallelGraph) != results.end()) {
+      func_graph = results[kStepParallelGraph].cast<FuncGraphPtr>();
+      ExecutorInfoPtr executor_info = std::make_shared<ExecutorInfo>();
+      std::string layout_graph = phase + kStepParallelGraph;
+      executor_info->func_graph = func_graph;
+      info_[layout_graph] = executor_info;
+    }
   } else {
     MS_LOG(DEBUG) << "Save model parallel parameter layout graph null!";
   }
@@ -680,6 +929,19 @@ std::vector<ActionItem> GetPipeline(const ResourcePtr &resource, const std::stri
   if (ps::PSContext::instance()->is_scheduler()) {
     return PSchedulerPipeline();
   }
+  if (distributed::cluster::ClusterContext::instance()->initialized()) {
+    auto node = distributed::cluster::ClusterContext::instance()->node();
+    MS_EXCEPTION_IF_NULL(node);
+    MS_LOG(INFO) << "Cluster is initialized. This node role is " << node->role();
+    switch (node->role()) {
+      case ps::core::NodeRole::SERVER:
+        return PServerPipeline();
+      case ps::core::NodeRole::SCHEDULER:
+        return PSchedulerPipeline();
+      default:
+        break;
+    }
+  }
 #endif
 
   if (use_vm && backend != "ge" && !is_air) {
@@ -691,10 +953,8 @@ std::vector<ActionItem> GetPipeline(const ResourcePtr &resource, const std::stri
     backend_ptr->SetDebugger();
 #endif
     resource->results()[kBackend] = backend_ptr;
-    // If the 'use_frontend_compile_cache' context has been set true and the cache is read successfully,
-    // do the backend actions only.
-    if (IsPhaseTrain(phase) && MsContext::GetInstance()->get_param<bool>(MS_CTX_LOAD_COMPILE_CACHE) &&
-        resource->func_graph() != nullptr) {
+    // If enable compilation cache and the cache is read successfully, do the backend actions only.
+    if (resource->enable_compile_cache() && resource->func_graph() != nullptr) {
       return BackendPipeline();
     }
     if (IsPhaseLoadFromMindIR(phase)) {
@@ -706,7 +966,7 @@ std::vector<ActionItem> GetPipeline(const ResourcePtr &resource, const std::stri
 }
 
 bool GraphExecutorPy::CompileInner(const py::object &source_obj, const py::tuple &args, const py::object &phase_obj,
-                                   bool use_vm, const std::string &queue_name) {
+                                   bool use_vm) {
   // Check if the phase is valid.
   if ((!py::isinstance<py::str>(phase_obj))) {
     MS_LOG(ERROR) << "The `phase` must be string.";
@@ -721,9 +981,8 @@ bool GraphExecutorPy::CompileInner(const py::object &source_obj, const py::tuple
   CheckArgsValid(args);
 
   auto phase = py::cast<std::string>(phase_obj);
-  MS_LOG(INFO) << "Start compiling, phase: " << phase << ".";
-  MS_LOG(DEBUG) << "Compiling source: {" << py::str(source_obj)
-                << "}\n\n Args: " << py::str(const_cast<py::tuple &>(args));
+  MS_LOG(INFO) << "Start compiling, phase: " << phase;
+  MS_LOG(DEBUG) << "source: {" << py::str(source_obj) << "}\nargs: " << py::str(const_cast<py::tuple &>(args));
 
 #ifdef ENABLE_GE
   GetGeBackendPolicy();
@@ -731,11 +990,15 @@ bool GraphExecutorPy::CompileInner(const py::object &source_obj, const py::tuple
   ExecutorInfoPtr executor_info = std::make_shared<ExecutorInfo>();
   ResourcePtr resource = std::make_shared<Resource>(source_obj);
 
-  if (MsContext::GetInstance()->get_param<bool>(MS_CTX_LOAD_COMPILE_CACHE)) {
+  // If enable compilation cache, it will get a non-empty dependent files list from python.
+  if (!compile_cache_dep_files_.empty()) {
 #ifdef ENABLE_PROFILE
     double t1 = GetTime();
 #endif
-    GetCachedFuncGraph(resource, queue_name);
+    resource->set_enable_compile_cache(true);
+    resource->set_compile_cache_id(GetCompileCacheGraphId());
+    resource->set_compile_cache_dep_files_hash(GetCompileDepFilesHash(compile_cache_dep_files_));
+    resource->set_func_graph(GetCachedFuncGraph(resource, weights_, queue_name_));
 #ifdef ENABLE_PROFILE
     double t2 = GetTime();
     MsProfile::StatTime("LoadCachedFuncGraph", t2 - t1);
@@ -755,7 +1018,7 @@ bool GraphExecutorPy::CompileInner(const py::object &source_obj, const py::tuple
     if (!succ) {
       MS_LOG(EXCEPTION) << "Fail to convert the " << i << "th argument, args[" << i << "]: " << py::str(args[i]);
     }
-    args_spec.push_back(ArgsToAbstract(converted));
+    args_spec.push_back(ArgsToAbstract(converted, enable_tuple_broaden_));
   }
   resource->set_args_spec(args_spec);
   executor_info->arg_list_size = size;
@@ -802,17 +1065,17 @@ void GraphExecutorPy::ReleaseResource(const py::object &phase) {
   ReclaimOptimizer();
 }
 
-bool GraphExecutorPy::Compile(const py::object &source_obj, const py::tuple &args, const py::object &phase, bool use_vm,
-                              const std::string &queue_name) {
+bool GraphExecutorPy::Compile(const py::object &source_obj, const py::tuple &args, const py::object &phase,
+                              bool use_vm) {
   bool ret_value = false;
   try {
-    ret_value = CompileInner(source_obj, args, phase, use_vm, queue_name);
+    ret_value = CompileInner(source_obj, args, phase, use_vm);
   } catch (const py::error_already_set &ex) {
     if (!StaticAnalysisException::Instance().HasException()) {
       // print function call stack info before release
-      std::string exception_info = GetCompileExceptionInfo();
-      if (!exception_info.empty()) {
-        MS_LOG(ERROR) << exception_info;
+      std::string compile_exception_info = GetCompileExceptionInfo();
+      if (!compile_exception_info.empty()) {
+        MS_LOG(ERROR) << compile_exception_info;
       }
     }
     ReleaseResource(phase);
@@ -850,7 +1113,7 @@ bool GraphExecutorPy::Compile(const py::object &source_obj, const py::tuple &arg
 }
 
 void CacheValidateFuncGraph(const std::string &phase, const ResourcePtr &resource) {
-  if (IsPhaseTrain(phase) && MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_COMPILE_CACHE)) {
+  if (resource->enable_compile_cache()) {
 #ifdef ENABLE_PROFILE
     double t1 = GetTime();
 #endif
@@ -861,6 +1124,83 @@ void CacheValidateFuncGraph(const std::string &phase, const ResourcePtr &resourc
 #endif
   }
 }
+
+void CheckInterpretNodeLineInfos() {
+  auto &line_infos = InterpretNodeRecorder::GetInstance().LineInfos();
+  if (line_infos.empty()) {
+    return;
+  }
+  std::stringstream ss;
+  ss << "Found unsupported syntax in Graph mode, those codes would be fallen back to Python interpreter:\n";
+  size_t num = 1;
+  for (auto &line : line_infos) {
+    ss << "\t#" << num << ": " << line << "\n";
+    ++num;
+  }
+  ss << "\n";
+  // Print the codes run in JIT Fallback.
+  MS_LOG(WARNING) << ss.str();
+  InterpretNodeRecorder::GetInstance().Clear();
+}
+
+#ifdef ENABLE_DUMP_IR
+void RDRRecordGraph(const size_t action_index, const size_t action_size, const std::string &filename,
+                    const FuncGraphPtr graph) {
+  if (mindspore::RecorderManager::Instance().RdrEnable()) {
+    MS_LOG(INFO) << "Recording FuncGraph in pipeline using RDR.";
+    if (graph != nullptr) {
+      auto graph_clone = BasicClone(graph);
+      if (graph_clone != nullptr) {
+        DumpGraphParams dump_params = {false, static_cast<int>(kTopStack)};
+        if (action_index == action_size) {
+          dump_params.dump_mode = static_cast<int>(kWholeStack);
+        }
+        (void)mindspore::RDR::RecordAnfGraph(SUBMODULE_ID, filename, graph_clone, dump_params, ".ir");
+      } else {
+        MS_LOG(WARNING) << "Clone FuncGraph failed in pipeline, no FuncGraph recording in RDR.";
+      }
+    } else {
+      MS_LOG(WARNING) << "Pipeline Resource has no FuncGraph, no FuncGraph recording in RDR";
+    }
+    MS_LOG(INFO) << "Recording FuncGraph in pipeline end.";
+  }
+}
+#endif
+
+#ifdef ENABLE_DUMP_IR
+void RecordIR(const size_t action_index, const size_t action_size, const std::string &action_name,
+              const FuncGraphPtr graph, const std::string &phase, FuncGraphPtr *user_graph) {
+  if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG) && graph != nullptr) {
+    *user_graph = graph;
+    std::string base_name = GetBaseNameForIR(SizeToLong(action_index), action_name);
+
+    // Generate IR file in human readable format
+    if (action_index == action_size - 1) {
+      DumpIR(base_name + ".ir", graph, false, kWholeStack);
+    } else {
+      DumpIR(base_name + ".ir", graph, false, kTopStack);
+    }
+    // Generate IR file in a heavily commented format, which can also be reloaded
+    ExportIR(base_name + ".dat", graph);
+    // Generate IR file in dot format, which can be converted to svg file using graphviz dot command
+    draw::Draw(base_name + ".dot", graph);
+  }
+}
+#endif
+
+#ifndef ENABLE_SECURITY
+void SaveGraphForReadability(const std::string &action_name, const FuncGraphPtr graph, const std::string &phase,
+                             const ResourcePtr resource) {
+  if (graph != nullptr && action_name.find("optimize") != string::npos) {
+#ifdef ENABLE_DUMP_IR
+    if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
+      DumpIRProto(graph, action_name);
+    }
+#endif
+    resource->set_optimize_graph(graph);
+  }
+}
+#endif
 
 void Pipeline::Run(const std::string &phase) {
   MS_LOG(INFO) << "Pipeline run";
@@ -876,14 +1216,21 @@ void Pipeline::Run(const std::string &phase) {
 #endif
       bool result = true;
       WITH(MsProfile::GetProfile()->Step(action.first))[&result, &action, this]() {
-        MS_LOG(DEBUG) << "Action " << action.first << " start ...";
+        MS_LOG(INFO) << "Status record: start " << action.first << " action.";
         result = action.second(resource_);
-        MS_LOG(DEBUG) << "Action " << action.first << " end.";
+        MS_LOG(INFO) << "Status record: end " << action.first << " action.";
       };
       if (action.first == "task_emit") {
         SetLoopCount(resource_);
       } else if (action.first == "validate") {
+        CheckInterpretNodeLineInfos();
         CacheValidateFuncGraph(phase, resource_);
+#ifndef ENABLE_SECURITY
+#ifdef ENABLE_D
+        FuncGraphPtr graph = resource_->func_graph();
+        profiler::ascend::DumpProfileParallelStrategy(graph);
+#endif
+#endif
       }
       if (!result) {
         MS_LOG(EXCEPTION) << "Pipeline running to end, failed in step:" << action.first;
@@ -891,41 +1238,12 @@ void Pipeline::Run(const std::string &phase) {
 
       FuncGraphPtr graph = resource_->func_graph();
 #ifdef ENABLE_DUMP_IR
-      if (mindspore::RecorderManager::Instance().RdrEnable()) {
-        MS_LOG(INFO) << "Recording FuncGraph in pipeline using RDR.";
-        std::string name = GetBaseNameForIR(SizeToLong(i), action.first);
-        if (graph != nullptr) {
-          auto graph_clone = BasicClone(graph);
-          if (graph_clone != nullptr) {
-            DumpGraphParams dump_params = {false, static_cast<int>(kTopStack)};
-            if (i == actions_.size()) {
-              dump_params.dump_mode = static_cast<int>(kWholeStack);
-            }
-            (void)mindspore::RDR::RecordAnfGraph(SUBMODULE_ID, name, graph_clone, dump_params, ".ir");
-          } else {
-            MS_LOG(WARNING) << "Clone FuncGraph failed in pipeline, no FuncGraph recording in RDR.";
-          }
-        } else {
-          MS_LOG(WARNING) << "Pipeline Resource has no FuncGraph, no FuncGraph recording in RDR";
-        }
-        MS_LOG(INFO) << "Recording FuncGraph in pipeline end.";
-      }
-
-      if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG) && graph != nullptr) {
-        user_graph = graph;
-        std::string base_name = GetBaseNameForIR(SizeToLong(i), action.first);
-
-        // generate IR file in dot format, which can be converted to svg file using graphviz dot command
-        draw::Draw(base_name + ".dot", graph);
-        // generate IR file in human readable format
-        if (i == actions_.size() - 1) {
-          DumpIR(base_name + ".ir", graph, false, kWholeStack);
-        } else {
-          DumpIR(base_name + ".ir", graph, false, kTopStack);
-        }
-        // generate IR file in a heavily commented format, which can also be reloaded
-        ExportIR(base_name + ".dat", graph);
-      }
+      std::string filename = GetBaseNameForIR(SizeToLong(i), action.first);
+      RDRRecordGraph(i, actions_.size(), filename, graph);
+      RecordIR(i, actions_.size(), action.first, graph, phase, &user_graph);
+#endif
+#ifndef ENABLE_SECURITY
+      SaveGraphForReadability(action.first, graph, phase, resource_);
 #endif
       i++;
 #ifdef ENABLE_TIMELINE
@@ -1003,7 +1321,11 @@ void GraphExecutorPy::TerminateDebugger() {
   if (debugger_terminate_) {
     MS_LOG(INFO) << "Terminate debugger and clear resources!";
     ClearResAtexit();
-    exit(1);
+    if (exit_success_) {
+      exit(0);
+    } else {
+      exit(1);
+    }
   }
 }
 #endif
@@ -1076,9 +1398,11 @@ py::object GraphExecutorPy::Run(const py::tuple &args, const py::object &phase_o
   MS_LOG(INFO) << "VM loop size " << vm_loop << ", loopsink size " << vm_loop;
   py::object ret;
   MS_LOG(DEBUG) << "Eval run" << backend;
+  auto output = execute_info->func_graph->output()->abstract();
+  MS_EXCEPTION_IF_NULL(output);
   for (int64_t i = 0; i < vm_loop; i++) {
     BaseRef value = (*run)(execute_info->arg_list);
-    ret = BaseRefToPyData(value);
+    ret = BaseRefToPyData(value, output);
   }
   MS_LOG(DEBUG) << "Run end";
   return ret;
@@ -1172,6 +1496,7 @@ bool InitExecDatasetVm(const std::string &queue_name, int64_t size, int64_t batc
   }
 #endif
   MS_LOG(INFO) << "Start InitDataSet Entry";
+  mindspore::parse::python_adapter::set_python_env_flag(true);
   ShapeVector int_input_indexes;
   (void)std::transform(input_indexes.begin(), input_indexes.end(), std::back_inserter(int_input_indexes),
                        [](int64_t item) { return static_cast<int64_t>(item); });
@@ -1234,7 +1559,7 @@ bool InitExecDatasetVm(const std::string &queue_name, int64_t size, int64_t batc
   auto runner = convert_fn(segment, "");
   ConfigManager::GetInstance().set_iter_num(size);
   // PS cache does not support loop sink.
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   if (ps::PSContext::instance()->is_worker() && ps::PsDataPrefetch::GetInstance().cache_enable()) {
     ps::PsDataPrefetch::GetInstance().CreateDataChannel(queue_name, LongToSize(size));
     ConfigManager::GetInstance().set_iter_num(1);
@@ -1256,6 +1581,15 @@ bool InitExecDatasetVm(const std::string &queue_name, int64_t size, int64_t batc
   return true;
 }  // namespace pipeline
 
+std::string GetJitLevel() {
+  auto jit_config = GraphExecutorPy::GetInstance()->jit_config();
+  auto iter = jit_config.find("jit_level");
+  if (iter != jit_config.end()) {
+    return iter->second;
+  }
+  return "";
+}
+
 void ResetOpId() { mindspore::id_generator::reset_id(); }
 
 void InitHccl() {
@@ -1269,8 +1603,7 @@ void InitHccl() {
 #if ENABLE_D
   bool task_sink = true;
   auto single_op = common::GetEnv(kGraphOpRun);
-  auto enable_mem_scheduler = common::GetEnv(kEnableMemScheduler);
-  if (single_op == "1" || enable_mem_scheduler == "1") {
+  if (single_op == "1") {
     task_sink = false;
   }
   auto mode = ms_context->get_param<int>(MS_CTX_EXECUTION_MODE);
@@ -1301,13 +1634,6 @@ void InitHccl() {
     (void)context::OpenTsd(ms_context);
   }
 #endif
-#if (defined ENABLE_D)
-#ifndef ENABLE_SECURITY
-  if (!ProfilingManager::GetInstance().IsProfiling()) {
-    ProfilingManager::GetInstance().SetHcclEnabledBefProfilingEnabled();
-  }
-#endif
-#endif
 }
 
 void FinalizeHccl() {
@@ -1315,6 +1641,7 @@ void FinalizeHccl() {
   (void)FinalizeBackend();
 #else
   session::ExecutorManager::Instance().Clear();
+  device::DeviceContextManager::GetInstance().ClearDeviceContexts();
   device::KernelRuntimeManager::Instance().ClearRuntimeResource();
 #endif
 }
@@ -1347,8 +1674,8 @@ void ExportGraph(const std::string &file_name, const std::string &, const std::s
 
 FuncGraphPtr LoadMindIR(const std::string &file_name, char *dec_key, const size_t key_len,
                         const std::string &dec_mode) {
-  auto func_graph =
-    mindspore::LoadMindIR(file_name, false, reinterpret_cast<unsigned char *>(dec_key), key_len, dec_mode);
+  MindIRLoader mindir_loader(false, reinterpret_cast<unsigned char *>(dec_key), key_len, dec_mode, false);
+  auto func_graph = mindir_loader.LoadMindIR(file_name);
 #ifdef ENABLE_DUMP_IR
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
@@ -1368,37 +1695,10 @@ void ReleaseGeTsd() {
   }
 }
 
-#ifndef ENABLE_SECURITY
-void StartUpProfiling() {
-#ifdef ENABLE_D
-  if (!ProfilingManager::GetInstance().IsProfiling()) {
-    return;
-  }
-
-  auto ms_context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(ms_context);
-
-  MS_LOG(INFO) << "Startup profiling";
-  // Start up profiling before OpenTsd
-  uint32_t device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
-  std::string device_name = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-  if (ms_context->backend_policy() == "ms" &&
-      ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice) {
-    auto runtime_instance = device::KernelRuntimeManager::Instance().GetKernelRuntime(device_name, device_id);
-    MS_EXCEPTION_IF_NULL(runtime_instance);
-    runtime_instance->PreInit();
-  }
-#endif
-}
-#endif
-
 void InitPipeline() {
   // set python env flag
+  RecordInitStatus();
   mindspore::parse::python_adapter::set_python_env_flag(true);
-#ifndef ENABLE_SECURITY
-  // Startup profiling before open tsd
-  StartUpProfiling();
-#endif
   // open tsd before ge initialize
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
@@ -1416,7 +1716,8 @@ void FinalizeBackend() {
 }
 
 void ClearResAtexit() {
-  MS_LOG(DEBUG) << "Pipeline clear all resource";
+  MS_LOG(INFO) << "Pipeline clear all resource";
+  RecordExitStatus();
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
   if (ps::PSContext::instance()->is_ps_mode() && ps::PSContext::instance()->is_worker()) {
     if (ps::PsDataPrefetch::GetInstance().cache_enable()) {
@@ -1430,14 +1731,25 @@ void ClearResAtexit() {
       ps::Worker::GetInstance().Finalize();
     }
   }
+  if (distributed::cluster::ClusterContext::instance()->initialized()) {
+    (void)distributed::cluster::ClusterContext::instance()->Finalize();
+  }
 #endif
 #ifdef ENABLE_DUMP_IR
+  mindspore::RDR::Snapshot();
   mindspore::RDR::ResetRecorder();
 #endif
   session::ExecutorManager::Instance().Clear();
-  device::KernelRuntimeManager::Instance().ClearRuntimeResource();
   runtime::GraphScheduler::GetInstance().Clear();
+
+  MS_LOG(INFO) << "Start clear device context...";
   device::DeviceContextManager::GetInstance().ClearDeviceContexts();
+  MS_LOG(INFO) << "End clear device context.";
+
+  MS_LOG(INFO) << "Start clear kernel runtime...";
+  device::KernelRuntimeManager::Instance().ClearRuntimeResource();
+  MS_LOG(INFO) << "End clear kernel runtime.";
+
   ad::g_k_prims.clear();
   ad::ClearKPynativeCellStaticRes();
   ad::PrimBpropOptimizer::GetPrimBpropOptimizerInst().Clear();
@@ -1447,29 +1759,64 @@ void ClearResAtexit() {
   pipeline::GetAttrMap().clear();
   pipeline::GraphExecutorPy::ClearRes();
   pipeline::ReclaimOptimizer();
+
+  MS_LOG(INFO) << "Start clear PynativeExecutor...";
   pynative::PynativeExecutor::GetInstance()->ClearRes();
+  MS_LOG(INFO) << "End clear PynativeExecutor.";
+
+  MS_LOG(INFO) << "Start clear PyPassManager...";
   opt::python_pass::PyPassManager::GetInstance()->ClearRes();
+  MS_LOG(INFO) << "End clear PyPassManager.";
+
 #ifdef ENABLE_GE
   transform::DfGraphManager::GetInstance().ClearGraph();
   transform::OpAdapterMap::get().clear();
 #else
+  MS_LOG(INFO) << "Start clear ConfigManager...";
   ConfigManager::GetInstance().ResetIterNum();
+  MS_LOG(INFO) << "End clear ConfigManager.";
 #endif
   ReleaseGeTsd();
+  MS_LOG(INFO) << "Start clear python_adapter...";
   parse::python_adapter::ResetPythonScope();
+  MS_LOG(INFO) << "End clear python_adapter.";
+
+  MS_LOG(INFO) << "Start clear AnalysisResultCacheMgr...";
   abstract::AnalysisResultCacheMgr::GetInstance().Clear();
+  MS_LOG(INFO) << "End clear AnalysisResultCacheMgr.";
+
+  MS_LOG(INFO) << "Start clear AnalysisContext...";
   abstract::AnalysisContext::ClearContext();
+  MS_LOG(INFO) << "End clear AnalysisContext...";
+
+  MS_LOG(INFO) << "Start clear AnalysisSchedule...";
   abstract::AnalysisSchedule::GetInstance().Stop();
+  MS_LOG(INFO) << "End clear AnalysisSchedule...";
 #ifdef ENABLE_DEBUGGER
   Debugger::GetInstance()->Reset();
 #endif
   g_args_cache.clear();
   // clean static variable to prevent from crash. As static variable is released after
   // Python threads is released.
+  MS_LOG(INFO) << "Start clear ClearObjectCache...";
   parse::data_converter::ClearObjectCache();
+  MS_LOG(INFO) << "End clear ClearObjectCache...";
+
+  MS_LOG(INFO) << "Start clear Parser...";
   parse::Parser::CleanParserResource();
+  MS_LOG(INFO) << "End clear Parser...";
+
+  MS_LOG(INFO) << "Start CleanDataClassToClassMap...";
   parse::CleanDataClassToClassMap();
+  MS_LOG(INFO) << "End CleanDataClassToClassMap...";
+
+  MS_LOG(INFO) << "Start ClearTraceStack...";
   trace::ClearTraceStack();
+  MS_LOG(INFO) << "End ClearTraceStack...";
+
+  MS_LOG(INFO) << "Start clear InterpretNodeRecorder...";
+  InterpretNodeRecorder::GetInstance().Clear();
+  MS_LOG(INFO) << "End clear InterpretNodeRecorder...";
 }
 
 py::bytes PyEncrypt(char *plain_data, size_t plain_len, char *key, size_t key_len, const std::string &enc_mode) {

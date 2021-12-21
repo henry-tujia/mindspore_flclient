@@ -29,29 +29,30 @@
 
 namespace mindspore {
 namespace parallel {
-
 void GenerateStrategy(const std::shared_ptr<Graph> &graph, const std::vector<std::shared_ptr<OperatorInfo>> &ops,
                       const std::shared_ptr<std::vector<std::vector<size_t>>> &eli_list,
                       const std::vector<std::vector<std::string>> &input_tensor_names,
-                      const std::shared_ptr<std::vector<size_t>> &index_list, bool is_training) {
+                      const std::shared_ptr<std::vector<size_t>> &index_list, bool is_training,
+                      const std::vector<std::vector<size_t>> &shared_tensors_ops) {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(eli_list);
   MS_EXCEPTION_IF_NULL(index_list);
   GeneratePartitionedOperatorStrategy(graph, ops, index_list);
 
-  std::shared_ptr<std::vector<size_t>> no_stra_op_list(new std::vector<size_t>);
+  std::shared_ptr<std::vector<size_t>> no_stra_op_list = std::make_shared<std::vector<size_t>>();
   for (size_t i = 0; i < eli_list->size(); i++) {
     no_stra_op_list->push_back(eli_list->at(i)[0]);
   }
   GenerateEliminatedOperatorStrategyForward(graph, ops, input_tensor_names, index_list, no_stra_op_list);
   GenerateEliminatedOperatorStrategyBackward(ops, input_tensor_names, no_stra_op_list);
   GenerateRemainingOperatorStrategy(graph, ops, input_tensor_names, index_list, no_stra_op_list);
+  ModifySharingTensorOps(ops, shared_tensors_ops);
 
   for (auto &op : ops) {
     // Set user-defined strategy
     auto attrs = op->attrs();
     if (StrategyFound(attrs)) {
-      StrategyPtr user_defined_stra = parallel::ExtractStrategy(attrs[STRATEGY]);
+      StrategyPtr user_defined_stra = parallel::ExtractStrategy(attrs[IN_STRATEGY]);
       op->SetSelectedStrategyAndCost(user_defined_stra, op->selected_cost());
     }
     // Set back to raw strategy for special node in predict/eval
@@ -63,6 +64,22 @@ void GenerateStrategy(const std::shared_ptr<Graph> &graph, const std::vector<std
   }
 }
 
+Dimensions PrepareMatMulStrategy(const std::shared_ptr<Graph> &graph, const size_t iter_graph, bool transpose_a,
+                                 bool transpose_b, size_t iter_op_inputs) {
+  Dimensions s;
+  if (transpose_a && (iter_op_inputs == 0)) {
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
+  } else if (transpose_b && (iter_op_inputs == 1)) {
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
+  } else {
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
+    s.push_back(static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
+  }
+  return s;
+}
+
 Strategys PrepareMatMul(const std::shared_ptr<Graph> &graph, const std::vector<std::shared_ptr<OperatorInfo>> &ops,
                         const size_t iter_graph, const size_t iter_ops) {
   Strategys strategies;
@@ -70,76 +87,8 @@ Strategys PrepareMatMul(const std::shared_ptr<Graph> &graph, const std::vector<s
   bool transpose_a = attrs[TRANSPOSE_A]->cast<BoolImmPtr>()->value();
   bool transpose_b = attrs[TRANSPOSE_B]->cast<BoolImmPtr>()->value();
 
-  // HCCL does not support multi-dimension partition, and the hardware does not support excessive
-  // number of EVENT, so we temporarily disable matmul's multi-dimension partition function.
-  const auto max_cut = 1.0 / g_device_manager->DeviceNum();
-  // The rule of cut is 0.5, 0.125. To compare the result we have to use ">" so we multiply max_cut to 1.1
-  if (graph->nodes[iter_graph].apply.arguments[0].tensor_str.str_h > max_cut * 1.1 &&
-      graph->nodes[iter_graph].apply.arguments[1].tensor_str.str_w > max_cut * 1.1) {
-    graph->nodes[iter_graph].apply.arguments[0].tensor_str.str_h = 1.0;
-    graph->nodes[iter_graph].apply.arguments[0].tensor_str.str_w = 1.0;
-    graph->nodes[iter_graph].apply.arguments[1].tensor_str.str_h = 1.0;
-    graph->nodes[iter_graph].apply.arguments[1].tensor_str.str_w = 1.0;
-    graph->nodes[iter_graph].tensor_parm.tensor_str.str_h = 1.0;
-    graph->nodes[iter_graph].tensor_parm.tensor_str.str_w = 1.0;
-
-    auto shape_1 = ops[iter_ops]->inputs_tensor_info()[0].shape()[0];
-    if (transpose_a) {
-      shape_1 = ops[iter_ops]->inputs_tensor_info()[0].shape()[1];
-    }
-    auto shape_4 = ops[iter_ops]->inputs_tensor_info()[1].shape()[1];
-    if (transpose_b) {
-      shape_4 = ops[iter_ops]->inputs_tensor_info()[1].shape()[0];
-    }
-
-    bool already_cut = false;
-    if (shape_1 >= shape_4) {
-      if (shape_1 % g_device_manager->DeviceNum() == 0) {
-        graph->nodes[iter_graph].apply.arguments[0].tensor_str.str_h = max_cut;
-        graph->nodes[iter_graph].tensor_parm.tensor_str.str_h = max_cut;
-        already_cut = true;
-      }
-      if (!already_cut && shape_4 % g_device_manager->DeviceNum() == 0) {
-        graph->nodes[iter_graph].apply.arguments[1].tensor_str.str_w = max_cut;
-        graph->nodes[iter_graph].tensor_parm.tensor_str.str_w = max_cut;
-        already_cut = true;
-      }
-    } else {
-      if (shape_4 % g_device_manager->DeviceNum() == 0) {
-        graph->nodes[iter_graph].apply.arguments[1].tensor_str.str_w = max_cut;
-        graph->nodes[iter_graph].tensor_parm.tensor_str.str_w = max_cut;
-        already_cut = true;
-      }
-      if (!already_cut && shape_1 % g_device_manager->DeviceNum() == 0) {
-        graph->nodes[iter_graph].apply.arguments[0].tensor_str.str_h = max_cut;
-        graph->nodes[iter_graph].tensor_parm.tensor_str.str_h = max_cut;
-        already_cut = true;
-      }
-    }
-
-    if (!already_cut) {
-      MS_LOG(EXCEPTION) << "Failure: MatMul's shape is invalid.";
-    }
-  }
-
   for (size_t iter_op_inputs = 0; iter_op_inputs < ops[iter_ops]->inputs_tensor_info().size(); iter_op_inputs++) {
-    Dimensions s;
-    if (transpose_a && (iter_op_inputs == 0)) {
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
-    } else if (transpose_b && (iter_op_inputs == 1)) {
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
-    } else {
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_h));
-      s.push_back(
-        static_cast<int64_t>(1.0 / graph->nodes[iter_graph].apply.arguments[iter_op_inputs].tensor_str.str_w));
-    }
+    Dimensions s = PrepareMatMulStrategy(graph, iter_graph, transpose_a, transpose_b, iter_op_inputs);
     strategies.push_back(s);
   }
   return strategies;
@@ -179,60 +128,94 @@ Strategys PrepareStridedSlice(const std::vector<std::shared_ptr<OperatorInfo>> &
   return stra;
 }
 
-Strategys PrepareOneHot(const std::shared_ptr<Graph> &graph, const std::vector<std::shared_ptr<OperatorInfo>> &ops,
-                        const size_t iter_graph, const size_t iter_ops) {
-  Strategys strategies = MakeRecSearchStrategy(graph, ops, iter_graph, iter_ops);
+Strategys PrepareSoftMax(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops,
+                         Dimensions basic_stra) {
+  Strategys strategies;
+  strategies.push_back(basic_stra);
+  std::vector<int64_t> axis_list;
+  string axis_name = AXIS;
 
-  int64_t axis = -1;
-  auto iter = ops[iter_ops]->attrs().find(AXIS);
+  auto iter = ops[iter_ops]->attrs().find(axis_name);
   if (iter != ops[iter_ops]->attrs().end()) {
     MS_EXCEPTION_IF_NULL(iter->second);
     if (iter->second->isa<Int64Imm>()) {
-      axis = iter->second->cast<Int64ImmPtr>()->value();
+      axis_list.push_back(iter->second->cast<Int64ImmPtr>()->value());
+    } else if (iter->second->isa<ValueTuple>()) {
+      ValueTuplePtr value_tuple = iter->second->cast<ValueTuplePtr>();
+      if (value_tuple == nullptr) {
+        MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": The value_tuple is nullptr.";
+      }
+
+      std::vector<ValuePtr> value_vector = value_tuple->value();
+      (void)std::transform(value_vector.begin(), value_vector.end(), std::back_inserter(axis_list),
+                           [](const ValuePtr &value) { return static_cast<int64_t>(GetValue<int64_t>(value)); });
     } else {
-      MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": The value of axis is not int64_t.";
+      MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": The value of axis is not int64_t or tuple int64_t.";
     }
-  }
-  if (axis == -1) {
-    strategies[0][0] = strategies[0][1];
-    strategies[0][1] = 1;
-    graph->nodes[iter_graph].tensor_parm.tensor_str.str_h = graph->nodes[iter_graph].tensor_parm.tensor_str.str_w;
-    graph->nodes[iter_graph].tensor_parm.tensor_str.str_w = 1.0;
+  } else {
+    axis_list.push_back(-1);
   }
 
+  for (auto &axis : axis_list) {
+    if (axis < 0) {
+      int64_t input_dim = SizeToLong(ops[iter_ops]->inputs_tensor_info()[0].shape().size());
+      axis = input_dim + axis;
+    }
+    if (axis >= SizeToLong(strategies[0].size()) || axis < 0) {
+      MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": axis value is out of range.";
+    }
+    if (strategies[0][axis] != 1) {
+      strategies[0][axis] = 1;
+      MS_LOG(INFO) << ops[iter_ops]->name() << ": adjust strategy to 1 on axis " << axis;
+    }
+  }
+
+  return strategies;
+}
+
+Strategys PrepareOneHot(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops, Dimensions s) {
+  Strategys strategies;
+
+  // The Dimension size of the first input tensor of OneHot should be 2 even its Shape size is 1. Using the division of
+  // the number of devices and the partition parts of the first dimension.
+
+  size_t s_second = 1;
+
+  if (s[0] != 0) {
+    s_second = g_device_manager->DeviceNum() / s[0];
+  }
+
+  if (s.size() == 1) {
+    s.push_back(s_second);
+  }
+
+  // Partition number should not exceed the number of devices
+  for (size_t i = 0; i < ops[iter_ops]->outputs_tensor_info()[0].shape().size(); i++) {
+    if (s[i] > ops[iter_ops]->outputs_tensor_info()[0].shape()[i]) {
+      s[i] = 1;
+    }
+  }
+
+  strategies.push_back(s);
+
+  // Push two empty Dimensions for the other two input tensors.
   Dimensions s_empty = {};
   strategies.push_back(s_empty);
   strategies.push_back(s_empty);
+
   return strategies;
 }
 
 Strategys PrepareGatherV2(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops, Dimensions s) {
   Strategys strategies;
 
-  auto axis_input = GetValue<int64_t>(ops[iter_ops]->input_value().at(2));
-  if (axis_input < 0) {
-    axis_input += SizeToLong(ops[iter_ops]->inputs_tensor_info()[0].shape().size());
-  }
-  int64_t axis = axis_input;
-  if (axis >= SizeToLong(s.size())) {
-    MS_LOG(EXCEPTION) << "Failure: GatherV2' axis out of range.";
-  }
-  s[axis] = 1;
-  strategies.push_back(s);
-
-  return strategies;
-}
-
-Strategys PrepareGatherV2P(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops, Dimensions s) {
-  Strategys strategies;
-
   auto output_shape = ops[iter_ops]->outputs_tensor_info()[0].shape();
   Dimensions index(output_shape.size() - 1, 0);
   for (size_t i = 0; i < index.size(); i++) {
-    index[i] = i;
+    index[i] = SizeToLong(i);
   }
   std::sort(index.begin(), index.end(), [&output_shape](const int64_t &a, const int64_t &b) {
-    return (output_shape[a + 1] > output_shape[b + 1]);
+    return (output_shape[LongToSize(a + 1)] > output_shape[LongToSize(b + 1)]);
   });
   std::transform(std::begin(index), std::end(index), std::begin(index), [](int64_t x) { return x + 1; });
   index.insert(index.begin(), 0);
@@ -241,10 +224,11 @@ Strategys PrepareGatherV2P(const std::vector<std::shared_ptr<OperatorInfo>> &ops
   size_t num_device = g_device_manager->DeviceNum();
   size_t cut = 1;
   for (size_t i = 0; i < index.size(); i++) {
-    while (output_shape[index[i]] % 2 == 0 && output_shape[index[i]] > 0 && cut < num_device) {
-      output_shape[index[i]] /= 2;
+    size_t index_i = LongToSize(index[i]);
+    while (output_shape[index_i] % 2 == 0 && output_shape[index_i] > 0 && cut < num_device) {
+      output_shape[index_i] /= 2;
       cut *= 2;
-      strategie[index[i]] *= 2;
+      strategie[index_i] *= 2;  // We apply 2-parts partitioning for Gather.
     }
     if (cut == num_device) {
       break;
@@ -288,16 +272,15 @@ Strategys PrepareGatherV2P(const std::vector<std::shared_ptr<OperatorInfo>> &ops
   return strategies;
 }
 
-Dimensions PrepareGatherV2POutputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
-                                          const size_t incoming_op_index) {
+Dimensions PrepareGatherV2OutputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                                         const size_t incoming_op_index) {
   auto output_shape = ops[incoming_op_index]->outputs_tensor_info()[0].shape();
   Dimensions index(output_shape.size() - 1, 0);
   for (size_t i = 0; i < index.size(); i++) {
-    index[i] = i;
+    index[i] = SizeToLong(i);
   }
-  std::sort(index.begin(), index.end(), [&output_shape](const int64_t &a, const int64_t &b) {
-    return (output_shape[a + 1] > output_shape[b + 1]);
-  });
+  std::sort(index.begin(), index.end(),
+            [&output_shape](const size_t &a, const size_t &b) { return (output_shape[a + 1] > output_shape[b + 1]); });
   std::transform(std::begin(index), std::end(index), std::begin(index), [](int64_t x) { return x + 1; });
   index.insert(index.begin(), 0);
 
@@ -305,10 +288,11 @@ Dimensions PrepareGatherV2POutputStrategy(const std::vector<std::shared_ptr<Oper
   size_t num_device = g_device_manager->DeviceNum();
   size_t cut = 1;
   for (size_t i = 0; i < index.size(); i++) {
-    while (output_shape[index[i]] % 2 == 0 && output_shape[index[i]] > 0 && cut < num_device) {
-      output_shape[index[i]] /= 2;
+    size_t index_i = LongToSize(index[i]);
+    while (output_shape[index_i] % 2 == 0 && output_shape[index_i] > 0 && cut < num_device) {
+      output_shape[index_i] /= 2;
       cut *= 2;
-      strategie[index[i]] *= 2;
+      strategie[index_i] *= 2;  // We apply 2-parts partitioning for Gather.
     }
     if (cut == num_device) {
       break;
@@ -324,7 +308,7 @@ Strategys PrepareL2Normalize(const std::vector<std::shared_ptr<OperatorInfo>> &o
   auto iter = ops[iter_ops]->attrs().find(AXIS);
   if (iter != ops[iter_ops]->attrs().end()) {
     MS_EXCEPTION_IF_NULL(iter->second);
-    if (iter->second->isa<ValueSequeue>()) {
+    if (iter->second->isa<ValueSequence>()) {
       axis = GetValue<std::vector<int64_t>>(iter->second)[0];
     } else {
       MS_LOG(EXCEPTION) << ops[iter_ops]->name() << " : The value of axis is not int64_t.";
@@ -388,8 +372,8 @@ Strategys PrepareAxisRelatedStrategy(const std::shared_ptr<Graph> &graph,
     if (axis >= SizeToLong(strategies[0].size()) || axis < 0) {
       MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": axis value is out of range.";
     }
-    if (strategies[0][axis] != 1) {
-      strategies[0][axis] = 1;
+    if (strategies[0][LongToSize(axis)] != 1) {
+      strategies[0][LongToSize(axis)] = 1;
       MS_LOG(INFO) << ops[iter_ops]->name() << ": adjust strategy to 1 on axis " << axis;
     }
   }
@@ -507,7 +491,7 @@ Strategys MakeDataParallelStrategy(const std::shared_ptr<Graph> &graph,
   } else if (ops[iter_ops]->outputs_tensor_info()[0].shape().size() == 3) {
     // Experimental support for 3D data.
     graph->nodes[iter_graph].tensor_parm.tensor_str.str_c = 1.0 / std::min(max_device_num, target_tensor_batch);
-  } else if (ops[iter_ops]->outputs_tensor_info()[0].shape().size() == 4) {
+  } else if (ops[iter_ops]->outputs_tensor_info()[0].shape().size() == 4) {  // Experimental support for 4D data.
     graph->nodes[iter_graph].tensor_parm.tensor_str.str_n = 1.0 / std::min(max_device_num, target_tensor_batch);
   } else {
     MS_LOG(INFO) << ops[iter_ops]->name() << " output tensor shape is unexpected, using default value instead.";
@@ -590,13 +574,11 @@ Strategys PrepareStrategy(const std::shared_ptr<Graph> &graph, const std::vector
   auto type = ops[iter_ops]->type();
   if (type == MATMUL) {
     return PrepareMatMul(graph, ops, iter_graph, iter_ops);
-  } else if (type == ONEHOT) {
-    return PrepareOneHot(graph, ops, iter_graph, iter_ops);
-  } else if ((type == SOFTMAX) || (type == LAYER_NORM)) {
+  } else if (type == LAYER_NORM) {
     return PrepareAxisRelatedStrategy(graph, ops, iter_graph, iter_ops);
-  } else if ((type == SPARSE_SOFTMAX_CROSS_ENTROPY_WITH_LOGITS) || (type == "Dropout") || (type == BATCH_MATMUL)) {
+  } else if ((type == SPARSE_SOFTMAX_CROSS_ENTROPY_WITH_LOGITS) || (type == DROPOUT) || (type == BATCH_MATMUL)) {
     return MakeDataParallelStrategy(graph, ops, iter_graph, iter_ops);
-  } else if (type == "_VirtualDataset") {
+  } else if (type == VIRTUAL_DATA_SET) {
     if (ParallelContext::GetInstance()->full_batch()) {
       return MakeFullBatchStrategy(graph, ops, iter_graph, iter_ops);
     } else {
@@ -618,6 +600,28 @@ void GeneratePartitionedOperatorStrategy(const std::shared_ptr<Graph> &graph,
     }
     StrategyPtr sp = std::make_shared<Strategy>(0, strategies);
     ops[iter_ops]->SetSelectedStrategyAndCost(sp, ops[iter_ops]->selected_cost());
+  }
+}
+
+void ModifySharingTensorOps(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                            const std::vector<std::vector<size_t>> &shared_tensors_ops) {
+  for (auto tensor : shared_tensors_ops) {
+    for (auto op_i : tensor) {
+      Dimensions str_gather_a;
+      if (ops[op_i]->type() == GATHERV2) {  // It should be the operator to copy | main op > elemwise op
+        str_gather_a = ops[op_i]
+                         ->selected_strategy()
+                         ->GetInputDim()[0];  // Instead of 0 we should put the index of input sharing the tensor
+        for (auto op_j : tensor) {
+          if (op_i != op_j && IsStrictElementWise(ops, op_j)) {
+            Strategys stra = GenerateStrategiesFromStrategy(ops, op_j, str_gather_a);
+            StrategyPtr sp = std::make_shared<Strategy>(0, stra);
+            MS_LOG(INFO) << "Changing strategy of " << ops[op_j]->name() << " with " << ops[op_i]->name();
+            ops[op_j]->SetSelectedStrategyAndCost(sp, ops[op_j]->selected_cost());
+          }
+        }
+      }
+    }
   }
 }
 
@@ -668,7 +672,7 @@ Dimensions CopyVirtualDataset(const std::shared_ptr<Graph> &graph,
     if (virtual_dataset_str == 0) {
       s.push_back(1);
     } else {
-      s.push_back(1 / virtual_dataset_str);
+      s.push_back(FloatToLong(1 / virtual_dataset_str));
     }
     for (size_t i = 1; i < input_stra_dim; i++) {
       s.push_back(1);
@@ -694,25 +698,168 @@ Dimensions CopyIncomingOperatorOutputStrategy(const std::shared_ptr<Graph> &grap
       continue;
     }
     if (input_stra_dim == 1) {
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w);
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w));
     } else if (input_stra_dim == 2) {
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w);
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w));
     } else if (input_stra_dim == 3) {
       // Experimental support for 3D data.
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_c);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w);
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_c));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w));
     } else if (input_stra_dim == 4) {
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_n);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_c);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h);
-      s.push_back(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w);
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_n));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_c));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_h));
+      s.push_back(FloatToLong(1 / graph->nodes[iter_graph].tensor_parm.tensor_str.str_w));
     } else {
       MS_LOG(EXCEPTION) << ops[iter_ops]->name() << ": Tensor's shape is unknown.";
     }
     break;
   }
+  return s;
+}
+
+Dimensions PrepareReshapeOutputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                                        const size_t incoming_op_index) {
+  Dimensions s;
+
+  auto output_shape = ops[incoming_op_index]->outputs_tensor_info()[0].shape();
+  auto input_shape = ops[incoming_op_index]->inputs_tensor_info()[0].shape();
+  auto strategy = ops[incoming_op_index]->selected_strategy();
+
+  std::vector<int64_t> mapping;
+  int64_t tmp_prod = 1;
+  int64_t tmp_index = 0;
+
+  // mapping is using to store the correspondence between the input dims and output dims.
+  // mapping stores the output's corresponded input's position.
+  // If the length of the output shape is bigger than that of input,
+  // e.g. input_shape [2,4,2] output_shape [2,2,2,2], the mapping is [0,1,1,2,-1].
+  // If the length of the output shape is smaller than that of input,
+  // e.g. input_shape [2,2,2,2] output_shape [2,4,2], the mapping is [0,2,3,-1].
+  if (output_shape.size() >= input_shape.size()) {
+    for (size_t i = 0; i < input_shape.size(); i++) {
+      if (input_shape[i] < output_shape[tmp_index]) {
+        break;
+      } else {
+        for (size_t j = tmp_index; j < output_shape.size(); j++) {
+          tmp_prod *= output_shape[j];
+          tmp_index++;
+          if (input_shape[i] == tmp_prod) {
+            tmp_prod = 1;
+            mapping.push_back(i);
+            break;
+          } else {
+            mapping.push_back(i);
+          }
+        }
+      }
+    }
+    mapping.push_back(-1);
+  } else {
+    for (size_t i = 0; i < output_shape.size(); i++) {
+      if (output_shape[i] < input_shape[tmp_index]) {
+        break;
+      } else {
+        for (size_t j = tmp_index; j < input_shape.size(); j++) {
+          tmp_prod *= input_shape[j];
+          if (output_shape[i] == tmp_prod) {
+            tmp_prod = 1;
+            mapping.push_back(tmp_index);
+            tmp_index++;
+            break;
+          }
+          tmp_index++;
+        }
+      }
+    }
+    mapping.push_back(-1);
+  }
+  tmp_index = 0;
+  tmp_prod = 1;
+  if (output_shape.size() >= input_shape.size()) {
+    for (size_t i = 0; i < output_shape.size(); i++) {
+      if ((int64_t)mapping[i] == tmp_index) {
+        s.push_back(strategy->GetInputDim()[0][mapping[i]]);
+        tmp_index++;
+      } else {
+        s.push_back(1);
+      }
+    }
+  } else {
+    for (size_t i = 0; i < output_shape.size(); i++) {
+      if (mapping[i] == -1) {
+        mapping.push_back(-1);
+        s.push_back(1);
+      } else {
+        for (size_t j = tmp_index; j < input_shape.size(); j++) {
+          tmp_prod *= strategy->GetInputDim()[0][j];
+          tmp_index++;
+          if (mapping[i] == (int64_t)j) {
+            s.push_back(tmp_prod);
+            tmp_prod = 1;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return s;
+}
+
+Dimensions PrepareTransposeOutputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                                          const size_t incoming_op_index) {
+  Dimensions s;
+
+  auto permutation = GetValue<std::vector<int64_t>>(ops[incoming_op_index]->input_value().at(1));
+  auto strategy = ops[incoming_op_index]->selected_strategy();
+  // The strategies are assigned according to the order in permutation (user defined).
+  for (size_t i = 0; i < permutation.size(); i++) {
+    s.push_back(strategy->GetInputDim()[0][permutation[i]]);
+  }
+  return s;
+}
+
+Dimensions PrepareExpandDimsOutputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                                           const size_t incoming_op_index) {
+  Dimensions s;
+
+  auto axis_input = GetValue<int64_t>(ops[incoming_op_index]->input_value().at(1));
+  auto strategy = ops[incoming_op_index]->selected_strategy();
+  bool already_expand = false;
+
+  // The strategy of the expanded dimesion will be assigned 1, the others take the strategies of corresponding
+  // dimensions.
+  for (size_t i = 0; i < ops[incoming_op_index]->inputs_tensor_info()[0].shape().size() + 1; i++) {
+    if ((int64_t)i == axis_input) {
+      s.push_back(1);
+      already_expand = true;
+    } else if ((int64_t)i != axis_input && !already_expand) {
+      s.push_back(strategy->GetInputDim()[0][i]);
+    } else {
+      s.push_back(strategy->GetInputDim()[0][i - 1]);
+    }
+  }
+
+  return s;
+}
+
+Dimensions PrepareIncompingArithmeticOpeartorInputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
+                                                           const size_t incoming_op_index) {
+  Dimensions s;
+  size_t max = 0;
+  for (size_t i = 1; i < ops[incoming_op_index]->inputs_tensor_info().size(); i++) {
+    if (ops[incoming_op_index]->inputs_tensor_info()[i].shape().size() >
+        ops[incoming_op_index]->inputs_tensor_info()[max].shape().size()) {
+      max = i;
+    }
+  }
+
+  for (size_t j = 0; j < ops[incoming_op_index]->inputs_tensor_info()[max].shape().size(); j++) {
+    s.push_back(ops[incoming_op_index]->selected_strategy()->GetInputDim()[max][j]);
+  }
+
   return s;
 }
 
@@ -729,9 +876,7 @@ Dimensions PrepareIncomingOperatorInputStrategy(const std::vector<std::shared_pt
     }
     auto name = ops[incoming_op_index]->name().substr(0, pos);
     if (name == "Gather") {
-      return s;
-    } else if (name == "GatherP") {
-      return PrepareGatherV2POutputStrategy(ops, incoming_op_index);
+      return PrepareGatherV2OutputStrategy(ops, incoming_op_index);
     } else {
       MS_LOG(EXCEPTION) << "Failure: Unknown type of GatherV2." << std::endl;
     }
@@ -741,6 +886,19 @@ Dimensions PrepareIncomingOperatorInputStrategy(const std::vector<std::shared_pt
     return s;
   }
 
+  if (ops[incoming_op_index]->type() == MUL || ops[incoming_op_index]->type() == SUB ||
+      ops[incoming_op_index]->type() == ADD || ops[incoming_op_index]->type() == BIAS_ADD) {
+    s = PrepareIncompingArithmeticOpeartorInputStrategy(ops, incoming_op_index);
+    return s;
+  }
+
+  if (ops[incoming_op_index]->type() == RESHAPE) {
+    return PrepareReshapeOutputStrategy(ops, incoming_op_index);
+  } else if (ops[incoming_op_index]->type() == TRANSPOSE) {
+    return PrepareTransposeOutputStrategy(ops, incoming_op_index);
+  } else if (ops[incoming_op_index]->type() == EXPAND_DIMS) {
+    return PrepareExpandDimsOutputStrategy(ops, incoming_op_index);
+  }
   for (size_t i = 0; i < (size_t)ops[incoming_op_index]->inputs_tensor_info().size(); i++) {
     if (ops[incoming_op_index]->inputs_tensor_info()[i].shape().size() == 0) {
       continue;
@@ -755,7 +913,7 @@ Dimensions PrepareIncomingOperatorInputStrategy(const std::vector<std::shared_pt
 
 Dimensions GetAxisList(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const int64_t iter_ops) {
   Dimensions axis_list;
-  auto axis_param = ops[iter_ops]->attrs().find(AXIS)->second;
+  auto axis_param = ops[LongToSize(iter_ops)]->attrs().find(AXIS)->second;
   std::vector<ValuePtr> elements;
   if (axis_param->isa<ValueTuple>()) {
     elements = axis_param->cast<ValueTuplePtr>()->value();
@@ -780,23 +938,23 @@ Dimensions ModifyStrategyIfSqueezeIncoming(const std::vector<std::shared_ptr<Ope
   Dimensions s_Squeeze;
   Dimensions stra_dim_list;
   for (size_t i = 0; i < s.size(); i++) {
-    stra_dim_list.push_back(i);
+    stra_dim_list.push_back(SizeToLong(i));
   }
 
-  auto axis_list = GetAxisList(ops, incoming_op_index);
+  auto axis_list = GetAxisList(ops, SizeToLong(incoming_op_index));
   for (auto axis : axis_list) {
     auto it = find(stra_dim_list.begin(), stra_dim_list.end(), axis);
     if (it == stra_dim_list.end()) {
       MS_LOG(EXCEPTION) << "Failure: Can not find dimension indexes in Axis." << std::endl;
     }
-    if (ops[incoming_op_index]->inputs_tensor_info()[0].shape()[axis] != 1) {
+    if (ops[incoming_op_index]->inputs_tensor_info()[0].shape()[LongToSize(axis)] != 1) {
       MS_LOG(EXCEPTION) << "Failure: Removed dimension's shape is not 1." << std::endl;
     }
     stra_dim_list.erase(it);
   }
 
   for (size_t i = 0; i < (size_t)stra_dim_list.size(); i++) {
-    s_Squeeze.push_back(s[stra_dim_list[i]]);
+    s_Squeeze.push_back(s[LongToSize(stra_dim_list[i])]);
   }
   return s_Squeeze;
 }
@@ -848,7 +1006,7 @@ Dimensions ModifyStrategyIfReduceIncoming(const std::vector<std::shared_ptr<Oper
   Dimensions s_Reduce;
   Dimensions axis_list;
   for (size_t i = 0; i < s.size(); i++) {
-    axis_list.push_back(i);
+    axis_list.push_back(SizeToLong(i));
   }
 
   auto dim_list = GetDimList(ops, incoming_op_index);
@@ -861,7 +1019,7 @@ Dimensions ModifyStrategyIfReduceIncoming(const std::vector<std::shared_ptr<Oper
   }
 
   for (size_t i = 0; i < (size_t)axis_list.size(); i++) {
-    s_Reduce.push_back(s[axis_list[i]]);
+    s_Reduce.push_back(s[LongToSize(axis_list[i])]);
   }
   return s_Reduce;
 }
@@ -904,7 +1062,7 @@ Dimensions ModifyStrategyIfArgIncoming(const std::vector<std::shared_ptr<Operato
   Dimensions s_Arg;
   Dimensions axis_list;
   for (size_t i = 0; i < s.size(); i++) {
-    axis_list.push_back(i);
+    axis_list.push_back(SizeToLong(i));
   }
 
   auto dim_list = GetDimListFromAttrs(ops, incoming_op_index);
@@ -917,7 +1075,7 @@ Dimensions ModifyStrategyIfArgIncoming(const std::vector<std::shared_ptr<Operato
   }
 
   for (size_t i = 0; i < (size_t)axis_list.size(); i++) {
-    s_Arg.push_back(s[axis_list[i]]);
+    s_Arg.push_back(s[LongToSize(axis_list[i])]);
   }
   return s_Arg;
 }
@@ -925,6 +1083,9 @@ Dimensions ModifyStrategyIfArgIncoming(const std::vector<std::shared_ptr<Operato
 Dimensions CopyIncomingOperatorInputStrategy(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
                                              const size_t iter_ops, const size_t incoming_op_index) {
   Dimensions s;
+  if (ops[iter_ops]->type() == ONEHOT) {
+    return s;
+  }
   s = PrepareIncomingOperatorInputStrategy(ops, incoming_op_index);
   if (s.size() != 0) {
     if (ops[incoming_op_index]->type() == SQUEEZE) {
@@ -946,6 +1107,10 @@ Strategys GenerateStrategiesFromStrategy(const std::vector<std::shared_ptr<Opera
   Strategys stra;
   MS_EXCEPTION_IF_NULL(ops[iter_ops]);
 
+  if (iter_ops >= ops.size()) {
+    MS_LOG(EXCEPTION) << "Failure: Operators' elements out of range.";
+  }
+
   if (basic_stra.size() == 0) {
     for (size_t iter_op_inputs = 0; iter_op_inputs < (size_t)ops[iter_ops]->inputs_tensor_info().size();
          iter_op_inputs++) {
@@ -966,11 +1131,12 @@ Strategys GenerateStrategiesFromStrategy(const std::vector<std::shared_ptr<Opera
     auto name = ops[iter_ops]->name().substr(0, pos);
     if (name == "Gather") {
       return PrepareGatherV2(ops, iter_ops, basic_stra);
-    } else if (name == "GatherP") {
-      return PrepareGatherV2P(ops, iter_ops, basic_stra);
     } else {
       MS_LOG(EXCEPTION) << "Failure: Unknown type of GatherV2." << std::endl;
     }
+  }
+  if (ops[iter_ops]->type() == ONEHOT) {
+    return PrepareOneHot(ops, iter_ops, basic_stra);
   }
   if (ops[iter_ops]->type() == L2_NORMALIZE) {
     return PrepareL2Normalize(ops, iter_ops, basic_stra);
@@ -979,12 +1145,15 @@ Strategys GenerateStrategiesFromStrategy(const std::vector<std::shared_ptr<Opera
       ops[iter_ops]->type() == DIV) {
     return CheckBroadcast(ops, iter_ops, basic_stra);
   }
-
+  if (ops[iter_ops]->type() == SOFTMAX || ops[iter_ops]->type() == LOG_SOFTMAX) {
+    return PrepareSoftMax(ops, iter_ops, basic_stra);
+  }
   return CheckDivisible(ops, iter_ops, basic_stra);
 }
 
 // Function to deal with ops with broadcasting, like TensorAdd/Sub/Mul/Div etc.
-Strategys CheckBroadcast(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops, Dimensions s) {
+Strategys CheckBroadcast(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops,
+                         const Dimensions s) {
   Strategys stra;
 
   size_t first_tensor_dim = ops[iter_ops]->inputs_tensor_info()[0].shape().size();
@@ -1024,8 +1193,8 @@ Dimensions ApplyBroadcast(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
                           size_t first_tensor_dim, size_t second_tensor_dim, bool broadcast_first_tensor) {
   Dimensions s_empty = {};
   Dimensions s_broadcast;
-  int64_t target_tensor_index = 0;
-  int64_t refer_tensor_index = 0;
+  size_t target_tensor_index = 0;
+  size_t refer_tensor_index = 0;
   size_t target_tensor_dim;
   size_t refer_tensor_dim;
 
@@ -1074,7 +1243,7 @@ Dimensions ApplyBroadcast(const std::vector<std::shared_ptr<OperatorInfo>> &ops,
 
 // Check whether the operator can be divided by the current strategy.
 Strategys CheckDivisible(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops,
-                         Dimensions basic_stra) {
+                         const Dimensions basic_stra) {
   Dimensions s_empty = {};
   Strategys stra;
 
@@ -1150,7 +1319,7 @@ void GenerateEliminatedOperatorStrategyForward(const std::shared_ptr<Graph> &gra
 Dimensions ModifyStrategyIfSqueezeOutgoing(const std::vector<std::shared_ptr<OperatorInfo>> &ops, const size_t iter_ops,
                                            Dimensions s) {
   Dimensions s_Squeeze;
-  auto axis_list = GetAxisList(ops, iter_ops);
+  auto axis_list = GetAxisList(ops, SizeToLong(iter_ops));
   size_t s_index = 0;
   size_t axis_list_index = 0;
   for (size_t i = 0; i < (size_t)(s.size() + axis_list.size()); i++) {
@@ -1165,7 +1334,7 @@ Dimensions ModifyStrategyIfSqueezeOutgoing(const std::vector<std::shared_ptr<Ope
 
   size_t cut = 1;
   for (size_t i = 0; i < s_Squeeze.size(); i++) {
-    cut *= s_Squeeze[i];
+    cut *= LongToSize(s_Squeeze[i]);
   }
   if (cut != g_device_manager->DeviceNum()) {
     s_Squeeze.clear();
@@ -1179,9 +1348,10 @@ Dimensions CopyOutgoingOperatorInputStrategy(const std::vector<std::shared_ptr<O
                                              const size_t iter_ops) {
   Dimensions s;
   if (ops[iter_ops]->type() == REDUCE_MAX || ops[iter_ops]->type() == REDUCE_MIN ||
-      ops[iter_ops]->type() == REDUCE_SUM || ops[iter_ops]->type() == REDUCE_MEAN || ops[iter_ops]->type() == RESHAPE ||
-      ops[iter_ops]->type() == GATHERV2 || ops[iter_ops]->type() == TRANSPOSE ||
-      ops[iter_ops]->type() == ARGMAXWITHVALUE || ops[iter_ops]->type() == ARGMINWITHVALUE) {
+      ops[iter_ops]->type() == EXPAND_DIMS || ops[iter_ops]->type() == REDUCE_SUM ||
+      ops[iter_ops]->type() == REDUCE_MEAN || ops[iter_ops]->type() == RESHAPE || ops[iter_ops]->type() == GATHERV2 ||
+      ops[iter_ops]->type() == TRANSPOSE || ops[iter_ops]->type() == ARGMAXWITHVALUE ||
+      ops[iter_ops]->type() == ARGMINWITHVALUE) {
     return s;
   }
 

@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/affine_ir.h"
 
 #include "minddata/dataset/kernels/image/affine_op.h"
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -44,8 +43,7 @@ Status AffineOperation::ValidateParams() {
   if (translation_.size() != kExpectedTranslationSize) {
     std::string err_msg =
       "Affine: translate expecting size 2, got: translation.size() = " + std::to_string(translation_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   RETURN_IF_NOT_OK(ValidateScalar("Affine", "translate", translation_[0], {-1, 1}, false, false));
   RETURN_IF_NOT_OK(ValidateScalar("Affine", "translate", translation_[1], {-1, 1}, false, false));
@@ -54,11 +52,16 @@ Status AffineOperation::ValidateParams() {
   constexpr size_t kExpectedShearSize = 2;
   if (shear_.size() != kExpectedShearSize) {
     std::string err_msg = "Affine: shear_ranges expecting size 2, got: shear.size() = " + std::to_string(shear_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   // Fill Value
   RETURN_IF_NOT_OK(ValidateVectorFillvalue("Affine", fill_value_));
+  // interpolation
+  if (interpolation_ != InterpolationMode::kLinear && interpolation_ != InterpolationMode::kNearestNeighbour &&
+      interpolation_ != InterpolationMode::kCubic && interpolation_ != InterpolationMode::kArea) {
+    std::string err_msg = "Affine: Invalid InterpolationMode, check input value of enum.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
 
   return Status::OK();
 }
@@ -82,12 +85,12 @@ Status AffineOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status AffineOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("degrees") != op_params.end(), "Failed to find degrees");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("translate") != op_params.end(), "Failed to find translate");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("scale") != op_params.end(), "Failed to find scale");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("shear") != op_params.end(), "Failed to find shear");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("resample") != op_params.end(), "Failed to find resample");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("fill_value") != op_params.end(), "Failed to find fill_value");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "degrees", kAffineOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "translate", kAffineOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "scale", kAffineOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "shear", kAffineOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "resample", kAffineOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "fill_value", kAffineOperation));
   float_t degrees = op_params["degrees"];
   std::vector<float> translation = op_params["translate"];
   float scale = op_params["scale"];
@@ -97,7 +100,6 @@ Status AffineOperation::from_json(nlohmann::json op_params, std::shared_ptr<Tens
   *operation = std::make_shared<vision::AffineOperation>(degrees, translation, scale, shear, interpolation, fill_value);
   return Status::OK();
 }
-
 }  // namespace vision
 }  // namespace dataset
 }  // namespace mindspore

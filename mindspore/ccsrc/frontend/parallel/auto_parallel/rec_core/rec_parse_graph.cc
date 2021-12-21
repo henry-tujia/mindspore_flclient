@@ -215,7 +215,8 @@ void Eliminate_Aux(const size_t node_index, const std::shared_ptr<Graph> &graph,
     auto it = find(outgoing_inputs->begin(), outgoing_inputs->end(), node_index);
     if (it != outgoing_inputs->end()) {
       if (graph->nodes[node_index].node_in.size() > 0) {
-        outgoing_inputs->at(std::distance(outgoing_inputs->begin(), it)) = graph->nodes[node_index].node_in[0];
+        outgoing_inputs->at(LongToSize(std::distance(outgoing_inputs->begin(), it))) =
+          graph->nodes[node_index].node_in[0];
         for (size_t j = 1; j < graph->nodes[node_index].node_in.size(); j++) {
           graph->nodes[graph->nodes[node_index].node_out[i]].node_in_aux.push_back(graph->nodes[node_index].node_in[j]);
         }
@@ -263,7 +264,7 @@ std::shared_ptr<Graph> EliminateGraph(const std::shared_ptr<Graph> &graph,
     for (size_t j = node_in->size(); j > 0; j--) {
       bool IsEliminated = (index_list->at(node_in->at(j - 1)) == SIZE_MAX);
       if (IsEliminated) {
-        node_in->erase(node_in->begin() + j - 1);
+        (void)node_in->erase(node_in->begin() + SizeToLong(j) - 1);
       } else {
         node_in->at(j - 1) = index_list->at(node_in->at(j - 1));
       }
@@ -272,13 +273,22 @@ std::shared_ptr<Graph> EliminateGraph(const std::shared_ptr<Graph> &graph,
     for (size_t j = node_out->size(); j > 0; j--) {
       bool IsEliminated = (index_list->at(node_out->at(j - 1)) == SIZE_MAX);
       if (IsEliminated) {
-        node_out->erase(node_out->begin() + j - 1);
+        (void)node_out->erase(node_out->begin() + SizeToLong(j) - 1);
       } else {
         node_out->at(j - 1) = index_list->at(node_out->at(j - 1));
       }
     }
   }
   return new_graph;
+}
+bool IsStrictElementWise(const std::vector<std::shared_ptr<OperatorInfo>> &ops, size_t iter_ops) {
+  std::string op_type = ops[iter_ops]->type();
+  auto idx = DictOpType.find(op_type);
+  if (idx == DictOpType.end()) {
+    return false;
+  } else {
+    return StrictElementWiseOpType.find(DictOpType.at(op_type)) != ElementWiseOpType.end();
+  }
 }
 }  // namespace parallel
 }  // namespace mindspore

@@ -29,7 +29,9 @@
 #include <memory>
 #include <cfloat>
 #include <utility>
+#ifndef BENCHMARK_CLIP_JSON
 #include <nlohmann/json.hpp>
+#endif
 #include "tools/benchmark/benchmark_base.h"
 #include "include/model.h"
 #include "tools/common/flag_parser.h"
@@ -37,9 +39,11 @@
 #include "src/common/utils.h"
 #include "include/api/types.h"
 #include "include/api/model.h"
+#ifdef ENABLE_OPENGL_TEXTURE
+#include "tools/common/opengl_util.h"
+#endif
 
 namespace mindspore::lite {
-
 class MS_API BenchmarkUnifiedApi : public BenchmarkBase {
  public:
   explicit BenchmarkUnifiedApi(BenchmarkFlags *flags) : BenchmarkBase(flags) {}
@@ -51,19 +55,34 @@ class MS_API BenchmarkUnifiedApi : public BenchmarkBase {
  protected:
   int CompareDataGetTotalBiasAndSize(const std::string &name, mindspore::MSTensor *tensor, float *total_bias,
                                      int *total_size);
+  int CompareDataGetTotalCosineDistanceAndSize(const std::string &name, mindspore::MSTensor *tensor,
+                                               float *total_cosine_distance, int *total_size);
   void InitContext(const std::shared_ptr<mindspore::Context> &context);
 
+#ifdef ENABLE_OPENGL_TEXTURE
+  int GenerateGLTexture(std::map<std::string, GLuint> *inputGlTexture);
+
+  int LoadAndBindGLTexture();
+
+  int ReadGLTextureFile(std::map<std::string, GLuint> *inputGlTexture);
+
+  int FillGLTextureToTensor(std::map<std::string, GLuint> *gl_texture, mindspore::MSTensor *tensor, std::string name,
+                            void *data = nullptr);
+#endif
+
   // call GenerateRandomData to fill inputTensors
+  int LoadInput() override;
   int GenerateInputData() override;
 
   int ReadInputFile() override;
 
-  int ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name,
-                     const std::vector<size_t> &dims) override;
+  int InitMSContext(const std::shared_ptr<Context> &context);
 
-  void InitMSContext(const std::shared_ptr<Context> &context);
+  int GetDataTypeByTensorName(const std::string &tensor_name) override;
 
   int CompareOutput() override;
+
+  int CompareOutputByCosineDistance(float cosine_distance_threshold);
 
   int InitTimeProfilingCallbackParameter() override;
 
@@ -88,9 +107,15 @@ class MS_API BenchmarkUnifiedApi : public BenchmarkBase {
 
   int MarkAccuracy();
 
+  void UpdateDistributionName(const std::shared_ptr<mindspore::Context> &context, std::string *name);
+
  private:
+#ifdef ENABLE_OPENGL_TEXTURE
+  mindspore::OpenGL::OpenGLRuntime gl_runtime_;
+#endif
   mindspore::Model ms_model_;
   std::vector<mindspore::MSTensor> ms_inputs_for_api_;
+  std::vector<mindspore::MSTensor> ms_outputs_for_api_;
 
   MSKernelCallBack ms_before_call_back_ = nullptr;
   MSKernelCallBack ms_after_call_back_ = nullptr;

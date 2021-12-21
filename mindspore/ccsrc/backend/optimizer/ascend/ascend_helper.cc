@@ -34,17 +34,18 @@ namespace opt {
 using KernelBuildInfoBuilder = kernel::KernelBuildInfo::KernelBuildInfoBuilder;
 namespace {
 bool NeedInsertTransData(const std::vector<size_t> &origin_shape, const std::string &format) {
-  return kCommonFormatSet.find(format) == kCommonFormatSet.end() &&
-         (origin_shape.size() > 1 || format == kOpFormat_ND_RNN_BIAS);
+  bool shape_check = origin_shape.size() > 1 || (origin_shape.size() == 1 && origin_shape[0] % kCubeSize != 0);
+  return kCommonFormatSet.find(format) == kCommonFormatSet.end() && (shape_check || format == kOpFormat_ND_RNN_BIAS);
 }
 
-AnfNodePtr CreateReshapeNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input_node,
+AnfNodePtr CreateReshapeNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input_node, const AnfNodePtr &orig_node,
                              const KernelSelectPtr &kernel_select, const std::vector<size_t> &dst_shape) {
   std::vector<AnfNodePtr> trans_inputs;
   auto prim = std::make_shared<Primitive>(prim::kPrimReshape->name());
   trans_inputs.emplace_back(NewValueNode(prim));
   trans_inputs.emplace_back(input_node);
-  auto reshape = func_graph->NewCNode(trans_inputs);
+  auto reshape = NewCNode(trans_inputs, func_graph, {orig_node});
+  MS_EXCEPTION_IF_NULL(reshape);
   AnfAlgo::SetOutputInferTypeAndShape({AnfAlgo::GetOutputInferDataType(input_node, 0)}, {dst_shape}, reshape.get());
   AnfAlgo::SetNodeAttr(kAttrVisited, MakeValue(true), reshape);
   AnfAlgo::SetNodeAttr(kAttrShape, MakeValue(dst_shape), reshape);
@@ -72,6 +73,7 @@ void SetTransNodeAttr(const CNodePtr &trans_node) {
 
 void ReFreshInferShape(const AnfNodePtr &trans_node, const AnfNodePtr &node) {
   MS_EXCEPTION_IF_NULL(trans_node);
+  MS_EXCEPTION_IF_NULL(node);
   auto real_input_node = AnfAlgo::VisitKernelWithReturnType(node, 0).first;
   if (!real_input_node->isa<CNode>()) {
     return;
@@ -106,6 +108,7 @@ void SetGroupAttr(const ParameterPtr &param, const AnfNodePtr &out_trans, const 
 AnfNodePtr GetTransInputNodePtr(const FuncGraphPtr &func_graph, const CNodePtr &node, size_t index,
                                 const KernelSelectPtr &kernel_select) {
   MS_EXCEPTION_IF_NULL(node);
+  MS_EXCEPTION_IF_NULL(func_graph);
   auto input_node = AnfAlgo::GetInputNode(node, index);
   if (HasAbstractMonad(input_node)) {
     // No transfer for monad inputs.
@@ -136,11 +139,12 @@ AnfNodePtr GetTransInputNodePtr(const FuncGraphPtr &func_graph, const CNodePtr &
 AnfNodePtr InsertTransOpForSingleOutput(const FuncGraphPtr &func_graph, const AnfNodePtr &node,
                                         const KernelSelectPtr &kernel_select) {
   MS_EXCEPTION_IF_NULL(node);
+  MS_EXCEPTION_IF_NULL(func_graph);
   std::string output_format = AnfAlgo::GetOutputFormat(node, 0);
   std::vector<size_t> origin_shape = AnfAlgo::GetOutputInferShape(node, 0);
   if (output_format == kOpFormat_NC1KHKWHWC0) {
     MS_LOG(EXCEPTION) << "Got the hw format " << output_format << "when insert the transdata node "
-                      << node->DebugString() << " trace: " << trace::DumpSourceLines(node);
+                      << node->DebugString() << trace::DumpSourceLines(node);
   }
   if (NeedInsertTransData(origin_shape, output_format)) {
     MS_LOG(DEBUG) << "Inserted transdata " << output_format << " to default , index :0";
@@ -159,6 +163,9 @@ AnfNodePtr InsertTransOpForMultipleOutput(const FuncGraphPtr &func_graph, const 
   for (auto &update_state : update_states) {
     manager->SetEdge(update_state.first, update_state.second, node);
   }
+  if (manager->node_users()[orig_node].empty()) {
+    return node;
+  }
   std::vector<AnfNodePtr> make_tuple_inputs = {NewValueNode(prim::kPrimMakeTuple)};
   auto kernel_graph = func_graph->cast<KernelGraphPtr>();
   size_t out_num = AnfAlgo::GetOutputTensorNum(node);
@@ -166,7 +173,7 @@ AnfNodePtr InsertTransOpForMultipleOutput(const FuncGraphPtr &func_graph, const 
     std::string output_format = AnfAlgo::GetOutputFormat(node, output_idx);
     if (output_format == kOpFormat_NC1KHKWHWC0) {
       MS_LOG(EXCEPTION) << "Got the special format" << output_format << " when insert the transdata node "
-                        << node->DebugString() << " trace: " << trace::DumpSourceLines(node);
+                        << node->DebugString() << trace::DumpSourceLines(node);
     }
     auto tuple_getitem = CreatTupleGetItemNode(func_graph, node, output_idx);
     std::vector<size_t> origin_shape = AnfAlgo::GetOutputInferShape(node, output_idx);
@@ -185,6 +192,7 @@ AnfNodePtr InsertTransOpForMultipleOutput(const FuncGraphPtr &func_graph, const 
   return make_tuple;
 }
 }  // namespace
+
 AnfNodePtr AddTransOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePtr &node,
                                  const KernelSelectPtr &kernel_select, size_t insert_index, bool is_insert_input) {
   AnfNodePtr trans_node = nullptr;
@@ -204,24 +212,30 @@ AnfNodePtr AddTransOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePt
   std::string trans_opname = (spec_format == kOpFormat_FRACTAL_ZN_RNN || spec_format == kOpFormat_ND_RNN_BIAS)
                                ? prim::kPrimTransDataRNN->name()
                                : prim::kPrimTransData->name();
+  auto orig_node = node;
+  if (!is_insert_input && node->isa<CNode>() && AnfAlgo::GetCNodeName(node) == prim::kTupleGetItem) {
+    auto cnode = node->cast<CNodePtr>();
+    orig_node = cnode->input(kRealInputNodeIndexInTupleGetItem);
+  }
+
   if (!need_padding) {
     // don't need padding insert transdata only
-    trans_data = NewTransOpNode(func_graph, input_node, kernel_select, need_padding, trans_opname);
+    trans_data = NewTransOpNode(func_graph, input_node, orig_node, kernel_select, need_padding, trans_opname);
     trans_node = trans_data;
   } else if (is_insert_input) {
     // if need padding & is input need insert a transdata
     // reshape[padding shape] -> transdata[padding shape] -> node
     auto padding_shape = trans::PaddingShape(input_node_out_shape, AnfAlgo::GetInputFormat(node, insert_index),
                                              AnfAlgo::GetInputReshapeType(node, insert_index));
-    auto reshape_node = CreateReshapeNode(func_graph, input_node, kernel_select, padding_shape);
-    trans_data = NewTransOpNode(func_graph, reshape_node, kernel_select, need_padding, trans_opname);
+    auto reshape_node = CreateReshapeNode(func_graph, input_node, orig_node, kernel_select, padding_shape);
+    trans_data = NewTransOpNode(func_graph, reshape_node, orig_node, kernel_select, need_padding, trans_opname);
     trans_node = trans_data;
     trans_data->set_abstract(input_node->abstract());
   } else {
     // if need padding & is output need insert a transdata
     // node -> transdata[padding shape] -> reshape[ori_shape]
-    trans_data = NewTransOpNode(func_graph, input_node, kernel_select, need_padding, trans_opname);
-    auto reshape_node = CreateReshapeNode(func_graph, trans_data, kernel_select, input_node_out_shape);
+    trans_data = NewTransOpNode(func_graph, input_node, orig_node, kernel_select, need_padding, trans_opname);
+    auto reshape_node = CreateReshapeNode(func_graph, trans_data, orig_node, kernel_select, input_node_out_shape);
     trans_node = reshape_node;
   }
   if (trans_opname == prim::kPrimTransDataRNN->name()) {
@@ -237,11 +251,12 @@ AnfNodePtr AddTransOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePt
 }
 
 void RefreshKernelBuildInfo(const std::string &input_format, const std::string &output_format,
-                            const AnfNodePtr &trans_data, const std::string &reshape_type, const TypeId &type_id) {
-  MS_EXCEPTION_IF_NULL(trans_data);
-  auto ori_build_info = AnfAlgo::GetSelectKernelBuildInfo(trans_data);
+                            const AnfNodePtr &trans_node, const std::string &reshape_type, const TypeId &type_id) {
+  MS_EXCEPTION_IF_NULL(trans_node);
+  auto ori_build_info = AnfAlgo::GetSelectKernelBuildInfo(trans_node);
   MS_EXCEPTION_IF_NULL(ori_build_info);
   auto builder = std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>(ori_build_info);
+  MS_EXCEPTION_IF_NULL(builder);
   builder->SetInputsFormat({input_format});
   builder->SetInputsReshapeType({reshape_type});
   builder->SetOutputsReshapeType({reshape_type});
@@ -250,16 +265,17 @@ void RefreshKernelBuildInfo(const std::string &input_format, const std::string &
     builder->SetOutputsDeviceType({type_id});
     builder->SetInputsDeviceType({type_id});
   }
-  AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), trans_data.get());
-  SetTransNodeAttr(trans_data->cast<CNodePtr>());
+  AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), trans_node.get());
+  SetTransNodeAttr(trans_node->cast<CNodePtr>());
 }
 
-CNodePtr NewTransOpNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const KernelSelectPtr &kernel_select,
-                        const bool need_padding, const std::string &op_name, const std::vector<int64_t> &perm) {
+CNodePtr NewTransOpNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const AnfNodePtr &orig_node,
+                        const KernelSelectPtr &kernel_select, const bool need_padding, const std::string &op_name,
+                        const std::vector<int64_t> &perm) {
   MS_EXCEPTION_IF_NULL(func_graph);
   MS_EXCEPTION_IF_NULL(input);
   MS_EXCEPTION_IF_NULL(kernel_select);
-  CNodePtr trans_node = func_graph->NewCNode({NewValueNode(std::make_shared<Primitive>(op_name)), input});
+  CNodePtr trans_node = NewCNode({NewValueNode(std::make_shared<Primitive>(op_name)), input}, func_graph, {orig_node});
   MS_EXCEPTION_IF_NULL(trans_node);
   auto infer_type = AnfAlgo::GetOutputInferDataType(input, 0);
 
@@ -317,14 +333,16 @@ CNodePtr NewTransOpNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input,
   return trans_node;
 }
 
-CNodePtr AddCastOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const std::string &format,
-                              const TypeId &input_type, const TypeId &output_type,
+CNodePtr AddCastOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const AnfNodePtr &orig_node,
+                              const std::string &format, const TypeId &input_type, const TypeId &output_type,
                               const abstract::BaseShapePtr &origin_shape, const TypeId &origin_type,
                               const std::string &reshape_type) {
   MS_EXCEPTION_IF_NULL(func_graph);
+  MS_EXCEPTION_IF_NULL(origin_shape);
   std::string input_format = format;
   std::string output_format = format;
-  CNodePtr cast = func_graph->NewCNode({NewValueNode(std::make_shared<Primitive>(prim::kPrimCast->name())), input});
+  CNodePtr cast =
+    NewCNode({NewValueNode(std::make_shared<Primitive>(prim::kPrimCast->name())), input}, func_graph, {orig_node});
   MS_EXCEPTION_IF_NULL(cast);
   // set kernel build info
   kernel::KernelBuildInfo::KernelBuildInfoBuilder builder;
@@ -406,10 +424,12 @@ AnfNodePtr InsertTransOpForInput(const FuncGraphPtr &func_graph, const AnfNodePt
 
 CNodePtr InsertCastForInput(const FuncGraphPtr &func_graph, const CNodePtr &cnode) {
   MS_EXCEPTION_IF_NULL(cnode);
+  MS_EXCEPTION_IF_NULL(func_graph);
   std::vector<AnfNodePtr> new_inputs = {AnfAlgo::GetCNodePrimitiveNode(cnode)};
   size_t in_num = AnfAlgo::GetInputNum(cnode);  // include monads.
   for (size_t input_index = 0; input_index < in_num; ++input_index) {
     auto cur_input = AnfAlgo::GetInputNode(cnode, input_index);
+    MS_EXCEPTION_IF_NULL(cur_input);
     if (HasAbstractMonad(cur_input)) {
       // No cast for monad inputs.
       new_inputs.push_back(cur_input);
@@ -421,6 +441,7 @@ CNodePtr InsertCastForInput(const FuncGraphPtr &func_graph, const CNodePtr &cnod
 
     auto kernel_with_index = AnfAlgo::VisitKernelWithReturnType(cur_input, 0);
     auto real_input_node = kernel_with_index.first;
+    MS_EXCEPTION_IF_NULL(real_input_node);
     if (kernel::IsWeightBoundary(real_input_node)) {
       // weight
       origin_type = AnfAlgo::GetPrevNodeOutputPrecision(cnode, input_index);
@@ -437,7 +458,7 @@ CNodePtr InsertCastForInput(const FuncGraphPtr &func_graph, const CNodePtr &cnod
     // the eliminate pass will not eliminate this case, so we just do not insert the no used cast.
     if (TypeId device_type = AnfAlgo::GetInputDeviceDataType(cnode, input_index); origin_type != device_type) {
       auto cast =
-        AddCastOpNodeToGraph(func_graph, cur_input, dev_fmt, origin_type, device_type, origin_shape, infer_type);
+        AddCastOpNodeToGraph(func_graph, cur_input, cnode, dev_fmt, origin_type, device_type, origin_shape, infer_type);
       MS_EXCEPTION_IF_NULL(cast);
       cast->set_scope(cnode->scope());
       AnfAlgo::SetNodeAttr(kAttrVisited, MakeValue(true), cast);

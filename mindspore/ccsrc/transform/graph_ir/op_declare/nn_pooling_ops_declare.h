@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_NN_POOLING_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 #include "ops/nn_ops.h"
 #include "ops/nn_pooling_ops.h"
@@ -68,5 +68,8 @@ DECLARE_OP_USE_OUTPUT(AvgPoolV2)
 
 DECLARE_OP_ADAPTER(GlobalAveragePool)
 DECLARE_OP_USE_OUTPUT(GlobalAveragePool)
+
+DECLARE_OP_ADAPTER(Upsample)
+DECLARE_OP_USE_OUTPUT(Upsample)
 }  // namespace mindspore::transform
 #endif  // MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_NN_POOLING_OPS_DECLARE_H_

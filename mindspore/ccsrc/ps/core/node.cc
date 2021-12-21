@@ -30,6 +30,7 @@ uint16_t Node::BoundPort() const { return node_info_.port_; }
 std::string Node::BoundIp() const { return node_info_.ip_; }
 
 bool Node::WaitForStart(const uint32_t &timeout) {
+  MS_LOG(INFO) << "The node id:" << node_info_.node_id_ << " is Waiting for start!";
   std::unique_lock<std::mutex> lock(wait_start_mutex_);
   bool res = wait_start_cond_.wait_for(lock, std::chrono::seconds(timeout), [this] {
     bool result = this->is_ready_.load();
@@ -79,9 +80,14 @@ bool Node::SendMessageSync(const std::shared_ptr<TcpClient> &client, const std::
   if (!client->SendMessage(meta, protos, data, size)) {
     MS_LOG(WARNING) << "Client send message failed.";
   }
-  MS_LOG(DEBUG) << "The node role is:" << CommUtil::NodeRoleToString(node_info_.node_role_)
-                << ", the node id is:" << node_info_.node_id_ << " send the request id is:" << request_id;
+  MS_LOG(INFO) << "The node role is:" << CommUtil::NodeRoleToString(node_info_.node_role_)
+               << ", the node id is:" << node_info_.node_id_ << " send the request id is:" << request_id;
   return Wait(request_id, timeout);
+}
+
+bool Node::EnableRecovery() const {
+  MS_EXCEPTION_IF_NULL(config_);
+  return config_->Exists(kKeyRecovery);
 }
 
 bool Node::Wait(uint64_t request_id, const uint32_t &timeout) {
@@ -152,8 +158,9 @@ void Node::ProcessSendDataResp(const std::shared_ptr<MessageMeta> &meta, const P
     if (size > 0) {
       size_t dest_size = size;
       size_t src_size = size;
-      if (memcpy_s(received_data.get()->data(), dest_size, data, src_size) != EOK) {
-        MS_LOG(EXCEPTION) << "The memcpy_s error";
+      auto ret = memcpy_s(received_data.get()->data(), dest_size, data, src_size);
+      if (ret != EOK) {
+        MS_LOG(EXCEPTION) << "The memcpy_s error, errorno(" << ret << ")";
       }
     }
     if (it != receive_messages_.end()) {
@@ -169,8 +176,9 @@ void Node::ProcessSendDataResp(const std::shared_ptr<MessageMeta> &meta, const P
     if (size > 0) {
       size_t dest_size = size;
       size_t src_size = size;
-      if (memcpy_s(received_data.get()->data(), dest_size, data, src_size) != EOK) {
-        MS_LOG(EXCEPTION) << "The memcpy_s error";
+      auto ret = memcpy_s(received_data.get()->data(), dest_size, data, src_size);
+      if (ret != EOK) {
+        MS_LOG(EXCEPTION) << "The memcpy_s error, errorno(" << ret << ")";
       }
     }
     if (it != workder_receive_messages_.end()) {
@@ -197,7 +205,7 @@ void Node::RunMessageCallback(const uint64_t &request_id) {
       }
 
       message_callbacks_mutex_.lock();
-      message_callbacks_.erase(it);
+      (void)message_callbacks_.erase(it);
     }
   }
   message_callbacks_mutex_.unlock();

@@ -27,16 +27,23 @@
 #include "tools/converter/anf_transform.h"
 #include "tools/converter/converter_context.h"
 #include "tools/common/graph_util.h"
-#include "load_mindir/load_model.h"
 
 namespace mindspore {
 namespace lite {
 class Converter {
  public:
   Converter() = default;
-  ~Converter() { delete model_parser_; }
+  ~Converter() {
+    delete model_parser_;
+    this->model_parser_ = nullptr;
+  }
   schema::MetaGraphT *Convert(const std::unique_ptr<converter::Flags> &flag);
+  schema::MetaGraphT *Convert(const std::unique_ptr<converter::Flags> &flag, const void *buf, const size_t &size);
+
+ private:
   FuncGraphPtr BuildFuncGraph(const converter::Flags &flag);
+  FuncGraphPtr BuildFuncGraph(const converter::Flags &flag, const void *buf, const size_t &size);
+  schema::MetaGraphT *TransferFuncGraph(const std::unique_ptr<converter::Flags> &flag, FuncGraphPtr func_graph);
 
  protected:
   converter::ModelParser *model_parser_ = nullptr;

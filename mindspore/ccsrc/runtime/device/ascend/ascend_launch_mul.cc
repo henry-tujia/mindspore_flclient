@@ -15,10 +15,9 @@
  */
 
 #include "runtime/device/ascend/ascend_launch_mul.h"
-
-#include <memory>
 #include "abstract/utils.h"
 #include "runtime/mem.h"
+#include "acl/acl_rt.h"
 #include "backend/session/single_kernel_graph.h"
 #include "frontend/parallel/context.h"
 
@@ -31,11 +30,11 @@ size_t AscendLaunchMul::AlignSizeForLaunchKernel(size_t size) {
 
 uint8_t *AscendLaunchMul::AllocDeviceMem(size_t size) { return AscendLaunchKernel::AllocDeviceMem(size); }
 
-void AscendLaunchMul::KernelSelect(std::shared_ptr<session::KernelGraph> kernel_graph) {
+void AscendLaunchMul::KernelSelect(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
   AscendLaunchKernel::KernelSelect(kernel_graph);
 }
 
-void AscendLaunchMul::KernelBuild(std::shared_ptr<session::KernelGraph> kernel_graph) {
+void AscendLaunchMul::KernelBuild(const std::shared_ptr<session::KernelGraph> &kernel_graph) {
   AscendLaunchKernel::KernelBuild(kernel_graph);
 }
 
@@ -54,9 +53,9 @@ void AscendLaunchMul::FreeLaunchDeviceMem() {
 }
 
 void AscendLaunchMul::CopyHostMemToDevice(size_t origin_size, size_t dst_size) {
-  auto ret = rtMemcpyAsync(input2_addr_, dst_size, &input2_value_, origin_size, RT_MEMCPY_HOST_TO_DEVICE, stream_);
+  auto ret = aclrtMemcpyAsync(input2_addr_, dst_size, &input2_value_, origin_size, ACL_MEMCPY_HOST_TO_DEVICE, stream_);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(EXCEPTION) << "launch rtMemcpyAsync failed, ret:" << ret;
+    MS_LOG(EXCEPTION) << "launch aclrtMemcpyAsync failed, ret:" << ret;
   }
 }
 }  // namespace mindspore::device::ascend

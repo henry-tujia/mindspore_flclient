@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/ir_fusion/lamb_next_mv_with_decay_rule.h"
-#include <utility>
 #include "backend/session/anf_runtime_algorithm.h"
 #include "frontend/optimizer/opt.h"
 #include "utils/trace_base.h"
@@ -75,7 +74,7 @@ AnfNodePtr LambNextMVWithDecayRule::CreateLambNextMVWithDecayNode(const FuncGrap
   auto constant_add2_y_node = utils::cast<AnfNodePtr>((*equiv)[constant_add2_y_]);
   MS_EXCEPTION_IF_NULL(constant_add2_y_node);
   new_node_inputs.push_back(constant_add2_y_node);
-  auto new_node = func_graph->NewCNode(new_node_inputs);
+  auto new_node = NewCNode(new_node_inputs, func_graph);
   return GetLambNextMVWithDecayOutput(func_graph, new_node, add3, add5, equiv);
 }
 
@@ -97,8 +96,7 @@ const AnfNodePtr LambNextMVWithDecayRule::Process(const FuncGraphPtr &func_graph
   auto manager = func_graph->manager();
   MS_EXCEPTION_IF_NULL(manager);
   if (manager->node_users().find(mul4) == manager->node_users().end()) {
-    MS_LOG(EXCEPTION) << "The Mul4 should be used by at least another node input."
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "The Mul4 should be used by at least another node input." << trace::DumpSourceLines(node);
   }
   AnfNodeIndexSet mul4_outputs = manager->node_users()[mul4];
   auto iter = std::find_if(mul4_outputs.begin(), mul4_outputs.end(),

@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_BROADCAST_TO_CPU_KERNEL_H
-#define MINDSPORE_BROADCAST_TO_CPU_KERNEL_H
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_BROADCAST_TO_CPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_BROADCAST_TO_CPU_KERNEL_H_
 
 #include <vector>
 #include <memory>
+
 #include "backend/kernel_compiler/cpu/cpu_kernel.h"
 #include "backend/kernel_compiler/cpu/cpu_kernel_factory.h"
-#include "nnacl/base/broadcast_to.h"
+#include "backend/kernel_compiler/cpu/nnacl/base/broadcast_to.h"
 
 namespace mindspore {
 namespace kernel {
@@ -35,10 +36,12 @@ class BroadcastToCPUKernel : public CPUKernel {
               const std::vector<AddressPtr> &outputs) override;
   void InitKernel(const CNodePtr &kernel_node) override;
 
+  void CheckArgs();
+
  private:
   std::vector<size_t> input_shape_;
   std::vector<size_t> output_shape_;
-  BroadcastShapeInfo shape_info_;
+  BroadcastShapeInfo shape_info_{};
 };
 
 MS_REG_CPU_KERNEL_T(BroadcastTo, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
@@ -47,7 +50,19 @@ MS_REG_CPU_KERNEL_T(BroadcastTo, KernelAttr().AddInputAttr(kNumberTypeInt32).Add
                     BroadcastToCPUKernel, int);
 MS_REG_CPU_KERNEL_T(BroadcastTo, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutputAttr(kNumberTypeBool),
                     BroadcastToCPUKernel, bool);
+MS_REG_CPU_KERNEL_T(
+  DynamicBroadcastTo,
+  KernelAttr().AddInputAttr(kNumberTypeFloat32).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeFloat32),
+  BroadcastToCPUKernel, float);
+MS_REG_CPU_KERNEL_T(
+  DynamicBroadcastTo,
+  KernelAttr().AddInputAttr(kNumberTypeInt32).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeInt32),
+  BroadcastToCPUKernel, int);
+MS_REG_CPU_KERNEL_T(
+  DynamicBroadcastTo,
+  KernelAttr().AddInputAttr(kNumberTypeBool).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeBool),
+  BroadcastToCPUKernel, bool);
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_BROADCAST_TO_CPU_KERNEL_H
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_BROADCAST_TO_CPU_KERNEL_H_

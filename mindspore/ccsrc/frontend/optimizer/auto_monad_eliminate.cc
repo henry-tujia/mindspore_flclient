@@ -17,152 +17,137 @@
 #include "frontend/optimizer/auto_monad_eliminate.h"
 
 #include <vector>
-#include <unordered_set>
-#include <unordered_map>
 #include <algorithm>
 #include <memory>
+#include <string>
+#include <optional>
 
+#include "utils/hash_map.h"
+#include "utils/ordered_map.h"
 #include "base/core_ops.h"
+#include "abstract/abstract_value.h"
 
 namespace mindspore {
 namespace opt {
-std::unordered_set<FuncGraphPtr> GetAllSubGraphs(const std::unordered_set<AnfNodePtr> &call_partial) {
-  std::unordered_set<FuncGraphPtr> graphs;
-  for (auto node : call_partial) {
-    auto cnode = node->cast<CNodePtr>();
-    MS_EXCEPTION_IF_NULL(cnode);
-    int fg_idx = IsPrimitiveCNode(cnode, prim::kPrimCall) ? 0 : 1;
-    auto fg_value_node = cnode->input(fg_idx)->cast<ValueNodePtr>();
-    MS_EXCEPTION_IF_NULL(fg_value_node);
-    auto value = fg_value_node->value();
-    MS_EXCEPTION_IF_NULL(value);
-    auto caller_fg = value->cast<FuncGraphPtr>();
-    auto sub_graphs = caller_fg->func_graphs_used_total();
-    for (auto sub_graph : sub_graphs) {
-      graphs.insert(sub_graph);
+namespace {
+using ParamUserMap = mindspore::HashMap<std::string, std::vector<size_t>>;
+using LoadGraphMap = OrderedMap<std::string, std::vector<size_t>>;
+
+std::optional<std::string> GetRefKey(const AnfNodePtr &node) {
+  auto abs = node->abstract();
+  if (abs == nullptr) {
+    // Abstract for some Depends node are not proper set, we follow its input.
+    if (IsPrimitiveCNode(node, prim::kPrimDepend)) {
+      return GetRefKey(node->cast<CNodePtr>()->input(1));
     }
+    // Abstract should be set except UpdateState nodes.
+    if (!IsPrimitiveCNode(node, prim::kPrimUpdateState)) {
+      MS_LOG(WARNING) << "Abstract not set for " << node->DebugString();
+    }
+    return std::nullopt;
   }
-  return graphs;
+  auto abs_ref = abs->cast<abstract::AbstractRefPtr>();
+  if (abs_ref == nullptr) {
+    return std::nullopt;
+  }
+  auto ref_key = abs_ref->ref_key_value();
+  if (ref_key == nullptr) {
+    return std::nullopt;
+  }
+  return ref_key->name();
 }
 
-bool HasUMonadCallNodeUser(const FuncGraphPtr &fg, const std::unordered_set<AnfNodePtr> &call_partial,
-                           const AnfNodePtr &load_param) {
-  if (call_partial.empty()) {
-    return false;
+bool HasMemoryEffect(const CNodePtr &cnode) {
+  const auto &inputs = cnode->inputs();
+  if (HasAbstractUMonad(inputs.back())) {
+    // The last input is UMonad.
+    return true;
   }
-  auto manager = fg->manager();
-  auto load_param_users = manager->node_users()[load_param];
-  std::unordered_set<FuncGraphPtr> sub_graphs = GetAllSubGraphs(call_partial);
-  for (auto user : load_param_users) {
-    if (!user.first->isa<CNode>()) {
-      continue;
-    }
-    auto node = user.first->cast<CNodePtr>();
-    auto user_graph = node->func_graph();
-    // Check if user graph is in sub graphs.
-    bool exist_user_graph = std::any_of(sub_graphs.begin(), sub_graphs.end(),
-                                        [&user_graph](const FuncGraphPtr &graph) { return user_graph == graph; });
-    if (exist_user_graph) {
-      return true;
-    }
+  constexpr size_t kRequiredArgs = 2;
+  if (inputs.size() > kRequiredArgs) {
+    // The last two inputs are UMonad and IOMonad.
+    return HasAbstractIOMonad(inputs.back()) && HasAbstractUMonad(inputs.rbegin()[1]);
   }
   return false;
 }
 
-std::vector<std::vector<size_t>> GenerateLoadGroups(const FuncGraphPtr &fg, const std::vector<AnfNodePtr> &toposet,
-                                                    std::vector<AnfNodePtr> *need_replace_loads) {
-  std::unordered_map<AnfNodePtr, size_t> load_groups_record;
-  std::vector<std::vector<size_t>> load_groups;
-  // Record the param and the user set of param in toposet nodes
-  std::unordered_map<AnfNodePtr, std::unordered_set<AnfNodePtr>> unload_users_record;
-  std::unordered_set<AnfNodePtr> call_partial_nodes;
-  std::unordered_map<AnfNodePtr, bool> has_umonad_call_node_users;
+LoadGraphMap GenerateLoadGroups(const FuncGraphPtr &fg, const std::vector<AnfNodePtr> &toposet,
+                                std::vector<AnfNodePtr> *need_replace_loads, ParamUserMap *param_users,
+                                std::vector<size_t> *special_op_indexes) {
+  LoadGraphMap load_groups;
   for (size_t i = 0; i < toposet.size(); i++) {
-    auto &node = toposet[i];
-    auto cnode = node->cast<CNodePtr>();
-    if (cnode == nullptr) {
+    auto cnode = dyn_cast<CNode>(toposet[i]);
+    // Exclude free variable node.
+    if (cnode == nullptr || cnode->func_graph() != fg) {
+      continue;
+    }
+    // Handle Load node.
+    if (cnode->IsApply(prim::kPrimLoad)) {
+      auto ref_key = GetRefKey(cnode->input(1));
+      if (!ref_key.has_value()) {
+        MS_LOG(WARNING) << "Load without ref key: " << cnode->DebugString();
+        continue;
+      }
+      // Group load nodes by their input ref key.
+      auto &group = load_groups[ref_key.value()];
+      (void)group.emplace_back(i);
+      if (group.size() == 1) {
+        // The first load user of param in toposort, if it can be replace load(param, ud) with load(param, u),
+        // Means there are not nodes which modify param before the load.
+        const bool param_not_used = (param_users->find(ref_key.value()) == param_users->end());
+        const bool can_replace = (param_not_used && special_op_indexes->empty());
+        if (can_replace) {
+          (void)need_replace_loads->emplace_back(cnode);
+        }
+      }
+      continue;
+    }
+    // Record special cnode.
+    bool is_special_op = IsValueNode<FuncGraph>(cnode->input(0)) || cnode->IsApply(prim::kPrimCall) ||
+                         cnode->IsApply(prim::kPrimPartial) || cnode->IsApply(prim::kPrimSwitch) ||
+                         cnode->IsApply(prim::kPrimSwitchLayer);
+    if (is_special_op) {
+      (void)special_op_indexes->emplace_back(i);
       continue;
     }
     // Record param user in toposort nodes.
-    for (const auto &input : cnode->inputs()) {
-      AnfNodePtr cur_param = nullptr;
-      if (input->isa<Parameter>()) {
-        cur_param = input;
-      } else if (IsPrimitiveCNode(input, prim::kPrimLoad)) {
-        cur_param = input->cast<CNodePtr>()->input(1);
-      } else if (IsPrimitiveCNode(input, prim::kPrimDepend) && input->cast<CNodePtr>()->input(1)->isa<Parameter>()) {
-        cur_param = input->cast<CNodePtr>()->input(1);
+    // We only check memory side effect cnodes or Depend nodes.
+    if (HasMemoryEffect(cnode) || cnode->IsApply(prim::kPrimDepend)) {
+      for (size_t n = 1; n < cnode->size(); ++n) {
+        const auto &input = cnode->input(n);
+        auto ref_key = GetRefKey(input);
+        if (ref_key.has_value()) {
+          (void)(*param_users)[ref_key.value()].emplace_back(i);
+        }
       }
-      if (cur_param != nullptr) {
-        unload_users_record[cur_param].insert(cnode);
-      }
-    }
-    if (IsPrimitiveCNode(cnode, prim::kPrimCall) || IsPrimitiveCNode(cnode, prim::kPrimPartial)) {
-      call_partial_nodes.insert(cnode);
-    }
-
-    if (!IsPrimitiveCNode(cnode, prim::kPrimLoad)) {
-      continue;
-    }
-    // Exclude free variable node.
-    if (cnode->func_graph() != fg) {
-      continue;
-    }
-    auto load_param = cnode->input(1);
-    // first time get same input1 of load.
-    if (load_groups_record.find(load_param) == load_groups_record.end()) {
-      load_groups_record[load_param] = load_groups.size();
-      load_groups.push_back({i});
-      // If had not user in toposort, should check if has call or partial user
-      // If already has call node user, do not need check again.
-      if (!unload_users_record[load_param].empty() || has_umonad_call_node_users[load_param] == true) {
-        continue;
-      }
-      has_umonad_call_node_users[load_param] = HasUMonadCallNodeUser(fg, call_partial_nodes, load_param);
-      if (has_umonad_call_node_users[load_param] == false) {
-        need_replace_loads->emplace_back(cnode);
-      }
-    } else {
-      // not first time get same input1 of load
-      load_groups[load_groups_record[load_param]].push_back(i);
     }
   }
   return load_groups;
 }
 
-std::vector<std::vector<size_t>> SplitGroup(const std::vector<AnfNodePtr> &toposet, const std::vector<size_t> &group) {
+bool HasIndexBetween(const std::vector<size_t> &indexes, size_t first, size_t second) {
+  return std::any_of(indexes.begin(), indexes.end(),
+                     [&first, &second](size_t index) { return index > first && index < second; });
+}
+
+std::vector<std::vector<size_t>> SplitGroup(const std::vector<size_t> &group,
+                                            const std::vector<size_t> &param_user_indexes,
+                                            const std::vector<size_t> &special_op_indexes) {
   if (group.size() <= 1) {
     return {};
   }
-  auto load_param = toposet[group.back()]->cast<CNodePtr>()->input(1);
   size_t cur_load_index = 1;
   size_t pre_load_index = 0;
   std::vector<size_t> cur_group = {group[pre_load_index]};
   std::vector<std::vector<size_t>> split_groups;
   while (cur_load_index < group.size()) {
-    const auto &cur_load = group[cur_load_index];
-    const auto &prev_load = group[pre_load_index];
-    const auto param_used_by_other =
-      std::any_of(toposet.begin() + prev_load, toposet.begin() + cur_load, [&load_param](const AnfNodePtr &node) {
-        if (!node->isa<CNode>()) {
-          return false;
-        }
-        if (IsPrimitiveCNode(node, prim::kPrimLoad)) {
-          return false;
-        }
-        // if Call/Switch/SwitchLayer, do not replace load.
-        if (IsPrimitiveCNode(node, prim::kPrimCall) || IsPrimitiveCNode(node, prim::kPrimSwitch) ||
-            IsPrimitiveCNode(node, prim::kPrimSwitchLayer)) {
-          return true;
-        }
-        auto cnode = node->cast<CNodePtr>();
-        auto &inputs = cnode->inputs();
-        return std::any_of(inputs.begin(), inputs.end(),
-                           [&load_param](const AnfNodePtr &input) { return load_param == input; });
-      });
-    if (param_used_by_other) {
-      split_groups.push_back(cur_group);
-      cur_group.clear();
+    const auto cur_load = group[cur_load_index];
+    const auto prev_load = group[pre_load_index];
+    // Exist node which is the user of load_param between prev_load and cur_load,
+    // Do not divide into the same group.
+    if (HasIndexBetween(param_user_indexes, prev_load, cur_load) ||
+        HasIndexBetween(special_op_indexes, prev_load, cur_load)) {
+      (void)split_groups.emplace_back(std::move(cur_group));
     }
     cur_group.push_back(cur_load);
     pre_load_index++;
@@ -319,16 +304,20 @@ bool ReplaceUpdateStateForLoad(const FuncGraphPtr &fg, const std::vector<AnfNode
       continue;
     }
     auto update_state = load_node->cast<CNodePtr>()->input(second_input_index);
-    if (!IsPrimitiveCNode(update_state, prim::kPrimUpdateState)) {
-      continue;
-    }
     auto mgr = fg->manager();
     MS_EXCEPTION_IF_NULL(mgr);
+    // If the u1 only used by Load and one other updatestate, no need to replace u1 by u'.
+    auto &node_users = mgr->node_users()[update_state];
+    constexpr size_t kUserSize = 2;
+    if (!IsPrimitiveCNode(update_state, prim::kPrimUpdateState) || node_users.size() == kUserSize) {
+      continue;
+    }
     mgr->SetEdge(load_node, second_input_index, monad);
     change = true;
   }
   return change;
 }
+}  // namespace
 
 // Node1{primLoad,X,Y1},...,Node{Node's input != X},...,Node2{primLoad,X,Y2},... =>
 // Node1{primLoad,X,Y1},...,Node{Nodes' input != X},...,Node1,...
@@ -336,16 +325,20 @@ bool AutoMonadEliminator::ReplaceAutoMonadNode(const FuncGraphManagerPtr &manage
   auto changed = false;
   for (const FuncGraphPtr &fg : manager->func_graphs()) {
     std::vector<AnfNodePtr> toposet = TopoSort(fg->get_return());
+    // Record the set of the first load of param which no nodes modify param before the load in toposort.
     std::vector<AnfNodePtr> need_replace_loads;
-    std::vector<std::vector<size_t>> load_groups = GenerateLoadGroups(fg, toposet, &need_replace_loads);
-    bool update_state_replaced = ReplaceUpdateStateForLoad(fg, need_replace_loads);
-    if (update_state_replaced) {
-      changed = true;
-    }
-    // split group if there is no-load node between two load nodes.
+    // Record the param and the toposort id of the unload user of param, they may modify the value of param.
+    ParamUserMap param_users;
+    // Record the toposort id of special_op(call, partial, switch, switch_layer), they may modify the value of param.
+    std::vector<size_t> special_op_indexes;
+    auto load_groups = GenerateLoadGroups(fg, toposet, &need_replace_loads, &param_users, &special_op_indexes);
+    // Split group if there is no-load node between two load nodes.
     std::vector<std::vector<size_t>> need_merge_loads;
-    for (auto &group : load_groups) {
-      auto groups = SplitGroup(toposet, group);
+    for (auto &load_group : load_groups) {
+      auto &ref_key = load_group.first;
+      auto &group = load_group.second;
+      const auto &param_user_indexes = param_users[ref_key];
+      auto groups = SplitGroup(group, param_user_indexes, special_op_indexes);
       need_merge_loads.insert(need_merge_loads.end(), groups.begin(), groups.end());
     }
     for (auto &group : need_merge_loads) {
@@ -353,6 +346,10 @@ bool AutoMonadEliminator::ReplaceAutoMonadNode(const FuncGraphManagerPtr &manage
       if (replaced) {
         changed = true;
       }
+    }
+    bool update_state_replaced = ReplaceUpdateStateForLoad(fg, need_replace_loads);
+    if (update_state_replaced) {
+      changed = true;
     }
   }
   return changed;
@@ -398,7 +395,7 @@ bool AutoMonadEliminator::EliminateAutoMonadNode(const FuncGraphManagerPtr &mana
     fg->set_output(input);
     changed = true;
   }
-  MS_LOG(DEBUG) << "changed: " << changed;
+  MS_LOG(DEBUG) << "Changed: " << changed;
   return changed;
 }
 }  // namespace opt

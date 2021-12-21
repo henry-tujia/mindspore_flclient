@@ -27,9 +27,7 @@ class AkgGpuKernelBuilder : public AkgKernelBuilder {
   AkgGpuKernelBuilder() = default;
   ~AkgGpuKernelBuilder() = default;
 
-  kernel::KernelBuildClient *GetClient() override { return &(kernel::GpuKernelBuildClient::Instance()); }
-  KernelPackPtr AkgSearchCache(const std::string &kernel_name) override;
-  KernelPackPtr AkgInsertCache(const std::string &kernel_name) override;
+  kernel::KernelBuildClient *GetClient() override { return &(kernel::AkgKernelBuildClient::Instance()); }
   void AkgSetKernelMod(const KernelPackPtr &kernel_pack, const AkgKernelJsonGenerator &json_generator,
                        const AnfNodePtr &anf_node) override;
   void AkgSaveJsonInfo(const string &kernel_name, const string &kernel_json) override;

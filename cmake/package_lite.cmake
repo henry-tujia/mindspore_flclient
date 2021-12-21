@@ -11,12 +11,18 @@ set(TEST_CASE_DIR ${TOP_DIR}/mindspore/lite/test/build)
 set(RUNTIME_DIR ${RUNTIME_PKG_NAME}/runtime)
 set(RUNTIME_INC_DIR ${RUNTIME_PKG_NAME}/runtime/include)
 set(RUNTIME_LIB_DIR ${RUNTIME_PKG_NAME}/runtime/lib)
+set(PROVIDERS_LIB_DIR ${RUNTIME_PKG_NAME}/providers)
 set(MIND_DATA_INC_DIR ${RUNTIME_PKG_NAME}/runtime/include/dataset)
 set(TURBO_DIR ${RUNTIME_PKG_NAME}/runtime/third_party/libjpeg-turbo)
+set(GLOG_DIR ${RUNTIME_PKG_NAME}/runtime/third_party/glog)
 set(SECUREC_DIR ${RUNTIME_PKG_NAME}/runtime/third_party/securec)
 set(MINDSPORE_LITE_LIB_NAME libmindspore-lite)
 set(MINDSPORE_CORE_LIB_NAME libmindspore_core)
 set(BENCHMARK_NAME benchmark)
+set(MSLITE_NNIE_LIB_NAME libmslite_nnie)
+set(MSLITE_PROPOSAL_LIB_NAME libmslite_proposal)
+set(MICRO_NNIE_LIB_NAME libmicro_nnie)
+set(DPICO_ACL_ADAPTER_LIB_NAME libdpico_acl_adapter)
 set(BENCHMARK_ROOT_DIR ${RUNTIME_PKG_NAME}/tools/benchmark)
 
 set(MINDSPORE_LITE_TRAIN_LIB_NAME libmindspore-lite-train)
@@ -220,11 +226,37 @@ if(PLATFORM_ARM64)
     endif()
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
+    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+            COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
-    __install_micro_wrapper()
+    install(DIRECTORY ${TOP_DIR}/include/c_api/ DESTINATION ${RUNTIME_INC_DIR}/c_api
+            COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
+    if(NOT TARGET_MIX210)
+        __install_micro_wrapper()
+    endif()
     if(MSLITE_ENABLE_TOOLS)
-        install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+        if(NOT BUILD_FIRST)
+            install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR}
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
+            if(TARGET_HIMIX)
+                if(${MSLITE_REGISTRY_DEVICE}  STREQUAL "Hi3559A")
+                    install(FILES ${TOP_DIR}/mindspore/lite/build/tools/benchmark/nnie/${MSLITE_NNIE_LIB_NAME}.so
+                            DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                            COMPONENT ${RUNTIME_COMPONENT_NAME})
+                    install(FILES
+                            ${TOP_DIR}/mindspore/lite/build/tools/benchmark/nnie_proposal/${MSLITE_PROPOSAL_LIB_NAME}.so
+                            DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                            COMPONENT ${RUNTIME_COMPONENT_NAME})
+                endif()
+            elseif(TARGET_MIX210)
+                if(${MSLITE_REGISTRY_DEVICE}  STREQUAL "SD3403")
+                    install(FILES ${TOP_DIR}/mindspore/lite/build/tools/benchmark/dpico/${DPICO_ACL_ADAPTER_LIB_NAME}.so
+                            DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                            COMPONENT ${RUNTIME_COMPONENT_NAME})
+                endif()
+            endif()
+        endif()
         if(SUPPORT_TRAIN)
             install(TARGETS ${BENCHMARK_TRAIN_NAME} RUNTIME DESTINATION ${BENCHMARK_TRAIN_ROOT_DIR} COMPONENT
                     ${RUNTIME_COMPONENT_NAME})
@@ -295,11 +327,35 @@ elseif(PLATFORM_ARM32)
     endif()
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
+    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+            COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
+    install(DIRECTORY ${TOP_DIR}/include/c_api/ DESTINATION ${RUNTIME_INC_DIR}/c_api
+            COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
     __install_micro_wrapper()
     if(MSLITE_ENABLE_TOOLS AND NOT TARGET_OHOS_LITE)
-        install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+        if(NOT BUILD_FIRST)
+            install(TARGETS ${BENCHMARK_NAME} RUNTIME
+                    DESTINATION ${BENCHMARK_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+            if(TARGET_HIMIX)
+                if(${MSLITE_REGISTRY_DEVICE}  STREQUAL "Hi3516D" OR ${MSLITE_REGISTRY_DEVICE}  STREQUAL "Hi3519A")
+                    install(FILES ${TOP_DIR}/mindspore/lite/build/tools/benchmark/nnie/${MSLITE_NNIE_LIB_NAME}.so
+                            DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                            COMPONENT ${RUNTIME_COMPONENT_NAME})
+                    install(FILES
+                            ${TOP_DIR}/mindspore/lite/build/tools/benchmark/nnie_proposal/${MSLITE_PROPOSAL_LIB_NAME}.so
+                            DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                            COMPONENT ${RUNTIME_COMPONENT_NAME})
+                    if(${MSLITE_REGISTRY_DEVICE}  STREQUAL "Hi3516D")
+                        install(FILES
+                                ${TOP_DIR}/mindspore/lite/tools/benchmark/nnie/third_patry/${MICRO_NNIE_LIB_NAME}.so
+                                DESTINATION ${PROVIDERS_LIB_DIR}/${MSLITE_REGISTRY_DEVICE}
+                                COMPONENT ${RUNTIME_COMPONENT_NAME})
+                    endif()
+                endif()
+            endif()
+        endif()
         if(SUPPORT_TRAIN)
             install(TARGETS ${BENCHMARK_TRAIN_NAME} RUNTIME DESTINATION ${BENCHMARK_TRAIN_ROOT_DIR} COMPONENT
                     ${RUNTIME_COMPONENT_NAME})
@@ -312,52 +368,10 @@ elseif(WIN32)
     if(MSLITE_ENABLE_CONVERTER)
         install(FILES ${TOP_DIR}/build/mindspore/tools/converter/converter_lite.exe
                 DESTINATION ${CONVERTER_ROOT_DIR}/converter COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(DIRECTORY ${TOP_DIR}/mindspore/lite/include/ DESTINATION ${CONVERTER_ROOT_DIR}/include
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h"
-                PATTERN "train*" EXCLUDE PATTERN "delegate.h" EXCLUDE PATTERN "lite_session.h" EXCLUDE)
         install(FILES ${LIB_LIST} DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(FILES ${TOP_DIR}/build/mindspore/tools/converter/registry/libmslite_converter_plugin.dll
                 DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(FILES ${glog_LIBPATH}/../bin/libglog.dll DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${CONVERTER_ROOT_DIR}/include/api
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/api/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/api
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/abstract/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/abstract
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/base/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/base
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/ir/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ir
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/ops/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ops
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/utils/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/utils
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(FILES ${TOP_DIR}/mindspore/lite/tools/converter/ops/ops_def.h
-                DESTINATION ${CONVERTER_ROOT_DIR}/include COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(DIRECTORY ${TOP_DIR}/build/mindspore/schema/ DESTINATION ${CONVERTER_ROOT_DIR}/include/schema
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${flatbuffers_INC}/ DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(DIRECTORY ${glog_LIBPATH}/../include/glog/ DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party/glog
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/third_party/securec/include/
-                DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party/securec
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${protobuf_INC}/google DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(DIRECTORY ${eigen3_INC}/eigen3 DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/build/mindspore/tools/converter/mindspore_core/${MINDSPORE_CORE_LIB_NAME}.a
-                DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/build/mindspore/tools/converter/mindspore_core/gvar/libmindspore_gvar.a
-                DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/build/mindspore/securec/src/libsecurec.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${protobuf_LIBPATH}/libprotobuf.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${flatbuffers_LIBPATH}/libflatbuffers.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
         file(GLOB_RECURSE OPENCV_LIB_LIST
                 ${opencv_LIBPATH}/../bin/libopencv_core*
@@ -402,8 +416,12 @@ elseif(WIN32)
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
+    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+            COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
+    install(DIRECTORY ${TOP_DIR}/include/c_api/ DESTINATION ${RUNTIME_INC_DIR}/c_api
+            COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
     if(MSVC)
         install(FILES ${TOP_DIR}/build/mindspore/src/${MINDSPORE_LITE_LIB_NAME}.lib DESTINATION ${RUNTIME_LIB_DIR}
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
@@ -444,8 +462,12 @@ else()
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
+    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+            COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
+    install(DIRECTORY ${TOP_DIR}/include/c_api/ DESTINATION ${RUNTIME_INC_DIR}/c_api
+            COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
     install(FILES ${TOP_DIR}/mindspore/lite/build/src/${MINDSPORE_LITE_LIB_NAME}.so DESTINATION ${RUNTIME_LIB_DIR}
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(FILES ${TOP_DIR}/mindspore/lite/build/src/${MINDSPORE_LITE_LIB_NAME}.a DESTINATION ${RUNTIME_LIB_DIR}
@@ -461,24 +483,28 @@ else()
         install(DIRECTORY ${TOP_DIR}/mindspore/lite/include/ DESTINATION ${CONVERTER_ROOT_DIR}/include
                 COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h"
                 PATTERN "train*" EXCLUDE PATTERN "delegate.h" EXCLUDE PATTERN "lite_session.h" EXCLUDE)
-        install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${CONVERTER_ROOT_DIR}/include/api
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/api/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/api
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/abstract/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/abstract
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/base/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/base
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/ir/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ir
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
+        install(FILES ${API_HEADER}  DESTINATION ${CONVERTER_ROOT_DIR}/include/api
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${MINDAPI_BASE_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/mindapi/base
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${MINDAPI_IR_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/mindapi/ir
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${ABSTRACT_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/abstract
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${API_IR_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/api/ir
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${BASE_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/base
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${IR_DTYPE_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ir/dtype
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${IR_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ir
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(DIRECTORY ${TOP_DIR}/mindspore/core/ops/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/ops
                 COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${TOP_DIR}/mindspore/core/utils/ DESTINATION ${CONVERTER_ROOT_DIR}/include/core/utils
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(FILES ${TOP_DIR}/mindspore/lite/tools/converter/ops/ops_def.h
-                DESTINATION ${CONVERTER_ROOT_DIR}/include COMPONENT ${RUNTIME_COMPONENT_NAME})
+        install(FILES ${UTILS_HEADER} DESTINATION ${CONVERTER_ROOT_DIR}/include/core/utils
+                COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(DIRECTORY ${TOP_DIR}/mindspore/lite/build/schema/ DESTINATION ${CONVERTER_ROOT_DIR}/include/schema
-                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
+                COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "schema_generated.h" EXCLUDE)
         install(DIRECTORY ${flatbuffers_INC}/ DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(DIRECTORY ${glog_LIBPATH}/../include/glog/ DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party/glog
@@ -486,26 +512,6 @@ else()
         install(DIRECTORY ${TOP_DIR}/third_party/securec/include/
                 DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party/securec
                 COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
-        install(DIRECTORY ${protobuf_INC}/google DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        if(MSLITE_ENABLE_MODEL_ENCRYPTION)
-            install(DIRECTORY ${openssl_INC}/openssl DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                    COMPONENT ${RUNTIME_COMPONENT_NAME})
-            install(FILES ${openssl_LIBPATH}/libcrypto.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                    COMPONENT ${RUNTIME_COMPONENT_NAME})
-        endif()
-        install(DIRECTORY ${eigen3_INC}/eigen3 DESTINATION ${CONVERTER_ROOT_DIR}/include/third_party
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/mindspore/lite/build/tools/converter/mindspore_core/${MINDSPORE_CORE_LIB_NAME}.a
-                DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/mindspore/lite/build/tools/converter/mindspore_core/gvar/libmindspore_gvar.a
-                DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${TOP_DIR}/mindspore/lite/build/securec/src/libsecurec.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${protobuf_LIBPATH}/libprotobuf.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${flatbuffers_LIBPATH}/libflatbuffers.a DESTINATION ${CONVERTER_ROOT_DIR}/lib
-                COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(TARGETS converter_lite RUNTIME DESTINATION ${CONVERTER_ROOT_DIR}/converter
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(FILES ${TOP_DIR}/mindspore/lite/build/tools/converter/registry/libmslite_converter_plugin.so
@@ -513,30 +519,59 @@ else()
         install(FILES ${glog_LIBPATH}/libglog.so.0.4.0 DESTINATION ${CONVERTER_ROOT_DIR}/lib RENAME libglog.so.0
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
 
-        install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.5.1
+        install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.5.2
                 DESTINATION ${CONVERTER_ROOT_DIR}/lib RENAME libopencv_core.so.4.5
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.5.1
+        install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.5.2
                 DESTINATION ${CONVERTER_ROOT_DIR}/lib RENAME libopencv_imgcodecs.so.4.5
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
-        install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.5.1
+        install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.5.2
                 DESTINATION ${CONVERTER_ROOT_DIR}/lib RENAME libopencv_imgproc.so.4.5
                 COMPONENT ${RUNTIME_COMPONENT_NAME})
 
-        if(MSLITE_ENABLE_NNIE)
-            install(FILES ${glog_LIBPATH}/libglog.so.0.4.0 DESTINATION ${CONVERTER_ROOT_DIR}/lib RENAME libglog.so
-                    COMPONENT ${RUNTIME_COMPONENT_NAME})
-        endif()
         if(MSLITE_ENABLE_ACL)
-            set(LITE_ACL_DIR ${TOP_DIR}/mindspore/lite/build/tools/converter/acl)
+            set(LITE_ACL_DIR ${TOP_DIR}/mindspore/lite/build/tools/converter/adapter/acl)
             install(FILES ${LITE_ACL_DIR}/mindspore_shared_lib/libmindspore_shared_lib.so
                     DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
+        endif()
+
+        if(MSLITE_ENABLE_DPICO_ATC_ADAPTER)
+            install(FILES ${TOP_DIR}/mindspore/lite/build/tools/converter/adapter/dpico/libdpico_atc_adapter.so
+                    DESTINATION ${CONVERTER_ROOT_DIR}/providers/SD3403 COMPONENT ${RUNTIME_COMPONENT_NAME})
+            if(MSLITE_ENABLE_TOOLS)
+                install(TARGETS ${BECHCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR}
+                        COMPONENT ${RUNTIME_COMPONENT_NAME})
+            endif()
+        endif()
+
+        if(MSLITE_ENABLE_RUNTIME_GLOG)
+            install(DIRECTORY ${glog_LIBPATH}/../include/glog/ DESTINATION ${RUNTIME_INC_DIR}/third_party/glog
+                    COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
+            install(FILES ${glog_LIBPATH}/libglog.so.0.4.0 DESTINATION ${GLOG_DIR} RENAME libglog.so.0
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
+        endif()
+        if(MSLITE_ENABLE_RUNTIME_CONVERT)
+            install(FILES ${TOP_DIR}/mindspore/lite/build/tools/converter/registry/libmslite_converter_plugin.so
+                    DESTINATION ${RUNTIME_LIB_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+
+            install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.5.2
+                    DESTINATION ${RUNTIME_LIB_DIR} RENAME libopencv_core.so.4.5
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
+            install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.5.2
+                    DESTINATION ${RUNTIME_LIB_DIR} RENAME libopencv_imgcodecs.so.4.5
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
+            install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.5.2
+                    DESTINATION ${RUNTIME_LIB_DIR} RENAME libopencv_imgproc.so.4.5
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
         endif()
         __install_micro_wrapper()
         __install_micro_codegen()
     endif()
     if(MSLITE_ENABLE_TOOLS)
-        install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+        if(NOT BUILD_FIRST)
+            install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR}
+                    COMPONENT ${RUNTIME_COMPONENT_NAME})
+        endif()
         if(SUPPORT_TRAIN)
             install(TARGETS ${BENCHMARK_TRAIN_NAME} RUNTIME DESTINATION ${BENCHMARK_TRAIN_ROOT_DIR} COMPONENT
                     ${RUNTIME_COMPONENT_NAME})

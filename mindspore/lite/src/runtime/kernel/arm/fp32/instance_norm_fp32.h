@@ -32,10 +32,12 @@ class InstanceNormCPUKernel : public InnerKernel {
   }
   ~InstanceNormCPUKernel() override{};
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
-  int DoInstanceNorm(int task_id);
+  int DoInstanceNorm(int task_id) const;
+
+ private:
   void FreeTmpBuffer() {
     if (tmp_src_data_ != nullptr) {
       ms_context_->allocator->Free(tmp_src_data_);

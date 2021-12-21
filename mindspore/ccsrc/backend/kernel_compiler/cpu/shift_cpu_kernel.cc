@@ -14,22 +14,24 @@
  * limitations under the License.
  */
 #include "backend/kernel_compiler/cpu/shift_cpu_kernel.h"
-#include <algorithm>
-#include <cmath>
 #include "common/thread_pool.h"
 
 namespace mindspore {
 namespace kernel {
 template <typename T>
 void ShiftCpuKernel<T>::InitKernel(const CNodePtr &kernel_node) {
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   size_t input_count = AnfAlgo::GetInputTensorNum(kernel_node);
   if (input_count != 2) {
-    MS_LOG(EXCEPTION) << input_count << " inputs were provided, but Shift expects 2.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 2, but got " << input_count
+                      << " input(s).";
   }
 
   size_t output_count = AnfAlgo::GetOutputTensorNum(kernel_node);
   if (output_count != 1) {
-    MS_LOG(EXCEPTION) << "Number of outputs is " << output_count << ", but should be 1 for Shift.";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_count
+                      << " output(s).";
   }
 
   auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, kInputIndex);
@@ -38,7 +40,7 @@ void ShiftCpuKernel<T>::InitKernel(const CNodePtr &kernel_node) {
   auto axis = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, AXIS);
   size_t axis_t = axis < 0 ? LongToSize(axis + SizeToLong(input_shape.size())) : LongToSize(axis);
   if (axis_t >= input_shape.size()) {
-    MS_LOG(EXCEPTION) << "the evaluated axis should be smaller than the dimension of input tensor "
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be less than the dimension of input tensor "
                       << input_shape.size() << "D, but got " << axis_t;
   }
 
@@ -51,30 +53,37 @@ void ShiftCpuKernel<T>::InitKernel(const CNodePtr &kernel_node) {
 
     copy_src_begin_ = 0;
     copy_dst_begin_ = periods_;
-    copy_size_ = input_shape[axis] - periods_;
+    copy_size_ = SizeToLong(input_shape[axis]) - periods_;
   } else if (periods_ < 0) {
-    fill_begin_ = input_shape[axis] + periods_;
+    fill_begin_ = SizeToLong(input_shape[axis]) + periods_;
     fill_size_ = -periods_;
 
     copy_src_begin_ = -periods_;
     copy_dst_begin_ = 0;
-    copy_size_ = input_shape[axis] + periods_;
+    copy_size_ = SizeToLong(input_shape[axis]) + periods_;
   }
 }
 
 template <typename T>
 bool ShiftCpuKernel<T>::Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
                                const std::vector<AddressPtr> &outputs) {
-  if (inputs.size() != 2 || outputs.size() != 1) {
-    MS_LOG(EXCEPTION) << "Sort needs 2 input and 1 outputs, but get inputs: " << inputs.size()
-                      << "outputs: " << outputs.size();
+  if (inputs.size() != 2) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 2, but got " << inputs.size()
+                      << " input(s).";
+  }
+  if (outputs.size() != 1) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << outputs.size()
+                      << " output(s).";
   }
   auto input = reinterpret_cast<T *>(inputs[0]->addr);
   const auto fill_value = reinterpret_cast<T *>(inputs[1]->addr)[0];
   auto output = reinterpret_cast<T *>(outputs[0]->addr);
 
   if (outputs[0]->size != inputs[0]->size) {
-    MS_LOG(EXCEPTION) << "Error output data size!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the memory size of output should be equal to the memory size "
+                         "of the first input, but got the memory size of output: "
+                      << outputs[0]->size << " and the memory size of the first input: " << inputs[0]->size;
   }
 
   // if periods_ is 0, do nothing
@@ -84,18 +93,18 @@ bool ShiftCpuKernel<T>::Launch(const std::vector<AddressPtr> &inputs, const std:
     return true;
   }
 
-  const size_t outer_size = axisIterator_.OuterSize();
-  const size_t axis_size = axisIterator_.AxisSize();
-  const size_t inner_size = axisIterator_.InnerSize();
+  const int64_t outer_size = SizeToLong(axisIterator_.OuterSize());
+  const int64_t axis_size = SizeToLong(axisIterator_.AxisSize());
+  const int64_t inner_size = SizeToLong(axisIterator_.InnerSize());
 
   // periods is larger than size, all value of the tensor would be fill_value
-  if (std::abs(periods_) >= static_cast<int>(axis_size)) {
+  if (std::abs(periods_) >= axis_size) {
     (void)std::fill_n(output, outer_size * axis_size * inner_size, fill_value);
     return true;
   }
 
   if (inputs[0]->size != outer_size * axis_size * inner_size * sizeof(T)) {
-    MS_LOG(EXCEPTION) << "Error input data size!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the memory size of inputs error.";
   }
 
   // check if the tensor is linear
@@ -111,7 +120,7 @@ bool ShiftCpuKernel<T>::Launch(const std::vector<AddressPtr> &inputs, const std:
   // normal procedure
   std::vector<common::Task> tasks;
   tasks.reserve(outer_size);
-  for (size_t i = 0; i < outer_size; ++i) {
+  for (int i = 0; i < outer_size; ++i) {
     (void)tasks.emplace_back([this, i, fill_value, axis_size, inner_size, input, output, outputs] {
       size_t offset = i * axis_size * inner_size;
       size_t input_offset = offset + copy_src_begin_ * inner_size;

@@ -60,7 +60,7 @@ AbstractBasePtr InferImplSqrtGrad(const AnalysisEnginePtr &, const PrimitivePtr 
   auto out = CheckArg<AbstractTensor>(op_name, args_spec_list, 0);
   auto dout = CheckArg<AbstractTensor>(op_name, args_spec_list, 1);
   (void)CheckDtypeSame(op_name, out, dout);
-  (void)CheckShapeSame(op_name, out, dout);
+  CheckShapeSame(op_name, out, dout);
 
   return out->Broaden();
 }
@@ -95,7 +95,7 @@ void InferImplReduceFuncCalShape(ShapeVector *shape, const ShapeVector &x_shape,
         for (it = axis_items.begin(); it != axis_items.end(); ++it) {
           axis_value = GetValue<int64_t>(*it);
           axis_value = InferImplReduceFuncCheckAxis(axis_value, x_shape.size());
-          shape->at(axis_value) = 1;
+          shape->at(LongToSize(axis_value)) = 1;
         }
       } else {
         std::sort(axis_items.begin(), axis_items.end());
@@ -108,10 +108,10 @@ void InferImplReduceFuncCalShape(ShapeVector *shape, const ShapeVector &x_shape,
     }
   } else if (axis->isa<Int32Imm>() || axis->isa<Int64Imm>()) {
     (void)shape->insert(shape->end(), x_shape.begin(), x_shape.end());
-    int64_t axis_value = GetValue<int64_t>(axis);
+    auto axis_value = GetValue<int64_t>(axis);
     axis_value = InferImplReduceFuncCheckAxis(axis_value, x_shape.size());
     if (keep_dims_value) {
-      shape->at(axis_value) = 1;
+      shape->at(LongToSize(axis_value)) = 1;
     } else {
       (void)shape->erase(shape->begin() + axis_value);
     }
@@ -434,6 +434,30 @@ AbstractBasePtr InferImplLess(const AnalysisEnginePtr &, const PrimitivePtr &pri
   auto output_type = std::make_shared<Bool>();
   return std::make_shared<AbstractTensor>(output_type,
                                           std::make_shared<Shape>(out_shape, out_shape_min, out_shape_max));
+}
+
+AbstractBasePtr InferImplReal(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                              const AbstractBasePtrList &args_spec_list) {
+  // Inputs: one tensors.
+  constexpr auto kRealInputNum = 1;
+  const std::string op_name = primitive->name();
+  CheckArgsSize(op_name, args_spec_list, kRealInputNum);
+  AbstractBasePtr input_abs = args_spec_list[0];
+  auto input = dyn_cast<AbstractTensor>(input_abs);
+  if (input == nullptr) {
+    return input_abs->Clone();
+  }
+  TypePtr input_type = input->element()->GetTypeTrack();
+  TypePtr output_type = nullptr;
+  if (input_type->type_id() == TypeId::kNumberTypeComplex64) {
+    output_type = kFloat32;
+  } else if (input_type->type_id() == TypeId::kNumberTypeComplex128) {
+    output_type = kFloat64;
+  } else {
+    return input_abs->Clone();
+  }
+
+  return std::make_shared<AbstractTensor>(output_type, input->shape());
 }
 }  // namespace abstract
 }  // namespace mindspore

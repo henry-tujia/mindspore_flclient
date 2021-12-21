@@ -81,7 +81,6 @@ std::unordered_map<schema::PrimitiveType, std::vector<int>> GetExtNhwcIndexes();
 std::vector<schema::PrimitiveType> Getfp32FullOpList();
 
 std::vector<schema::PrimitiveType> GetUint8NhwcOpList();
-std::vector<schema::PrimitiveType> GetInt8OpList();
 
 const schema::Primitive *ConvertToPrimitive(schema::PrimitiveT *primitive_t, flatbuffers::FlatBufferBuilder *fbb);
 
@@ -420,6 +419,8 @@ bool IsCall(const AnfNodePtr &node);
 
 bool IsSwitch(const AnfNodePtr &node);
 
+bool IsSwitchLayer(const AnfNodePtr &node);
+
 bool IsMakeTuple(const AnfNodePtr &node);
 
 ValueNodePtr GetPartialFusionPrim();
@@ -427,6 +428,10 @@ ValueNodePtr GetPartialFusionPrim();
 ValueNodePtr GetSwitchAnfPrim();
 
 ValueNodePtr GetCallAnfPrim();
+
+inline bool IsGraphInput(const AnfNodePtr &cnode) {
+  return cnode->isa<Parameter>() && !cnode->cast<ParameterPtr>()->has_default();
+}
 }  // namespace lite
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_TOOLS_COMMON_NODE_UTIL_H

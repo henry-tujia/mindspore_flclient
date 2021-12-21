@@ -13,126 +13,94 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_CPU_KERNEL_H_
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_CPU_KERNEL_H_
+
 #include <functional>
 #include <memory>
 #include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
+
 #include "backend/kernel_compiler/kernel.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "ir/anf.h"
 #include "runtime/framework/graph_scheduler.h"
 #include "actor/actormgr.h"
+#if defined(__x86_64__) || defined(__amd64__) || defined(_M_IX86) || defined(_M_X64)
+#define PLATFORM_86
+#endif
 
 using mindspore::kernel::Address;
 using mindspore::kernel::AddressPtr;
 using CTask = std::function<void(size_t, size_t)>;
 namespace mindspore {
 namespace kernel {
-const char KERNEL_SIZE[] = "kernel_size";
-const char STRIDE[] = "stride";
-const char STRIDES[] = "strides";
-const char DILATION[] = "dilation";
-const char DILATIONS[] = "dilations";
-const char FORMAT[] = "format";
-const char PAD[] = "pad";
-const char PAD_LIST[] = "pad_list";
-const char PAD_MODE[] = "pad_mode";
-const char PAD_MODE_LOWER_SAME[] = "same";
-const char PAD_MODE_LOWER_VALID[] = "valid";
-const char PAD_MODE_UPPER_SAME[] = "SAME";
-const char PAD_MODE_UPPER_VALID[] = "VALID";
-const char TRANSPOSE_A[] = "transpose_a";
-const char TRANSPOSE_B[] = "transpose_b";
-const char IS_GRAD[] = "is_grad";
-const char TRANSPOSE_NO = 'N';
-const char TRANSPOSE_YES = 'T';
-const char AXIS[] = "axis";
-const char DIM[] = "dim";
-const char BEGIN[] = "begin";
-const char END[] = "end";
-const char SIZE[] = "size";
-const char USE_NESTEROV[] = "use_nesterov";
-const char GROUP[] = "group";
-const char START[] = "start";
-const char LIMIT[] = "limit";
-const char DELTA[] = "delta";
-const char SORTED[] = "sorted";
-const char ADJ_ST[] = "adjoint_st";
-const char ADJ_dT[] = "adjoint_dt";
-const char PERIODS[] = "periods";
-const char WINDOW[] = "window";
-const char MIN_PERIODS[] = "min_periods";
-const char CENTER[] = "center";
-const char METHOD[] = "method";
-const char CLOSED[] = "closed";
-const char NA_OPTION[] = "na_option";
-const char ASCENDING[] = "ascending";
-const char PCT[] = "pct";
-
-enum OperateType {
-  ADD = 0,
-  SUB,
-  MUL,
-  DIV,
-  SQUARE,
-  SQRT,
-  POW,
-  REALDIV,
-  FLOORDIV,
-  MOD,
-  FLOORMOD,
-  NEG,
-  LESS,
-  ASSIGNADD,
-  RELUGRAD,
-  RELU6GRAD,
-  ABSGRAD,
-  TANHGRAD,
-  SQRTGRAD,
-  SIGMOIDGRAD,
-  ONESLIKE,
-  ZEROSLIKE,
-  SIGN,
-  EQUAL,
-  NOTEQUAL,
-  LESSEQUAL,
-  LOGICALAND,
-  LOGICALOR,
-  LOGICALNOT,
-  FLOOR,
-  SQUAREDDIFFERENCE,
-  GREATER,
-  GREATEREQUAL,
-  RECIPROCAL,
-  GELU,
-  GELUGRAD,
-  ASIN,
-  ACOS,
-  ATAN,
-  ASINGRAD,
-  ACOSGRAD,
-  ATANGRAD,
-  SIN,
-  COS,
-  TAN,
-  SINH,
-  COSH,
-  ASINH,
-  ACOSH,
-  ATANH,
-  ASINHGRAD,
-  ACOSHGRAD,
-  ATAN2,
-  RINT,
-  ROUND,
-  EXP,
-  IDENTITY,
-};
+constexpr char KERNEL_SIZE[] = "kernel_size";
+constexpr char STRIDE[] = "stride";
+constexpr char STRIDES[] = "strides";
+constexpr char DILATION[] = "dilation";
+constexpr char DILATIONS[] = "dilations";
+constexpr char FORMAT[] = "format";
+constexpr char PAD[] = "pad";
+constexpr char PAD_LIST[] = "pad_list";
+constexpr char PAD_MODE[] = "pad_mode";
+constexpr char PAD_MODE_LOWER_SAME[] = "same";
+constexpr char PAD_MODE_LOWER_VALID[] = "valid";
+constexpr char PAD_MODE_UPPER_SAME[] = "SAME";
+constexpr char PAD_MODE_UPPER_VALID[] = "VALID";
+constexpr char TRANSPOSE_A[] = "transpose_a";
+constexpr char TRANSPOSE_B[] = "transpose_b";
+constexpr char IS_GRAD[] = "is_grad";
+constexpr char TRANSPOSE_NO = 'N';
+constexpr char TRANSPOSE_YES = 'T';
+constexpr char AXIS[] = "axis";
+constexpr char DIM[] = "dim";
+constexpr char NUM[] = "num";
+constexpr char BEGIN[] = "begin";
+constexpr char END[] = "end";
+constexpr char SIZE[] = "size";
+constexpr char USE_NESTEROV[] = "use_nesterov";
+constexpr char GROUP[] = "group";
+constexpr char START[] = "start";
+constexpr char LIMIT[] = "limit";
+constexpr char DELTA[] = "delta";
+constexpr char SORTED[] = "sorted";
+constexpr char ADJ_ST[] = "adjoint_st";
+constexpr char ADJ_dT[] = "adjoint_dt";
+constexpr char REDUCTION[] = "reduction";
+constexpr char NONE[] = "none";
+constexpr char SUM[] = "sum";
+constexpr char MEAN[] = "mean";
+constexpr char BETA[] = "beta";
+constexpr char EXCLUSIVE[] = "exclusive";
+constexpr char REVERSE[] = "reverse";
+constexpr char PCR[] = "preprocess_collapse_repeated";
+constexpr char CTR[] = "ctc_merge_repeated";
+constexpr char ILOTI[] = "ignore_longer_outputs_than_inputs";
+constexpr char MOMENTUM[] = "momentum";
+constexpr char RHO[] = "rho";
+constexpr char EPSILON[] = "epsilon";
+constexpr char ALIGN_CORNERS[] = "align_corners";
+constexpr char PERIODS[] = "periods";
+constexpr char WINDOW[] = "window";
+constexpr char MIN_PERIODS[] = "min_periods";
+constexpr char CENTER[] = "center";
+constexpr char METHOD[] = "method";
+constexpr char CLOSED[] = "closed";
+constexpr char NA_OPTION[] = "na_option";
+constexpr char ASCENDING[] = "ascending";
+constexpr char PCT[] = "pct";
+constexpr char LOWER[] = "lower";
+constexpr char CLEAN[] = "clean";
+constexpr char TRANS[] = "trans";
+constexpr char MODE[] = "mode";
+constexpr char UNIT_DIAGONAL[] = "unit_diagonal";
+constexpr char C_EIEH_VECTOR[] = "compute_eigenvectors";
+constexpr char ADJOINT[] = "adjoint";
 
 struct ParallelSearchInfo {
   double min_cost_time{DBL_MAX};
@@ -140,6 +108,16 @@ struct ParallelSearchInfo {
   float best_block_size;
   size_t best_pow{0};
   size_t search_count{0};
+};
+
+class CpuDynamicKernel : public device::DynamicKernel {
+ public:
+  explicit CpuDynamicKernel(const CNodePtr &cnode_ptr) : DynamicKernel(nullptr, cnode_ptr) {}
+  ~CpuDynamicKernel() = default;
+
+  void UpdateArgs() override;
+  void PostExecute() final { MS_LOG(EXCEPTION) << "`PostExecute()` should not invoked with cpu backend"; };
+  void Execute() final { MS_LOG(EXCEPTION) << "`Execute()` should not invoked with cpu backend"; }
 };
 
 class CPUKernel : public kernel::KernelMod {
@@ -158,21 +136,30 @@ class CPUKernel : public kernel::KernelMod {
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
   const std::vector<size_t> &GetWorkspaceSizeList() const override { return workspace_size_list_; }
 
+  void SetCNodePtr(const CNodePtr &kernel_node) { cnode_ptr_ = kernel_node; }
+  const CNodeWeakPtr &GetCNodePtr() { return cnode_ptr_; }
+  void InitDynamicKernel(const CNodePtr &cnode_ptr) { dynamic_kernel_ = std::make_shared<CpuDynamicKernel>(cnode_ptr); }
+  device::DynamicKernelPtr DynamicKernel() const { return dynamic_kernel_; }
+
+  ParallelSearchInfo parallel_search_info_;
+
  protected:
   virtual void InitInputOutputSize(const CNodePtr &kernel_node);
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
-  ParallelSearchInfo parallel_search_info_;
+  CNodeWeakPtr cnode_ptr_;
+  device::DynamicKernelPtr dynamic_kernel_;
 
   template <typename T>
   inline T *GetDeviceAddress(const std::vector<AddressPtr> &addr_list, size_t index) {
     if (index >= addr_list.size()) {
-      MS_LOG(EXCEPTION) << "Address index(" << index << ") out of range(" << addr_list.size() << ")";
+      MS_LOG(EXCEPTION) << "Address index should be in range(" << addr_list.size() << "), but got " << index << ".";
     }
 
     if ((addr_list[index] == nullptr) || (addr_list[index]->addr == nullptr) || (addr_list[index]->size == 0)) {
-      MS_LOG(EXCEPTION) << "The device address is empty, address index: " << index;
+      MS_LOG(EXCEPTION) << "The device address is empty. Address index is " << index
+                        << ", and the length of 'addr_list' is " << addr_list.size();
     }
 
     return reinterpret_cast<T *>(addr_list[index]->addr);

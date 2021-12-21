@@ -17,9 +17,7 @@
 #define MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ARM_CONTROL_SWITCH_H_
 
 #include <vector>
-#include "src/runtime/kernel/arm/base/carry_data.h"
 #include "src/inner_kernel.h"
-#include "src/tensorlist.h"
 
 namespace mindspore::kernel {
 class SwitchCPUKernel : public InnerKernel {
@@ -28,7 +26,7 @@ class SwitchCPUKernel : public InnerKernel {
                   const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~SwitchCPUKernel() override = default;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 };

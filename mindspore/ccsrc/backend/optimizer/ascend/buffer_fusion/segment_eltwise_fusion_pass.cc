@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/segment_eltwise_fusion_pass.h"
-#include <vector>
-#include <unordered_set>
-#include <memory>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -30,7 +26,7 @@ void SegmentEltwiseFusionPass::MatchSegmentEltwise(const CNodePtr &cnode, const 
                                                    FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  std::unordered_set<AnfNodePtr> record{cnode};
+  mindspore::HashSet<AnfNodePtr> record{cnode};
   auto eltwise_input = cnode->input(kIndex1);
   while (CheckEltWiseNode(kernel_graph, eltwise_input)) {
     (void)record.insert(eltwise_input);
@@ -42,7 +38,7 @@ void SegmentEltwiseFusionPass::MatchSegmentEltwise(const CNodePtr &cnode, const 
     }
   }
   MS_EXCEPTION_IF_NULL(eltwise_input);
-  if (!eltwise_input->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(eltwise_input) ||
+  if (!eltwise_input->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(eltwise_input) ||
       fusion_id_allocator->HasFusionIdAttr(eltwise_input)) {
     return;
   }
@@ -73,7 +69,7 @@ void SegmentEltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGra
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   std::reverse(node_list.begin(), node_list.end());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

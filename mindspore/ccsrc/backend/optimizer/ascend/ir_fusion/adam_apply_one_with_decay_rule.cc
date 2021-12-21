@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,6 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/ir_fusion/adam_apply_one_with_decay_rule.h"
-
-#include <memory>
-#include <vector>
-
 #include "backend/session/anf_runtime_algorithm.h"
 #include "ir/primitive.h"
 #include "backend/optimizer/common/helper.h"
@@ -283,7 +279,7 @@ const AnfNodePtr AdamApplyOneWithDecayRule::Process(const FuncGraphPtr &graph, c
     auto iter_sub0 = (*equiv).find(sub0_var_);
     if (iter_sub0 == (*equiv).end()) {
       MS_LOG(EXCEPTION) << "The equiv map is expected to contains the sub0 var after matched."
-                        << " trace: " << trace::DumpSourceLines(node);
+                        << trace::DumpSourceLines(node);
     }
     sub0 = utils::cast<AnfNodePtr>(iter_sub0->second);
   }
@@ -292,19 +288,19 @@ const AnfNodePtr AdamApplyOneWithDecayRule::Process(const FuncGraphPtr &graph, c
     return nullptr;
   }
   std::vector<AnfNodePtr> inputs = GetFusionNodeInputs(equiv, node);
-  auto fusion_node = graph->NewCNode(inputs);
+  auto fusion_node = NewCNode(inputs, graph);
   MS_EXCEPTION_IF_NULL(fusion_node);
   fusion_node->set_scope(sub0->scope());
 
   auto iter_add0 = (*equiv).find(add0_var_);
   if (iter_add0 == (*equiv).end()) {
     MS_LOG(EXCEPTION) << "The equiv map is expected to contains the add0 var after matched."
-                      << " trace: " << trace::DumpSourceLines(node);
+                      << trace::DumpSourceLines(node);
   }
   auto iter_add1 = (*equiv).find(add1_var_);
   if (iter_add1 == (*equiv).end()) {
     MS_LOG(EXCEPTION) << "The equiv map is expected to contains the add1 var after matched."
-                      << " trace: " << trace::DumpSourceLines(node);
+                      << trace::DumpSourceLines(node);
   }
   auto add0 = utils::cast<AnfNodePtr>(iter_add0->second);
   MS_EXCEPTION_IF_NULL(add0);

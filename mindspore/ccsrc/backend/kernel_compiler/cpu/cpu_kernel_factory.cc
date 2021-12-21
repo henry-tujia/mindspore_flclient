@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,10 @@
 
 namespace mindspore {
 namespace kernel {
-const std::set<std::string> same_op_name = {"Concat", "Pack", "Stack", "Split", "Transpose", "Unpack", "AddN"};
+namespace {
+const std::set<std::string> same_op_name = {"Concat", "Pack", "Stack",        "Split",        "Transpose",
+                                            "Unpack", "AddN", "ConcatOffset", "DynamicStitch"};
+}
 CPUKernelFactory &CPUKernelFactory::GetInstance() {
   static CPUKernelFactory instance;
   return instance;
@@ -34,12 +37,13 @@ CPUKernelFactory &CPUKernelFactory::GetInstance() {
 void CPUKernelFactory::Register(const std::string &kernel_name, const KernelAttr &kernel_attr,
                                 CPUKernelCreator &&kernel_creator) {
   (void)name_to_attr_creator_[kernel_name].emplace_back(kernel_attr, kernel_creator);
-#if !defined(_WIN32) && !defined(_WIN64)
+#if !defined(_WIN32) && !defined(_WIN64) && !defined(__APPLE__)
   MS_LOG(DEBUG) << "CPUKernelFactory register operator: " << kernel_name;
 #endif
 }
 
 std::shared_ptr<CPUKernel> CPUKernelFactory::Create(const std::string &kernel_name, const CNodePtr &apply_kernel) {
+  MS_EXCEPTION_IF_NULL(apply_kernel);
   auto kernel_info = dynamic_cast<device::KernelInfo *>(apply_kernel->kernel_info());
   MS_EXCEPTION_IF_NULL(kernel_info);
   const KernelBuildInfo *kernel_build_Info = kernel_info->select_kernel_build_info();
@@ -53,20 +57,20 @@ std::shared_ptr<CPUKernel> CPUKernelFactory::Create(const std::string &kernel_na
 
 void CPUKernelFactory::SetKernelAttrs(const std::shared_ptr<kernel::OpInfo> op_info,
                                       std::vector<KernelAttr> *kernel_attrs) {
+  MS_EXCEPTION_IF_NULL(kernel_attrs);
+  MS_EXCEPTION_IF_NULL(op_info);
   auto inputs_ptr = op_info->inputs_ptr();
   auto outputs_ptr = op_info->outputs_ptr();
-  if (inputs_ptr.empty()) {
-    MS_LOG(EXCEPTION) << "op " << op_info->op_name() << " input size is zero.";
+  if (outputs_ptr.empty()) {
+    MS_LOG(EXCEPTION) << "The output dimension of operator '" << op_info->op_name() << "' should not be zero.";
   }
-  auto first_input_dtypes = inputs_ptr[0]->dtypes();
-  auto input_formats = inputs_ptr[0]->formats();
+  auto first_output_dtypes = outputs_ptr[0]->dtypes();
 
-  for (size_t i = 0; i < first_input_dtypes.size(); i++) {
+  for (size_t i = 0; i < first_output_dtypes.size(); i++) {
     KernelAttr kernel_attr;
-    (void)kernel_attr.AddInputAttr(kernel::DtypeToTypeId(first_input_dtypes[i]), input_formats[i]);
-    for (size_t j = 1; j < inputs_ptr.size(); j++) {
+    for (size_t j = 0; j < inputs_ptr.size(); j++) {
       auto input_dtypes = inputs_ptr[j]->dtypes();
-      input_formats = inputs_ptr[j]->formats();
+      auto input_formats = inputs_ptr[j]->formats();
       (void)kernel_attr.AddInputAttr(kernel::DtypeToTypeId(input_dtypes[i]), input_formats[i]);
     }
     for (size_t j = 0; j < outputs_ptr.size(); j++) {
@@ -121,7 +125,8 @@ std::pair<bool, size_t> CPUKernelFactory::CPUKernelAttrCheck(const std::string &
   if (kernel_attrs[0].GetInputSize() == 0 && kernel_attrs[0].GetOutputSize() == 0) {
     auto op_info_ptr = mindspore::kernel::OpLib::FindOp(kernel_name, kernel::OpImplyType::kCPU);
     if (op_info_ptr == nullptr) {
-      MS_LOG(EXCEPTION) << "Not find op[" << kernel_name << "] in cpu";
+      MS_LOG(EXCEPTION) << "Not find op[" << kernel_name << "] in cpu. For more details, "
+                        << "please refer to the list of supported cpu operations at https://www.mindspore.cn.";
     }
     kernel_attrs.clear();
     SetKernelAttrs(op_info_ptr, &kernel_attrs);
@@ -169,6 +174,11 @@ std::vector<KernelAttr> CPUKernelFactory::GetSupportedKernelAttrList(const std::
     (void)result.emplace_back(attr_creator.first);
   }
   return result;
+}
+
+bool CPUKernelFactory::SearchRegisteredOp(const std::string &kernel_name) const {
+  auto iter = name_to_attr_creator_.find(kernel_name);
+  return iter != name_to_attr_creator_.end();
 }
 }  // namespace kernel
 }  // namespace mindspore

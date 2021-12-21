@@ -16,14 +16,12 @@
 
 #include "minddata/dataset/engine/ir/datasetops/zip_node.h"
 
-#include <memory>
-#include <string>
-#include <vector>
 #include <algorithm>
 
 #include "minddata/dataset/engine/datasetops/zip_op.h"
 #include "minddata/dataset/engine/opt/pass.h"
 #include "minddata/dataset/util/status.h"
+
 namespace mindspore {
 namespace dataset {
 
@@ -46,22 +44,20 @@ Status ZipNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (children_.size() < kMinChildrenSize) {
     std::string err_msg = "ZipNode: input datasets are not specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (find(children_.begin(), children_.end(), nullptr) != children_.end()) {
     std::string err_msg = "ZipNode: input datasets should not be null.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
 
 Status ZipNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<ZipOp>();
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }

@@ -22,6 +22,7 @@
 #endif
 
 #include "minddata/dataset/kernels/ir/validators.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -37,8 +38,7 @@ std::string RescaleOperation::Name() const { return kRescaleOperation; }
 Status RescaleOperation::ValidateParams() {
   if (rescale_ < 0) {
     std::string err_msg = "Rescale: rescale must be greater than or equal to 0, got: " + std::to_string(rescale_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -57,8 +57,8 @@ Status RescaleOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status RescaleOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("rescale") != op_params.end(), "Failed to find rescale");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("shift") != op_params.end(), "Failed to find shift");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "rescale", kRescaleOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "shift", kRescaleOperation));
   float rescale = op_params["rescale"];
   float shift = op_params["shift"];
   *operation = std::make_shared<vision::RescaleOperation>(rescale, shift);

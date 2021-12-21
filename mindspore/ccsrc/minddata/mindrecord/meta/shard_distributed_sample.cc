@@ -22,8 +22,8 @@ using mindspore::MsLogLevel::ERROR;
 
 namespace mindspore {
 namespace mindrecord {
-ShardDistributedSample::ShardDistributedSample(int num_shards, int shard_id, int no_of_padded_samples, bool shuffle,
-                                               uint32_t seed, int no_of_samples, int offset)
+ShardDistributedSample::ShardDistributedSample(int num_shards, int shard_id, int64_t no_of_padded_samples, bool shuffle,
+                                               uint32_t seed, int64_t no_of_samples, int64_t offset)
     : ShardSample(1, num_shards, shard_id, no_of_samples, offset),
       shuffle_(shuffle),
       no_of_padded_samples_(no_of_padded_samples),
@@ -32,7 +32,7 @@ ShardDistributedSample::ShardDistributedSample(int num_shards, int shard_id, int
 }
 
 ShardDistributedSample::ShardDistributedSample(int num_shards, int shard_id, bool shuffle, uint32_t seed,
-                                               int no_of_samples, int offset)
+                                               int64_t no_of_samples, int64_t offset)
     : ShardDistributedSample(num_shards, shard_id, 0, shuffle, seed, no_of_samples, offset) {}
 
 int64_t ShardDistributedSample::GetNumSamples(int64_t dataset_size, int64_t num_classes) {
@@ -43,7 +43,7 @@ int64_t ShardDistributedSample::GetNumSamples(int64_t dataset_size, int64_t num_
     } else {
       res = dataset_size / denominator_ * numerator_ + 1;
     }
-    return no_of_samples_ == 0 ? res : std::min(static_cast<int64_t>(no_of_samples_), res);
+    return no_of_samples_ == 0 ? res : std::min(no_of_samples_, res);
   } else {
     auto padded_size = dataset_size + no_of_padded_samples_;
     if (padded_size % denominator_ == 0) {
@@ -58,10 +58,10 @@ int64_t ShardDistributedSample::GetNumSamples(int64_t dataset_size, int64_t num_
 Status ShardDistributedSample::PreExecute(ShardTaskList &tasks) {
   auto total_no = tasks.Size();
   if (no_of_padded_samples_ > 0 && first_epoch_) {
-    CHECK_FAIL_RETURN_UNEXPECTED(
-      total_no % denominator_ == 0,
-      "Invalid input, number of padding samples: " + std::to_string(no_of_padded_samples_) +
-        " plus dataset size is not divisible by num_shards: " + std::to_string(denominator_) + ".");
+    CHECK_FAIL_RETURN_UNEXPECTED(total_no % denominator_ == 0,
+                                 "Invalid data, the size of dataset and padded samples: " + std::to_string(total_no) +
+                                   " can not be divisible by the value of 'num_shards': " +
+                                   std::to_string(denominator_) + ".\n Please adjust the value of 'num_padded'.");
   }
   if (first_epoch_) {
     first_epoch_ = false;

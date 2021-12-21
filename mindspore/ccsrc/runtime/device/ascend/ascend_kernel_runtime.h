@@ -41,19 +41,19 @@ class AscendKernelRuntime : public KernelRuntime {
   AscendKernelRuntime() = default;
   ~AscendKernelRuntime() override;
   bool Init() override;
-  bool LoadData(session::KernelGraph *graph) override;
-  bool GenTask(const session::KernelGraph *graph);
-  void GenKernelEvents(const session::KernelGraph *graph) override;
+  bool LoadData(const session::KernelGraph &graph) override;
+  bool GenTask(const session::KernelGraph &graph);
+  void GenKernelEvents(const session::KernelGraph &graph) override;
   void SetKernelModStream(const std::vector<CNodePtr> &kernels, std::vector<size_t> *last_stream_nodes);
   void ProcessBoundaryEvent(const std::vector<CNodePtr> &kernels,
-                            std::vector<std::vector<std::function<void()>>> *kernel_run_events,
+                            std::map<AnfNodePtr, std::vector<std::function<void()>>> *kernel_run_events,
                             const std::vector<size_t> &last_stream_nodes);
-  bool GenDynamicKernel(const session::KernelGraph *graph) override;
-  bool RunDynamicKernelAsync(const session::KernelGraph *graph) override;
-  bool LoadTask(const session::KernelGraph *graph);
-  bool RunTask(const session::KernelGraph *graph);
-  bool Load(session::KernelGraph *graph, bool is_task_sink) override;
-  bool Run(session::KernelGraph *graph, bool is_task_sink) override;
+  bool GenDynamicKernel(const session::KernelGraph &graph) override;
+  bool RunDynamicKernelAsync(const session::KernelGraph &graph) override;
+  bool LoadTask(const session::KernelGraph &graph);
+  bool RunTask(const session::KernelGraph &graph);
+  bool Load(const session::KernelGraph &graph, bool is_task_sink) override;
+  bool Run(const session::KernelGraph &graph, bool is_task_sink) override;
   void ClearGraphRuntimeResource(uint32_t graph_id) override;
   void ClearGlobalIdleMem() override;
   bool SyncStream() override;
@@ -61,6 +61,9 @@ class AscendKernelRuntime : public KernelRuntime {
   void SetContext() override;
   void CreateContext() override;
   const void *context() const override { return rt_context_; }
+  DeviceAddressPtr GetInternalDeviceAddress(const session::KernelGraph &graph, const AnfNodePtr &node) override;
+  void GetShadowBackendNodeMap(const session::KernelGraph &graph,
+                               std::map<AnfNodePtr, AnfNodePtr> *shadow_backend_node_map) override;
 #ifndef ENABLE_SECURITY
   void PreInit() override;
 #endif
@@ -71,6 +74,9 @@ class AscendKernelRuntime : public KernelRuntime {
   void *compute_stream() const override { return stream_; }
   void *communication_stream() const override { return communication_stream_; }
   void *GetModelStream(uint32_t graph_id) const override;
+  // add for MindRT
+  void ReleaseDeviceRes() override;
+  uint64_t GetMsUsedHbmSize() const;
 
  protected:
   DeviceAddressPtr CreateDeviceAddress(void *device_ptr, size_t device_size, const string &format,
@@ -90,19 +96,16 @@ class AscendKernelRuntime : public KernelRuntime {
   void SetCurrentContext();
 
   void ClearGraphModelMap();
-  void ReleaseDeviceRes() override;
-  bool GraphWithEmptyTaskList(const session::KernelGraph *graph) const;
+  bool GraphWithEmptyTaskList(const session::KernelGraph &graph) const;
   bool CheckGraphIdValid(GraphId graph_id) const;
 #ifndef ENABLE_SECURITY
-  void DistributeDebugTask(NotNull<const session::KernelGraph *> graph,
-                           const NotNull<std::function<void *()>> &model_handle);
+  void DistributeDebugTask(const session::KernelGraph &graph, const NotNull<std::function<void *()>> &model_handle);
   void LaunchDataDump(GraphId graph_id);
-  void ReportProfilingData();
 #endif
   static CNodePtr GetErrorNodeName(uint32_t streamid, uint32_t taskid);
   static std::string GetDumpPath();
 #ifndef ENABLE_SECURITY
-  static void DumpTaskExceptionInfo(const session::KernelGraph *graph);
+  static void DumpTaskExceptionInfo(const session::KernelGraph &graph);
 #endif
   static void TaskFailCallback(rtExceptionInfo *task_fail_info);
   static bool DeleteDumpDir(const std::string &path);
@@ -120,7 +123,6 @@ class AscendKernelRuntime : public KernelRuntime {
   static std::map<std::string, uint32_t> overflow_tasks_;
   static std::vector<rtExceptionInfo> task_fail_infoes_;
   std::map<uint32_t, void *> stream_id_map_;
-  std::map<std::string, uint32_t> group_stream_id_map_;
 };
 
 MS_REG_KERNEL_RUNTIME(kAscendDevice, AscendKernelRuntime);

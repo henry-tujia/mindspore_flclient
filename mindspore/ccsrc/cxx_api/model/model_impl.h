@@ -39,14 +39,16 @@ class ModelImpl {
 
   virtual Status Predict(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs);
 
-  virtual Status PredictWithPreprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs);
+  virtual Status PredictWithPreprocess(const std::vector<std::vector<MSTensor>> &inputs,
+                                       std::vector<MSTensor> *outputs);
 
   virtual std::vector<MSTensor> GetInputs() = 0;
   virtual std::vector<MSTensor> GetOutputs() = 0;
 
-  virtual bool CheckModelSupport(enum ModelType model_type) { return false; }
+  virtual bool CheckDeviceSupport(mindspore::DeviceType device_type) = 0;
+  virtual bool CheckModelSupport(enum ModelType model_type) = 0;
 
-  virtual Status Preprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs);
+  virtual Status Preprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs);
 
   virtual bool HasPreprocess();
 

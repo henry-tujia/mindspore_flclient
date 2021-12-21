@@ -27,8 +27,10 @@
 #include "pybind11/stl.h"
 #include "pybind11/stl_bind.h"
 
+#include "utils/ms_utils.h"
 #include "debug/debug_services.h"
 namespace py = pybind11;
+namespace common = mindspore::common;
 
 struct parameter_t {
   parameter_t(const std::string &name, bool disabled, double value, bool hit, double actual_value)
@@ -99,9 +101,9 @@ struct tensor_info_t {
 };
 
 struct tensor_data_t {
-  tensor_data_t(char *data_ptr, uint64_t data_size, int dtype, const std::vector<int64_t> &shape)
+  tensor_data_t(const char *data_ptr, uint64_t data_size, int dtype, const std::vector<int64_t> &shape)
       : data_size(data_size), dtype(dtype), shape(shape) {
-    if (data_ptr != NULL) {
+    if (data_ptr != nullptr) {
       this->data_ptr = py::bytes(data_ptr, data_size);
     } else {
       this->data_ptr = py::bytes();
@@ -180,11 +182,8 @@ struct TensorStatData {
 };
 
 class DbgServices {
- private:
-  DebugServices *debug_services_;
-
  public:
-  explicit DbgServices(bool verbose = false);
+  DbgServices();
 
   DbgServices(const DbgServices &other);
 
@@ -192,7 +191,8 @@ class DbgServices {
 
   ~DbgServices();
 
-  int32_t Initialize(std::string net_name, std::string dump_folder_path, bool is_sync_mode, uint64_t max_mem_usage);
+  int32_t Initialize(const std::string net_name, const std::string dump_folder_path, bool is_sync_mode,
+                     uint64_t max_mem_usage);
 
   int32_t AddWatchpoint(
     unsigned int id, unsigned int watch_condition,
@@ -201,17 +201,20 @@ class DbgServices {
 
   int32_t RemoveWatchpoint(unsigned int id);
 
-  std::vector<watchpoint_hit_t> CheckWatchpoints(unsigned int iteration);
+  std::vector<watchpoint_hit_t> CheckWatchpoints(unsigned int iteration, bool error_on_no_value = false);
 
   std::vector<std::shared_ptr<TensorData>> ReadTensorsUtil(std::vector<tensor_info_t> info);
 
-  std::vector<tensor_data_t> ReadTensors(std::vector<tensor_info_t> info);
+  std::vector<tensor_data_t> ReadTensors(const std::vector<tensor_info_t> info);
 
-  std::vector<TensorBaseData> ReadTensorsBase(std::vector<tensor_info_t> info);
+  std::vector<TensorBaseData> ReadTensorsBase(const std::vector<tensor_info_t> info);
 
-  std::vector<TensorStatData> ReadTensorsStat(std::vector<tensor_info_t> info);
+  std::vector<TensorStatData> ReadTensorsStat(const std::vector<tensor_info_t> info);
 
-  std::string GetVersion();
+  std::string GetVersion() const;
+
+ private:
+  std::shared_ptr<DebugServices> debug_services_ = nullptr;
 };
 
 #endif  // DEBUG_DBG_SERVICES_H_

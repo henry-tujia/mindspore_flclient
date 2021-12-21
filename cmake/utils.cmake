@@ -133,7 +133,13 @@ function(__find_pkg_then_add_target pkg_name pkg_exe lib_path)
             set(_LIB_TYPE STATIC)
         endif()
         set(${_LIB_NAME}_LIB ${_LIB_NAME}_LIB-NOTFOUND)
-        find_library(${_LIB_NAME}_LIB ${_LIB_SEARCH_NAME} PATHS ${${pkg_name}_BASE_DIR}/${lib_path} NO_DEFAULT_PATH)
+        if(APPLE)
+            find_library(${_LIB_NAME}_LIB ${_LIB_SEARCH_NAME} PATHS ${${pkg_name}_BASE_DIR}/${lib_path}
+                    NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+        else()
+            find_library(${_LIB_NAME}_LIB ${_LIB_SEARCH_NAME} PATHS ${${pkg_name}_BASE_DIR}/${lib_path}
+                    NO_DEFAULT_PATH)
+        endif()
         if(NOT ${_LIB_NAME}_LIB)
             return()
         endif()
@@ -238,7 +244,7 @@ function(mindspore_add_pkg pkg_name)
 
     message("${pkg_name} config hash: ${${pkg_name}_CONFIG_HASH}")
 
-    set(${pkg_name}_BASE_DIR ${_MS_LIB_CACHE}/${pkg_name}_${${pkg_name}_CONFIG_HASH})
+    set(${pkg_name}_BASE_DIR ${_MS_LIB_CACHE}/${pkg_name}_${PKG_VER}_${${pkg_name}_CONFIG_HASH})
     set(${pkg_name}_DIRPATH ${${pkg_name}_BASE_DIR} CACHE STRING INTERNAL)
 
     if(EXISTS ${${pkg_name}_BASE_DIR}/options.txt AND PKG_HEAD_ONLY)

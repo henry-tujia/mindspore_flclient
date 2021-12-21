@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,10 @@
 #include <sstream>
 #include <climits>
 #include "ir/anf.h"
+#include "ir/graph_utils.h"
+#include "ir/func_graph.h"
 #include "utils/convert_utils_base.h"
+#include "utils/file_utils.h"
 
 namespace mindspore {
 std::string HighLightLine(const std::string &line, int col_begin, int col_end, SourceLineTip tip) {
@@ -51,19 +54,11 @@ std::string Location::ToString(SourceLineTip tip) const {
   if (line_ <= 0) {
     return debug_info_ss.str();
   }
-
-  char path[PATH_MAX] = {0x00};
-#if defined(_WIN32) || defined(_WIN64)
-  if (file_name_.size() >= PATH_MAX || _fullpath(path, file_name_.c_str(), PATH_MAX) == nullptr) {
+  auto path = FileUtils::GetRealPath(file_name_.c_str());
+  if (!path.has_value()) {
     return debug_info_ss.str();
   }
-#else
-  if (file_name_.size() >= PATH_MAX || realpath(file_name_.c_str(), path) == nullptr) {
-    return debug_info_ss.str();
-  }
-#endif
-  auto src_path = std::string(path);
-  std::ifstream file(src_path);
+  std::ifstream file(path.value());
   if (!file.is_open()) {
     return debug_info_ss.str();
   }
@@ -81,48 +76,21 @@ std::string Location::ToString(SourceLineTip tip) const {
   return debug_info_ss.str();
 }
 
-void TraceContext::ProcessAttributeFromContext() {
-  trace_info_ = nullptr;
-  location_ = nullptr;
-  func_name_ = "";
-  // if there is trace context, get info from previous context
-  if (!TraceManager::trace_context_stack_.empty()) {
-    TraceContextPtr top = TraceManager::trace_context_stack_.top();
-    trace_info_ = top->trace_info();
-    location_ = top->location();
-    func_name_ = top->func_name();
+bool Location::operator<(const Location &other) const {
+  auto ret = file_name_.compare(other.file_name());
+  if (ret != 0) {
+    return ret < 0;
   }
+  return line_ < other.line();
 }
 
-DebugInfo::DebugInfo() {
-  InitValueFromContext();
-  unique_id_ = gen_unique_id();
-  debug_id_ = -1;
-  name_ = "";
-}
-
-DebugInfo::DebugInfo(const std::string &name) {
-  InitValueFromContext();
-  unique_id_ = gen_unique_id();
-  debug_id_ = -1;
-  name_ = name;
-}
-
-DebugInfo::DebugInfo(const LocationPtr &loc) {
-  InitValueFromContext();
-  unique_id_ = gen_unique_id();
-  debug_id_ = -1;
-  location_ = loc;
-}
-
-int64_t DebugInfo::debug_id() {
+int64_t DebugInfo::get_id() const {
   // cppcheck-suppress variableScope
-  static int64_t cur_debug_id = 0;
-  if (debug_id_ == -1) {
-    debug_id_ = cur_debug_id;
-    cur_debug_id++;
+  static int64_t current_id = 1;
+  if (id_ == 0) {
+    id_ = current_id++;
   }
-  return debug_id_;
+  return id_;
 }
 
 int64_t DebugInfo::unique_id_through_copy() const {
@@ -135,15 +103,6 @@ int64_t DebugInfo::unique_id_through_copy() const {
   return unique_id();
 }
 
-std::string DebugInfo::debug_name() {
-  if (!name_.empty()) {
-    return name_;
-  }
-  std::string debug_name = std::to_string(debug_id());
-  name_ = debug_name;
-  return debug_name;
-}
-
 std::string NodeDebugInfo::debug_name() {
   if (!name_.empty()) {
     return name_;
@@ -154,83 +113,120 @@ std::string NodeDebugInfo::debug_name() {
     oss << "[" << node_.lock()->type_name() << "]";
     prefix = oss.str();
   }
-  name_ = prefix + DebugInfo::debug_name();
+  name_ = prefix + std::to_string(get_id());
   return name_;
 }
 
 std::string GraphDebugInfo::debug_name() {
-  std::string prefix = "";
-  return prefix + DebugInfo::debug_name();
+  if (name_.empty()) {
+    name_ = std::to_string(get_id());
+  }
+  return name_;
 }
 
-LocationPtr GraphDebugInfo::location() {
-  // function may have decorator which is included in its location
-  if (deco_loc_ != nullptr && DebugInfo::location() != nullptr) {
-    LocationPtr loc = std::make_shared<Location>(*DebugInfo::location());
-    loc->set_line(loc->line() + (deco_loc_->line_end() - deco_loc_->line() + 1));
-    return loc;
+LocationPtr GraphDebugInfo::location() const {
+  // Function may have decorator which is included in its location.
+  auto loc = DebugInfo::location();
+  if (deco_loc_ != nullptr && loc != nullptr) {
+    auto loc_line = loc->line() + (deco_loc_->line_end() - deco_loc_->line() + 1);
+    return std::make_shared<Location>(loc->file_name(), loc_line, loc->line_end(), loc->column(), loc->column_end());
   }
-  return DebugInfo::location();
+  return loc;
 }
+
 void GraphDebugInfo::set_deco_location(const LocationPtr &deco_list_loc) { deco_loc_ = deco_list_loc; }
 
-TraceContextPtr TraceManager::CurrentContextInfo() {
-  if (!TraceManager::trace_context_stack_.empty()) {
-    return TraceManager::trace_context_stack_.top();
+void TraceManager::DebugTrace(const std::string &func_name, const LocationPtr &location) {
+  MS_EXCEPTION_IF_NULL(location);
+  (void)trace_context_stack_.emplace_back(location, func_name);
+}
+
+void TraceManager::DebugTrace(const LocationPtr &location) {
+  MS_EXCEPTION_IF_NULL(location);
+  (void)TraceManager::trace_context_stack_.emplace_back(location);
+  if (record_debug_info_flag_) {
+    TraceManager::record_debug_info_ = std::make_shared<DebugInfo>(location);
+  }
+}
+
+void TraceManager::DebugTrace(const TraceInfoPtr &trace_info) {
+  MS_EXCEPTION_IF_NULL(trace_info);
+  auto &debug_info = trace_info->debug_info();
+  MS_EXCEPTION_IF_NULL(debug_info);
+  (void)TraceManager::trace_context_stack_.emplace_back(trace_info);
+  if (record_debug_info_flag_) {
+    TraceManager::record_debug_info_ = debug_info;
+  }
+}
+
+void TraceManager::DebugTrace(const DebugInfoPtr &debug_info, const TraceInfoPtr &trace_info) {
+  MS_EXCEPTION_IF_NULL(debug_info);
+  MS_EXCEPTION_IF_NULL(trace_info);
+  auto cloned_info = trace_info->clone();
+  cloned_info->set_debug_info(debug_info);
+  (void)TraceManager::trace_context_stack_.emplace_back(cloned_info);
+}
+
+DebugInfoPtr TraceManager::record_debug_info() { return TraceManager::record_debug_info_; }
+
+void TraceManager::ClearParseOrResolveDebugInfo() { TraceManager::record_debug_info_ = nullptr; }
+
+void TraceManager::CloseRecordDebugInfoFlag() { record_debug_info_flag_ = false; }
+
+void TraceManager::OpenRecordDebugInfoFlag() { record_debug_info_flag_ = true; }
+
+bool TraceManager::record_debug_info_flag() { return record_debug_info_flag_; }
+
+thread_local std::vector<TraceContext> TraceManager::trace_context_stack_;
+
+thread_local DebugInfoPtr TraceManager::record_debug_info_ = nullptr;
+
+thread_local bool TraceManager::record_debug_info_flag_ = false;
+
+LocationPtr GetFirstLocation(const DebugInfoPtr &debug_info) {
+  auto tmp = debug_info;
+  while (tmp != nullptr) {
+    if (tmp->location() != nullptr) {
+      return tmp->location();
+    }
+    if (tmp->trace_info() != nullptr) {
+      tmp = tmp->trace_info()->debug_info();
+    } else {
+      break;
+    }
   }
   return nullptr;
 }
 
-void TraceManager::DebugTrace(const std::string &func_name, const LocationPtr &location) {
-  if (location == nullptr) {
-    MS_LOG(EXCEPTION) << "DebugTrace wrong location is null";
+bool DebugInfoCompare::operator()(const DebugInfoPtr &left, const DebugInfoPtr &right) const {
+  MS_EXCEPTION_IF_NULL(left);
+  MS_EXCEPTION_IF_NULL(right);
+  if (left == right) {
+    return false;
   }
-  TraceContextPtr context = std::make_shared<TraceContext>(location);
-  context->set_func_name(func_name);
-  TraceManager::trace_context_stack_.push(context);
+  auto left_loc = GetFirstLocation(left);
+  auto right_loc = GetFirstLocation(right);
+  if (left_loc == nullptr || right_loc == nullptr) {
+    return left < right;
+  }
+  if (left_loc == right_loc) {
+    return false;
+  }
+  return *left_loc < *right_loc;
 }
 
-void TraceManager::DebugTrace(const LocationPtr &location) {
-  if (location == nullptr) {
-    MS_LOG(EXCEPTION) << "DebugTrace wrong location is null";
+void UpdateDebugInfo(const FuncGraphPtr &func_graph, const ScopePtr &scope, const DebugInfoPtr &debug_info) {
+  if (func_graph == nullptr || scope == nullptr || debug_info == nullptr) {
+    return;
   }
-  TraceContextPtr context = std::make_shared<TraceContext>(location);
-  TraceManager::trace_context_stack_.push(context);
-  TraceManager::parse_or_resolve_debug_info_ = std::make_shared<DebugInfo>(location);
+  auto nodes = TopoSort(func_graph->get_return(), SuccDeeperSimple);
+  TraceGuard guard(std::make_shared<TraceGenMetaFuncGraph>(debug_info));
+  for (const auto &node : nodes) {
+    if (!node->isa<CNode>()) {
+      continue;
+    }
+    node->set_scope(std::make_shared<Scope>(scope->name()));
+    node->set_debug_info(std::make_shared<NodeDebugInfo>());
+  }
 }
-
-void TraceManager::DebugTrace(const TraceInfoPtr &trace_info) {
-  if (trace_info == nullptr) {
-    MS_LOG(EXCEPTION) << "DebugTrace wrong traced info is null";
-  }
-  TraceContextPtr context = std::make_shared<TraceContext>(trace_info);
-  if (trace_info->debug_info() == nullptr) {
-    MS_LOG(EXCEPTION) << "Trace debug info is null";
-  }
-  TraceManager::trace_context_stack_.push(context);
-  TraceManager::parse_or_resolve_debug_info_ = trace_info->debug_info();
-}
-
-void TraceManager::DebugTrace(const DebugInfoPtr &debug_info, const TraceInfoPtr &trace_info) {
-  if (trace_info == nullptr) {
-    MS_LOG(EXCEPTION) << "DebugTrace wrong traced info is null";
-  }
-  auto cloned_info = trace_info->clone();
-  cloned_info->set_debug_info(debug_info);
-  if (cloned_info->debug_info() == nullptr) {
-    MS_LOG(EXCEPTION) << "Trace debug info is null with cloned trace";
-  }
-  TraceContextPtr context = std::make_shared<TraceContext>(cloned_info);
-  TraceManager::trace_context_stack_.push(context);
-}
-
-void TraceManager::EndTrace() { TraceManager::trace_context_stack_.pop(); }
-
-DebugInfoPtr TraceManager::GetParseOrResolveDebugInfo() { return TraceManager::parse_or_resolve_debug_info_; }
-
-void TraceManager::ClearParseOrResolveDebugInfo() { TraceManager::parse_or_resolve_debug_info_ = nullptr; }
-
-thread_local std::stack<TraceContextPtr> TraceManager::trace_context_stack_;
-
-thread_local DebugInfoPtr TraceManager::parse_or_resolve_debug_info_ = nullptr;
 }  // namespace mindspore

@@ -22,6 +22,14 @@
 #include "ops/batch_norm.h"
 #include "ops/elu.h"
 #include "ops/fused_batch_norm.h"
+#include "ops/fusion/conv2d_transpose_fusion.h"
+#include "ops/fusion/div_fusion.h"
+#include "ops/fusion/exp_fusion.h"
+#include "ops/fusion/l2_normalize_fusion.h"
+#include "ops/fusion/layer_norm_fusion.h"
+#include "ops/fusion/max_pool_fusion.h"
+#include "ops/fusion/mul_fusion.h"
+#include "ops/fusion/pad_fusion.h"
 #include "ops/fusion/activation.h"
 #include "ops/fusion/add_fusion.h"
 #include "ops/fusion/adder_fusion.h"
@@ -31,14 +39,6 @@
 #include "ops/fusion/conv2d_backprop_filter_fusion.h"
 #include "ops/fusion/conv2d_backprop_input_fusion.h"
 #include "ops/fusion/conv2d_fusion.h"
-#include "ops/fusion/conv2d_transpose_fusion.h"
-#include "ops/fusion/div_fusion.h"
-#include "ops/fusion/exp_fusion.h"
-#include "ops/fusion/l2_normalize_fusion.h"
-#include "ops/fusion/layer_norm_fusion.h"
-#include "ops/fusion/max_pool_fusion.h"
-#include "ops/fusion/mul_fusion.h"
-#include "ops/fusion/pad_fusion.h"
 #include "ops/partial.h"
 #include "ops/fusion/partial_fusion.h"
 #include "ops/fusion/pow_fusion.h"
@@ -146,6 +146,8 @@ constexpr auto kNameAvgPoolGradCpu = "AvgPoolGradCpu";
 constexpr auto kNameTanhGrad = "TanhGrad";
 constexpr auto kNameResizeBilinearGrad = "ResizeBilinearGrad";
 constexpr auto kNameResizeNearestNeighborGrad = "ResizeNearestNeighborGrad";
+constexpr int kNCHW_H = 2;
+constexpr int kNCHW_W = 3;
 
 std::map<std::string, mindspore::ActivationType> activation_map = {{ops::kNameElu, mindspore::ELU},
                                                                    {ops::kNameGeLU, mindspore::GELU},
@@ -177,8 +179,9 @@ int AttrAdjust(const PrimitivePtr &prim, const std::string &name, const std::vec
     return lite::RET_OK;
   }
   auto value_ptr = prim->GetAttr(name);
-  if (utils::isa<ValueSequeuePtr>(value_ptr)) {
-    if (value_ptr->cast<ValueSequeuePtr>()->value().front()->type()->number_type() != kNumberTypeInt64) {
+  if (utils::isa<ValueSequencePtr>(value_ptr)) {
+    MS_CHECK_TRUE_MSG(value_ptr->cast<ValueSequencePtr>()->value().size() > 0, RET_ERROR, "value is empty.");
+    if (value_ptr->cast<ValueSequencePtr>()->value().front()->type()->number_type() != kNumberTypeInt64) {
       MS_LOG(ERROR) << "the func is to adjust attr which is array, please check the attr.";
       return lite::RET_ERROR;
     }
@@ -224,44 +227,42 @@ int MoveAttrMapCommon(const CNodePtr &cnode) {
 int MoveAttrMapActivation(const CNodePtr &cnode) {
   MS_ASSERT(cnode != nullptr);
   auto value_node = cnode->input(0)->cast<ValueNodePtr>();
-  MS_ASSERT(value_node != nullptr);
   auto src_prim = GetValueNode<PrimitivePtr>(value_node);
   if (src_prim == nullptr) {
     MS_LOG(ERROR) << "value node is invalid.";
     return lite::RET_ERROR;
   }
-  auto dst_prim = std::make_shared<ops::Activation>();
-  MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
-  dst_prim->SetAttrs(src_prim->attrs());
+  auto act_prim = std::make_shared<ops::Activation>();
+  MS_CHECK_TRUE_MSG(act_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
+  act_prim->SetAttrs(src_prim->attrs());
   auto iter = activation_map.find(src_prim->name());
   if (iter == activation_map.end()) {
     MS_LOG(ERROR) << "activation mode is unsupported.";
     return lite::RET_ERROR;
   }
-  dst_prim->set_activation_type(iter->second);
-  value_node->set_value(dst_prim);
+  act_prim->set_activation_type(iter->second);
+  value_node->set_value(act_prim);
   return lite::RET_OK;
 }
 
 int MoveAttrMapActivationGrad(const CNodePtr &cnode) {
   MS_ASSERT(cnode != nullptr);
   auto value_node = cnode->input(0)->cast<ValueNodePtr>();
-  MS_ASSERT(value_node != nullptr);
   auto src_prim = GetValueNode<PrimitivePtr>(value_node);
   if (src_prim == nullptr) {
     MS_LOG(ERROR) << "value node is invalid.";
     return lite::RET_ERROR;
   }
-  auto dst_prim = std::make_shared<ops::ActivationGrad>();
-  MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
-  dst_prim->SetAttrs(src_prim->attrs());
+  auto act_grad_prim = std::make_shared<ops::ActivationGrad>();
+  MS_CHECK_TRUE_MSG(act_grad_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
+  act_grad_prim->SetAttrs(src_prim->attrs());
   auto iter = activation_map.find(src_prim->name());
   if (iter == activation_map.end()) {
     MS_LOG(ERROR) << "activation mode is unsupported.";
     return lite::RET_ERROR;
   }
-  dst_prim->set_activation_type(iter->second);
-  value_node->set_value(dst_prim);
+  act_grad_prim->set_activation_type(iter->second);
+  value_node->set_value(act_grad_prim);
   return lite::RET_OK;
 }
 
@@ -288,6 +289,27 @@ int MoveAttrMapReduce(const CNodePtr &cnode) {
   return lite::RET_OK;
 }
 
+namespace {
+int AdjustConvAttr(const PrimitivePtr &prim) {
+  auto status = AttrAdjust(prim, ops::kStride, {kNCHW_H, kNCHW_W});
+  if (status != lite::RET_OK) {
+    MS_LOG(ERROR) << "adjust stride failed.";
+    return status;
+  }
+  status = AttrAdjust(prim, ops::kDilation, {kNCHW_H, kNCHW_W});
+  if (status != lite::RET_OK) {
+    MS_LOG(ERROR) << "adjust dilation failed.";
+    return status;
+  }
+  status = AttrAdjust(prim, ops::kKernelSize, {0, 1});
+  if (status != lite::RET_OK) {
+    MS_LOG(ERROR) << "adjust kernel size failed.";
+    return status;
+  }
+  return RET_OK;
+}
+}  // namespace
+
 int MoveAttrMapConv2D(const CNodePtr &cnode) {
   MS_ASSERT(cnode != nullptr);
   auto value_node = cnode->input(0)->cast<ValueNodePtr>();
@@ -305,19 +327,9 @@ int MoveAttrMapConv2D(const CNodePtr &cnode) {
   }
   MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
   dst_prim->SetAttrs(src_prim->attrs());
-  auto status = AttrAdjust(dst_prim, ops::kStride, {2, 3});
+  auto status = AdjustConvAttr(dst_prim);
   if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust stride failed.";
-    return status;
-  }
-  status = AttrAdjust(dst_prim, ops::kDilation, {2, 3});
-  if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust dilation failed.";
-    return status;
-  }
-  status = AttrAdjust(dst_prim, ops::kKernelSize, {0, 1});
-  if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust kernel size failed.";
+    MS_LOG(ERROR) << "adjust conv attrs failed.";
     return status;
   }
   int64_t group = 1;
@@ -325,9 +337,13 @@ int MoveAttrMapConv2D(const CNodePtr &cnode) {
     group = GetValue<int64_t>(dst_prim->GetAttr(ops::kGroup));
   }
   if (group > 1) {
-    dst_prim->AddAttr(ops::kIsDepthWise, MakeValue<bool>(true));
+    auto make_bool_ptr = MakeValue<bool>(true);
+    MS_CHECK_TRUE_MSG(make_bool_ptr != nullptr, RET_NULL_PTR, "make_bool_ptr is nullptr.");
+    dst_prim->AddAttr(ops::kIsDepthWise, make_bool_ptr);
   }
-  dst_prim->AddAttr(ops::kGroup, MakeValue(group));
+  auto make_value_ptr = MakeValue(group);
+  MS_CHECK_TRUE_MSG(make_value_ptr != nullptr, RET_NULL_PTR, "make_value_ptr is nullptr.");
+  dst_prim->AddAttr(ops::kGroup, make_value_ptr);
   value_node->set_value(dst_prim);
   return lite::RET_OK;
 }
@@ -341,7 +357,7 @@ int MoveAttrPool(const CNodePtr &cnode) {
     MS_LOG(ERROR) << "value node is invalid.";
     return lite::RET_ERROR;
   }
-  PrimitivePtr dst_prim;
+  PrimitivePtr dst_prim = nullptr;
   if (src_prim->name() == kNameAvgPool) {
     dst_prim = std::make_shared<ops::AvgPoolFusion>();
     MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
@@ -377,7 +393,7 @@ int MoveAttrPoolGrad(const CNodePtr &cnode) {
     MS_LOG(ERROR) << "value node is invalid.";
     return lite::RET_ERROR;
   }
-  PrimitivePtr dst_prim;
+  PrimitivePtr dst_prim = nullptr;
   if (src_prim->name() == kNameAvgPoolGrad || src_prim->name() == kNameAvgPoolGradGpu ||
       src_prim->name() == kNameAvgPoolGradCpu) {
     dst_prim = std::make_shared<ops::AvgPoolGrad>();
@@ -416,19 +432,9 @@ int MoveAttrMapAdder(const CNodePtr &cnode) {
   auto dst_prim = std::make_shared<ops::AdderFusion>();
   MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
   dst_prim->SetAttrs(src_prim->attrs());
-  auto status = AttrAdjust(dst_prim, ops::kStride, {2, 3});
+  auto status = AdjustConvAttr(dst_prim);
   if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust stride failed.";
-    return status;
-  }
-  status = AttrAdjust(dst_prim, ops::kDilation, {2, 3});
-  if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust dilation failed.";
-    return status;
-  }
-  status = AttrAdjust(dst_prim, ops::kKernelSize, {0, 1});
-  if (status != lite::RET_OK) {
-    MS_LOG(ERROR) << "adjust kernel size failed.";
+    MS_LOG(ERROR) << "adjust conv attrs failed.";
     return status;
   }
   value_node->set_value(dst_prim);
@@ -467,6 +473,7 @@ int MoveAttrMapResize(const CNodePtr &cnode) {
   auto dst_prim = std::make_shared<ops::Resize>();
   MS_CHECK_TRUE_MSG(dst_prim != nullptr, RET_NULL_PTR, "dst_prim is nullptr.");
   auto size = GetValue<std::vector<int64_t>>(src_prim->GetAttr(ops::kSize));
+  MS_CHECK_TRUE_MSG(size.size() > 1, RET_ERROR, "out of range.");
   dst_prim->set_new_height(size[0]);
   dst_prim->set_new_width(size[1]);
   if (src_prim->GetAttr(ops::kAlignCorners) != nullptr && GetValue<bool>(src_prim->GetAttr(ops::kAlignCorners))) {
@@ -497,7 +504,7 @@ int MoveAttrSlice(const CNodePtr &cnode) {
 
   std::vector<int64_t> axes(begin_value.size());
   for (size_t i = 0; i < begin_value.size(); i++) {
-    axes[i] = i;
+    axes[i] = static_cast<int64_t>(i);
   }
   dst_prim->set_axes(axes);
   dst_prim->SetAttrs(src_prim->attrs());
@@ -525,6 +532,8 @@ int MoveAttrMapResizeGrad(const CNodePtr &cnode) {
     MS_LOG(ERROR) << "Resize grad method " << src_prim->name() << "is not supported";
     return lite::RET_ERROR;
   }
+  MS_CHECK_TRUE_MSG(src_prim->GetAttr(ops::kAlignCorners) != nullptr, RET_NULL_PTR,
+                    "src_prim->GetAttr(ops::kAlignCorners) is nullptr.");
   auto align_corners = GetValue<bool>(src_prim->GetAttr(ops::kAlignCorners));
   dst_prim->set_align_corners(align_corners);
   value_node->set_value(dst_prim);
@@ -533,9 +542,10 @@ int MoveAttrMapResizeGrad(const CNodePtr &cnode) {
 }  // namespace
 
 bool PrimitiveAdjust::Run(const FuncGraphPtr &func_graphs) {
+  MS_ASSERT(func_graphs != nullptr);
   if (this->fmk_type_ != converter::kFmkTypeMs) {
     MS_LOG(INFO) << "The framework type of model should be mindir.";
-    return lite::RET_OK;
+    return true;
   }
   MS_ASSERT(graph != nullptr);
   static auto root_func_manager = Manage(func_graphs);
@@ -544,11 +554,17 @@ bool PrimitiveAdjust::Run(const FuncGraphPtr &func_graphs) {
   int i = 0;
   for (auto func_graph : all_func_graphs) {
     func_graph->set_manager(root_func_manager);
-    func_graph->set_attr("fmk", MakeValue(static_cast<int>(FmkType::kFmkTypeMs)));
+    auto make_int_ptr = MakeValue(static_cast<int>(FmkType::kFmkTypeMs));
+    MS_CHECK_TRUE_MSG(make_int_ptr != nullptr, false, "make_int_ptr is nullptr.");
+    func_graph->set_attr("fmk", make_int_ptr);
     if (i == 0) {
-      func_graph->set_attr("graph_name", MakeValue("main_graph"));
+      auto make_value_ptr = MakeValue("main_graph");
+      MS_CHECK_TRUE_MSG(make_value_ptr != nullptr, false, "make_value_ptr is nullptr.");
+      func_graph->set_attr("graph_name", make_value_ptr);
     } else {
-      func_graph->set_attr("graph_name", MakeValue("subgraph" + std::to_string(i)));
+      auto make_value_ptr = MakeValue("subgraph" + std::to_string(i));
+      MS_CHECK_TRUE_MSG(make_value_ptr != nullptr, false, "make_value_ptr is nullptr.");
+      func_graph->set_attr("graph_name", make_value_ptr);
     }
     i++;
     auto node_list = TopoSort(func_graph->get_return());

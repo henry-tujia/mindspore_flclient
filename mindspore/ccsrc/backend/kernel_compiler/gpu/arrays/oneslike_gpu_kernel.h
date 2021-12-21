@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ONESLIKE_H_
-#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ONESLIKE_H_
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_ONESLIKE_GPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_ONESLIKE_GPU_KERNEL_H_
 
 #include <vector>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
@@ -25,7 +25,7 @@ namespace kernel {
 template <typename T>
 class OnesLikeGpuKernel : public GpuKernel {
  public:
-  OnesLikeGpuKernel() : input_size_(0), output_size_(0) {}
+  OnesLikeGpuKernel() : input_size_(0), output_size_(0), is_null_input_(false) {}
   ~OnesLikeGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -34,6 +34,9 @@ class OnesLikeGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     T *output = GetDeviceAddress<T>(outputs, 0);
     int size = SizeToInt(input_size_ / sizeof(T));
@@ -43,17 +46,21 @@ class OnesLikeGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but oneslike needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 1, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but oneslike needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     size_t shape_size = input_shape.size();
 
     input_size_ = sizeof(T);
@@ -78,8 +85,9 @@ class OnesLikeGpuKernel : public GpuKernel {
   std::vector<size_t> workspace_size_list_;
   size_t input_size_;
   size_t output_size_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ONESLIKE_H_
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_ONESLIKE_GPU_KERNEL_H_

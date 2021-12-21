@@ -35,12 +35,20 @@ class ShuffleTensorRT : public TensorRTOp {
                 const std::vector<mindspore::MSTensor> &out_tensors) override;
 
  private:
+  int InputTensorPreprocess();
   int AddSqueezeOp(nvinfer1::IShuffleLayer *shuffle_layer);
   int AddUnsqueezeOp(nvinfer1::IShuffleLayer *shuffle_layer);
   int AddTransposeOp(nvinfer1::IShuffleLayer *shuffle_layer);
   int AddReshapeOp(nvinfer1::IShuffleLayer *shuffle_layer);
   int AddFlattenOp(nvinfer1::IShuffleLayer *shuffle_layer);
-  int InferReshapeDims(nvinfer1::Dims input_dims, nvinfer1::Dims *reshape_dims);
+  int AddExpandDimsOp(nvinfer1::IShuffleLayer *shuffle_layer);
+  nvinfer1::Dims InferReshapeDims(const nvinfer1::Dims &input_dims, const std::vector<int64_t> &ms_input_shape,
+                                  const std::vector<int64_t> &ms_output_shape);
+
+  Format out_format_ = Format::NHWC;
+  nvinfer1::ITensor *shuffler_input_{nullptr};
+  nvinfer1::ITensor *shuffler_output_{nullptr};
+  nvinfer1::INetworkDefinition *network_{nullptr};
 };
 }  // namespace mindspore::lite
 #endif  // MINDSPORE_LITE_SRC_DELEGATE_TENSORRT_OP_SHUFFLE_TENSORRT_H_

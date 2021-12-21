@@ -34,6 +34,8 @@ using mindspore::lite::RET_NOT_SUPPORT;
 using mindspore::lite::RET_OK;
 namespace mindspore {
 constexpr int NPU_SHAPE_SIZE = 4;
+constexpr int INPUT_SIZE2 = 2;
+constexpr int INPUT_SIZE3 = 3;
 
 class NPUOp {
  public:
@@ -70,10 +72,13 @@ class NPUOp {
     if (index2_multi_out_index.empty()) {
       return SetNPUInputs(in_tensors, out_tensors, npu_inputs);
     }
-    return RET_OK;
+    MS_LOG(ERROR) << "The input operator of npu op: " << this->name() << " has multiple outputs. Override this method.";
+    return RET_ERROR;
   }
 
   virtual ge::Operator *GetNPUOp() { return nullptr; }
+
+  virtual int HandleAxis() { return RET_OK; }
 
   void set_inputs(const std::vector<mindspore::MSTensor> &in_tensors) { this->inputs_ = in_tensors; }
 

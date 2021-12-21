@@ -47,11 +47,11 @@ void Cifar10Node::Print(std::ostream &out) const {
 
 Status Cifar10Node::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  RETURN_IF_NOT_OK(ValidateDatasetDirParam("Cifar10Node", dataset_dir_));
+  RETURN_IF_NOT_OK(ValidateDatasetDirParam("Cifar10Dataset", dataset_dir_));
 
-  RETURN_IF_NOT_OK(ValidateDatasetSampler("Cifar10Node", sampler_));
+  RETURN_IF_NOT_OK(ValidateDatasetSampler("Cifar10Dataset", sampler_));
 
-  RETURN_IF_NOT_OK(ValidateStringValue("Cifar10Node", usage_, {"train", "test", "all"}));
+  RETURN_IF_NOT_OK(ValidateStringValue("Cifar10Dataset", usage_, {"train", "test", "all"}));
 
   return Status::OK();
 }
@@ -69,8 +69,8 @@ Status Cifar10Node::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_op
 
   auto cifar_op = std::make_shared<CifarOp>(CifarOp::CifarType::kCifar10, usage_, num_workers_, dataset_dir_,
                                             connector_que_size_, std::move(schema), std::move(sampler_rt));
-  cifar_op->set_total_repeats(GetTotalRepeats());
-  cifar_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  cifar_op->SetTotalRepeats(GetTotalRepeats());
+  cifar_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(cifar_op);
 
   return Status::OK();
@@ -124,11 +124,10 @@ Status Cifar10Node::to_json(nlohmann::json *out_json) {
 
 #ifndef ENABLE_ANDROID
 Status Cifar10Node::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> *ds) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_parallel_workers") != json_obj.end(),
-                               "Failed to find num_parallel_workers");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("dataset_dir") != json_obj.end(), "Failed to find dataset_dir");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("usage") != json_obj.end(), "Failed to find usage");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("sampler") != json_obj.end(), "Failed to find sampler");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_parallel_workers", kCifar10Node));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "dataset_dir", kCifar10Node));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "usage", kCifar10Node));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "sampler", kCifar10Node));
   std::string dataset_dir = json_obj["dataset_dir"];
   std::string usage = json_obj["usage"];
   std::shared_ptr<SamplerObj> sampler;

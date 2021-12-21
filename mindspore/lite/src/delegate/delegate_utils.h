@@ -19,13 +19,13 @@
 #include "include/ms_tensor.h"
 #include "include/api/delegate.h"
 #include "src/common/log_adapter.h"
-#include "src/delegate/tensorrt/op/tensorrt_op.h"
+#include "include/errorcode.h"
 
 namespace mindspore::lite {
 bool IsSubGraphInputTensor(const std::vector<mindspore::MSTensor> &inputs, mindspore::MSTensor input);
 
 template <typename T>
-std::vector<mindspore::MSTensor> GetGraphInTensors(std::vector<T *> ops) {
+std::vector<mindspore::MSTensor> GetGraphInTensors(std::vector<T *> ops, std::vector<size_t> *input_index) {
   std::vector<mindspore::MSTensor> inputs;
   auto is_op_output = [&](mindspore::MSTensor tensor) -> bool {
     for (auto op : ops) {
@@ -40,7 +40,14 @@ std::vector<mindspore::MSTensor> GetGraphInTensors(std::vector<T *> ops) {
   for (auto op : ops) {
     for (auto in_tensor : op->inputs()) {
       if (in_tensor.Data() == nullptr && !is_op_output(in_tensor)) {
-        inputs.push_back(in_tensor);
+        // remove the repeated input.
+        size_t idx = std::find(inputs.begin(), inputs.end(), in_tensor) - inputs.begin();
+        if (idx == inputs.size()) {
+          inputs.push_back(in_tensor);
+        }
+        if (input_index != nullptr) {
+          input_index->push_back(idx);
+        }
       }
     }
   }
@@ -73,7 +80,8 @@ std::vector<mindspore::MSTensor> GetGraphOutTensors(const std::vector<T *> &ops)
       if (find(ops.begin(), ops.end(), out_op) == ops.end()) {
         // visit the out op that is not in the subgraph
         for (auto tensor : op->outputs()) {
-          if (find(out_op->inputs().begin(), out_op->inputs().end(), tensor) != out_op->inputs().end()) {
+          if (find(out_op->inputs().begin(), out_op->inputs().end(), tensor) != out_op->inputs().end() &&
+              find(outputs.begin(), outputs.end(), tensor) == outputs.end()) {
             // find the connected tensor
             outputs.push_back(tensor);
             break;
@@ -86,9 +94,9 @@ std::vector<mindspore::MSTensor> GetGraphOutTensors(const std::vector<T *> &ops)
 }
 
 template <typename T>
-std::vector<mindspore::MSTensor> GraphInTensors(const std::vector<T *> &ops, DelegateModel *model, KernelIter from,
-                                                KernelIter end) {
-  auto in_tensors = GetGraphInTensors(ops);
+std::vector<mindspore::MSTensor> GraphInTensors(const std::vector<T *> &ops, DelegateModel<schema::Primitive> *model,
+                                                KernelIter from, KernelIter end) {
+  auto in_tensors = GetGraphInTensors(ops, nullptr);
   std::vector<mindspore::MSTensor> all_in_tensors;
   for (auto op : ops) {
     for (auto in_tensor : op->inputs()) {
@@ -113,14 +121,18 @@ std::vector<mindspore::MSTensor> GraphInTensors(const std::vector<T *> &ops, Del
 }
 
 template <typename T>
-std::vector<mindspore::MSTensor> GraphOutTensors(const std::vector<T *> &ops, DelegateModel *model, KernelIter from,
-                                                 KernelIter end) {
+std::vector<mindspore::MSTensor> GraphOutTensors(const std::vector<T *> &ops, DelegateModel<schema::Primitive> *model,
+                                                 KernelIter from, KernelIter end) {
   auto out_tensors = GetGraphOutTensors(ops);
   std::vector<mindspore::MSTensor> all_out_tensors;
   for (auto op : ops) {
     for (auto out_tensor : op->outputs()) {
       if (find(out_tensors.begin(), out_tensors.end(), out_tensor) == out_tensors.end()) {
         all_out_tensors.push_back(out_tensor);
+      }
+      if (find(model->outputs().begin(), model->outputs().end(), out_tensor) != model->outputs().end() &&
+          find(out_tensors.begin(), out_tensors.end(), out_tensor) == out_tensors.end()) {
+        out_tensors.push_back(out_tensor);
       }
     }
   }

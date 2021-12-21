@@ -25,7 +25,7 @@
 
 #include "minddata/dataset/callback/callback_manager.h"
 #include "minddata/dataset/include/dataset/constants.h"
-#include "minddata/dataset/engine/db_connector.h"
+#include "minddata/dataset/engine/operator_connector.h"
 #include "minddata/dataset/util/status.h"
 
 namespace mindspore {
@@ -112,15 +112,21 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
   // Getter function to get all of our parents.
   std::vector<DatasetOp *> parents() const;
 
+  virtual Status AddNewWorkers(int32_t num_new_workers = 1) {
+    return Status(StatusCode::kMDUnexpectedError, "Add new workers is not supported for non-ParallelOps");
+  }
+
+  virtual Status RemoveWorkers(int32_t num_workers = 1) {
+    return Status(StatusCode::kMDUnexpectedError, "Remove workers is not supported for non-ParallelOps");
+  }
+
   // \brief Inserts a operator as the parent current op.
   // \notes Inserted op will become the sole parent of the current op.
   //     The existing parent of the current op will be transferred to the inserted op.
   Status InsertAsParent(std::shared_ptr<DatasetOp> to_add);
 
   // \brief Creates the connector within this operator
-  // \param num_producers - number of threads that write into this connector
-  // \param num_consumers - number of threads that read from this connector
-  void CreateConnector(int32_t num_producers, int32_t num_consumers);
+  void CreateConnector();
 
   // \brief A print method typically used for debugging
   // \param out - The output stream to write output to
@@ -151,16 +157,8 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
 
   /// \brief Gets the next row from the given child
   /// \param row[out] - Fetched TensorRow
-  /// \param worker_id[in] - The worker id, default to 0.
   /// \return Status The status code returned
-  virtual Status GetNextRow(TensorRow *row, int32_t worker_id = 0) { return GetNextRow(row, worker_id, false); }
-
-  /// \brief Gets the next row from the given child
-  /// \param row[out] - Fetched TensorRow
-  /// \param worker_id[in] - The worker id, default to 0.
-  /// \param retry_if_eoe Set this flag to true to allow calling pop() again after the first pop() returns EOE.
-  /// \return Status The status code returned
-  virtual Status GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe);
+  virtual Status GetNextRow(TensorRow *row);
 
   // \brief Gets the batch size
   // \return Status - The status code return
@@ -209,33 +207,25 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
 
   // \brief Getter function
   // \return The number of workers in this op
-  virtual int32_t num_workers() const = 0;
-
-  // \brief Getter function
-  // \return The number of threads consuming from previous op.
-  virtual int32_t num_consumers() const = 0;
-
-  // \brief Getter function
-  // \return The number of threads producing to the output connector.
-  virtual int32_t num_producers() const = 0;
+  virtual int32_t NumWorkers() const = 0;
 
   // \brief Getter function
   // \return T/F if this is an inlined operator
   bool inlined() const { return (oc_queue_size_ == 0); }
 
   // \brief Setter function, set the number of total repeats for the operator
-  void set_total_repeats(int32_t total_repeats) { op_total_repeats_ = total_repeats; }
+  void SetTotalRepeats(int32_t total_repeats) { op_total_repeats_ = total_repeats; }
 
   // \brief Setter function, set the number of repeats per epoch for the operator
-  void set_num_repeats_per_epoch(int32_t num_repeats_per_epoch) { op_num_repeats_per_epoch_ = num_repeats_per_epoch; }
+  void SetNumRepeatsPerEpoch(int32_t num_repeats_per_epoch) { op_num_repeats_per_epoch_ = num_repeats_per_epoch; }
 
   // \brief Getter function
   // \return The number of required repeats for the operator
-  int32_t op_total_repeats() { return op_total_repeats_; }
+  int32_t GetOpTotalRepeats() { return op_total_repeats_; }
 
   // \brief Getter function
   // \return The number of repeats per epoch for the operator
-  int32_t op_num_repeats_per_epoch() const { return op_num_repeats_per_epoch_; }
+  int32_t GetOpNumRepeatsPerEpoch() const { return op_num_repeats_per_epoch_; }
 
   // \brief Register the internal worker connectors. No op unless it is a parallel op
   // \return Status
@@ -252,6 +242,8 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
   // \brief gives a string output for the column map for handy debug printing
   // \return - the column name map as a string
   std::string ColumnNameMapAsString() const;
+
+  OperatorConnector *OutputConnector() const { return out_connector_.get(); }
 
   // \brief Getter function
   // \return connector size of current op
@@ -342,11 +334,19 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
   // \return Status
   virtual Status WaitForWorkers() { return Status::OK(); }
 
+  virtual int32_t NumWorkers() { return 0; }
+
+  virtual Status SendQuitFlagToWorker(int32_t worker_id) { return Status::OK(); }
+
+  virtual Status SendWaitFlagToWorker(int32_t worker_id) { return Status::OK(); }
+
   // \brief Add callback to DatasetOp, only MapOp supports Callback at the moment
   void AddCallbacks(std::vector<std::shared_ptr<DSCallback>> callbacks) { callback_manager_.AddCallbacks(callbacks); }
 
   // \brief Remove all callbacks from DatasetOp
   void ClearCallbacks() { callback_manager_.ClearCallbacks(); }
+
+  virtual bool IsPython() const { return false; }
 
  protected:
   // \brief Removes a parent operator from this operator
@@ -381,7 +381,7 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
   int32_t op_num_repeats_per_epoch_;                             // Total number of repeats per epoch for the operator
   int32_t op_current_repeats_;                                   // Current number of repeats the operator has handled
   int32_t op_current_epochs_;                                    // Current number of epochs the operator has handled
-  std::unique_ptr<DbConnector> out_connector_;                   // Output Connector
+  std::unique_ptr<OperatorConnector> out_connector_;             // Output Connector
   std::unordered_map<std::string, int32_t> column_name_id_map_;  // Mapping between col index and col name
   std::mutex column_name_map_mutex_;                             // For protecting shared access to the column map
   CallbackManager callback_manager_;                             // Manages callbacks associated with a DatasetOp
@@ -393,7 +393,7 @@ class DatasetOp : public std::enable_shared_from_this<DatasetOp> {
   // \notes No public interface.  Only the class itself, or it's friend the execution tree can set
   // this
   // \param op_id - the Id value to set into the operator
-  void set_id(int32_t op_id) { operator_id_ = op_id; }
+  void SetId(int32_t op_id) { operator_id_ = op_id; }
 
   // Sets the tree into the op so that the operator has a back pointer to the tree.
   // \param tree - the tree to assign to the op.

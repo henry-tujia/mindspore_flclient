@@ -40,33 +40,33 @@ ValueNodePtr NewQuantCastValueNode(int src_type, int dst_type, const std::vector
   return NewValueNode(prim_c);
 }
 
-STATUS InsertCastNode(const FuncGraphPtr &graph, const CNodePtr &cnode, size_t input_index, bool is_graph_input) {
-  auto curr_cnode_primitive_c = GetValueNode<std::shared_ptr<ops::PrimitiveC>>(cnode->input(0));
-  if (curr_cnode_primitive_c == nullptr) {
+int InsertCastNode(const FuncGraphPtr &graph, const CNodePtr &cnode, size_t input_index, bool is_graph_input) {
+  auto primitive = GetValueNode<std::shared_ptr<mindspore::Primitive>>(cnode->input(0));
+  if (primitive == nullptr) {
     MS_LOG(ERROR) << "primitive_c is nullptr: " << cnode->fullname_with_scope();
     return RET_ERROR;
   }
   auto input_node = cnode->input(input_index);
   auto input_cnode_quant_type = schema::QuantType_QUANT_NONE;
-  std::shared_ptr<ops::PrimitiveC> input_cnode_primitive_c = nullptr;
+  std::shared_ptr<mindspore::Primitive> input_cnode_primitive_c = nullptr;
   if (!is_graph_input) {
     auto input_cnode = std::dynamic_pointer_cast<mindspore::CNode>(input_node);
-    input_cnode_primitive_c = GetValueNode<std::shared_ptr<ops::PrimitiveC>>(input_cnode->input(0));
+    input_cnode_primitive_c = GetValueNode<std::shared_ptr<mindspore::Primitive>>(input_cnode->input(0));
     if (input_cnode_primitive_c == nullptr) {
       MS_LOG(DEBUG) << "input: " << input_index << " " << input_cnode->fullname_with_scope() << ": "
                     << " PrimitiveC is null";
-      return RET_CONTINUE;
+      return RET_NO_CHANGE;
     }
     auto input_primitive_quant_holder = GetCNodeQuantHolder(input_cnode_primitive_c);
     MS_CHECK_TRUE_MSG(input_primitive_quant_holder != nullptr, RET_NULL_PTR,
                       "input_primitive_quant_holder is nullptr.");
     input_cnode_quant_type = input_primitive_quant_holder->quant_type();
   }
-  auto primitive_quant_param_holder = GetCNodeQuantHolder(curr_cnode_primitive_c);
+  auto primitive_quant_param_holder = GetCNodeQuantHolder(primitive);
   MS_CHECK_TRUE_MSG(primitive_quant_param_holder != nullptr, RET_NULL_PTR, "primitive_quant_param_holder is nullptr.");
   auto curnode_quant_type = primitive_quant_param_holder->quant_type();
   if (curnode_quant_type == input_cnode_quant_type) {
-    return RET_CONTINUE;
+    return RET_NO_CHANGE;
   }
 
   bool insert_dequant_node =
@@ -78,11 +78,11 @@ STATUS InsertCastNode(const FuncGraphPtr &graph, const CNodePtr &cnode, size_t i
                     << "cur_node: " << cnode->fullname_with_scope() << " quant_type: "
                     << " input_" << input_index << ": "
                     << " quant_type:" << input_cnode_quant_type;
-    return RET_CONTINUE;
+    return RET_NO_CHANGE;
   }
   ValueNodePtr value_node;
   if (insert_dequant_node) {
-    auto curr_primitive_quant_param_holder = GetCNodeQuantHolder(curr_cnode_primitive_c);
+    auto curr_primitive_quant_param_holder = GetCNodeQuantHolder(primitive);
     if (curr_primitive_quant_param_holder->get_input_quant_params().size() < input_index) {
       MS_LOG(ERROR) << "quant param is invalid.";
       return RET_ERROR;
@@ -107,9 +107,9 @@ STATUS InsertCastNode(const FuncGraphPtr &graph, const CNodePtr &cnode, size_t i
   return RET_OK;
 }
 
-STATUS CheckDataType(const AnfNodePtr &input_node, bool is_graph_input) {
+int CheckDataType(const AnfNodePtr &input_node, bool is_graph_input) {
   if (!input_node->isa<mindspore::CNode>() && !is_graph_input) {
-    return RET_CONTINUE;
+    return RET_NO_CHANGE;
   }
   bool is_special_node =
     input_node->isa<mindspore::CNode>() && opt::IsSpecialType(input_node->cast<mindspore::CNodePtr>());
@@ -121,13 +121,13 @@ STATUS CheckDataType(const AnfNodePtr &input_node, bool is_graph_input) {
       return ret;
     }
     if (type_id != kNumberTypeFloat32) {
-      return RET_CONTINUE;
+      return RET_NO_CHANGE;
     }
   }
   return RET_OK;
 }
 
-STATUS QuantCast::Run(const FuncGraphPtr &graph) {
+int QuantCast::Run(const FuncGraphPtr &graph) {
   MS_ASSERT(graph != nullptr);
   auto cnodes = graph->GetOrderedCnodes();
   for (auto &cnode : cnodes) {
@@ -135,14 +135,14 @@ STATUS QuantCast::Run(const FuncGraphPtr &graph) {
       auto input_node = cnode->input(i);
       auto is_graph_input = input_node->isa<Parameter>() && !input_node->cast<ParameterPtr>()->has_default();
       auto ret = CheckDataType(input_node, is_graph_input);
-      if (ret == RET_CONTINUE) {
+      if (ret == RET_NO_CHANGE) {
         continue;
       } else if (ret != RET_OK) {
         MS_LOG(ERROR) << "Check data type failed.";
         return ret;
       }
       ret = InsertCastNode(graph, cnode, i, is_graph_input);
-      if (ret == RET_CONTINUE) {
+      if (ret == RET_NO_CHANGE) {
         continue;
       } else if (ret != RET_OK) {
         MS_LOG(ERROR) << "Insert cast node failed.";

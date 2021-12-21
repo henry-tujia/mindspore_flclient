@@ -16,23 +16,21 @@
 #ifndef MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_EXPANDERS_EXPANDER_FACTORY_H_
 #define MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_EXPANDERS_EXPANDER_FACTORY_H_
 
-#include <unordered_map>
 #include <functional>
 #include <string>
 #include <memory>
 
+#include "utils/hash_map.h"
 #include "backend/optimizer/graph_kernel/expanders/utils.h"
 
-namespace mindspore {
-namespace opt {
-namespace expanders {
+namespace mindspore::graphkernel::expanders {
 class OpExpanderFactory {
  public:
   static OpExpanderFactory &Instance() {
     static OpExpanderFactory instance;
     return instance;
   }
-  std::shared_ptr<OpExpander> GetExpander(const std::string &op) {
+  std::shared_ptr<OpDesc> GetExpander(const std::string &op) {
     if (auto iter = creators.find(op); iter != creators.end()) {
       auto expander_ptr = iter->second();
       expander_ptr->op_ = op;
@@ -42,25 +40,27 @@ class OpExpanderFactory {
   }
   ~OpExpanderFactory() = default;
 
-  using RegFunc = std::function<std::shared_ptr<OpExpander>()>;
+  using RegFunc = std::function<std::shared_ptr<OpDesc>()>;
   void Register(const std::string &op, const RegFunc &func) { creators[op] = func; }
 
  private:
-  std::unordered_map<std::string, RegFunc> creators;
+  mindspore::HashMap<std::string, RegFunc> creators;
 };
 
 class OpExpanderRegister {
  public:
-  OpExpanderRegister(const std::string &name, const OpExpanderFactory::RegFunc &func) {
+  OpExpanderRegister(const std::string &name, const OpExpanderFactory::RegFunc &func) : func_(func) {
     OpExpanderFactory::Instance().Register(name, func);
   }
   ~OpExpanderRegister() = default;
+
+ private:
+  // for pclint-plus
+  OpExpanderFactory::RegFunc func_;
 };
 
 #define OP_EXPANDER_REGISTER(name, cls)                   \
   static const OpExpanderRegister g_##cls##_expander_reg( \
-    name, []() -> std::shared_ptr<OpExpander> { return std::make_shared<cls>(); })
-}  // namespace expanders
-}  // namespace opt
-}  // namespace mindspore
+    name, []() -> std::shared_ptr<OpDesc> { return std::make_shared<cls>(); })
+}  // namespace mindspore::graphkernel::expanders
 #endif  // MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_EXPANDERS_EXPANDER_FACTORY_H_

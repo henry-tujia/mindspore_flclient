@@ -166,6 +166,7 @@ constexpr auto kDivisorOverride = "divisor_override";
 constexpr auto kPostNmsTopn = "post_nms_topn";
 constexpr auto kPower = "power";
 constexpr auto kPreNmsTopn = "pre_nms_topn";
+constexpr auto kRankSize = "rank_size";
 constexpr auto kRatio = "ratio";
 constexpr auto kReduction = "reduction";
 constexpr auto kRootRank = "root_rank";
@@ -257,6 +258,8 @@ constexpr auto kApproximate = "approximate";
 constexpr auto kNumOutput = "num_output";
 constexpr auto kUseGlobalStats = "use_global_stats";
 constexpr auto kFmkType = "fmk_type";
+constexpr auto kIsOriginalPadMode = "is_original_pad_mode";
+constexpr auto kOriginalOpName = "original_op_name";
 
 enum Index : size_t {
   kInputIndex0 = 0,
@@ -280,6 +283,10 @@ enum Index : size_t {
 
 const std::set<TypePtr> common_valid_types = {kInt8,   kInt16,  kInt32,   kInt64,   kUInt8,  kUInt16,
                                               kUInt32, kUInt64, kFloat16, kFloat32, kFloat64};
+
+const std::set<TypePtr> common_valid_types_with_complex = {kInt8,    kInt16,     kInt32,     kInt64,   kUInt8,
+                                                           kUInt16,  kUInt32,    kUInt64,    kFloat16, kFloat32,
+                                                           kFloat64, kComplex64, kComplex128};
 
 const std::set<TypePtr> all_types = {
   kBool,   kInt,    kInt8,   kInt16, kInt32,   kInt64,   kUInt,    kUInt8,

@@ -90,16 +90,16 @@ std::vector<int> TransformOpAxesAttr(const std::vector<int> &origin_axes, Format
   return cur_axes;
 }
 
-void TransformAttrByAxes(const FuncGraphPtr &func_graph, const CNodePtr &cnode, size_t input_index,
-                         const std::vector<int> &axes, FormatTransNodeType trans_type,
-                         NodeInferShape *node_infer_shape) {
+int TransformAttrByAxes(const FuncGraphPtr &func_graph, const CNodePtr &cnode, size_t input_index,
+                        const std::vector<int> &axes, FormatTransNodeType trans_type,
+                        NodeInferShape *node_infer_shape) {
   MS_ASSERT(func_graph != nullptr && cnode != nullptr && node_infer_shape != nullptr);
   if (input_index >= cnode->size() || axes.empty()) {
-    return;
+    return lite::RET_ERROR;
   }
   auto origin_input = node_infer_shape->GetIntVecInput(cnode, input_index);
   if (origin_input.size() != axes.size()) {
-    return;
+    return lite::RET_ERROR;
   }
   std::vector<int> cur_input;
   for (int dim = 0; dim < static_cast<int>(kInputSizeFour); ++dim) {
@@ -119,7 +119,9 @@ void TransformAttrByAxes(const FuncGraphPtr &func_graph, const CNodePtr &cnode, 
     }
   }
   auto param_node = BuildIntVecParameterNode(func_graph, cur_input, cnode->input(input_index)->fullname_with_scope());
-  func_graph->manager()->Replace(cnode->input(input_index), param_node);
+  MS_CHECK_TRUE_MSG(param_node != nullptr, lite::RET_ERROR, "BuildIntVecParameterNode failed");
+  func_graph->manager()->SetEdge(cnode, input_index, param_node);
+  return lite::RET_OK;
 }
 
 STATUS ChangeCommonOp(const FuncGraphPtr &func_graph, const CNodePtr &cnode, FormatTransNodeType trans_type,
@@ -134,6 +136,7 @@ STATUS ChangeCommonOp(const FuncGraphPtr &func_graph, const CNodePtr &cnode, For
   if (prim->GetAttr(ops::kAxis) == nullptr) {
     return lite::RET_NOT_SUPPORT;
   }
+  MS_CHECK_TRUE_MSG(prim->GetAttr(ops::kAxis) != nullptr, lite::RET_NULL_PTR, "GetAttr Failed.");
   auto axis = GetValue<int64_t>(prim->GetAttr(ops::kAxis));
   if (axis < 0) {
     axis += kInputSizeFour;
@@ -158,17 +161,21 @@ STATUS ChangeOpCrop(const FuncGraphPtr &func_graph, const CNodePtr &cnode, Forma
     MS_LOG(ERROR) << "cnode is invalid.";
     return lite::RET_ERROR;
   }
+  MS_CHECK_TRUE_RET(crop_prim->GetAttr(ops::kAxis) != nullptr, lite::RET_ERROR);
   auto axis = crop_prim->get_axis();
   if (axis < 0) {
     axis += kInputSizeFour;
   }
   MS_ASSERT(axis >= 0 && axis < kInputSizeFour);
+  MS_CHECK_TRUE_RET(crop_prim->GetAttr(ops::kOffsets) != nullptr, lite::RET_ERROR);
   auto offsets = crop_prim->get_offsets();
   if (trans_type == kNCHW2NHWC) {
     auto new_axis = kNH2NC[axis];
     if (new_axis == 0) {
+      MS_CHECK_GE(offsets.size(), kInputIndexFour, lite::RET_ERROR);
       offsets = {offsets[0], offsets[kInputIndexTwo], offsets[kInputIndexThree], offsets[1]};
     } else if (new_axis == kInputIndexThree) {
+      MS_CHECK_GE(offsets.size(), kInputIndexThree, lite::RET_ERROR);
       offsets = {offsets[1], offsets[kInputIndexTwo], offsets[0]};
     } else {
       offsets.push_back(0);
@@ -205,9 +212,9 @@ STATUS ChangeOpPad(const FuncGraphPtr &func_graph, const CNodePtr &cnode, Format
   lite::DataInfo data_info;
   int status;
   if (utils::isa<Parameter>(second_input)) {
-    status = lite::FetchDataFromParameterNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info);
+    status = lite::FetchDataFromParameterNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info, true);
   } else if (utils::isa<ValueNode>(second_input)) {
-    status = lite::FetchDataFromValueNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info);
+    status = lite::FetchDataFromValueNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info, true);
   } else {
     return lite::RET_NOT_SUPPORT;
   }
@@ -236,7 +243,10 @@ STATUS ChangeOpPad(const FuncGraphPtr &func_graph, const CNodePtr &cnode, Format
   }
   auto param_node =
     BuildIntVec2DParameterNode(func_graph, padding_list, cnode->input(kInputIndexTwo)->fullname_with_scope());
-  func_graph->manager()->Replace(cnode->input(kInputIndexTwo), param_node);
+  MS_CHECK_TRUE_MSG(param_node != nullptr, lite::RET_NULL_PTR, "BuildParameterNode Failed");
+  auto manager = func_graph->manager();
+  MS_ASSERT(manager != nullptr);
+  manager->Replace(cnode->input(kInputIndexTwo), param_node);
   auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
   MS_CHECK_TRUE_MSG(prim != nullptr, lite::RET_NULL_PTR, "GetValueNode Failed");
   if (prim->GetAttr(ops::kPaddings) != nullptr) {
@@ -266,6 +276,7 @@ STATUS ChangeOpSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode, Form
   }
   int element_num = shape.front();
   auto prim = GetValueNode<std::shared_ptr<ops::SliceFusion>>(cnode->input(0));
+  MS_CHECK_TRUE_MSG(prim != nullptr, RET_ERROR, "GetValueNode failed");
   std::vector<int> axes;
   if (prim->GetAttr(ops::kAxes) == nullptr || prim->get_axes().empty()) {
     for (int index = 0; index < element_num; ++index) {
@@ -277,7 +288,10 @@ STATUS ChangeOpSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode, Form
                    [](int64_t v) { return static_cast<int>(v); });
   }
   for (size_t i = 2; i < cnode->size(); ++i) {
-    TransformAttrByAxes(func_graph, cnode, i, axes, trans_type, node_infer_shape);
+    if (TransformAttrByAxes(func_graph, cnode, i, axes, trans_type, node_infer_shape) != RET_OK) {
+      MS_LOG(ERROR) << "Transform axes failed.";
+      return RET_ERROR;
+    }
   }
   auto tmp_axes = TransformOpAxesAttr(axes, trans_type);
   std::vector<int64_t> new_axes(tmp_axes.begin(), tmp_axes.end());
@@ -309,12 +323,18 @@ STATUS ChangeOpStrideSlice(const FuncGraphPtr &func_graph, const CNodePtr &cnode
     if (index == kInputIndexFour) {
       continue;
     }
-    TransformAttrByAxes(func_graph, cnode, index, axes, trans_type, node_infer_shape);
+    if (TransformAttrByAxes(func_graph, cnode, index, axes, trans_type, node_infer_shape) != RET_OK) {
+      MS_LOG(ERROR) << "transform axes failed.";
+      return lite::RET_ERROR;
+    }
   }
   auto cur_axes = TransformOpAxesAttr(axes, trans_type);
   auto param_node =
     BuildIntVecParameterNode(func_graph, cur_axes, cnode->input(kInputIndexFour)->fullname_with_scope());
-  func_graph->manager()->Replace(cnode->input(kInputIndexFour), param_node);
+  MS_CHECK_TRUE_MSG(param_node != nullptr, RET_ERROR, "BuildIntVecParameterNode failed");
+  auto manager = func_graph->manager();
+  MS_ASSERT(manager != nullptr);
+  manager->SetEdge(cnode, kInputIndexFour, param_node);
   return lite::RET_OK;
 }
 }  // namespace
@@ -373,14 +393,14 @@ bool TransposeStrategy::CanFusionIfInsert(const FuncGraphPtr &func_graph, const 
       in_nodes.push_back(cnode->input(i));
     }
   }
-  if (!IsInOutCanFuison(func_graph, in_nodes, &trans_count, &trans_info->pre_)) {
+  if (!IsInOutCanFuison(in_nodes, &trans_count, &trans_info->pre_)) {
     return false;
   }
   std::vector<AnfNodePtr> out_nodes;
   if (GetPostNodes(func_graph, cnode, &out_nodes) != lite::RET_OK) {
     return false;
   }
-  if (!IsInOutCanFuison(func_graph, out_nodes, &trans_count, &trans_info->post_)) {
+  if (!IsInOutCanFuison(out_nodes, &trans_count, &trans_info->post_)) {
     return false;
   }
   if (trans_info->pre_ == trans_info->post_) {
@@ -405,8 +425,8 @@ bool TransposeStrategy::CanFusionIfInsert(const FuncGraphPtr &func_graph, const 
   return can_insert;
 }
 
-bool TransposeStrategy::CanChangeOpAxis(const FuncGraphPtr &func_graph, const CNodePtr &cnode) {
-  MS_ASSERT(func_graph != nullptr && cnode != nullptr);
+bool TransposeStrategy::CanChangeOpAxis(const CNodePtr &cnode) {
+  MS_ASSERT(cnode != nullptr);
   auto prim = GetValueNode<PrimitivePtr>(cnode->input(0));
   MS_CHECK_TRUE_MSG(prim != nullptr, false, "GetValueNode Failed");
   if (!IsDynamicFormatOp(prim->name())) {
@@ -477,6 +497,7 @@ STATUS TransposeStrategy::TransposeInsertDependOnShape(const FuncGraphPtr &func_
     return lite::RET_ERROR;
   }
   CNodePtr base_node = before ? cnode : node_users.front().first->cast<CNodePtr>();
+  MS_ASSERT(base_node != nullptr);
   size_t input_index = before ? index : node_users.front().second;
   auto shape = node_infer_shape_.GetInputShape(base_node, input_index);
   if (!shape.empty() && shape.size() != kNH2NC.size()) {
@@ -485,9 +506,8 @@ STATUS TransposeStrategy::TransposeInsertDependOnShape(const FuncGraphPtr &func_
   return lite::RET_OK;
 }
 
-bool TransposeStrategy::IsInOutCanFuison(const FuncGraphPtr &func_graph, const std::vector<AnfNodePtr> &nodes,
-                                         size_t *trans_count, FormatTransNodeType *trans_type) {
-  MS_ASSERT(func_graph != nullptr);
+bool TransposeStrategy::IsInOutCanFuison(const std::vector<AnfNodePtr> &nodes, size_t *trans_count,
+                                         FormatTransNodeType *trans_type) {
   MS_ASSERT(trans_count != nullptr && trans_type != nullptr);
   for (auto &node : nodes) {
     if (CheckPrimitiveType(node, prim::kPrimTranspose)) {
@@ -518,7 +538,7 @@ bool TransposeStrategy::IsInOutCanFuison(const FuncGraphPtr &func_graph, const s
   return true;
 }
 
-void TransposeStrategy::DecidePreAndPostTransType(TransTypePair *trans_info, TransTypePair *trans_insert_info) {
+void TransposeStrategy::DecidePreAndPostTransType(TransTypePair *trans_info, TransTypePair *trans_insert_info) const {
   if (trans_info->pre_ == trans_info->post_) {
     return;
   }

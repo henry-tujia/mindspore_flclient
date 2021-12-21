@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 #include <memory>
-#include <unordered_set>
+#include "utils/hash_set.h"
 #include "backend/optimizer/common/helper.h"
 #include "backend/kernel_compiler/kernel_build_info.h"
 #include "utils/utils.h"
@@ -27,9 +27,10 @@
 #include "utils/ms_context.h"
 
 namespace mindspore::opt {
+namespace {
 constexpr size_t kFloat16Len = 2;  // size of float16;
 constexpr size_t kTopkIndexK = 1;
-namespace {
+
 tensor::TensorPtr CreateTensor() {
   // 1 create tensor
   const size_t last_dim = 4096;
@@ -56,7 +57,7 @@ tensor::TensorPtr CreateTensor() {
   auto ret_code = memcpy_s(data_ptr, static_cast<size_t>(indices_tensor->data().nbytes()),
                            reinterpret_cast<void *>(half_data.data()), elem_num);
   if (ret_code != 0) {
-    MS_LOG(ERROR) << "Failed to copy data into Tensor.";
+    MS_LOG(ERROR) << "Failed to copy data into tensor, memcpy_s errorno: " << ret_code;
     return nullptr;
   }
   return indices_tensor;
@@ -142,7 +143,7 @@ const AnfNodePtr TopKSplit::Process(const FuncGraphPtr &func_graph, const AnfNod
   // Copy a new node to check supported.
   std::vector<AnfNodePtr> new_inputs{NewValueNode(std::make_shared<Primitive>(kTopKOpName))};
   new_inputs.insert(new_inputs.end(), cnode->inputs().begin() + 1, cnode->inputs().end());
-  CNodePtr new_cnode = func_graph->NewCNode(new_inputs);
+  CNodePtr new_cnode = NewCNode(new_inputs, func_graph);
   MS_EXCEPTION_IF_NULL(new_cnode);
   new_cnode->set_abstract(cnode->abstract());
   new_cnode->set_scope(cnode->scope());
@@ -163,7 +164,7 @@ const AnfNodePtr TopKSplit::Process(const FuncGraphPtr &func_graph, const AnfNod
   auto new_value_node = std::make_shared<ValueNode>(MakeValue(*data));
   new_cnode->set_input(kTopkIndexK + 1, new_value_node);
 
-  std::unordered_set<size_t> attr_index{kTopkIndexK};
+  mindspore::HashSet<size_t> attr_index{kTopkIndexK};
   ConstInputToAttr(new_cnode, attr_index);
   auto indices_const = CreateValueNode();
   new_cnode->add_input(indices_const);

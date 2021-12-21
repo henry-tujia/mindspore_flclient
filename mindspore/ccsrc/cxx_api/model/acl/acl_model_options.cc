@@ -33,29 +33,30 @@ AclModelOptions::AclModelOptions(const std::shared_ptr<Context> &context) {
   if (device_infos.size() != 1) {
     return;
   }
-  auto ascend310_info = device_infos[0]->Cast<Ascend310DeviceInfo>();
-  if (ascend310_info == nullptr) {
+  auto ascend_info = device_infos[0]->Cast<AscendDeviceInfo>();
+  if (ascend_info == nullptr) {
     return;
   }
 
-  insert_op_cfg_path_ = ascend310_info->GetInsertOpConfigPath();
-  input_format_ = ascend310_info->GetInputFormat();
-  input_shape_map_ = ascend310_info->GetInputShapeMap();
-  auto out_type = ascend310_info->GetOutputType();
+  insert_op_cfg_path_ = ascend_info->GetInsertOpConfigPath();
+  input_format_ = ascend_info->GetInputFormat();
+  input_shape_map_ = ascend_info->GetInputShapeMap();
+  auto out_type = ascend_info->GetOutputType();
   auto iter = kSupportedDtypeOptionMap.find(out_type);
   if (out_type == DataType::kTypeUnknown) {
     // do nothing
   } else if (iter == kSupportedDtypeOptionMap.end()) {
-    MS_LOG(WARNING) << "Unsupported output type " << out_type << ", use FP32 as default.";
+    MS_LOG(INFO) << "Unsupported output type " << out_type << ", use FP32 as default.";
   } else {
     output_type_ = iter->second;
   }
-  dynamic_batch_size_ = ascend310_info->GetDynamicBatchSize();
-  precision_mode_ = ascend310_info->GetPrecisionMode();
-  op_select_impl_mode_ = ascend310_info->GetOpSelectImplMode();
-  fusion_switch_cfg_path_ = ascend310_info->GetFusionSwitchConfigPath();
-  device_id_ = ascend310_info->GetDeviceID();
-  buffer_optimize_mode_ = ascend310_info->GetBufferOptimizeMode();
+  dynamic_batch_size_ = ascend_info->GetDynamicBatchSize();
+  dynamic_image_size_ = ascend_info->GetDynamicImageSize();
+  precision_mode_ = ascend_info->GetPrecisionMode();
+  op_select_impl_mode_ = ascend_info->GetOpSelectImplMode();
+  fusion_switch_cfg_path_ = ascend_info->GetFusionSwitchConfigPath();
+  device_id_ = ascend_info->GetDeviceID();
+  buffer_optimize_mode_ = ascend_info->GetBufferOptimizeMode();
   const char *soc_name = aclrtGetSocName();
   if (soc_name == nullptr) {
     MS_LOG(WARNING) << "Get soc version failed.";
@@ -71,6 +72,10 @@ void AclModelOptions::RenameInput(const std::vector<std::string> &input_names) {
   }
   input_shape_ = "";
   for (size_t i = 0; i < input_shape_map_.size(); i++) {
+    if (input_shape_map_.find(i) == input_shape_map_.end()) {
+      MS_LOG(WARNING) << "Not find the key: " << i;
+      return;
+    }
     std::string s;
     for (size_t j = 0; j < input_shape_map_[i].size(); j++) {
       s += std::to_string(input_shape_map_[i][j]) + ",";

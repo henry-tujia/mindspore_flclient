@@ -20,8 +20,8 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "frontend/optimizer/irpass.h"
 #include "frontend/parallel/context.h"
 #include "frontend/optimizer/optimizer.h"
@@ -30,6 +30,8 @@
 #include "ir/func_graph_cloner.h"
 #include "ir/tensor.h"
 #include "frontend/operator/ops.h"
+#include "abstract/abstract_value.h"
+#include "utils/utils.h"
 
 namespace mindspore {
 namespace opt {
@@ -144,9 +146,8 @@ class InlinerBase : public AnfVisitor {
     if (IsForceInline(this, fg, node)) {
       if (IsUniqueUse(nullptr, fg, nullptr)) {
         return InlineMove(node, fg, args, inputs);
-      } else {
-        return InlineClone(fg, node->func_graph(), args, inputs[0]->scope());
       }
+      return InlineClone(fg, node->func_graph(), args, inputs[0]->scope());
     }
 
     if (IsUniqueUse(nullptr, fg, nullptr)) {
@@ -170,6 +171,7 @@ class InlinerBase : public AnfVisitor {
       }
     }
     // Or, just make a clone for not single used fg.
+    MS_LOG(INFO) << "Run InlineClone in inline pass, subgraph number may increase.";
     return InlineClone(fg, node->func_graph(), args, inputs[0]->scope());
   }
 
@@ -279,6 +281,30 @@ class InlinerBase : public AnfVisitor {
     return node->func_graph()->NewCNode(node_inputs);
   }
 
+  bool CheckSwitchBranchAbstract(const AbstractBasePtr &branch_abstract) {
+    if (branch_abstract != nullptr && branch_abstract->isa<abstract::AbstractError>()) {
+      auto branch_abstract_value = branch_abstract->GetValueTrack();
+      MS_EXCEPTION_IF_NULL(branch_abstract_value);
+      auto branch_abstract_value_string_imm = branch_abstract_value->cast<StringImmPtr>();
+      if (branch_abstract_value_string_imm != nullptr) {
+        auto branch_abstract_value_string_imm_value = branch_abstract_value_string_imm->value();
+        return branch_abstract_value_string_imm_value == kDeadNodeName ||
+               branch_abstract_value_string_imm_value == kPolyNodeName;
+      }
+    }
+    return false;
+  }
+
+  bool CheckSwitchInputs(const std::vector<AnfNodePtr> &sw_inputs) {
+    auto true_branch_abstract = sw_inputs[kSwitchTrueKernelGraphIndex]->abstract();
+    auto false_branch_abstract = sw_inputs[kSwitchFalseKernelGraphIndex]->abstract();
+    // When branch has dead node or poly node, do not perform inline.
+    if (CheckSwitchBranchAbstract(true_branch_abstract) || CheckSwitchBranchAbstract(false_branch_abstract)) {
+      return true;
+    }
+    return !sw_inputs[1]->isa<ValueNode>() || IsValueNode<tensor::Tensor>(sw_inputs[1]);
+  }
+
   // This is a try-best algorithm to find a graph which may generate branch call.
   // It does not handle high-order function call. For high-orderer call branch, it still may be inlined.
   bool GraphHasBranch(FuncGraphPtr fg) {
@@ -293,14 +319,14 @@ class InlinerBase : public AnfVisitor {
         if (sw_inputs.size() != 4) {
           MS_LOG(EXCEPTION) << "switch inputs should be 4";
         }
-        if (!sw_inputs[1]->isa<ValueNode>() || IsValueNode<tensor::Tensor>(sw_inputs[1])) {
+        if (CheckSwitchInputs(sw_inputs)) {
           has_branch = true;
           break;
         }
       } else if (IsCNodeGraph(item)) {
         auto cinputs = item->cast<CNodePtr>()->inputs();
         if (cinputs.size() < 1) {
-          MS_LOG(EXCEPTION) << "graph call inputs should greater than 1";
+          MS_LOG(EXCEPTION) << "graph call inputs should be greater than 1";
         }
         FuncGraphPtr call_fg = GetValueNode<FuncGraphPtr>(cinputs[0]);
         bool call_fg_has_branch = GraphHasBranch(call_fg);
@@ -311,7 +337,7 @@ class InlinerBase : public AnfVisitor {
       } else if (IsPrimitiveCNode(item, prim::kPrimPartial)) {
         auto cinputs = item->cast<CNodePtr>()->inputs();
         if (cinputs.size() < 2) {
-          MS_LOG(EXCEPTION) << "partial call inputs should greater than 2";
+          MS_LOG(EXCEPTION) << "partial call inputs should be greater than 2";
         }
         FuncGraphPtr call_fg = GetValueNode<FuncGraphPtr>(cinputs[1]);
         if (call_fg == nullptr) {
@@ -332,7 +358,7 @@ class InlinerBase : public AnfVisitor {
   bool is_checked_{false}, is_recursive_{false};
   bool use_move_;
   std::vector<std::vector<CriterionFuncType>> criterions_;
-  std::unordered_map<FuncGraphPtr, bool> graph_branch_cache_;
+  mindspore::HashMap<FuncGraphPtr, bool> graph_branch_cache_;
 };
 
 bool IsUniqueUse(InlinerBase *, const FuncGraphPtr &fg, const AnfNodePtr &) {

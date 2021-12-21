@@ -18,6 +18,7 @@
 #define MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ASCEND310_KERNEL_CUSTOM_H_
 
 #include <vector>
+#include <string>
 #include <memory>
 #include "src/runtime/kernel/ascend310/src/acl_model_options.h"
 #include "src/runtime/kernel/ascend310/src/model_infer.h"
@@ -30,22 +31,27 @@ namespace mindspore::kernel {
 namespace acl {
 using mindspore::lite::STATUS;
 
-class CustomAscend310Kernel : public kernel::Kernel {
+class CustomAscendKernel : public kernel::Kernel {
  public:
-  CustomAscend310Kernel(const std::vector<mindspore::MSTensor> &inputs, const std::vector<mindspore::MSTensor> &outputs,
-                        const mindspore::schema::Primitive *primitive, const mindspore::Context *ctx);
-  ~CustomAscend310Kernel() override;
+  CustomAscendKernel(const std::vector<mindspore::MSTensor> &inputs, const std::vector<mindspore::MSTensor> &outputs,
+                     const mindspore::schema::Primitive *primitive, const mindspore::Context *ctx);
+  ~CustomAscendKernel() override;
 
   STATUS Prepare() override;
   STATUS ReSize() override;
   STATUS Execute() override;
 
  private:
+  void RecordInputDataIndex();
   STATUS PrepareModelInfer();
-  AclModelOptions GetAclModelOptions(const mindspore::Context *ctx) const;
+  STATUS ProcDynamicInput(std::vector<mindspore::MSTensor> *input);
+  STATUS GetRealBatchSize(std::vector<mindspore::MSTensor> *inputs, int32_t *batch_size);
+  STATUS GetRealImageSize(std::vector<mindspore::MSTensor> *inputs, int32_t *image_size, int32_t num);
 
   bool load_model_;
+  AclModelOptions acl_options_;
   std::shared_ptr<ModelInfer> model_infer_;
+  size_t InputDataIndex_;
 };
 }  // namespace acl
 }  // namespace mindspore::kernel

@@ -40,6 +40,9 @@ class InTopKGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *predictions_device = GetDeviceAddress<T>(inputs, 0);
     int32_t *targets_device = GetDeviceAddress<int32_t>(inputs, 1);
 
@@ -92,20 +95,28 @@ class InTopKGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     size_t input_count = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_count != 2) {
-      MS_LOG(ERROR) << input_count << " inputs were provided, but InTopKGpuKernel expects 2.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_count;
     }
 
     size_t output_count = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_count != 1) {
-      MS_LOG(ERROR) << "Number of outputs is " << output_count << ", but should be 1 for InTopKGpuKernel.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of output should be 1, but got " << output_count;
     }
 
     input_shape_ = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
+    if (input_shape_.size() < 2) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of input cannot be less than 2, but got "
+                        << input_shape_.size();
+    }
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape_, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     input_rank_ = input_shape_.size();
     input_size_ = 1;
     for (size_t i = 0; i < input_rank_; i++) {
@@ -136,6 +147,7 @@ class InTopKGpuKernel : public GpuKernel {
     input_rank_ = 0;
     outer_size_ = 0;
     inner_size_ = 0;
+    is_null_input_ = false;
     top_k_init_ = static_cast<T>(0.);
     input_size_list_.clear();
     output_size_list_.clear();
@@ -171,6 +183,7 @@ class InTopKGpuKernel : public GpuKernel {
   // for topk
   size_t outer_size_;
   size_t inner_size_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

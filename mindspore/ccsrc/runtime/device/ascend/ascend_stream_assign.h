@@ -45,59 +45,6 @@ using std::vector;
 using CNodeKey = void *;
 const uint32_t kInvalidStreamId = UINT32_MAX;
 const uint32_t kInvalidEventId = UINT32_MAX;
-class AscendResourceMng {
- public:
-  static AscendResourceMng &GetInstance() {
-    static AscendResourceMng instance;
-    return instance;
-  }
-
-  void ResetResource() {
-    cur_stream_num_ = 0;
-    cur_event_num_ = 0;
-  }
-  uint32_t ApplyNewStream() {
-    if (!cur_stream_num_) {
-      uint32_t cur_stream_id = cur_stream_num_;
-      cur_stream_num_++;
-      return cur_stream_id;
-    }
-    uint32_t cur_stream_id = cur_stream_num_;
-    cur_stream_num_++;
-    return cur_stream_id;
-  }
-  uint32_t ApplyNewEvent() {
-    if (!cur_event_num_) {
-      uint32_t cur_event_id = cur_event_num_;
-      cur_event_num_++;
-      return cur_event_id;
-    }
-    uint32_t cur_event_id = cur_event_num_;
-    cur_event_num_++;
-    return cur_event_id;
-  }
-
-  void DeleteEvent() {
-    if (!cur_event_num_) {
-      MS_LOG(WARNING) << "total event num is 0, no event to delete";
-    } else {
-      --cur_event_num_;
-    }
-  }
-  uint32_t get_cur_stream_num() { return cur_stream_num_; }
-  uint32_t GetCurAllocStreamId() {
-    if (!cur_stream_num_) {
-      MS_LOG(EXCEPTION) << "stream nums is 0, no stream id should be get";
-    }
-    return cur_stream_num_ - 1;
-  }
-  uint32_t get_cur_event_num() { return cur_event_num_; }
-
- private:
-  uint32_t cur_stream_num_{0};
-  uint32_t cur_event_num_{0};
-};
-
 enum StreamActiveKind { kInvalid = 0, kHead, kMiddle, kTail };
 class AscendStreamAssign {
  public:
@@ -112,6 +59,7 @@ class AscendStreamAssign {
   void AssignStream(const NotNull<KernelGraphPtr> &graph_ptr);
   void GetHcomStreams(std::vector<uint32_t> *streams);
   void GetWaitStreams(vector<uint32_t> *wait_active_stream_list);
+  void AssignStreamForNonTaskSink(const std::vector<CNodePtr> &kernels);
   const std::vector<std::vector<uint32_t>> &get_stream_group() const { return stream_groups_; }
   const std::map<CNodePtr, CNodePtr> &get_event_map() const { return event_map_; }
 
@@ -145,12 +93,17 @@ class AscendStreamAssign {
   void InsertEventForIndependentParallel(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertCtrlForIndependentParallel(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventForHcomParallel(const NotNull<KernelGraphPtr> &graph_ptr);
+  void InsertEventForIndependentHcom(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventCommonDependHcom(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventHcomDependCommon(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventHcomDependCommonBak(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventHcomDependHcom(const NotNull<KernelGraphPtr> &graph_ptr);
   void InsertEventBetweenHcom(const NotNull<KernelGraphPtr> &graph_ptr,
                               const std::vector<std::pair<uint32_t, vector<size_t>>> &hcom_index);
+  void InsertEventHcomDependHcomAtSameGroup(const NotNull<KernelGraphPtr> &graph_ptr,
+                                            std::pair<std::string, std::map<uint32_t, std::set<uint32_t>>> group_item);
+  std::vector<std::pair<uint32_t, vector<size_t>>> GetStreamIDHcomMap(std::vector<CNodePtr> cnode_ptr_list,
+                                                                      std::string group, size_t graph_id);
 
   void AdjustAtomicAddrCleanOrder(const NotNull<KernelGraphPtr> &graph_ptr);
   vector<CNodePtr> GetLastInputCnode(const NotNull<KernelGraphPtr> &graph_ptr, const CNodePtr &cur_cnode_ptr);
@@ -199,6 +152,10 @@ class AscendStreamAssign {
   bool IsSatisfiedEvent(uint32_t send_stream_id, uint32_t recv_stream_id) const;
   vector<CNodePtr> GetInputKernels(const CNodePtr &cnode);
 
+  bool ExistStreamSendAfterLastHcomNode(const NotNull<KernelGraphPtr> &graph_ptr, uint32_t graph_id);
+  void GetAllGraphID(const NotNull<KernelGraphPtr> &graph_ptr, std::vector<uint32_t> *graphs_id);
+  void GraphLoopSync(const NotNull<KernelGraphPtr> &root_graph, uint32_t graph_id);
+
   bool independent_stream_activated_{false};
   bool hcom_stream_activated_{false};
   bool loop_sink_{false};
@@ -213,6 +170,7 @@ class AscendStreamAssign {
   std::set<uint32_t> processed_streams_{};
   std::vector<uint32_t> need_first_active_streams_{};
   std::set<CNodeKey> independent_targets_;
+  std::map<std::string, uint32_t> group_stream_id_map_;
 
   // key:group name, value:key1:graph id, value1:stream id
   std::map<std::string, std::map<uint32_t, std::set<uint32_t>>> group_hcom_graph_map_;

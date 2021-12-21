@@ -35,22 +35,22 @@ namespace mindspore::kernel {
 int Conv2dTransposeOpenCLKernel::CheckSpecs() {
   if ((in_tensors_.size() != INPUT_TENSOR_SIZE_2 && in_tensors_.size() != INPUT_TENSOR_SIZE_3) ||
       out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
 
   auto *param = reinterpret_cast<ConvParameter *>(op_parameter_);
   if (param->act_type_ != ActType_No && param->act_type_ != ActType_Relu && param->act_type_ != ActType_Relu6) {
-    MS_LOG(ERROR) << "Unsupported activation type " << param->act_type_;
+    MS_LOG(WARNING) << "Unsupported activation type " << param->act_type_;
     return RET_ERROR;
   }
   if (!in_tensors_.at(1)->IsConst()) {
-    MS_LOG(ERROR) << "Conv2dTranspose doesn't support non-constant filter yet.";
+    MS_LOG(WARNING) << "Conv2dTranspose doesn't support non-constant filter yet.";
     return RET_ERROR;
   }
   if (in_tensors_.size() == INPUT_TENSOR_SIZE_3 && in_tensors_.at(C2NUM) != nullptr &&
       !in_tensors_.at(C2NUM)->IsConst()) {
-    MS_LOG(ERROR) << "Conv2dTranspose doesn't support non-constant bias yet.";
+    MS_LOG(WARNING) << "Conv2dTranspose doesn't support non-constant bias yet.";
     return RET_ERROR;
   }
   return RET_OK;
@@ -188,7 +188,6 @@ int Conv2dTransposeOpenCLKernel::InitFilter() {
   }
   memset(padWeight_, 0x00, div_ci * div_co * C4NUM * C4NUM * kh * kw * data_size);
   auto origin_weight = stored_weight_ == nullptr ? in_tensors_.at(kWeightIndex)->data() : stored_weight_;
-  auto weight_dtype = in_tensors_.at(kWeightIndex)->data_type();
   int index = 0;
   for (int co_i = 0; co_i < div_co; co_i++) {
     for (int kh_i = 0; kh_i < kh; kh_i++) {
@@ -200,6 +199,8 @@ int Conv2dTransposeOpenCLKernel::InitFilter() {
               int ci_offset = ci_i * C4NUM + ci4_i;
               if (co_offset < co && ci_offset < ci) {
                 int ori_index = ((ci_offset * kh + kh_i) * kw + kw_i) * co + co_offset;
+#ifdef ENABLE_FP16
+                auto weight_dtype = in_tensors_.at(kWeightIndex)->data_type();
                 if (enable_fp16_) {
                   if (weight_dtype == kNumberTypeFloat32) {
                     reinterpret_cast<float16_t *>(padWeight_)[index++] =
@@ -217,6 +218,9 @@ int Conv2dTransposeOpenCLKernel::InitFilter() {
                       reinterpret_cast<float16_t *>(origin_weight)[ori_index];
                   }
                 }
+#else
+                reinterpret_cast<float *>(padWeight_)[index++] = reinterpret_cast<float *>(origin_weight)[ori_index];
+#endif
               } else {
                 index++;
               }
@@ -262,6 +266,7 @@ int Conv2dTransposeOpenCLKernel::InitBias() {
   if (in_tensors_.size() == INPUT_TENSOR_SIZE_3) {
     void *src_data = stored_bias_ == nullptr ? in_tensors_.at(kBiasIndex)->data() : stored_bias_;
     MS_ASSERT(src_data);
+#ifdef ENABLE_FP16
     auto bias_dtype = in_tensors_[2]->data_type();
     if (bias_dtype == kNumberTypeFloat32 && enable_fp16_) {
       for (int i = 0; i < co; i++) {
@@ -274,6 +279,9 @@ int Conv2dTransposeOpenCLKernel::InitBias() {
     } else {
       memcpy(bias_, src_data, co * data_size);
     }
+#else
+    memcpy(bias_, src_data, co * data_size);
+#endif
   }
   if (allocator->UnmapBuffer(bias_) != RET_OK) {
     MS_LOG(ERROR) << "UnmapBuffer failed.";
@@ -328,14 +336,9 @@ kernel::InnerKernel *OpenCLConv2dTransposeCreator(const std::vector<lite::Tensor
   MS_CHECK_TRUE_RET(inputs.front() != nullptr, nullptr);
   MS_CHECK_TRUE_RET(outputs.front() != nullptr, nullptr);
 
-  MS_ASSERT(!inputs.empty());
-  MS_ASSERT(!outputs.empty());
-  MS_ASSERT(inputs.front()->shape().size() == DIMENSION_4D);
-  MS_ASSERT(outputs.front()->shape().size() == DIMENSION_4D);
-
   auto *conv_param = reinterpret_cast<ConvParameter *>(opParameter);
-  int input_channel = inputs.front()->shape().at(3);
-  int output_channel = outputs.front()->shape().at(3);
+  int input_channel = conv_param->input_channel_;
+  int output_channel = conv_param->output_channel_;
   int group = conv_param->group_;
 
   // case 1: depthwise Conv2dTranspose

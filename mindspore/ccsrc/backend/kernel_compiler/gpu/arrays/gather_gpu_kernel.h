@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_GATHER_GPU_KERNEL_H
-#define MINDSPORE_GATHER_GPU_KERNEL_H
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_GATHER_GPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_GATHER_GPU_KERNEL_H_
 
 #include <vector>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
@@ -27,7 +27,7 @@ namespace kernel {
 template <typename T, typename S>
 class GatherGpuFwdKernel : public GpuKernel {
  public:
-  GatherGpuFwdKernel() : axis_(0) {}
+  GatherGpuFwdKernel() : axis_(0), is_null_input_(false) {}
   ~GatherGpuFwdKernel() = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -36,6 +36,9 @@ class GatherGpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     S *index_addr = GetDeviceAddress<S>(inputs, 1);
@@ -46,23 +49,32 @@ class GatherGpuFwdKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     InitResource();
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(EXCEPTION) << "Argument number is " << input_num << ", but GatherGpuFwdKernel needs 2.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
     input_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     index_shapes_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     output_shapes_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shapes_, kernel_name, "input") ||
+                     CHECK_SHAPE_NULL(index_shapes_, kernel_name, "input_indices") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     if (input_shapes_.size() != index_shapes_.size() || input_shapes_.size() != output_shapes_.size()) {
-      MS_LOG(ERROR) << "The shape of input, index and output should be same.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input and output should be the same "
+                        << index_shapes_.size() << ", but got the dimension of input: " << input_shapes_.size()
+                        << ", the dimension of output: " << output_shapes_.size();
     }
     int dims = SizeToInt(input_shapes_.size());
     axis_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "dim"));
     if (axis_ < -dims || axis_ >= dims) {
-      MS_LOG(ERROR) << "axis must be in the range [-rank, rank)";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be in the range [-" << dims << "," << dims
+                        << "), but got " << axis_;
     }
     if (axis_ < 0) {
       axis_ += dims;
@@ -118,6 +130,7 @@ class GatherGpuFwdKernel : public GpuKernel {
 
   size_t dims_[4] = {};
   int axis_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
@@ -126,4 +139,4 @@ class GatherGpuFwdKernel : public GpuKernel {
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_GATHER_GPU_KERNEL_H
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_GATHER_GPU_KERNEL_H_

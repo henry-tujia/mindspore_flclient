@@ -22,7 +22,7 @@
 #include <set>
 #include "backend/optimizer/common/optimizer.h"
 #include "schema/inner/model_generated.h"
-#include "tools/common/storage.h"
+#include "tools/common/meta_graph_serializer.h"
 #include "tools/converter/converter_flags.h"
 #include "ir/anf.h"
 #include "tools/converter/quantizer/quantizer.h"
@@ -37,8 +37,6 @@ class AnfTransform {
   FuncGraphPtr Transform(const FuncGraphPtr &old_graph, const converter::Flags *config = nullptr);
 
  private:
-  std::unique_ptr<quant::Quantizer> m_quantizer_ = nullptr;
-
   FuncGraphPtr TransformFuncGraph(const FuncGraphPtr &old_graph, const converter::Flags *config = nullptr);
 
   static int RunFusionPass(const FuncGraphPtr &old_graph, const converter::Flags *config);
@@ -57,7 +55,7 @@ class AnfTransform {
 
   int DoSingleGraphQuantize(const FuncGraphPtr &old_graph, const converter::Flags *config);
 
-  bool StoreBuiltinPass(const converter::Flags *config);
+  static bool StoreBuiltinPass(const converter::Flags *config);
 
   static STATUS MarkTrainInputOp(const FuncGraphPtr &func_graph, const CNodePtr &cnode);
 

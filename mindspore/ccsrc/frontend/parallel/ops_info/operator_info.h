@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "utils/ms_utils.h"
 #include "base/base.h"
 #include "frontend/parallel/auto_parallel/costmodel.h"
@@ -47,7 +47,7 @@ using VirtualDivOp = OperatorVector;
 using TensorMaps = std::vector<Shape>;
 using TensorLayouts = std::vector<TensorLayout>;
 using different_type = std::vector<int64_t>::difference_type;
-using PrimitiveAttrs = std::unordered_map<std::string, ValuePtr>;
+using PrimitiveAttrs = mindspore::HashMap<std::string, ValuePtr>;
 using ReplaceGraphPtr = std::shared_ptr<std::pair<std::vector<std::pair<AnfNodePtr, int64_t>>, AnfNodePtr>>;
 
 class Edge;
@@ -81,8 +81,9 @@ class OperatorInfo {
   // If output is tuple, outputs_type.size() is greater than 1.
   Status set_outputs_type(const std::vector<TypePtr> &outputs_type);
   const std::vector<TypePtr> &outputs_type() const { return outputs_type_; }
-  virtual Status Init(const StrategyPtr &strategy) = 0;
-  virtual Status InitForCostModel(const StrategyPtr &strategy) = 0;  // only init the necessary parts
+  virtual Status Init(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy);
+  // only init the necessary parts
+  virtual Status InitForCostModel(const StrategyPtr &strategy, const StrategyPtr &out_strategy);
 
   // Given the stage_id (which indicates the number of devices),
   // generate all strategies for this operator
@@ -144,6 +145,16 @@ class OperatorInfo {
   void SetSelectedStrategy(const StrategyPtr &s_strategy, size_t);
   StrategyPtr selected_strategy() const { return selected_strategy_; }
   CostPtr selected_cost() const { return selected_cost_; }
+
+  TensorLayout GetInputLayoutFromSWCByStrategy(StrategyPtr stra, size_t input_index);
+  TensorLayout GetOutputLayoutFromSWCByStrategy(StrategyPtr stra, size_t output_index);
+  StrategyPtr GetStrategyFromSWCByInputLayout(TensorLayout input_layout, size_t input_index);
+  StrategyPtr GetStrategyFromSWCByOutputLayout(TensorLayout output_layout, size_t output_index);
+  bool IsReshape();
+  bool IsTmpIdentity();
+
+  void set_swc_index(int64_t, int64_t);
+  int64_t swc_index() { return swc_index_; }
   // Approximate the list of available strategies
   void ApproximateStrategies();
   // Make the list of available strategies exact and re-init the related edges incident to this operator
@@ -152,7 +163,7 @@ class OperatorInfo {
   void SetIsStrategyCostExactTrue() { is_strategy_cost_exact_ = true; }
   void ClearStrategyCost() { strategy_cost_.clear(); }
   void CheckSelectedStrategy(const StrategyPtr &);
-  Status InitSelectedStrategy(const StrategyPtr &s_strategy) { return Init(s_strategy); }
+  Status InitSelectedStrategy(const StrategyPtr &s_strategy) { return Init(s_strategy, nullptr); }
   void set_input_value(const std::vector<ValuePtr> &input_value) { input_value_ = input_value; }
   const std::vector<ValuePtr> &input_value() const { return input_value_; }
   void set_outputs_dtype(const TypePtr &dtype) { outputs_dtype_ = dtype; }
@@ -161,6 +172,7 @@ class OperatorInfo {
   bool is_alive() const { return is_alive_; }
   void SetNotAlive() { is_alive_ = false; }
   StrategyPtr strategy() const { return strategy_; }
+  StrategyPtr out_strategy() const { return out_strategy_; }
   void set_strategy(const StrategyPtr &strategy) { strategy_ = strategy; }
   void set_refkey_parameter_name(std::string p_name) { refkey_parameter_name_ = std::move(p_name); }
   const std::string &refkey_parameter_name() const { return refkey_parameter_name_; }
@@ -177,7 +189,8 @@ class OperatorInfo {
   const std::string &type() const { return type_; }
   void set_last_node_flag(const bool &is_last_node) { is_last_node_ = is_last_node; }
   const bool &is_last_node() const { return is_last_node_; }
-  const std::unordered_map<std::string, ValuePtr> &attrs() const { return attrs_; }
+  const mindspore::HashMap<std::string, ValuePtr> &attrs() const { return attrs_; }
+  void addAttr(const std::string &name, const ValuePtr &val) { attrs_[name] = val; }
   void set_stage_id(int32_t stage_id) { stage_id_ = stage_id; }
   int32_t stage_id() const { return stage_id_; }
   Status CreateGroupByTensorMap(const Shape &tensor_map, std::vector<Group> *group);
@@ -190,7 +203,7 @@ class OperatorInfo {
  protected:
   // needed by rec_parser
   std::string type_;
-  bool is_last_node_;
+  bool is_last_node_ = false;
   virtual Status CheckStrategy(const StrategyPtr &strategy) = 0;
   virtual Status InferTensorMap() = 0;
   virtual Status InferForwardCommunication() = 0;
@@ -198,16 +211,16 @@ class OperatorInfo {
   virtual Status InferDevMatrixShape() = 0;
   virtual Status InferMirrorOps();
   virtual Status InferTensorInfo();
+  virtual void InferReplaceOps() {}
+  virtual Status CheckOutputStrategy(const StrategyPtr &out_strategy);
   Status CheckStrategyValue(const StrategyPtr &strategy, const Shapes &inputs_shape);
   void SetRepeatedCalcDevMatrix();
   void ResetTensorMapIfRepeatedCalc();
   Status CreateGroupByDim(size_t axis, std::vector<Group> *group);
   Status InferAttrs();
   void ResetQueueMember();
-  Status InitWithAutoRepeatCalc(const StrategyPtr &strategy);
-  Status InitWithManualRepeatCalc(const StrategyPtr &strategy);
-  Status InitForCostModelWithAutoRepeatCalc(const StrategyPtr &strategy);
-  Status InitForCostModelWithManualRepeatCalc(const StrategyPtr &strategy);
+  Status InitWithAutoRepeatCalc(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy);
+  Status InitForCostModelWithAutoRepeatCalc(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy);
   Status InferRepeatedCalcInfo();
   Status InferVirtualDivOps();
 
@@ -227,12 +240,13 @@ class OperatorInfo {
   std::string name_;
   Shapes inputs_shape_;
   Shapes outputs_shape_;
-  std::unordered_map<std::string, ValuePtr> attrs_;
+  mindspore::HashMap<std::string, ValuePtr> attrs_;
   std::vector<ValuePtr> input_value_;
   TypePtr outputs_dtype_;
 
   int32_t stage_id_ = 0;
   StrategyPtr strategy_;
+  StrategyPtr out_strategy_;
   std::vector<TensorInfo> inputs_tensor_info_;
   std::vector<TensorInfo> outputs_tensor_info_;
   Shape dev_matrix_shape_;  // if repeated calculation, it contains the repeated_calc_num_
@@ -294,6 +308,7 @@ class OperatorInfo {
  private:
   OperatorCostPtr operator_cost_;
   std::vector<TypePtr> outputs_type_;
+  int64_t swc_index_ = -1;
 };
 
 Shape GetSliceShape(const Shape &tensor_shape, const Dimensions &strategy);
@@ -302,8 +317,11 @@ Operator CreateVirtualDivOp(int64_t div_num);
 Operator CreateAllReduceOp(const std::string &reduce_op, const std::string &group);
 Operator CreateReduceScatterOp(const std::string &reduce_op, const std::string &group);
 Operator CreateAllGatherOp(const std::string &group);
+Operator CreateCastOp(TypePtr type);
 Operator CreateMiniStepAllGatherOp(const std::string &group);
 void AddCommOpFusionType(const CNodePtr &comm_node, const AnfNodePtr &param_node);
+void AddCommOpMirrorFlag(const CNodePtr &comm_node, bool do_mirror);
+void AddCommOpAddAccuFlag(const CNodePtr &comm_node, bool add_accu);
 Operator CreateMicroStepAllGatherOp(const std::string &group);
 void AddCommOpMeanFlag(const CNodePtr &comm_node);
 void AddCommOpParamFlag(const CNodePtr &comm_node);
@@ -326,7 +344,10 @@ Status GenerateStrategiesWithBroadcast(int64_t stage_id, const Shapes &inputs_sh
                                        std::vector<StrategyPtr> *sp_vector);
 
 Shapes GetRefKeyNodeShape(const AnfNodePtr &node, const FuncGraphPtr &func_graph);
-std::vector<ValuePtr> GetValueSequeue(const ValuePtr &sequeue);
+std::vector<ValuePtr> GetValueSequence(const ValuePtr &sequeue);
+ValuePtr MakeListValue(const std::vector<int64_t> &v);
+ValuePtr MakeTupleListValue(const Shapes &v);
+AnfNodePtr CreateValueTupleAnfNodePtr(const std::vector<int64_t> &value_tuple);
 }  // namespace parallel
 }  // namespace mindspore
 

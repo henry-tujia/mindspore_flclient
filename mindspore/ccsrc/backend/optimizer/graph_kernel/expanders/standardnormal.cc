@@ -19,16 +19,16 @@
 
 #include "backend/optimizer/graph_kernel/expanders/expander_factory.h"
 
-namespace mindspore {
-namespace opt {
-namespace expanders {
-class StandardNormal : public OpExpander {
+namespace mindspore::graphkernel::expanders {
+class StandardNormal : public OpDesc {
  public:
   StandardNormal() {
     std::initializer_list<std::string> attrs{"seed", "seed2"};
-    validators_.emplace_back(std::make_unique<CheckAttr>(attrs));
+    (void)validators_.emplace_back(std::make_unique<CheckAttr>(attrs));
   }
   ~StandardNormal() {}
+
+ protected:
   NodePtrList Expand() override {
     const auto &inputs = gb.Get()->inputs();
     const auto &input_x = inputs[0];
@@ -39,6 +39,4 @@ class StandardNormal : public OpExpander {
   }
 };
 OP_EXPANDER_REGISTER("StandardNormal", StandardNormal);
-}  // namespace expanders
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::expanders

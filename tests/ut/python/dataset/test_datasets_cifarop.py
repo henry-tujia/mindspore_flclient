@@ -210,7 +210,7 @@ def test_cifar10_exception():
     with pytest.raises(ValueError, match=error_msg_6):
         ds.Cifar10Dataset(DATA_DIR_10, shuffle=False, num_parallel_workers=256)
 
-    error_msg_7 = "no .bin files found"
+    error_msg_7 = r"cifar\(.bin\) files are missing"
     with pytest.raises(RuntimeError, match=error_msg_7):
         ds1 = ds.Cifar10Dataset(NO_BIN_DIR)
         for _ in ds1.__iter__():
@@ -360,7 +360,7 @@ def test_cifar100_exception():
     with pytest.raises(ValueError, match=error_msg_6):
         ds.Cifar100Dataset(DATA_DIR_100, shuffle=False, num_parallel_workers=256)
 
-    error_msg_7 = "no .bin files found"
+    error_msg_7 = r"cifar\(.bin\) files are missing"
     with pytest.raises(RuntimeError, match=error_msg_7):
         ds1 = ds.Cifar100Dataset(NO_BIN_DIR)
         for _ in ds1.__iter__():
@@ -454,7 +454,7 @@ def test_cifar_exception_file_path():
         data = ds.Cifar10Dataset(DATA_DIR_10)
         data = data.map(operations=exception_func, input_columns=["image"], num_parallel_workers=1)
         num_rows = 0
-        for _ in data.create_dict_iterator():
+        for _ in data.create_dict_iterator(num_epochs=1):
             num_rows += 1
         assert False
     except RuntimeError as e:
@@ -464,7 +464,7 @@ def test_cifar_exception_file_path():
         data = ds.Cifar10Dataset(DATA_DIR_10)
         data = data.map(operations=exception_func, input_columns=["label"], num_parallel_workers=1)
         num_rows = 0
-        for _ in data.create_dict_iterator():
+        for _ in data.create_dict_iterator(num_epochs=1):
             num_rows += 1
         assert False
     except RuntimeError as e:
@@ -474,7 +474,7 @@ def test_cifar_exception_file_path():
         data = ds.Cifar100Dataset(DATA_DIR_100)
         data = data.map(operations=exception_func, input_columns=["image"], num_parallel_workers=1)
         num_rows = 0
-        for _ in data.create_dict_iterator():
+        for _ in data.create_dict_iterator(num_epochs=1):
             num_rows += 1
         assert False
     except RuntimeError as e:
@@ -484,7 +484,7 @@ def test_cifar_exception_file_path():
         data = ds.Cifar100Dataset(DATA_DIR_100)
         data = data.map(operations=exception_func, input_columns=["coarse_label"], num_parallel_workers=1)
         num_rows = 0
-        for _ in data.create_dict_iterator():
+        for _ in data.create_dict_iterator(num_epochs=1):
             num_rows += 1
         assert False
     except RuntimeError as e:
@@ -494,7 +494,7 @@ def test_cifar_exception_file_path():
         data = ds.Cifar100Dataset(DATA_DIR_100)
         data = data.map(operations=exception_func, input_columns=["fine_label"], num_parallel_workers=1)
         num_rows = 0
-        for _ in data.create_dict_iterator():
+        for _ in data.create_dict_iterator(num_epochs=1):
             num_rows += 1
         assert False
     except RuntimeError as e:

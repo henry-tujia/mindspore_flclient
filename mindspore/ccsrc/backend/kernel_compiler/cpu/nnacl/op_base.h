@@ -22,6 +22,11 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
+
+#ifdef ENABLE_AVX512
+#include "nnacl/intrinsics/ms_simd_avx512_instructions.h"
+#endif
+
 #if defined(ENABLE_AVX) || defined(ENABLE_SSE) || defined(ENABLE_ARM)
 #include "nnacl/intrinsics/ms_simd_instructions.h"
 #endif
@@ -32,15 +37,23 @@
 #define C4NUM 4
 #define C5NUM 5
 #define C6NUM 6
+#define C7NUM 7
 #define C8NUM 8
 #define C12NUM 12
 #define C16NUM 16
 #define C20NUM 20
+#define C21NUM 21
 #define C24NUM 24
 #define C32NUM 32
 #define C40NUM 40
+#define C48NUM 48
+#define C56NUM 56
 #define C64NUM 64
+#define C128NUM 128
+#define C1500NUM 1500
 #define TILE_NUM 8
+
+#define FP16_DATA_TYPE_LEN 2
 
 #define MSMIN(x, y) ((x) < (y) ? (x) : (y))
 #define MSMAX(x, y) ((x) > (y) ? (x) : (y))
@@ -54,15 +67,15 @@
 
 #define MSVALID(left, x, right) (MSMIN((MSMAX(left, x)), right))
 #define SIZE_MUL_OVERFLOW(x, y) (((x) == 0) ? false : (SIZE_MAX / (x)) < (y))
-#define INT_MUL_OVERFLOW(x, y)                                                             \
-  ((x == 0) ? false                                                                        \
-            : ((x) > 0 ? ((y >= 0) ? (INT_MAX / (x)) < (y) : (INT_MAX / (x)) < (-1 * (y))) \
-                       : ((y >= 0) ? (INT_MAX / (x)) > (-1 * (y)) : (INT_MAX / (x)) > (y))))
+#define INT_MUL_OVERFLOW(x, y)                                                                 \
+  (((x) == 0) ? false                                                                          \
+              : ((x) > 0 ? (((y) >= 0) ? (INT_MAX / (x)) < (y) : (INT_MAX / (x)) < (-1 * (y))) \
+                         : (((y) >= 0) ? (INT_MAX / (x)) > (-1 * (y)) : (INT_MAX / (x)) > (y))))
 
-#define INT_MUL_OVERFLOW_THRESHOLD(x, y, threshold)                                                \
-  ((x == 0) ? false                                                                                \
-            : ((x) > 0 ? ((y >= 0) ? ((threshold) / (x)) < (y) : ((threshold) / (x)) < (-1 * (y))) \
-                       : ((y >= 0) ? ((threshold) / (x)) > (-1 * (y)) : ((threshold) / (x)) > (y))))
+#define INT_MUL_OVERFLOW_THRESHOLD(x, y, threshold)                                                    \
+  (((x) == 0) ? false                                                                                  \
+              : ((x) > 0 ? (((y) >= 0) ? ((threshold) / (x)) < (y) : ((threshold) / (x)) < (-1 * (y))) \
+                         : (((y) >= 0) ? ((threshold) / (x)) > (-1 * (y)) : ((threshold) / (x)) > (y))))
 
 #define INT_ADD_OVERFLOW(x, y) (INT_MAX - (x)) < (y)
 
@@ -76,7 +89,9 @@
 #define THIRD_INPUT 2
 #define FOURTH_INPUT 3
 #define FIFTH_INPUT 4
+#define SIXTH_INPUT 5
 
+#define DIMENSION_0D 0
 #define DIMENSION_1D 1
 #define DIMENSION_2D 2
 #define DIMENSION_3D 3
@@ -104,7 +119,7 @@
 #define kDefaulLiteMaxSpinCount 300000
 #define kDefaulLiteMinSpinCount 1
 #define kDefaulLiteIosSpinCount 1
-#define INPUT_MAX_NUM 10
+#define DEFAULT_GROUP_NAME_LEN 101
 
 #if ENABLE_HIGH_PERFORMANCE
 #define MS_CHECK_TRUE_RET(value, errcode)
@@ -262,6 +277,8 @@ typedef struct OpParameter {
   int thread_num_;
   int quant_type_;
   bool is_train_session_;
+  bool is_zero_shape_;
+  void (*destroy_func_)(struct OpParameter *param);
 } OpParameter;
 
 typedef struct QuantArg {

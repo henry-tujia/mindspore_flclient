@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except i n compliance with the License.
@@ -20,6 +20,7 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "frontend/optimizer/opt.h"
 #include "backend/optimizer/common/helper.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace opt {
@@ -38,7 +39,8 @@ tensor::TensorPtr CreateTensor(const AnfNodePtr &node) {
     MS_LOG(ERROR) << "MaxPool3DGradGrad only support NCDHW format, but got " << data_format;
   }
   if (ksize.size() != kKernelSizeNum) {
-    MS_LOG(EXCEPTION) << "kernel_size of MaxPool3DGradGrad must be five, but got :" << ksize;
+    MS_LOG(EXCEPTION) << "kernel_size of MaxPool3DGradGrad must be five, but got " << ksize
+                      << trace::DumpSourceLines(node);
   }
   int64_t d = ksize[kDim2];
   int64_t h = ksize[kDim3];
@@ -67,7 +69,9 @@ tensor::TensorPtr CreateTensor(const AnfNodePtr &node) {
   auto ret_code = memcpy_s(data_ptr, static_cast<size_t>(assist_tensor->data().nbytes()),
                            reinterpret_cast<void *>(half_data.data()), elem_num);
   if (ret_code != 0) {
-    MS_LOG(ERROR) << "Failed to copy data into Tensor while creating assist input for MaxPool3dGradGrad op.";
+    MS_LOG(ERROR)
+      << "Failed to copy data into Tensor while creating assist input for MaxPool3dGradGrad op, memcpy_s errorno: "
+      << ret_code;
     return nullptr;
   }
   return assist_tensor;
@@ -112,7 +116,7 @@ const AnfNodePtr MaxPool3DGradGradFission::Process(const FuncGraphPtr &graph, co
   auto assist_const = CreateValueNode(cnode);
   (void)new_inputs.insert(new_inputs.end(), cnode->inputs().begin() + 1, cnode->inputs().end());
   (void)new_inputs.emplace_back(assist_const);
-  CNodePtr new_cnode = graph->NewCNode(new_inputs);
+  CNodePtr new_cnode = NewCNode(new_inputs, graph);
   MS_EXCEPTION_IF_NULL(new_cnode);
   new_cnode->set_abstract(cnode->abstract());
   new_cnode->set_scope(cnode->scope());

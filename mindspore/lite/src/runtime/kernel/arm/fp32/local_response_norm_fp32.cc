@@ -27,7 +27,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_LRN;
 
 namespace mindspore::kernel {
-int LocalResponseNormCPUKernel::Init() {
+int LocalResponseNormCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   return RET_OK;
@@ -35,14 +35,14 @@ int LocalResponseNormCPUKernel::Init() {
 
 int LocalResponseNormCPUKernel::ReSize() { return RET_OK; }
 
-int LocalResponseNormCPUKernel::DoLocalResponseNorm(int task_id) {
+int LocalResponseNormCPUKernel::DoLocalResponseNorm(int task_id) const {
   auto input_tensor = in_tensors_.front();
   auto out_tensor = out_tensors_.front();
   auto input_ptr = reinterpret_cast<float *>(input_tensor->MutableData());
   auto output_ptr = reinterpret_cast<float *>(out_tensor->MutableData());
 
   auto in_shape = input_tensor->shape();
-  MS_CHECK_TRUE_RET(in_shape.size() == 4, RET_ERROR);
+  MS_CHECK_TRUE_RET(in_shape.size() == C4NUM, RET_ERROR);
 
   int batch = in_shape.at(0);
   int height = in_shape.at(1);
@@ -67,8 +67,8 @@ int LocalResponseNormCPUKernel::DoLocalResponseNorm(int task_id) {
   return RET_OK;
 }
 
-int LocalResponseNormRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
-  auto lrn = reinterpret_cast<LocalResponseNormCPUKernel *>(cdata);
+int LocalResponseNormRun(const void *cdata, int task_id, float, float) {
+  auto lrn = reinterpret_cast<const LocalResponseNormCPUKernel *>(cdata);
   auto error_code = lrn->DoLocalResponseNorm(task_id);
   if (error_code != RET_OK) {
     MS_LOG(ERROR) << "LocalResponseNormRun error task_id[" << task_id << "] error_code[" << error_code << "]";

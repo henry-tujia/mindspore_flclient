@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,11 +25,11 @@
 #include <map>
 #include <memory>
 #include <stack>
-#include <unordered_map>
 #include <vector>
+#include "utils/hash_map.h"
 #include "backend/session/kernel_graph.h"
 
-using std::unordered_map;
+using mindspore::HashMap;
 using std::vector;
 
 namespace mindspore {
@@ -175,7 +175,7 @@ struct SomasSolverTensorDesc {
   }
 };
 using SomasSolverTensorDescPtr = std::shared_ptr<SomasSolverTensorDesc>;
-typedef std::unordered_map<size_t, SomasSolverTensorDescPtr> TensorsDescMap;
+typedef mindspore::HashMap<size_t, SomasSolverTensorDescPtr> TensorsDescMap;
 class SomasSolverPre {
  public:
   SomasSolverPre() = default;
@@ -204,7 +204,7 @@ class SomasSolverPre {
  private:
   size_t max_offset_;
   void SolverInputLog(const session::KernelGraph *graph, const TensorsDescMap &tensors,
-                      const std::vector<DynamicBitSet> *pConstraints_v, const vector<vector<size_t>> &continuous_v);
+                      const vector<vector<size_t>> &continuous_v);
   void SolverOutputLog(const session::KernelGraph *graph, const TensorsDescMap &tensors) const;
   vector<TensorsDescMap> CreateTensorsMaps(const TensorsDescMap &tensors, size_t total_sol);
   void TensorRelationLog(const std::vector<DynamicBitSet> *pConstraints, const session::KernelGraph *graph);

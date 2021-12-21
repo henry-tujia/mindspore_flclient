@@ -36,9 +36,6 @@ using HostDynamicKernel = mindspore::device::ascend::HostDynamicKernel;
 
 namespace mindspore {
 namespace kernel {
-constexpr auto AICPU_OPS_SO_NAME = "libaicpu_kernels.so";
-constexpr auto CUST_AICPU_OPS_SO_NAME = "libcpu_kernels.so";
-
 AicpuOpKernelMod::AicpuOpKernelMod() : anf_node_(nullptr) {}
 
 AicpuOpKernelMod::~AicpuOpKernelMod() {
@@ -63,6 +60,10 @@ void AicpuOpKernelMod::SetOutputList(const std::vector<int64_t> &outputList) { o
 void AicpuOpKernelMod::SetNodeDef(const std::string &nodeDef) { (void)node_def_str_.assign(nodeDef); }
 void AicpuOpKernelMod::SetExtInfo(const std::string &ext_info) { ext_info_ = ext_info; }
 void AicpuOpKernelMod::SetNodeName(const std::string &node_name) { node_name_ = node_name; }
+void AicpuOpKernelMod::SetCustSo(const std::string &cust_so) {
+  node_so_ = cust_so;
+  cust_kernel_ = true;
+}
 void AicpuOpKernelMod::SetAnfNode(const mindspore::AnfNodePtr &anf_node) {
   MS_EXCEPTION_IF_NULL(anf_node);
   anf_node_ = anf_node;
@@ -72,15 +73,21 @@ void AicpuOpKernelMod::CreateCpuKernelInfo(const std::vector<AddressPtr> &inputs
                                            const std::vector<AddressPtr> &outputs) {
   MS_LOG(INFO) << "CreateCpuKernelInfoOffline start";
 
-  if (kCustAiCpuKernelOps.find(node_name_) != kCustAiCpuKernelOps.end()) {
-    node_so_ = CUST_AICPU_OPS_SO_NAME;
-    node_name_ = kCustRunApi;
-  } else if (kCacheKernelOps.find(node_name_) != kCacheKernelOps.end()) {
-    node_so_ = AICPU_OPS_SO_NAME;
-    node_name_ = kCustRunApi;
+  if (!cust_kernel_) {
+    if (kCpuKernelOps.find(node_name_) != kCpuKernelOps.end()) {
+      node_so_ = kLibCpuKernelSoName;
+      node_name_ = kCpuRunApi;
+    } else if (kCacheKernelOps.find(node_name_) != kCacheKernelOps.end()) {
+      node_so_ = kLibAicpuKernelSoName;
+      node_name_ = kCpuRunApi;
+    } else {
+      if (node_so_ != kLibCpuKernelSoName) {
+        node_so_ = kLibAicpuKernelSoName;
+      }
+    }
   } else {
-    if (node_so_ != CUST_AICPU_OPS_SO_NAME) {
-      node_so_ = AICPU_OPS_SO_NAME;
+    if (kCpuKernelBaseOps.find(node_name_) == kCpuKernelBaseOps.end()) {
+      node_name_ = kCpuRunApi;
     }
   }
   // InputOutputAddr
@@ -149,12 +156,16 @@ bool AicpuOpKernelMod::Launch(const std::vector<AddressPtr> &inputs, const std::
   if (node_name_ == kStack) {
     node_name_ = kPack;
   }
+  auto flag = RT_KERNEL_DEFAULT;
+  if (cust_kernel_) {
+    flag = RT_KERNEL_CUSTOM_AICPU;
+  }
   MS_LOG(INFO) << "Aicpu launch, node_so_:" << node_so_ << ", node name:" << node_name_
                << ", args_size:" << args_.length();
-  if (rtCpuKernelLaunch(reinterpret_cast<const void *>(node_so_.c_str()),
-                        reinterpret_cast<const void *>(node_name_.c_str()), 1,
-                        reinterpret_cast<const void *>(args_.data()), static_cast<uint32_t>(args_.length()), nullptr,
-                        stream_) != RT_ERROR_NONE) {
+  if (rtCpuKernelLaunchWithFlag(reinterpret_cast<const void *>(node_so_.c_str()),
+                                reinterpret_cast<const void *>(node_name_.c_str()), 1,
+                                reinterpret_cast<const void *>(args_.data()), static_cast<uint32_t>(args_.length()),
+                                nullptr, stream_, flag) != RT_ERROR_NONE) {
     MS_LOG(ERROR) << "Aicpu op launch failed!";
 
     return false;
@@ -168,15 +179,21 @@ std::vector<TaskInfoPtr> AicpuOpKernelMod::GenTask(const std::vector<AddressPtr>
   MS_LOG(INFO) << "AicpuOpKernelMod GenTask start";
 
   stream_id_ = stream_id;
-  if (kCustAiCpuKernelOps.find(node_name_) != kCustAiCpuKernelOps.end()) {
-    node_so_ = CUST_AICPU_OPS_SO_NAME;
-    node_name_ = kCustRunApi;
-  } else if (kCacheKernelOps.find(node_name_) != kCacheKernelOps.end()) {
-    node_so_ = AICPU_OPS_SO_NAME;
-    node_name_ = kCustRunApi;
+  if (!cust_kernel_) {
+    if (kCpuKernelOps.find(node_name_) != kCpuKernelOps.end()) {
+      node_so_ = kLibCpuKernelSoName;
+      node_name_ = kCpuRunApi;
+    } else if (kCacheKernelOps.find(node_name_) != kCacheKernelOps.end()) {
+      node_so_ = kLibAicpuKernelSoName;
+      node_name_ = kCpuRunApi;
+    } else {
+      if (node_so_ != kLibCpuKernelSoName) {
+        node_so_ = kLibAicpuKernelSoName;
+      }
+    }
   } else {
-    if (node_so_ != CUST_AICPU_OPS_SO_NAME) {
-      node_so_ = AICPU_OPS_SO_NAME;
+    if (kCpuKernelBaseOps.find(node_name_) == kCpuKernelBaseOps.end()) {
+      node_name_ = kCpuRunApi;
     }
   }
   std::vector<void *> input_data_addrs;
@@ -197,19 +214,17 @@ std::vector<TaskInfoPtr> AicpuOpKernelMod::GenTask(const std::vector<AddressPtr>
 
   AicpuTaskInfoPtr task_info_ptr = std::make_shared<mindspore::ge::model_runner::AicpuTaskInfo>(
     unique_name_, stream_id, node_so_, node_name_, node_def_str_, ext_info_, input_data_addrs, output_data_addrs,
-    NeedDump());
+    NeedDump(), cust_kernel_);
 
   MS_LOG(INFO) << "AicpuOpKernelMod GenTask end";
   return {task_info_ptr};
 }
 
 device::DynamicKernelPtr AicpuOpKernelMod::GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) {
-  AddressPtrList kernel_inputs;
-  AddressPtrList kernel_workspaces;
-  AddressPtrList kernel_outputs;
-  device::KernelRuntime::GenLaunchArgs(*this, cnode_ptr, &kernel_inputs, &kernel_workspaces, &kernel_outputs);
+  KernelLaunchInfo kernel_launch_info;
+  device::KernelRuntime::GenLaunchArgs(*this, cnode_ptr, &kernel_launch_info);
 
-  CreateCpuKernelInfo(kernel_inputs, kernel_outputs);
+  CreateCpuKernelInfo(kernel_launch_info.inputs_, kernel_launch_info.outputs_);
   return std::make_shared<AicpuDynamicKernel>(stream_ptr, cnode_ptr, args_, ext_info_, node_so_, node_name_);
 }
 }  // namespace kernel

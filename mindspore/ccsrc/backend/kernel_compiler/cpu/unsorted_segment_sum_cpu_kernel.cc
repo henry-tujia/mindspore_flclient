@@ -20,23 +20,22 @@
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kUnsortedSegmentInputsNum = 2;
+constexpr size_t kUnsortedSegmentOutputsNum = 1;
+}  // namespace
+
 void UnsortedSegmentSumCPUKernel::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 2) {
-    MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but UnsortedSegmentSum needs 2 input.";
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 1) {
-    MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but UnsortedSegmentSum needs 1 output.";
-  }
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
   segment_ids_dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 1);
   auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   auto segment_ids_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
   auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
   if (output_shape.empty()) {
-    MS_LOG(EXCEPTION) << "Output shape size is 0";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dimension of output should be at least 1, but got shape: " << output_shape;
   }
   for (size_t i = 0; i < input_shape.size(); ++i) {
     unit_num_ *= input_shape[i];
@@ -53,12 +52,14 @@ void UnsortedSegmentSumCPUKernel::InitKernel(const CNodePtr &kernel_node) {
 bool UnsortedSegmentSumCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                          const std::vector<kernel::AddressPtr> &,
                                          const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kUnsortedSegmentInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kUnsortedSegmentOutputsNum, kernel_name_);
   void *input_addr = inputs[0]->addr;
   void *indices_addr = inputs[1]->addr;
   void *output_addr = outputs[0]->addr;
   auto ret = memset_s(output_addr, outputs[0]->size, 0, outputs[0]->size);
   if (ret != EOK) {
-    MS_LOG(ERROR) << "Output buff memset fail. ret:" << ret;
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', output buff memset failed. Error no: " << ret;
     return false;
   }
 
@@ -79,12 +80,15 @@ bool UnsortedSegmentSumCPUKernel::Launch(const std::vector<kernel::AddressPtr> &
                              SizeToInt(input_dim1_), static_cast<const int64_t *>(indices_addr),
                              static_cast<float *>(output_addr), SizeToInt(output_dim0_), SizeToInt(output_dim1_));
   } else {
-    MS_LOG(ERROR) << "Only support input_x int32 and float32, indices int32 and int64";
+    MS_LOG(ERROR) << "For '" << kernel_name_
+                  << "', the dtype of 'input_x' should be int32 or float32, "
+                     "the dtype of 'segment_ids' should be int32 or int64, but got the dtype of 'input_x': "
+                  << dtype_ << ", and the dtype of 'segment_ids': " << segment_ids_dtype_;
     return false;
   }
 
   if (ret != EOK) {
-    MS_LOG(ERROR) << "unsortedSegmentSum failed. ret:" << ret;
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', run failed, error no: " << ret;
     return false;
   }
 

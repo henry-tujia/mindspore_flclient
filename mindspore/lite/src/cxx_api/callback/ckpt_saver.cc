@@ -23,8 +23,9 @@
 #include "src/common/log_adapter.h"
 
 namespace mindspore {
-CkptSaver::CkptSaver(int save_every_n, const std::string &filename_prefix) {
-  callback_impl_ = new (std::nothrow) CallbackImpl(new (std::nothrow) lite::CkptSaver(save_every_n, filename_prefix));
+CkptSaver::CkptSaver(int save_every_n, const std::vector<char> &filename_prefix) {
+  callback_impl_ =
+    new (std::nothrow) CallbackImpl(new (std::nothrow) lite::CkptSaver(save_every_n, CharToString(filename_prefix)));
   if (callback_impl_ == nullptr) {
     MS_LOG(ERROR) << "Callback implement new failed";
   }
@@ -33,10 +34,13 @@ CkptSaver::CkptSaver(int save_every_n, const std::string &filename_prefix) {
 CkptSaver::~CkptSaver() {
   if (callback_impl_ == nullptr) {
     MS_LOG(ERROR) << "Callback implement is null.";
+    return;
   }
   auto internal_call_back = callback_impl_->GetInternalCallback();
   if (internal_call_back != nullptr) {
     delete internal_call_back;
   }
+  delete callback_impl_;
+  callback_impl_ = nullptr;
 }
 }  // namespace mindspore

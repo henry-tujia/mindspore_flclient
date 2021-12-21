@@ -69,7 +69,7 @@ Status TensorDotInfo::GetAttrs() {
     }
     axes_type_ = INT_TYPE;
   } else if (axes_iter->second->isa<ValueTuple>() || axes_iter->second->isa<ValueList>()) {
-    std::vector<ValuePtr> var_tuple = GetValueSequeue(axes_iter->second);
+    std::vector<ValuePtr> var_tuple = GetValueSequence(axes_iter->second);
     if (var_tuple.size() != 2) {
       MS_LOG(ERROR) << name_ << ": The length of axes tuple must be 2, bug got " << var_tuple.size();
       return FAILED;
@@ -303,26 +303,6 @@ Status TensorDotInfo::InferTensorMap() {
     return FAILED;
   }
 
-  return SUCCESS;
-}
-
-Status TensorDotInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init failed";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init success";
-  return SUCCESS;
-}
-
-Status TensorDotInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success";
   return SUCCESS;
 }
 

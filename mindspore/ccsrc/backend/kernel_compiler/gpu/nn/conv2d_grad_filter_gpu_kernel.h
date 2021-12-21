@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@
 
 namespace mindspore {
 namespace kernel {
-#define NBDIMS 4
+constexpr int NBDIMS = 4;
 template <typename T>
 class ConvGradFilterGpuBkwKernel : public GpuKernel {
  public:
@@ -39,6 +39,7 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
         dy_desc_(nullptr),
         x_desc_(nullptr),
         padded_descriptor_(nullptr),
+        algo_(CUDNN_CONVOLUTION_BWD_FILTER_ALGO_0),
         cudnn_data_type_(CUDNN_DATA_FLOAT),
         compute_format_(CUDNN_TENSOR_NCHW),
         old_height_(0),
@@ -51,6 +52,7 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
         c_(0),
         group_(1),
         is_null_input_(false),
+        kernel_name_("Conv2dGradFilter"),
         input_size_(0),
         dy_size_(0),
         output_size_(0),
@@ -77,7 +79,7 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
     const float beta = 0;
 
     if (use_pad_) {
-      T *padded = GetPossiblyNullDeviceAddress<T>(workspace, 1);
+      T *padded = GetDeviceAddress<T>(workspace, 1);
       if (data_format_ == kOpFormat_NHWC) {
         CalPadNHWC(padded_size_ / sizeof(T), x, n_, old_height_, old_width_, c_, old_height_ + pad_height_,
                    old_width_ + pad_width_, pad_top_, pad_left_, pad_value_, padded,
@@ -102,17 +104,15 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
-    if (!CheckParam(kernel_node)) {
-      return false;
-    }
+    (void)CheckParam(kernel_node);
     cudnn_data_type_ = GetCudnnDataType(TypeIdLabel(AnfAlgo::GetInputDeviceDataType(kernel_node, 0)));
     auto dy_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
     auto in_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
-    is_null_input_ = CHECK_NULL_INPUT(dy_shape) || CHECK_NULL_INPUT(in_shape);
+    is_null_input_ = CHECK_SHAPE_NULL(dy_shape, kernel_name_, "dy") || CHECK_SHAPE_NULL(in_shape, kernel_name_, "x");
     if (is_null_input_) {
-      MS_LOG(WARNING) << "ConvGradFilterGpuBkwKernel input is null.";
       InitSizeLists();
       return true;
     }
@@ -137,6 +137,9 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
     std::vector<int64_t> pad_list_me = GetAttr<std::vector<int64_t>>(kernel_node, "pad_list");
     (void)std::transform(pad_list_me.begin(), pad_list_me.end(), std::back_inserter(pad_list),
                          [](const int64_t &value) { return static_cast<int>(value); });
+    if (pad_list.size() != 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'pad' should be 4, but got " << pad_list.size();
+    }
     pad_height_ = pad_list[0];
     pad_width_ = pad_list[2];
     use_pad_ = !((pad_height_ == pad_list[1]) && (pad_width_ == pad_list[3]));
@@ -266,18 +269,15 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
   }
 
  private:
-  bool CheckParam(const CNodePtr &kernel_node) {
+  void CheckParam(const CNodePtr &kernel_node) {
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but ConvGradFilter needs 2 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 2, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but ConvGradFilter needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
-    return true;
   }
   void SelectAlgorithm(cudnnTensorDescriptor_t x_desc_real) {
     constexpr int requested_algo_count = 1;
@@ -303,7 +303,9 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
     }
   }
   void GetFilterShape(const CNodePtr &kernel_node, std::vector<size_t> *filter_shape) {
-    auto shp_tuple_x = AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("filter_sizes")->cast<ValueTuplePtr>()->value();
+    auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+    MS_EXCEPTION_IF_NULL(prim);
+    auto shp_tuple_x = prim->GetAttr("filter_sizes")->cast<ValueTuplePtr>()->value();
     (void)std::transform(std::begin(shp_tuple_x), std::end(shp_tuple_x), std::back_inserter(*filter_shape),
                          [](const ValuePtr &e) -> size_t { return static_cast<int>(e->cast<Int64ImmPtr>()->value()); });
   }
@@ -339,13 +341,16 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
     (void)std::transform(dilation_me.begin(), dilation_me.end(), std::back_inserter(dilation_),
                          [](const int64_t &value) { return static_cast<int>(value); });
     if (stride_.size() != 2) {
-      MS_LOG(EXCEPTION) << "ConvGradFilterGpuBkwKernel's stride must be 2d!";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'stride' should be 2, but got "
+                        << stride_.size();
     }
     if (dilation_.size() != 4) {
-      MS_LOG(EXCEPTION) << "ConvGradFilterGpuBkwKernel's dilation must be 4d!";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the length of 'dilation' should be 4, but got "
+                        << dilation_.size();
     }
     if (dilation_[0] != 1 || dilation_[1] != 1) {
-      MS_LOG(EXCEPTION) << "ConvGradFilterGpuBkwKernel dilation only support 1 in N axis and C axis!";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the value of 'dilation' at 0 and 1 axis should be 1, but got "
+                        << "dilation[0]: " << dilation_[0] << ", dilation[1]: " << dilation_[1];
     }
   }
   cudnnHandle_t cudnn_handle_;
@@ -376,6 +381,7 @@ class ConvGradFilterGpuBkwKernel : public GpuKernel {
   std::vector<int> dilation_;
   int group_;
   bool is_null_input_;
+  std::string kernel_name_;
   size_t input_size_;
   size_t dy_size_;
   size_t output_size_;

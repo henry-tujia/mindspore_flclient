@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,17 +30,23 @@
 #include "pipeline/jit/parse/parse_base.h"
 #include "pipeline/jit/parse/resolve.h"
 #include "ir/value.h"
+#include "ir/anf.h"
 #include "ir/tensor.h"
 #include "ir/param_info.h"
 #include "pybind_api/ir/base_ref_py.h"
+#include "ir/dtype/tensor_type.h"
 #include "utils/ms_context.h"
+#include "utils/convert_utils.h"
+#include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
 py::object BuiltinsToPyData(const Any &value);
 py::object BuiltinsToPyData(const BaseRef &value);
 py::object VectorToPyData(const Any &value);
-py::object VectorRefToPyData(const VectorRef &value);
-
+py::object VectorRefToPyData(const VectorRef &value_list);
+py::object VectorRefToPyData(const VectorRef &value_list, const AbstractBasePtr &output);
+// Wrap VectorRef to CSRTensor
+py::object MakeCSRTensor(const VectorRef &value_list);
 py::object TensorToPyData(const tensor::TensorPtr &tensor) {
   MS_EXCEPTION_IF_NULL(tensor);
   if (tensor->NeedWait()) {
@@ -108,51 +114,50 @@ py::object ScalarPtrToPyData(const ScalarPtr &value) {
 }
 
 using ConverterFunction = std::function<py::object(const ValuePtr &value)>;
-using ValueNameToConverterVector = std::vector<std::pair<const char *, ConverterFunction>>;
+using ValueNameToConverterVector = std::vector<std::pair<uint32_t, ConverterFunction>>;
 
 // (Value Type Name) -> (Converter Function)
 // The converter function is used to convert Value object to Python data object.
 static ValueNameToConverterVector value_name_to_converter = {
   // Scalar
-  {typeid(Scalar).name(),
-   [](const ValuePtr &value) -> py::object { return ScalarPtrToPyData(value->cast<ScalarPtr>()); }},
+  {Scalar::kTypeId, [](const ValuePtr &value) -> py::object { return ScalarPtrToPyData(value->cast<ScalarPtr>()); }},
   // Tensor
-  {typeid(tensor::Tensor).name(),
+  {tensor::Tensor::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto tensor_ptr = value->cast<tensor::TensorPtr>();
      return TensorToPyData(tensor_ptr);
    }},
   // MetaTenser
-  {typeid(tensor::MetaTensor).name(),
+  {tensor::MetaTensor::kTypeId,
    [](const ValuePtr &value) -> py::object {
      py::tuple tuple_container(1);
      tuple_container[0] = value->cast<tensor::MetaTensorPtr>();
      return tuple_container[0];
    }},
   // RefKey
-  {typeid(RefKey).name(),
+  {RefKey::kTypeId,
    [](const ValuePtr &value) -> py::object {
      py::tuple tuple_container(1);
      tuple_container[0] = value->cast<RefKeyPtr>();
      return tuple_container[0];
    }},
   // Type
-  {typeid(Type).name(),
+  {Type::kTypeId,
    [](const ValuePtr &value) -> py::object {
      py::tuple tuple_container(1);
      tuple_container[0] = value->cast<TypePtr>();
      return tuple_container[0];
    }},
   // StringImm
-  {typeid(StringImm).name(),
+  {StringImm::kTypeId,
    [](const ValuePtr &value) -> py::object {
      py::str res = value->cast<StringImmPtr>()->value();
      return res;
    }},
-  // ValueSequeue
-  {typeid(ValueSequeue).name(),
+  // ValueSequence
+  {ValueSequence::kTypeId,
    [](const ValuePtr &value) -> py::object {
-     auto value_sequeue = value->cast<ValueSequeuePtr>()->value();
+     auto value_sequeue = value->cast<ValueSequencePtr>()->value();
      py::tuple res_sequeue(value_sequeue.size());
      for (size_t i = 0; i < value_sequeue.size(); i++) {
        res_sequeue[i] = ValueToPyData(value_sequeue[i]);
@@ -163,7 +168,7 @@ static ValueNameToConverterVector value_name_to_converter = {
      return res_sequeue.cast<py::list>();
    }},
   // ValueDictionary
-  {typeid(ValueDictionary).name(),
+  {ValueDictionary::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto value_list = value->cast<ValueDictionaryPtr>()->value();
      py::dict res_dict;
@@ -173,7 +178,7 @@ static ValueNameToConverterVector value_name_to_converter = {
      return res_dict;
    }},
   // ValueSlice
-  {typeid(ValueSlice).name(),
+  {ValueSlice::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto slice = value->cast<ValueSlicePtr>();
      auto start = ValueToPyData(slice->start());
@@ -183,7 +188,7 @@ static ValueNameToConverterVector value_name_to_converter = {
                                             step);
    }},
   // KeywordArg
-  {typeid(KeywordArg).name(),
+  {KeywordArg::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto abs_keyword_arg = value->ToAbstract()->cast<abstract::AbstractKeywordArgPtr>();
      auto key = abs_keyword_arg->get_key();
@@ -194,34 +199,40 @@ static ValueNameToConverterVector value_name_to_converter = {
      return kwargs;
    }},
   // parse::NameSpace
-  {typeid(parse::NameSpace).name(),
+  {parse::NameSpace::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto ns = value->cast<parse::NameSpacePtr>();
      return ns->module_obj();
    }},
   // parse::ClassType
-  {typeid(parse::ClassType).name(),
+  {parse::ClassType::kTypeId,
    [](const ValuePtr &value) -> py::object {
      auto class_type = value->cast<parse::ClassTypePtr>();
      return class_type->obj();
    }},
+  // parse::InterpretedObject
+  {parse::InterpretedObject::kTypeId,
+   [](const ValuePtr &value) -> py::object {
+     auto interpreted_object = value->cast<parse::InterpretedObjectPtr>();
+     return interpreted_object->obj();
+   }},
   // None
-  {typeid(None).name(), [](const ValuePtr &value) -> py::object { return py::none(); }},
+  {None::kTypeId, [](const ValuePtr &value) -> py::object { return py::none(); }},
   // AnyValue
-  {typeid(AnyValue).name(), [](const ValuePtr &value) -> py::object { return py::none(); }},
+  {AnyValue::kTypeId, [](const ValuePtr &value) -> py::object { return py::none(); }},
   // FuncGraph
-  {typeid(FuncGraph).name(), [](const ValuePtr &value) -> py::object { return py::none(); }},
+  {FuncGraph::kTypeId, [](const ValuePtr &value) -> py::object { return py::none(); }},
   // Monad
-  {typeid(Monad).name(), [](const ValuePtr &value) -> py::object { return py::none(); }},
+  {Monad::kTypeId, [](const ValuePtr &value) -> py::object { return py::none(); }},
   // Ellipsis
-  {typeid(Ellipsis).name(), [](const ValuePtr &value) -> py::object { return py::ellipsis(); }}};
+  {Ellipsis::kTypeId, [](const ValuePtr &value) -> py::object { return py::ellipsis(); }}};
 
 py::object ValueToPyData(const ValuePtr &value) {
   if (value == nullptr) {
     MS_LOG(EXCEPTION) << "The `value` should not be null";
   }
   for (auto &iter : value_name_to_converter) {
-    if (value->IsFromTypeId(Base::GetTypeId(iter.first))) {
+    if (value->IsFromTypeId(iter.first)) {
       return iter.second(value);
     }
   }
@@ -267,6 +278,19 @@ py::object AnyToPyData(const Any &value) {
     ret = v[0];
   } else {
     MS_LOG(EXCEPTION) << "value is not support type";
+  }
+  return ret;
+}
+
+py::object BaseRefToPyData(const BaseRef &value, const AbstractBasePtr &output) {
+  py::object ret;
+  // If output value is a tuple, check if abstract is a SparseTensor in funcgraph output
+  if (utils::isa<VectorRef>(value)) {
+    MS_LOG(DEBUG) << "BaseRefToPyData, value is tuple: " << value.ToString();
+    auto vec_ref = utils::cast<VectorRef>(value);
+    ret = VectorRefToPyData(vec_ref, output);
+  } else {
+    ret = BaseRefToPyData(value);
   }
   return ret;
 }
@@ -373,6 +397,29 @@ py::object VectorRefToPyData(const VectorRef &value_list) {
   auto ref_tuple = py::tuple(value_size);
   for (size_t i = 0; i < value_size; i++) {
     ref_tuple[i] = BaseRefToPyData(value_list[i]);
+  }
+  ret = ref_tuple;
+  return ret;
+}
+
+py::object VectorRefToPyData(const VectorRef &value_list, const AbstractBasePtr &output) {
+  MS_LOG(DEBUG) << "vector_ref";
+  // Current VectorRef reflects a SparseTensor type
+  if (output->isa<abstract::AbstractCSRTensor>()) {
+    return MakeCSRTensor(value_list);
+  }
+  py::object ret;
+  size_t value_size = value_list.size();
+  auto ref_tuple = py::tuple(value_size);
+  abstract::AbstractTuplePtr tuple_output = output->cast<abstract::AbstractTuplePtr>();
+  bool is_abstract_tuple = tuple_output != nullptr;
+  for (size_t i = 0; i < value_size; i++) {
+    if (!is_abstract_tuple || i >= tuple_output->size()) {
+      // Fall back to original process
+      ref_tuple[i] = BaseRefToPyData(value_list[i]);
+    } else {
+      ref_tuple[i] = BaseRefToPyData(value_list[i], (*tuple_output)[i]);
+    }
   }
   ret = ref_tuple;
   return ret;
@@ -545,5 +592,46 @@ bool IsGraphOutputValueNodeOrParameter(const AnfNodePtr &output, const py::tuple
     return true;
   }
   return false;
+}
+
+py::object MakeCSRTensor(const VectorRef &value_list) {
+  constexpr size_t kCSRTensorInputSize{4};
+  if (value_list.size() != kCSRTensorInputSize) {
+    MS_LOG(EXCEPTION) << "CSRTensor must have 4 inputs.";
+  }
+  using TensorPtr = tensor::TensorPtr;
+  using CSRTensor = tensor::CSRTensor;
+  TensorPtr indptr = utils::cast<TensorPtr>(value_list[0]);
+  TensorPtr indices = utils::cast<TensorPtr>(value_list[1]);
+  TensorPtr values = utils::cast<TensorPtr>(value_list[2]);
+  ValuePtr shape_ptr = utils::cast<ValuePtr>(value_list[3]);
+  ValueTuplePtr shape_tuple = shape_ptr->cast<ValueTuplePtr>();
+  ShapeVector shape{};
+  // CSRTensor shape is a tuple on GPU and CPU
+  if (shape_tuple) {
+    for (const auto &v : shape_tuple->value()) {
+      MS_EXCEPTION_IF_NULL(v);
+      ScalarPtr scalar = v->cast<ScalarPtr>();
+      MS_EXCEPTION_IF_NULL(scalar);
+      shape.push_back(GetValue<int64_t>(scalar));
+    }
+    // CSRTensor shape is a VectorRef(TensorPtr, TensorPtr) on Ascend
+  } else {
+    auto shape_ref = utils::cast<VectorRef>(value_list[3]);
+    MS_EXCEPTION_IF_NULL(shape_ref);
+    for (const auto &v : shape_ref) {
+      MS_EXCEPTION_IF_NULL(v);
+      auto tensorptr = utils::cast<TensorPtr>(v);
+      MS_EXCEPTION_IF_NULL(tensorptr);
+      if (tensorptr->DataDim() != 0) {
+        MS_LOG(EXCEPTION) << "Element in CSRTensor's shape must be scalar!";
+      }
+      shape.push_back(*(static_cast<int64_t *>(tensorptr->data_c())));
+    }
+  }
+  auto ref = py::tuple(1);
+  auto csr_tensor_ptr = std::make_shared<CSRTensor>(indptr, indices, values, shape);
+  ref[0] = csr_tensor_ptr;
+  return ref[0];
 }
 }  // namespace mindspore

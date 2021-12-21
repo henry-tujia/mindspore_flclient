@@ -21,7 +21,6 @@
 namespace mindspore {
 namespace dataset {
 namespace audio {
-
 // TimeStretchOperation
 TimeStretchOperation::TimeStretchOperation(float hop_length, int n_freq, float fixed_rate)
     : hop_length_(hop_length), n_freq_(n_freq), fixed_rate_(fixed_rate) {}
@@ -34,7 +33,6 @@ Status TimeStretchOperation::ValidateParams() {
   //  param check
   RETURN_IF_NOT_OK(ValidateFloatScalarPositive("TimeStretch", "hop_length", hop_length_));
   RETURN_IF_NOT_OK(ValidateIntScalarPositive("TimeStretch", "n_freq", n_freq_));
-  RETURN_IF_NOT_OK(ValidateFloatScalarNotNan("TimeStretch", "fixed_rate", fixed_rate_));
   RETURN_IF_NOT_OK(ValidateFloatScalarPositive("TimeStretch", "fixed_rate", fixed_rate_));
   return Status::OK();
 }

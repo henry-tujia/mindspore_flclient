@@ -23,7 +23,7 @@ namespace device {
 namespace ascend {
 namespace collective {
 HcclCollectiveGroup &HcclCollectiveGroup::instance() {
-  static HcclCollectiveGroup instance;
+  static HcclCollectiveGroup instance = {};
   return instance;
 }
 
@@ -49,7 +49,7 @@ bool HcclCollectiveGroup::InitCollective() {
       << "Loading libascend_collective.so failed. Many reasons could cause this:\n1.libascend_collective.so is not "
          "installed.\n2.hccl is not "
          "installed or found.\n3.mpi is not installed or found, please check if lib files of OpenMPI is added to "
-         "LD_LIBRATY_PATH.";
+         "LD_LIBRARY_PATH.";
   }
   init_mpi_ = DlsymFuncObj(InitMPI, collective_handle_);
   finalize_mpi_ = DlsymFuncObj(FinalizeMPI, collective_handle_);
@@ -83,7 +83,7 @@ int HcclCollectiveGroup::GetDeviceId() const {
 }
 void HcclCollectiveGroup::CreateCommGroup(const std::string &name, const std::vector<unsigned int> &ranks) {
   MS_EXCEPTION_IF_NULL(create_comm_for_group_);
-  create_comm_for_group_(name, ranks);
+  (void)create_comm_for_group_(name, ranks);
 }
 void HcclCollectiveGroup::DestroyCommGroup() {
   MS_EXCEPTION_IF_NULL(destroy_hccl_comm_);

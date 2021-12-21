@@ -45,7 +45,7 @@ bool StrategyCheckpoint::CheckPath(const std::string path) const {
     MS_LOG(ERROR) << "The checkpoit path " << path << " is too long";
     return false;
   }
-  auto realpath = Common::CreatePrefixPath(path);
+  auto realpath = Common::CreatePrefixPath(path, true);
   if (!realpath.has_value()) {
     MS_LOG(ERROR) << "Get real path failed, path=" << path;
     return false;
@@ -201,7 +201,7 @@ Status StrategyCheckpoint::Save(const StrategyMap &strategy_map, const TensorInf
   return SUCCESS;
 }
 
-Status StrategyCheckpoint::SaveGroupInfo(const GroupInfoMap &group_info_map) {
+Status StrategyCheckpoint::SaveGroupInfo(const GroupInfoMap &group_info_map, const RankList &restore_rank_list) {
   straspb::ParallelGroupMap parallel_group_map;
   for (auto &group : group_info_map) {
     straspb::ParallelGroupItem *parallel_group_item = parallel_group_map.add_parallel_group_item();
@@ -212,6 +212,10 @@ Status StrategyCheckpoint::SaveGroupInfo(const GroupInfoMap &group_info_map) {
     for (auto &rank : group.second) {
       parallel_group_ranks->add_dim(rank);
     }
+  }
+  straspb::ParallelGroupRanks *ckpt_restore_rank_list = parallel_group_map.mutable_ckpt_restore_rank_list();
+  for (auto &restore_rank : restore_rank_list) {
+    ckpt_restore_rank_list->add_dim(restore_rank);
   }
   if (!CheckPath(group_info_save_file_)) {
     MS_LOG(EXCEPTION) << "CheckPoint file in invalid";

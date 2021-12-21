@@ -28,9 +28,13 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameIndexAdd = "IndexAdd";
+/// \brief Adds tensor y to specified axis and indices of tensor x.
+/// Refer to Python API @ref mindspore.ops.IndexAdd for more details.
 class IndexAdd : public PrimitiveC {
  public:
+  /// \brief Constructor.
   IndexAdd() : PrimitiveC(kNameIndexAdd) { InitIOName({"input_x", "indices", "input_y"}, {"output"}); }
+  /// \brief Destructor.
   ~IndexAdd() = default;
   MS_DECLARE_PARENT(IndexAdd, PrimitiveC);
 };
@@ -38,7 +42,6 @@ class IndexAdd : public PrimitiveC {
 AbstractBasePtr IndexAddInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                               const std::vector<AbstractBasePtr> &input_args);
 
-using PrimIndexAddPtr = std::shared_ptr<IndexAdd>;
 }  // namespace ops
 }  // namespace mindspore
 

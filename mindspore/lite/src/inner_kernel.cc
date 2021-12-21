@@ -55,15 +55,15 @@ int InnerKernel::PreProcess() {
     }
   }
 
+  // check if inputs are valid
+  if (!CheckInputsValid()) {
+    MS_LOG(ERROR) << "The input is not valid.";
+    return RET_ERROR;
+  }
   for (auto *output : this->out_tensors()) {
     MS_ASSERT(output != nullptr);
     if (registry_data_type_ == kNumberTypeFloat16 && output->data_type() == kNumberTypeFloat32) {
       output->set_data_type(kNumberTypeFloat16);
-    }
-
-    if (output->ElementsNum() >= MAX_MALLOC_SIZE / static_cast<int>(sizeof(int64_t))) {
-      MS_LOG(ERROR) << "The size of output tensor is too big, output size: " << output->ElementsNum();
-      return RET_ERROR;
     }
     auto ret = output->MallocData();
     if (ret != RET_OK) {
@@ -82,18 +82,7 @@ int InnerKernel::Execute() {
     return ret;
   }
 
-  // Support ZeroShape
-  size_t zero_shape_num = 0;
-  for (auto tensor : this->out_tensors()) {
-    for (size_t i = 0; i < tensor->shape().size(); i++) {
-      if (tensor->shape()[i] == 0) {
-        zero_shape_num++;
-        break;
-      }
-    }
-  }
-
-  if (zero_shape_num != this->out_tensors().size()) {
+  if (op_parameter_->is_zero_shape_ == false) {
     ret = Run();
     if (lite::RET_OK != ret) {
       MS_LOG(ERROR) << "run kernel failed, name: " << this->name();

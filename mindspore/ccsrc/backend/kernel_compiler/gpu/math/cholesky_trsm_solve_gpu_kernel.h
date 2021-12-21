@@ -32,7 +32,19 @@ namespace kernel {
 template <typename T>
 class CholeskyTrsmGpuKernel : public GpuKernel {
  public:
-  CholeskyTrsmGpuKernel() : batch_(0), m_(0), lda_(0), is_null_input_(false), handle_(nullptr) {}
+  CholeskyTrsmGpuKernel()
+      : batch_(0),
+        m_(0),
+        lda_(0),
+        ldb_(0),
+        res_dim_(0),
+        split_dim_(0),
+        is_null_input_(false),
+        use_split_matrix_(false),
+        height_(0),
+        width_(0),
+        handle_(nullptr),
+        blas_handle_(nullptr) {}
   ~CholeskyTrsmGpuKernel() = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -43,6 +55,10 @@ class CholeskyTrsmGpuKernel : public GpuKernel {
     if (is_null_input_) {
       return true;
     }
+    CHECK_CUBLAS_RET_WITH_ERROR(cublasSetStream(blas_handle_, reinterpret_cast<cudaStream_t>(stream_ptr)),
+                                "cublasSetStream failed");
+    CHECK_CUSOLVER_RET_WITH_ERROR(cusolverDnSetStream(handle_, reinterpret_cast<cudaStream_t>(stream_ptr)),
+                                  "cusolverDnSetStream failed");
     if (!use_split_matrix_) {
       LaunchNonSplitMatrix(inputs, workspace, outputs, stream_ptr);
     } else {
@@ -55,6 +71,12 @@ class CholeskyTrsmGpuKernel : public GpuKernel {
     handle_ = device::gpu::GPUDeviceManager::GetInstance().GetCusolverDnHandle();
     blas_handle_ = device::gpu::GPUDeviceManager::GetInstance().GetCublasHandle();
     auto in_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(in_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'CholeskyTrsmSolveGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     split_dim_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "split_dim"));
     if (split_dim_ == 0) {
       if (!InitDim0(kernel_node, in_shape)) {

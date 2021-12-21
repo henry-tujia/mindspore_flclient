@@ -19,9 +19,9 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <unordered_map>
 #include <algorithm>
 
+#include "utils/hash_map.h"
 #include "ir/func_graph_cloner.h"
 #include "pipeline/jit/parse/parse_base.h"
 #include "pipeline/jit/resource.h"
@@ -40,6 +40,7 @@
 #include "frontend/parallel/cache_embedding/cache_embedding.h"
 #include "frontend/parallel/allreduce_fusion/step_allreduce_fusion.h"
 #include "frontend/optimizer/recompute.h"
+#include "frontend/optimizer/slice_activation_in_recompute.h"
 #include "utils/log_adapter.h"
 #include "pipeline/jit/pipeline_split.h"
 #include "pipeline/pynative/pynative_execute.h"
@@ -193,13 +194,15 @@ FuncGraphPtr BpropGraphFinalOptPass(const ResourcePtr &res) {
   });
 
   if (pynative::PynativeExecutor::GetInstance()->grad_executor()->need_renormalize()) {
-    map.emplace_back(std::make_pair("renormalize", opt::OptPassConfig::Renormalize()));
+    (void)map.emplace_back(std::make_pair("renormalize", opt::OptPassConfig::Renormalize()));
+    opt::OptPassConfig real_op_eliminate = opt::OptPassConfig{irpass.real_op_eliminate_};
+    (void)map.emplace_back(std::make_pair("real_op_eliminate", real_op_eliminate));
     opt::OptPassConfig env_eliminate = opt::OptPassConfig({
       irpass.incorporate_call_,
       irpass.incorporate_call_switch_,
       irpass.incorporate_getitem_set_,
     });
-    map.emplace_back(std::make_pair("env_eliminate", env_eliminate));
+    (void)map.emplace_back(std::make_pair("env_eliminate", env_eliminate));
   }
 
   auto bprop_graph_final_opt = opt::Optimizer::MakeOptimizer("bprop_graph_final_opt", res, map);
@@ -229,7 +232,7 @@ void AddParallelRenormalize(OptPassGroupMap *map_a) {
     auto parallel_end_opt =
       find_if(map_a->begin(), map_a->end(), [](auto opt_pair) { return opt_pair.first == "grad"; });
     if (parallel_end_opt != map_a->end()) {
-      map_a->insert(parallel_end_opt, {"parallel_renormalize", opt::OptPassConfig::Renormalize()});
+      (void)map_a->insert(parallel_end_opt, {"parallel_renormalize", opt::OptPassConfig::Renormalize()});
     }
   }
 }
@@ -253,6 +256,7 @@ opt::OptPassConfig GetOptPassA1(const opt::irpass::OptimizeIRPassLib &irpass) {
 
     // Miscellaneous
     irpass.tuple_list_get_item_eliminator_,
+    irpass.make_slice_get_slice_eliminator_,
     irpass.tuple_list_get_item_const_eliminator_,
     irpass.tuple_list_set_item_eliminator_,
     irpass.tuple_list_get_set_item_eliminator_,
@@ -298,6 +302,8 @@ OptPassGroupMap GetOptPassesA(const opt::irpass::OptimizeIRPassLib &irpass) {
       irpass.float_tuple_getitem_switch_,
       irpass.float_env_getitem_switch_,
       irpass.inline_,
+      irpass.updatestate_useless_node_eliminater_,
+      irpass.tuple_list_get_item_eliminator_,
       irpass.incorporate_getitem_set_,
       irpass.incorporate_call_,
       irpass.incorporate_call_switch_,
@@ -334,7 +340,8 @@ OptPassGroupMap GetOptPassesA(const opt::irpass::OptimizeIRPassLib &irpass) {
   opt::OptPassConfig updatestate_loads_eliminate = opt::OptPassConfig(opt::irpass::UpdatestateLoadsEliminater());
 
   // Before adjusting map_a, check GetA1A2() and GetOptPynativeGradEpiloguePhases().
-  OptPassGroupMap map_a({{"a_1", a_1},
+  OptPassGroupMap map_a({{"switch_simplify", opt::OptPassConfig({irpass.switch_simplify_})},
+                         {"a_1", a_1},
                          {"updatestate_depend_eliminate", updatestate_depend_eliminate},
                          {"updatestate_assign_eliminate", updatestate_assign_eliminate},
                          {"updatestate_loads_eliminate", updatestate_loads_eliminate},
@@ -350,6 +357,7 @@ OptPassGroupMap GetOptPassesA(const opt::irpass::OptimizeIRPassLib &irpass) {
                          {"after_resolve", after_resolve_pass},
                          {"a_after_grad", a_after_grad},
                          {"renormalize", opt::OptPassConfig::Renormalize()},
+                         {"real_op_eliminate", opt::OptPassConfig({irpass.real_op_eliminate_})},
                          {"auto_monad_grad", opt::OptPassConfig(ReAutoMonadWrapper)},
                          {"auto_monad_eliminator", opt::OptPassConfig(opt::AutoMonadEliminator())},
                          {"cse", opt::OptPassConfig(opt::CSEPass(false))},
@@ -360,7 +368,7 @@ OptPassGroupMap GetOptPassesA(const opt::irpass::OptimizeIRPassLib &irpass) {
 
 OptPassGroupMap GetA1A2(const opt::irpass::OptimizeIRPassLib &irpass) {
   auto opt_a = GetOptPassesA(irpass);
-  constexpr auto a1_a2_len = 6;
+  constexpr auto a1_a2_len = 7;
   OptPassGroupMap a1_a2(opt_a.begin(), opt_a.begin() + a1_a2_len);
   return a1_a2;
 }
@@ -391,11 +399,15 @@ OptPassGroupMap GetOptPassesAfterCconv(const opt::irpass::OptimizeIRPassLib &irp
 }
 
 OptPassGroupMap GetOptPassesTransformGraph(const opt::irpass::OptimizeIRPassLib &irpass) {
-  opt::OptPassConfig d_1 =
-    opt::OptPassConfig({irpass.call_graph_tuple_transform_, irpass.tuple_list_get_item_eliminator_,
-                        irpass.tuple_list_get_item_const_eliminator_, irpass.tuple_list_set_item_eliminator_,
-                        irpass.tuple_list_get_set_item_eliminator_, irpass.tuple_list_get_item_depend_reorder_,
-                        irpass.tuple_list_convert_item_index_to_positive_});
+  opt::OptPassConfig d_1 = opt::OptPassConfig({
+    irpass.call_graph_tuple_transform_,
+    irpass.tuple_list_get_item_eliminator_,
+    irpass.tuple_list_get_item_const_eliminator_,
+    irpass.tuple_list_set_item_eliminator_,
+    irpass.tuple_list_get_set_item_eliminator_,
+    irpass.tuple_list_get_item_depend_reorder_,
+    irpass.tuple_list_convert_item_index_to_positive_,
+  });
 
   OptPassGroupMap map_a({{"d_1", d_1}, {"renormalize", opt::OptPassConfig::Renormalize()}});
 
@@ -410,6 +422,7 @@ OptPassGroupMap GetOptPassesB(const opt::irpass::OptimizeIRPassLib &irpass) {
                                                irpass.tuple_list_get_set_item_eliminator_,
                                                irpass.tuple_list_get_item_depend_reorder_,
                                                irpass.tuple_list_convert_item_index_to_positive_,
+                                               irpass.make_slice_get_slice_eliminator_,
                                                irpass.float_tuple_getitem_switch_,
                                                irpass.reset_defer_inline_,
                                                irpass.inline_,
@@ -467,7 +480,7 @@ OptPassGroupMap GetOptPassesC(const opt::irpass::OptimizeIRPassLib &) {
   return OptPassGroupMap({{"renormalize", opt::OptPassConfig::Renormalize()}});
 }
 
-OptPassGroupMap GetControlPhases(const opt::irpass::OptimizeIRPassLib &irpass) {
+OptPassGroupMap GetControlPhases(const opt::irpass::OptimizeIRPassLib &) {
   opt::OptPassConfig control_group = opt::OptPassConfig(opt::irpass::ConvertSwitchReplacement());
   OptPassGroupMap map({
     {"control_group", control_group},
@@ -511,7 +524,7 @@ OptPassGroupMap GetAfterRecomputePass(const opt::irpass::OptimizeIRPassLib &) {
   return map;
 }
 
-static std::unordered_map<std::string, std::shared_ptr<Optimizer>> g_pass_opts = {};
+static mindspore::HashMap<std::string, std::shared_ptr<Optimizer>> g_pass_opts = {};
 
 void InitOpt(const ResourcePtr &res) {
   if (g_pass_opts.size() == 0) {
@@ -524,7 +537,7 @@ void InitOpt(const ResourcePtr &res) {
     g_pass_opts["opt_trans_graph"] =
       Optimizer::MakeOptimizer("opt_trans_graph", res, GetOptPassesTransformGraph(irpass), true, true);
     g_pass_opts["renormal"] = Optimizer::MakeOptimizer("renormal", res, GetOptPassesC(irpass));
-    g_pass_opts["opt_control"] = Optimizer::MakeOptimizer("opt_control", res, GetControlPhases(irpass), true, true);
+    g_pass_opts["opt_control"] = Optimizer::MakeOptimizer("opt_control", res, GetControlPhases(irpass), true, false);
     g_pass_opts["opt_grad_epilogue"] =
       Optimizer::MakeOptimizer("opt_grad_epilogue", res, GetOptPynativeGradEpiloguePhases(irpass), true, false);
     g_pass_opts["opt_prepare"] = Optimizer::MakeOptimizer("opt_prepare", res, GetPreparePhases(irpass));
@@ -582,6 +595,12 @@ bool AddRecomputationPass(const ResourcePtr &res) {
   return true;
 }
 
+bool SliceRecomputeActivationPass(const ResourcePtr &res) {
+  MS_EXCEPTION_IF_NULL(res);
+  opt::SliceRecomputedActivationNodes(res->func_graph());
+  return true;
+}
+
 bool AddCacheEmbeddingPass(const ResourcePtr &res) {
   MS_EXCEPTION_IF_NULL(res);
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
@@ -612,9 +631,26 @@ bool RemoveValueNodeDuplicationsPass(const ResourcePtr &res) {
   HashCache hash_cache;
   HashValue hashes;
   // Remove duplicated value nodes across all graphs in manager
+  auto node_user_map = manager->node_users();
   for (auto &fg : manager->func_graphs()) {
     auto value_nodes = fg->value_nodes();
     for (const auto &value_pair : value_nodes) {
+      auto users = node_user_map[value_pair.first];
+      // For data parallel with some parameters redundant, the allreduce will share the same value node
+      // which will raise an error when do allreduce fusion, so the solution is to make the allreduce's value node
+      // not be removed, if we found the fusion tag.
+      if (users.size() == 1) {
+        auto cnode = users.front().first->cast<CNodePtr>();
+        if (IsPrimitiveCNode(cnode, prim::kPrimAllReduce) && cnode->inputs().size() > 1 &&
+            cnode->input(1)->isa<ValueNode>()) {
+          auto allreduce_prim = GetCNodePrimitive(users.front().first);
+          auto attrs = allreduce_prim->attrs();
+          auto fusion_id = attrs.find(mindspore::parallel::FUSION);
+          if (fusion_id != attrs.end() && GetValue<int64_t>(fusion_id->second) > 0) {
+            continue;
+          }
+        }
+      }
       TryToDoReplace(manager.get(), value_pair.first, &hash_cache, &hashes);
     }
   }
@@ -705,7 +741,8 @@ std::vector<PassItem> kVmPasses = {{"simplify_data_structures", SimplifyDataStru
                                    {"tuple_transform", OptPassTransformGraphGroup},
                                    {"add_cache_embedding", AddCacheEmbeddingPass},
                                    {"add_recomputation", AddRecomputationPass},
-                                   {"cse_after_recomputation", OptAfterRecomputeGroup}};
+                                   {"cse_after_recomputation", OptAfterRecomputeGroup},
+                                   {"slice_recompute_activation", SliceRecomputeActivationPass}};
 
 std::vector<PassItem> kGePasses = {{"simplify_data_structures", SimplifyDataStructuresPass},
                                    {"opt_a", OptPassAGroup},

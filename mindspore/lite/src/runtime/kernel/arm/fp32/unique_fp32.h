@@ -18,7 +18,6 @@
 
 #include <vector>
 #include "src/inner_kernel.h"
-#include "nnacl/fp32/unique_fp32.h"
 
 namespace mindspore::kernel {
 class UniqueCPUKernel : public InnerKernel {
@@ -28,7 +27,7 @@ class UniqueCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~UniqueCPUKernel() = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 };

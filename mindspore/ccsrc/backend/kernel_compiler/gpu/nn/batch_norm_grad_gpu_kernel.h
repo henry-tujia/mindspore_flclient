@@ -34,7 +34,11 @@ template <typename T>
 class BatchNormGradGpuKernel : public GpuKernel {
  public:
   BatchNormGradGpuKernel()
-      : x_size_(0),
+      : batch_(0),
+        channel_(0),
+        height_(0),
+        width_(0),
+        x_size_(0),
         para_size_(0),
         workspace_size_(0),
         reserve_size_(0),
@@ -120,7 +124,9 @@ class BatchNormGradGpuKernel : public GpuKernel {
     } else if (kernel_name == kBatchNormGradWithAddAndActivation) {
       bn_ops_ = CUDNN_BATCHNORM_OPS_BN_ADD_ACTIVATION;
     } else {
-      MS_LOG(EXCEPTION) << "Invalid kernel name: " << kernel_name;
+      MS_LOG(EXCEPTION) << "Only support these kernel names: " << kBatchNormGradOpName << ", "
+                        << kBatchNormGradWithActivation << ", " << kBatchNormGradWithAddAndActivation << ", but got "
+                        << kernel_name;
     }
 
     InitResource();
@@ -130,23 +136,23 @@ class BatchNormGradGpuKernel : public GpuKernel {
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (bn_ops_ == CUDNN_BATCHNORM_OPS_BN) {
       if (input_num != CUDNN_BATCHNORM_OPS_BN_INPUT_NUM) {
-        MS_LOG(EXCEPTION) << "input tensor size is " << input_num << ", " << kernel_name << " should be "
-                          << CUDNN_BATCHNORM_OPS_BN_INPUT_NUM;
+        MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be "
+                          << CUDNN_BATCHNORM_OPS_BN_INPUT_NUM << ", but got " << input_num;
       }
     } else {
       if (input_num != NO_CUDNN_BATCHNORM_OPS_BN_INPUT_NUM) {
-        MS_LOG(EXCEPTION) << "input tensor size is " << input_num << ", " << kernel_name << "  should be "
-                          << NO_CUDNN_BATCHNORM_OPS_BN_INPUT_NUM;
+        MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be "
+                          << NO_CUDNN_BATCHNORM_OPS_BN_INPUT_NUM << ", but got " << input_num;
       }
     }
 
     auto shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
     if (shape.size() != 4 && shape.size() != 2) {
-      MS_LOG(EXCEPTION) << "tensor shape is " << shape.size() << ", BatchNormGradGpuKernel should be 2D or 4D";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of input should be 2 or 4, but got "
+                        << shape.size();
     }
-    is_null_input_ = CHECK_NULL_INPUT(shape);
+    is_null_input_ = CHECK_SHAPE_NULL(shape, kernel_name, "input");
     if (is_null_input_) {
-      MS_LOG(WARNING) << "BatchNormGradGpuKernel input is null";
       InitSizeLists();
       return true;
     }

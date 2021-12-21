@@ -45,8 +45,12 @@ update_submodule()
   cd "${BASEPATH}/graphengine"
   git submodule update --init metadef
   cd "${BASEPATH}"
-  if [[ "X$ENABLE_AKG" = "Xon" ]] && [[ "X$ENABLE_D" = "Xon" || "X$ENABLE_GPU" = "Xon" ]]; then
-      git submodule update --init --recursive akg
+  if [[ "X$ENABLE_AKG" = "Xon" ]]; then
+    if [[ "X$ENABLE_D" == "Xon" ]]; then
+      git submodule update --init akg
+    else
+      GIT_LFS_SKIP_SMUDGE=1 git submodule update --init akg
+    fi
   fi
 }
 
@@ -56,7 +60,6 @@ build_exit()
     stty echo
     exit 1
 }
-
 
 make_clean()
 {
@@ -89,8 +92,8 @@ else
       echo "acl mode, skipping deploy phase"
       rm -rf ${BASEPATH}/output/_CPack_Packages/
     else
-      cp -rf ${BUILD_PATH}/package/mindspore/lib ${BASEPATH}/mindspore
-      cp -rf ${BUILD_PATH}/package/mindspore/*.so ${BASEPATH}/mindspore
+      cp -rf ${BUILD_PATH}/package/mindspore/lib ${BASEPATH}/mindspore/python/mindspore
+      cp -rf ${BUILD_PATH}/package/mindspore/*.so ${BASEPATH}/mindspore/python/mindspore
   fi
 fi
 echo "---------------- MindSpore: build end   ----------------"

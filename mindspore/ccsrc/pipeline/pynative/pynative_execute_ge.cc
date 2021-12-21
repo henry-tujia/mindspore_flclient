@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@
 #include <typeinfo>
 #include <map>
 #include <set>
-#include <unordered_set>
 
+#include "utils/hash_set.h"
 #include "utils/any.h"
 #include "utils/utils.h"
 #include "utils/ms_context.h"
@@ -31,12 +31,11 @@
 #include "pybind_api/ir/tensor_py.h"
 #include "transform/graph_ir/op_declare/array_ops_declare.h"
 
-const char SINGLE_OP_GRAPH[] = "single_op_graph";
-
 using mindspore::tensor::TensorPy;
 
 namespace mindspore {
 namespace pynative {
+const char SINGLE_OP_GRAPH[] = "single_op_graph";
 using MeTensor = mindspore::tensor::Tensor;
 using MeTensorPtr = mindspore::tensor::TensorPtr;
 using GeOperator = ge::Operator;
@@ -120,7 +119,7 @@ bool SetInputsForSingleOpGraph(const OpExecInfoPtr &op_exec_info, const std::vec
 }
 
 bool BuildSingleOpGraph(const OpExecInfoPtr &op_exec_info, const std::vector<GeTensorPtr> &inputs,
-                        const std::unordered_map<std::string, ValuePtr> &attrs, const GeGraphPtr &graph) {
+                        const mindspore::HashMap<std::string, ValuePtr> &attrs, const GeGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(op_exec_info);
   std::string op_name = op_exec_info->op_name;
   auto op_inputs = op_exec_info->op_inputs;
@@ -191,7 +190,7 @@ void ToTensorPtr(const OpExecInfoPtr op_exec_info, std::vector<GeTensorPtr> *con
 PynativeStatusCode ConvertAttributes(const OpExecInfoPtr &op_exec_info, const std::vector<GeTensorPtr> &inputs) {
   MS_EXCEPTION_IF_NULL(op_exec_info);
   auto op_attrs = op_exec_info->op_attrs;
-  std::unordered_map<std::string, ValuePtr> attrs{};
+  mindspore::HashMap<std::string, ValuePtr> attrs{};
 
   for (auto &item : op_attrs) {
     if (!py::isinstance<py::str>(item.first)) {
@@ -224,22 +223,30 @@ PynativeStatusCode ConvertAttributes(const OpExecInfoPtr &op_exec_info, const st
 std::vector<MeTensorPtr> ConvertOutputTensors(const OpExecInfoPtr &op_exec_info,
                                               const std::vector<GeTensorPtr> &ge_tensors) {
   std::vector<MeTensorPtr> outputs;
+  MS_EXCEPTION_IF_NULL(op_exec_info);
   AbstractBasePtr abs_base = op_exec_info->abstract;
   std::vector<std::vector<int64_t>> shapes;
   if (abs_base != nullptr && abs_base->isa<abstract::AbstractTensor>()) {
     auto arg_tensor = dyn_cast<abstract::AbstractTensor>(abs_base);
-    shapes.emplace_back(arg_tensor->shape()->shape());
+    MS_EXCEPTION_IF_NULL(arg_tensor);
+    auto shape = arg_tensor->shape();
+    MS_EXCEPTION_IF_NULL(shape);
+    shapes.emplace_back(shape->shape());
     outputs = transform::TransformUtil::ConvertGeTensors(ge_tensors, shapes);
     return outputs;
   }
   if (abs_base != nullptr && abs_base->isa<abstract::AbstractTuple>()) {
     auto arg_tuple = dyn_cast<abstract::AbstractTuple>(abs_base);
+    MS_EXCEPTION_IF_NULL(arg_tuple);
     size_t len = arg_tuple->size();
 
     for (size_t i = 0; i < len; i++) {
       if (arg_tuple->elements()[i]->isa<abstract::AbstractTensor>()) {
         auto tensor = dyn_cast<abstract::AbstractTensor>(arg_tuple->elements()[i]);
-        shapes.emplace_back(tensor->shape()->shape());
+        MS_EXCEPTION_IF_NULL(tensor);
+        auto shape = tensor->shape();
+        MS_EXCEPTION_IF_NULL(shape);
+        shapes.emplace_back(shape->shape());
       }
     }
     outputs = transform::TransformUtil::ConvertGeTensors(ge_tensors, shapes);

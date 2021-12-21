@@ -47,7 +47,7 @@ int FullconnectionFP16CPUKernel::ReSize() {
   return MatmulBaseFP16CPUKernel::ReSize();
 }
 
-int FullconnectionFP16CPUKernel::Init() {
+int FullconnectionFP16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
 #ifdef ENABLE_ARM64
@@ -56,6 +56,10 @@ int FullconnectionFP16CPUKernel::Init() {
   row_tile_ = C12NUM;
 #endif
   params_->batch = 1;
+  a_batch_ = 1;
+  b_batch_ = 1;
+  a_offset_.resize(params_->batch, 0);
+  b_offset_.resize(params_->batch, 0);
   params_->a_transpose_ = false;
   params_->b_transpose_ = true;
 
@@ -68,7 +72,7 @@ int FullconnectionFP16CPUKernel::Init() {
     InitBShape();
   }
 
-  auto ret = MatmulBaseFP16CPUKernel::Init();
+  auto ret = MatmulBaseFP16CPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }

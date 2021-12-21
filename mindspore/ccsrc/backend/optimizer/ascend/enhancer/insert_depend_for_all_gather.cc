@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-#include "backend/optimizer/ascend/enhancer/insert_depend_for_all_gather.h"
-#include <memory>
 #include <map>
+#include "backend/optimizer/ascend/enhancer/insert_depend_for_all_gather.h"
 #include "utils/utils.h"
-#include "backend/optimizer/ascend/ascend_helper.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
 namespace mindspore {
@@ -30,7 +28,7 @@ bool InsertDependForAllGather::Run(const FuncGraphPtr &graph) {
   std::map<int64_t, AnfNodePtr> all_gather_node;
   for (auto &node : node_list) {
     MS_EXCEPTION_IF_NULL(node);
-    if (!node->cast<CNodePtr>() || !AnfAlgo::IsRealKernel(node)) {
+    if (!node->cast<CNodePtr>() || !AnfUtils::IsRealKernel(node)) {
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
@@ -44,6 +42,7 @@ bool InsertDependForAllGather::Run(const FuncGraphPtr &graph) {
   for (int64_t i = 0; i < SizeToInt(all_gather_node.size()) - 1; ++i) {
     auto current_node = iter->second;
     auto next_node = (++iter)->second;
+    MS_EXCEPTION_IF_NULL(next_node);
     auto next_cnode = next_node->cast<CNodePtr>();
     std::vector<AnfNodePtr> inputs = {NewValueNode(std::make_shared<Primitive>(prim::kPrimDepend->name())),
                                       AnfAlgo::GetInputNode(next_cnode, 0), current_node};

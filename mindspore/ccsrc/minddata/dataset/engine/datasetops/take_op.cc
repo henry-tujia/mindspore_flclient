@@ -15,11 +15,8 @@
  */
 #include "minddata/dataset/engine/datasetops/take_op.h"
 
-#include <algorithm>
-
 #include "utils/ms_utils.h"
 #include "minddata/dataset/core/config_manager.h"
-#include "minddata/dataset/engine/db_connector.h"
 
 namespace mindspore {
 namespace dataset {
@@ -41,12 +38,13 @@ void TakeOp::Print(std::ostream &out, bool show_all) const {
   }
 }
 
-Status TakeOp::operator()() { RETURN_STATUS_UNEXPECTED("Logic error. SkipOp is an inlined operator."); }
+Status TakeOp::operator()() { RETURN_STATUS_UNEXPECTED("[Internal ERROR] TakeOp is an inlined operator."); }
 
-Status TakeOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) {
+Status TakeOp::GetNextRow(TensorRow *row) {
+  RETURN_UNEXPECTED_IF_NULL(row);
   bool eoe_received = false;
   if (take_count_ < max_takes_) {
-    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+    RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
     if (row->eoe()) {
       eoe_received = true;
     } else {
@@ -57,7 +55,7 @@ Status TakeOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) 
   if (take_count_ == max_takes_) {
     // drain
     while (!row->eoe()) {
-      RETURN_IF_NOT_OK(child_[0]->GetNextRow(row, worker_id, retry_if_eoe));
+      RETURN_IF_NOT_OK(child_[0]->GetNextRow(row));
     }
     eoe_received = true;
   }
@@ -67,27 +65,6 @@ Status TakeOp::GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) 
   }
 
   return Status::OK();
-}
-
-int32_t TakeOp::num_consumers() const {
-  if (parent_.empty()) {
-    MS_LOG(DEBUG) << "Return operator, no parent node, assuming it's the root and returning 1.";
-    return 1;
-  } else if (parent_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to the first parent is null. Returning 0.";
-    return 0;
-  } else {
-    return parent_[0]->num_consumers();
-  }
-}
-
-int32_t TakeOp::num_producers() const {
-  if (child_.empty() || child_[0] == nullptr) {
-    MS_LOG(DEBUG) << "Return operator, pointer to child node is null. Returning 0.";
-    return 0;
-  } else {
-    return child_[0]->num_producers();
-  }
 }
 }  // namespace dataset
 }  // namespace mindspore

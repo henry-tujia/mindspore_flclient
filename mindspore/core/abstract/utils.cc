@@ -183,83 +183,6 @@ AbstractBasePtr SensitivityTransform(const AbstractBasePtr &spec) {
   return spec->Clone();
 }
 
-namespace {
-// Join all types in args_type_list;
-TypePtr TypeJoin(const TypePtrList &args_type_list) {
-  if (args_type_list.empty()) {
-    MS_LOG(EXCEPTION) << "args_type_list is empty";
-  }
-
-  TypePtr type_tmp = args_type_list[0];
-  for (std::size_t i = 1; i < args_type_list.size(); i++) {
-    type_tmp = abstract::TypeJoin(type_tmp, args_type_list[i]);
-  }
-  return type_tmp;
-}
-}  // namespace
-
-bool CheckType(const TypePtr &expected_type, const TypePtr &x) {
-  // As x and predicate both are mindspore type statically, here we only to judge whether
-  // x is predicate or is a subclass of predicate.
-  return IsIdentidityOrSubclass(x, expected_type);
-}
-
-TypePtr CheckTypeList(const TypePtr &predicate, const TypePtrList &args_type_list) {
-  MS_EXCEPTION_IF_NULL(predicate);
-  for (const auto &arg_type : args_type_list) {
-    MS_EXCEPTION_IF_NULL(arg_type);
-    if (!CheckType(predicate, arg_type)) {
-      MS_LOG(EXCEPTION) << "The expected is " << predicate->ToString() << ", not " << arg_type->ToString();
-    }
-  }
-  return TypeJoin(args_type_list);
-}
-
-int64_t GetPositiveAxis(int64_t axis_value, size_t increment) {
-  if (axis_value < 0) {
-    axis_value = axis_value + SizeToLong(increment);
-  }
-
-  if (axis_value < 0) {
-    MS_LOG(EXCEPTION) << "axis_value should not still <0";
-  }
-
-  return axis_value;
-}
-
-// Return if two shapes can be broadcast.
-// Broadcast shape is placed in broadcast_output_shape.
-ShapeVector RealBroadcast(const std::string &op, ShapeVector x_shape, ShapeVector y_shape) {
-  std::reverse(x_shape.begin(), x_shape.end());
-  std::reverse(y_shape.begin(), y_shape.end());
-  // Fill a placeholder value 1 which will be replaced later.
-  size_t std_len = x_shape.size() > y_shape.size() ? x_shape.size() : y_shape.size();
-  y_shape.resize(std_len, 1);
-  x_shape.resize(std_len, 1);
-
-  ShapeVector broadcast_shape;
-  for (size_t i = 0; i < std_len; i++) {
-    int64_t x_i = x_shape[i];  // i-th dimension of x
-    int64_t y_i = y_shape[i];  // i-th dimension of y
-    int64_t output_i = 0;      // i-th dimension of the output
-    if (x_i == y_i) {
-      output_i = x_i;
-    } else if (x_i == 1) {
-      output_i = y_i;
-    } else if (y_i == 1) {
-      output_i = x_i;
-    } else {
-      MS_LOG(EXCEPTION)
-        << op
-        << " evaluator the shape of first tensor and the shape of second tensor do not meet the broadcasting "
-           "requirements";
-    }
-    broadcast_shape.push_back(output_i);
-  }
-  std::reverse(broadcast_shape.begin(), broadcast_shape.end());
-  return broadcast_shape;
-}
-
 ShapeVector BroadcastShape(ShapeVector shpx, ShapeVector shpy) {
   int dlen = SizeToInt(shpx.size()) - SizeToInt(shpy.size());
   if (dlen < 0) {
@@ -311,34 +234,6 @@ size_t ShapeSize(const std::vector<size_t> &shape) {
 void CheckMinMaxShape(const ShapeVector &shape, ShapeVector *min_shape, ShapeVector *max_shape) {
   *min_shape = (*min_shape).empty() ? shape : *min_shape;
   *max_shape = (*max_shape).empty() ? shape : *max_shape;
-}
-
-int64_t GetUnsortedSegmentOpScalarArg(const AbstractBasePtrList &args_spec_list, const std::string &op_name) {
-  int64_t num_segments_value = 0;
-  constexpr size_t scalar_index = 2;
-  if (args_spec_list[scalar_index]->isa<AbstractTensor>()) {  // num_segments is Tensor
-    auto num_segments = args_spec_list[scalar_index]->cast<AbstractTensorPtr>();
-    MS_EXCEPTION_IF_NULL(num_segments);
-    auto num_segments_value_ptr = num_segments->BuildValue();
-    MS_EXCEPTION_IF_NULL(num_segments_value_ptr);
-    auto num_segments_tensor = num_segments_value_ptr->cast<tensor::TensorPtr>();
-    MS_EXCEPTION_IF_NULL(num_segments_tensor);
-    if (num_segments->element()->GetTypeTrack()->type_id() == TypeId::kNumberTypeInt64) {
-      num_segments_value = *static_cast<int64_t *>(num_segments_tensor->data_c());
-    } else {
-      num_segments_value = *static_cast<int32_t *>(num_segments_tensor->data_c());
-    }
-  } else if (args_spec_list[scalar_index]->isa<AbstractScalar>()) {  // num_segments is Scalar
-    auto num_segments = CheckArg<AbstractScalar>(op_name, args_spec_list, scalar_index);
-    if (num_segments->GetTypeTrack()->type_id() == TypeId::kNumberTypeInt64) {
-      num_segments_value = GetValue<int64_t>(num_segments->BuildValue());
-    } else {
-      num_segments_value = GetValue<int32_t>(num_segments->BuildValue());
-    }
-  } else {
-    MS_LOG(EXCEPTION) << "num_segments incorrect type in " << op_name;
-  }
-  return num_segments_value;
 }
 
 AbstractBasePtr MakeAbstractTensor(const ShapePtr &shape, const TypePtr &type) {

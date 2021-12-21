@@ -29,19 +29,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameSparseApplyRMSProp = "SparseApplyRMSProp";
-class MS_CORE_API SparseApplyRMSProp : public PrimitiveC {
+/// \brief Update relevant entries according to the rmsprop algorithm.
+class SparseApplyRMSProp : public PrimitiveC {
  public:
+  /// \brief Constructor.
   SparseApplyRMSProp() : PrimitiveC(kNameSparseApplyRMSProp) {
     InitIOName({"var", "ms", "mom", "lr", "grad", "indices"}, {"var", "ms", "mom"});
   }
-
+  /// \brief Destructor.
   ~SparseApplyRMSProp() = default;
   MS_DECLARE_PARENT(SparseApplyRMSProp, PrimitiveC);
 };
 
 AbstractBasePtr SparseApplyRMSPropInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                         const std::vector<AbstractBasePtr> &input_args);
-using PrimSparseApplyRMSPropPtr = std::shared_ptr<SparseApplyRMSProp>;
 }  // namespace ops
 }  // namespace mindspore
 

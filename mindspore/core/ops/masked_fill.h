@@ -27,16 +27,19 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameMaskedFill = "MaskedFill";
+/// \brief Fills elements of self tensor with value where mask is True.
+/// Refer to Python API @ref mindspore.ops.MaskedFill for more details.
 class MaskedFill : public PrimitiveC {
  public:
+  /// \brief Constructor.
   MaskedFill() : PrimitiveC(kNameMaskedFill) { InitIOName({"input", "mask", "value"}, {"output"}); }
+  /// \brief Destructor.
   ~MaskedFill() = default;
   MS_DECLARE_PARENT(MaskedFill, PrimitiveC);
 };
 
 AbstractBasePtr MaskedFillInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                 const std::vector<AbstractBasePtr> &input_args);
-using PrimMaskedFillPtr = std::shared_ptr<MaskedFill>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_MASKED_FILL_H_

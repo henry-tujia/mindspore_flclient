@@ -60,7 +60,7 @@ Status ShardSegment::GetCategoryFields(std::shared_ptr<vector<std::string>> *fie
       sqlite3_free(errmsg);
       sqlite3_close(database_paths_[0]);
       database_paths_[0] = nullptr;
-      RETURN_STATUS_UNEXPECTED("Invalid data, field_names size must be greater than 1, but got " +
+      RETURN_STATUS_UNEXPECTED("Invalid data, field_names size must be greater than 1, but got: " +
                                std::to_string(field_names[idx].size()));
     }
     candidate_category_fields_.push_back(field_names[idx][1]);
@@ -310,11 +310,10 @@ Status ShardSegment::ReadAllAtPageByName(std::string category_name, int64_t page
 
 std::pair<ShardType, std::vector<std::string>> ShardSegment::GetBlobFields() {
   std::vector<std::string> blob_fields;
-  for (auto &p : GetShardHeader()->GetSchemas()) {
-    // assume one schema
-    const auto &fields = p->GetBlobFields();
+  auto schema_list = GetShardHeader()->GetSchemas();
+  if (!schema_list.empty()) {
+    const auto &fields = schema_list[0]->GetBlobFields();
     blob_fields.assign(fields.begin(), fields.end());
-    break;
   }
   return std::make_pair(kCV, blob_fields);
 }

@@ -51,7 +51,7 @@ Status ComputeShuffleSize(int64_t num_files, int64_t num_devices, int64_t num_ro
   }
 
   // get the average per file
-  CHECK_FAIL_RETURN_UNEXPECTED(num_files != 0, "The size of dataset_files must greater than 0.");
+  CHECK_FAIL_RETURN_UNEXPECTED(num_files != 0, "The size of dataset_files must be greater than 0.");
   avg_rows_per_file = num_rows / num_files;
 
   *shuffle_size = std::max(avg_rows_per_file * average_files_multiplier, shuffle_max);
@@ -74,8 +74,7 @@ Status AddShuffleOp(int64_t num_files, int64_t num_devices, int64_t num_rows, in
 Status ValidateDatasetDirParam(const std::string &dataset_name, std::string dataset_dir) {
   if (dataset_dir.empty()) {
     std::string err_msg = dataset_name + ": dataset_dir is not specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   std::string real_path;
@@ -83,39 +82,34 @@ Status ValidateDatasetDirParam(const std::string &dataset_name, std::string data
   Path dir(dataset_dir);
   if (!dir.IsDirectory()) {
     std::string err_msg = dataset_name + ": dataset_dir: [" + dataset_dir + "] is an invalid directory path.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (access(dataset_dir.c_str(), R_OK) == -1) {
     std::string err_msg = dataset_name + ": No access to specified dataset path: " + dataset_dir;
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
 }
 
 // Helper function to validate dataset files parameter
-Status ValidateDatasetFilesParam(const std::string &dataset_name, const std::vector<std::string> &dataset_files) {
+Status ValidateDatasetFilesParam(const std::string &dataset_name, const std::vector<std::string> &dataset_files,
+                                 const std::string &file_name) {
   if (dataset_files.empty()) {
     std::string err_msg = dataset_name + ": dataset_files is not specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   for (auto f : dataset_files) {
     Path dataset_file(f);
     if (!dataset_file.Exists()) {
-      std::string err_msg = dataset_name + ": dataset file: [" + f + "] is invalid or does not exist.";
-      MS_LOG(ERROR) << err_msg;
-
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = dataset_name + ": " + file_name + ": [" + f + "] is invalid or does not exist.";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
     if (access(dataset_file.ToString().c_str(), R_OK) == -1) {
-      std::string err_msg = dataset_name + ": No access to specified dataset file: " + f;
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = dataset_name + ": No access to specified " + file_name + ": " + f;
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
 
@@ -126,16 +120,14 @@ Status ValidateDatasetFilesParam(const std::string &dataset_name, const std::vec
 Status ValidateDatasetShardParams(const std::string &dataset_name, int32_t num_shards, int32_t shard_id) {
   if (num_shards <= 0) {
     std::string err_msg = dataset_name + ": Invalid num_shards: " + std::to_string(num_shards);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   if (shard_id < 0 || shard_id >= num_shards) {
     // num_shards
     std::string err_msg = dataset_name + ": Invalid input, shard_id: " + std::to_string(shard_id) +
                           ", num_shards: " + std::to_string(num_shards);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -145,8 +137,7 @@ Status ValidateDatasetShardParams(const std::string &dataset_name, int32_t num_s
 Status ValidateDatasetSampler(const std::string &dataset_name, const std::shared_ptr<SamplerObj> &sampler) {
   if (sampler == nullptr) {
     std::string err_msg = dataset_name + ": Sampler is not constructed correctly, sampler: nullptr";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   RETURN_IF_NOT_OK(sampler->ValidateParams());
   return Status::OK();
@@ -159,8 +150,7 @@ Status ValidateStringValue(const std::string &dataset_name, const std::string &s
     std::string mode = std::accumulate(valid_strings.begin(), valid_strings.end(), init,
                                        [](std::string a, std::string b) { return std::move(a) + " " + std::move(b); });
     std::string err_msg = dataset_name + ": " + str + " does not match any mode in [" + mode + " ]";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -169,26 +159,47 @@ Status ValidateStringValue(const std::string &dataset_name, const std::string &s
 Status ValidateDatasetColumnParam(const std::string &dataset_name, const std::string &column_param,
                                   const std::vector<std::string> &columns) {
   if (columns.empty()) {
-    std::string err_msg = dataset_name + ":" + column_param + " should not be empty string";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = dataset_name + ": '" + column_param + "' should not be empty string";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   for (uint32_t i = 0; i < columns.size(); ++i) {
     if (columns[i].empty()) {
-      std::string err_msg = dataset_name + ":" + column_param + "[" + std::to_string(i) + "] must not be empty";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = dataset_name + ": '" + column_param + "' [" + std::to_string(i) + "] must not be empty";
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   std::set<std::string> columns_set;
   for (auto &column_name : columns) {
     auto result = columns_set.insert(column_name);
     if (result.second == false) {
-      std::string err_msg = dataset_name + ":" + column_param +
-                            ": Invalid parameter, duplicate column names are not allowed: " + *result.first;
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      std::string err_msg = dataset_name + ": '" + column_param +
+                            "' : Invalid parameter, duplicate column names are not allowed: " + *result.first;
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
+  }
+  return Status::OK();
+}
+
+Status ValidateMapKey(const std::string &dataset_name, const std::string &key,
+                      const std::map<std::string, std::vector<std::string>> &map) {
+  if (map.find(key) == map.end()) {
+    std::string init;
+    std::string mode = std::accumulate(map.begin(), map.end(), init,
+                                       [](std::string a, auto b) { return std::move(a) + " " + std::move(b.first); });
+    std::string err_msg = dataset_name + ": " + key + " does not match any key in [" + mode + " ]";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
+  }
+  return Status::OK();
+}
+
+Status ValidateMapValue(const std::string &dataset_name, const std::string &str,
+                        const std::vector<std::string> &valid_strings) {
+  if (find(valid_strings.begin(), valid_strings.end(), str) == valid_strings.end()) {
+    std::string init;
+    std::string mode = std::accumulate(valid_strings.begin(), valid_strings.end(), init,
+                                       [](std::string a, std::string b) { return std::move(a) + " " + std::move(b); });
+    std::string err_msg = dataset_name + ": " + str + " does not match any string in [" + mode + " ]";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -606,7 +617,7 @@ Status DatasetNode::GetShardId(int32_t *const shard_id) {
     // always be in front of the child_ structure, so we get the dataset size from the last child.
     return children_.back()->GetShardId(shard_id);
   } else {
-    RETURN_STATUS_SYNTAX_ERROR("Get Shard Id failed at source node: " + Name() + "\n");
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR("Get Shard Id failed at source node: " + Name() + "\n");
   }
 }
 

@@ -23,36 +23,36 @@
 // Basic function
 template <typename T>
 struct GreaterFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs > rhs ? true : false; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs > rhs; }
 };
 
 template <typename T>
 struct LessFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs < rhs ? true : false; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs < rhs; }
 };
 
 template <typename T>
 struct EqualFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs == rhs ? true : false; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs == rhs; }
 };
 
 template <>
 struct EqualFunc<half> {
   __device__ __host__ __forceinline__ bool operator()(const half &lhs, const half &rhs) {
-    return std::abs(__half2float(lhs) - __half2float(rhs)) < 1e-9 ? true : false;
+    return std::abs(__half2float(lhs) - __half2float(rhs)) < 1e-9;
   }
 };
 
 template <>
 struct EqualFunc<float> {
   __device__ __host__ __forceinline__ bool operator()(const float &lhs, const float &rhs) {
-    return std::abs(lhs - rhs) < 1e-9 ? true : false;
+    return std::abs(lhs - rhs) < 1e-9;
   }
 };
 
 template <typename T>
 struct GreaterEqualFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs >= rhs ? true : false; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs >= rhs; }
 };
 
 template <>
@@ -60,20 +60,20 @@ struct GreaterEqualFunc<half> {
   __device__ __host__ __forceinline__ bool operator()(const half &lhs, const half &rhs) {
     return std::abs(__half2float(lhs) - __half2float(rhs)) < 1e-9
              ? true
-             : (__half2float(lhs) > __half2float(rhs) ? true : false);
+             : (__half2float(lhs) > __half2float(rhs));
   }
 };
 
 template <>
 struct GreaterEqualFunc<float> {
   __device__ __host__ __forceinline__ bool operator()(const float &lhs, const float &rhs) {
-    return std::abs(lhs - rhs) < 1e-9 ? true : (lhs > rhs ? true : false);
+    return std::abs(lhs - rhs) < 1e-9 ? true : (lhs > rhs);
   }
 };
 
 template <typename T>
 struct LessEqualFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs <= rhs ? true : false; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs <= rhs; }
 };
 
 template <>
@@ -81,33 +81,33 @@ struct LessEqualFunc<half> {
   __device__ __host__ __forceinline__ bool operator()(const half &lhs, const half &rhs) {
     return std::abs(__half2float(lhs) - __half2float(rhs)) < 1e-9
              ? true
-             : (__half2float(lhs) < __half2float(rhs) ? true : false);
+             : (__half2float(lhs) < __half2float(rhs));
   }
 };
 
 template <>
 struct LessEqualFunc<float> {
   __device__ __host__ __forceinline__ bool operator()(const float &lhs, const float &rhs) {
-    return std::abs(lhs - rhs) < 1e-9 ? true : (lhs < rhs ? true : false);
+    return lhs <= rhs;
   }
 };
 
 template <typename T>
 struct NotEqualFunc {
-  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs == rhs ? false : true; }
+  __device__ __host__ __forceinline__ bool operator()(const T &lhs, const T &rhs) { return lhs != rhs; }
 };
 
 template <>
 struct NotEqualFunc<half> {
   __device__ __host__ __forceinline__ bool operator()(const half &lhs, const half &rhs) {
-    return std::abs(__half2float(lhs) - __half2float(rhs)) < 1e-9 ? false : true;
+    return std::abs(__half2float(lhs) - __half2float(rhs)) >= 1e-9;
   }
 };
 
 template <>
 struct NotEqualFunc<float> {
   __device__ __host__ __forceinline__ bool operator()(const float &lhs, const float &rhs) {
-    return std::abs(lhs - rhs) < 1e-9 ? false : true;
+    return std::abs(lhs - rhs) >= 1e-9;
   }
 };
 
@@ -162,6 +162,11 @@ struct RealDivFunc {
   __device__ __host__ __forceinline__ Complex<T> operator()(const Complex<T> &lhs, const Complex<T> &rhs) {
     return (lhs / rhs);
   }
+};
+
+template <typename T>
+struct ComplexFunc {
+  __device__ __host__ __forceinline__ Complex<T> operator()(const T &lhs, const T &rhs) { return Complex<T>(lhs, rhs); }
 };
 
 template <typename T>
@@ -667,6 +672,15 @@ void ElewiseArithComplexKernel(const int &nums, enum BroadcastOpType op, const T
 }
 
 template <typename T>
+void ElewiseArithComplexKernel(const int &nums, enum BroadcastOpType op, const T *x0, const T *x1, Complex<T> *y,
+                               cudaStream_t stream) {
+  if (op == BROADCAST_TYPE_COMPLEX) {
+    return ElewiseArithComplexKernel<T, T, T, ComplexFunc<T>>
+      <<<(nums + 255) / 256, 256, 0, stream>>>(nums, x0, x1, y);
+  }
+}
+
+template <typename T>
 void ElewiseArith(const int &nums, enum BroadcastOpType op, const T *x0, const T *x1, T *y, cudaStream_t stream) {
   return ElewiseArithKernel(nums, op, x0, x1, y, stream);
 }
@@ -725,6 +739,11 @@ template void ElewiseComplexArith(const int &nums, enum BroadcastOpType op, cons
                                   Complex<double> *y, cudaStream_t stream);
 template void ElewiseComplexArith(const int &nums, enum BroadcastOpType op, const double *x0, const Complex<double> *x1,
                                   Complex<double> *y, cudaStream_t stream);
+template void ElewiseComplexArith(const int &nums, enum BroadcastOpType op, const float *x0, const float *x1,
+                                  Complex<float> *y, cudaStream_t stream);
+template void ElewiseComplexArith(const int &nums, enum BroadcastOpType op, const double *x0, const double *x1,
+                                  Complex<double> *y, cudaStream_t stream);
+
 // Broadcast comparison
 __device__ __forceinline__ size_t Index(const size_t &index, const size_t &dim) { return dim == 1 ? 0 : index; }
 
@@ -1062,6 +1081,22 @@ void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const std::vector
   }
 }
 
+template <typename T>
+void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const std::vector<size_t> &x1_dims,
+                         const std::vector<size_t> &y_dims, enum BroadcastOpType op, const T *x0, const T *x1,
+                         Complex<T> *y, cudaStream_t stream) {
+  size_t size = 1;
+  for (auto d : y_dims) {
+    size *= d;
+  }
+  if (op == BROADCAST_TYPE_COMPLEX) {
+    return BroadcastComplexArithKernel<T, T, T, ComplexFunc<T>><<<(size + 255) / 256, 256, 0, stream>>>(
+      x0_dims[0], x0_dims[1], x0_dims[2], x0_dims[3], x0_dims[4], x0_dims[5], x0_dims[6], x1_dims[0], x1_dims[1],
+      x1_dims[2], x1_dims[3], x1_dims[4], x1_dims[5], x1_dims[6], y_dims[0], y_dims[1], y_dims[2], y_dims[3], y_dims[4],
+      y_dims[5], y_dims[6], x0, x1, y);
+  }
+}
+
 template void BroadcastArith(const std::vector<size_t> &x0_dims, const std::vector<size_t> &x1_dims,
                              const std::vector<size_t> &y_dims, enum BroadcastOpType op, const double *x0,
                              const double *x1, double *y, cudaStream_t stream);
@@ -1119,6 +1154,12 @@ template void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const st
 template void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const std::vector<size_t> &x1_dims,
                                     const std::vector<size_t> &y_dims, enum BroadcastOpType op, const double *x0,
                                     const Complex<double> *x1, Complex<double> *y, cudaStream_t stream);
+template void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const std::vector<size_t> &x1_dims,
+                                    const std::vector<size_t> &y_dims, enum BroadcastOpType op, const double *x0,
+                                    const double *x1, Complex<double> *y, cudaStream_t stream);
+template void BroadcastComplexArith(const std::vector<size_t> &x0_dims, const std::vector<size_t> &x1_dims,
+                                    const std::vector<size_t> &y_dims, enum BroadcastOpType op, const float *x0,
+                                    const float *x1, Complex<float> *y, cudaStream_t stream);
 
 // BroadcastTo
 template <typename T>

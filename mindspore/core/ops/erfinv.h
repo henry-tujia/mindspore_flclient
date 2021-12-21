@@ -25,16 +25,18 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameErfinv = "Erfinv";
+/// \brief Computes the inverse error function of input. Refer to Python API @ref mindspore.ops.Erfinv for more details.
 class Erfinv : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Erfinv() : PrimitiveC(kNameErfinv) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~Erfinv() = default;
   MS_DECLARE_PARENT(Erfinv, PrimitiveC);
 };
 
 AbstractBasePtr ErfinvInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                             const std::vector<AbstractBasePtr> &input_args);
-using PrimErfinvPtr = std::shared_ptr<Erfinv>;
 }  // namespace ops
 }  // namespace mindspore
 

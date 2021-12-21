@@ -22,6 +22,7 @@
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/loss_with_reduction_impl.cuh"
+#include "backend/kernel_compiler/common_utils.h"
 
 namespace mindspore {
 namespace kernel {
@@ -37,6 +38,9 @@ class NLLLossGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input_device = GetDeviceAddress<T>(inputs, 0);
     int32_t *target_device = GetDeviceAddress<int32_t>(inputs, 1);  // nll_loss only supports int32 target
     S *weight_device = GetDeviceAddress<S>(inputs, 2);
@@ -44,7 +48,9 @@ class NLLLossGpuKernel : public GpuKernel {
     T *loss_device = GetDeviceAddress<T>(outputs, 0);
     S *total_weight_device = GetDeviceAddress<S>(outputs, 1);
 
-    T *tmp_loss_device = GetPossiblyNullDeviceAddress<T>(workspace, 0);
+    T *tmp_loss_device = reduction_ != ReductionMode::kNone ? GetDeviceAddress<T>(workspace, 0)
+                                                            : GetPossiblyNullDeviceAddress<T>(workspace, 0);
+
     S *tmp_target_weight_device = GetDeviceAddress<S>(workspace, 1);
 
     NLLLoss(n_, c_, reduction_, input_device, target_device, weight_device, loss_device, total_weight_device,
@@ -53,26 +59,27 @@ class NLLLossGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     std::vector<size_t> input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "logits");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
+    if (input_shape.size() < 2) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of logits cannot be less than 2, but "
+                        << "got the " << input_shape.size();
+    }
     n_ = static_cast<int>(input_shape[0]);
     c_ = static_cast<int>(input_shape[1]);
     for (size_t i = 0; i < input_shape.size(); i++) {
       input_size_ *= input_shape[i];
     }
     string reduction = GetAttr<string>(kernel_node, "reduction");
-
-    // if reduction is not 'none', tmp_nll is (N,) size
-    if (reduction == "none") {
-      reduction_ = 0;
-    } else if (reduction == "sum") {
-      reduction_ = 2;
-      tmp_loss_size_ = sizeof(T) * n_;
-    } else {
-      // reduction = 'mean'
-      reduction_ = 1;
+    reduction_ = kReductionModeMap[reduction];
+    if ((reduction_ == ReductionMode::kSum) || (reduction_ == ReductionMode::kMean)) {
       tmp_loss_size_ = sizeof(T) * n_;
     }
-
     tmp_target_weight_size_ = n_ * sizeof(S);
 
     InitSizeLists();
@@ -83,7 +90,8 @@ class NLLLossGpuKernel : public GpuKernel {
     input_size_ = 1;
     n_ = 0;
     c_ = 0;
-    reduction_ = 1;  // default value
+    is_null_input_ = false;
+    reduction_ = ReductionMode::kMean;  // default value
     tmp_loss_size_ = 0;
     tmp_target_weight_size_ = 0;  // tmp_target_weight (N,) array
     input_size_list_.clear();
@@ -97,7 +105,7 @@ class NLLLossGpuKernel : public GpuKernel {
     input_size_list_.push_back(n_ * sizeof(int32_t));     // target tensor with shape (N)
     input_size_list_.push_back(c_ * sizeof(S));           // weight tensor with shape (C)
 
-    if (reduction_ == 0) {
+    if (reduction_ == ReductionMode::kNone) {
       output_size_list_.push_back(n_ * sizeof(T));  // loss output of shape (N,)
     } else {
       output_size_list_.push_back(sizeof(T));  // scalar loss output
@@ -109,11 +117,12 @@ class NLLLossGpuKernel : public GpuKernel {
 
  private:
   size_t input_size_;
-  int reduction_;
+  ReductionMode reduction_;
   size_t tmp_loss_size_;
   size_t tmp_target_weight_size_;
   int n_;
   int c_;
+  bool is_null_input_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

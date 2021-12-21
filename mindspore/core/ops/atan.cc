@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,28 +14,53 @@
  * limitations under the License.
  */
 
+#include <string>
+#include <algorithm>
+#include <map>
 #include <set>
+#include <vector>
 
 #include "ops/atan.h"
+#include "ops/op_utils.h"
+#include "utils/check_convert_utils.h"
+#include "abstract/primitive_infer_map.h"
 
 namespace mindspore {
 namespace ops {
+namespace {
+abstract::ShapePtr AtanInferShape(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &input_args) {
+  MS_EXCEPTION_IF_NULL(primitive);
+  auto prim_name = primitive->name();
+  (void)CheckAndConvertUtils::CheckArgs<abstract::AbstractTensor>(prim_name, input_args, 0);
+  auto x = input_args[0]->BuildShape();
+  MS_EXCEPTION_IF_NULL(x);
+  const int64_t max_dim = 8;
+  auto in_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->BuildShape())[kShape];
+  (void)CheckAndConvertUtils::CheckInteger("The dimension of Atan input", SizeToLong(in_shape.size()), kLessThan,
+                                           max_dim, prim_name);
+  auto shape_element = x->cast<abstract::ShapePtr>();
+  MS_EXCEPTION_IF_NULL(shape_element);
+  return shape_element;
+}
+TypePtr AtanInferType(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &input_args) {
+  MS_EXCEPTION_IF_NULL(primitive);
+  auto prim_name = primitive->name();
+  MS_EXCEPTION_IF_NULL(input_args[0]);
+  auto x_type = input_args[0]->BuildType();
+  const std::set valid_types = {kFloat16, kFloat32, kFloat64};
+  (void)CheckAndConvertUtils::CheckTensorTypeValid("input_x", x_type, valid_types, prim_name);
+  return x_type;
+}
+}  // namespace
 AbstractBasePtr AtanInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                           const std::vector<AbstractBasePtr> &input_args) {
   MS_EXCEPTION_IF_NULL(primitive);
-  auto prim_name = primitive->name();
-  (void)CheckAndConvertUtils::CheckInteger("Atan_infer", SizeToLong(input_args.size()), kEqual, 1, prim_name);
-
-  // Infer Shape
-  auto x_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->BuildShape())[kShape];
-  auto infer_shape = std::make_shared<abstract::Shape>(x_shape);
-
-  // Infer Type
-  auto dtype = input_args[0]->BuildType();
-  const std::set<TypePtr> valid_types = {kFloat16, kFloat32, kInt32};
-  auto element = CheckAndConvertUtils::CheckTensorTypeValid("x_dtype", dtype, valid_types, prim_name);
-  return std::make_shared<abstract::AbstractTensor>(element, infer_shape->shape());
+  const int64_t input_num = 1;
+  CheckAndConvertUtils::CheckInputArgs(input_args, kEqual, input_num, primitive->name());
+  auto type = AtanInferType(primitive, input_args);
+  auto shape = AtanInferShape(primitive, input_args);
+  return abstract::MakeAbstract(shape, type);
 }
-REGISTER_PRIMITIVE_C(kNameAtan, Atan);
+REGISTER_PRIMITIVE_EVAL_IMPL(Atan, prim::kPrimAtan, AtanInfer, nullptr, true);
 }  // namespace ops
 }  // namespace mindspore

@@ -45,6 +45,7 @@ class OptimizeIRPassLib {
   SubstitutionPtr tuple_list_get_set_item_eliminator_;
   SubstitutionPtr tuple_list_get_item_depend_reorder_;
   SubstitutionPtr tuple_list_convert_item_index_to_positive_;
+  SubstitutionPtr make_slice_get_slice_eliminator_;
 
   SubstitutionPtr tile_eliminate_;
   SubstitutionPtr cast_eliminate_;
@@ -61,6 +62,7 @@ class OptimizeIRPassLib {
   SubstitutionPtr virtual_add_elim_;
   SubstitutionPtr mini_step_allgather_replace_;
   SubstitutionPtr micro_step_allgather_replace_;
+  SubstitutionPtr real_op_eliminate_;
 
   // Env Item Eliminate
   SubstitutionPtr env_get_item_eliminate_;
@@ -167,7 +169,7 @@ class ResolveIRPassLib {
  public:
   ResolveIRPassLib();
   ~ResolveIRPassLib() = default;
-  SubstitutionPtr resolver_getattr_resolve_;
+  SubstitutionPtr resolver_;
 };
 
 class InferenceOptPrepareLib {

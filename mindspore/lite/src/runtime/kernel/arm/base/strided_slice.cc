@@ -31,7 +31,7 @@ constexpr int kNumInputSize = 2;
 constexpr int kNumOutputSize = 1;
 }  // namespace
 namespace mindspore::kernel {
-int StridedSliceCPUKernel::Init() {
+int StridedSliceCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), kNumInputSize);
   CHECK_LESS_RETURN(out_tensors_.size(), kNumOutputSize);
   CHECK_NULL_RETURN(in_tensors_[0]);
@@ -179,9 +179,6 @@ int StridedSliceCPUKernel::FastRun() {
   CHECK_NULL_RETURN(input_ptr_);
   output_ptr_ = reinterpret_cast<uint8_t *>(out_tensors_.front()->data());
   CHECK_NULL_RETURN(output_ptr_);
-  if (input_ptr_ == nullptr || output_ptr_ == nullptr) {
-    return RET_NULL_PTR;
-  }
   auto ret = ParallelLaunch(this->ms_context_, StrideRun, this, op_parameter_->thread_num_);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Stride run error error_code[" << ret << "]";

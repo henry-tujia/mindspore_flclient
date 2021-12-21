@@ -22,7 +22,8 @@
 #include <memory>
 #include <utility>
 #include <algorithm>
-#include <unordered_map>
+#include <map>
+#include "utils/hash_map.h"
 #include "runtime/framework/control_node_parser.h"
 #include "runtime/framework/device_tensor_store.h"
 #include "runtime/framework/actor/actor_common.h"
@@ -40,15 +41,15 @@ using mindspore::tensor::TensorPtr;
 // The output actor is used to receive the output result of actor which represents the graph output.
 class OutputActor : public AbstractActor {
  public:
-  OutputActor(std::string name, size_t loop_count, size_t outputs_num, bool need_loop_count)
+  OutputActor(std::string name, size_t loop_count, size_t outputs_num)
       : AbstractActor(name, KernelTransformType::kOutputActor, nullptr),
         loop_count_(loop_count),
         current_count_(0),
         outputs_num_(outputs_num),
-        current_outputs_num_(0),
-        need_loop_count_(need_loop_count) {
+        current_outputs_num_(0) {
     outputs_.resize(outputs_num);
     output_nodes_.resize(outputs_num);
+    output_device_tensors_.resize(outputs_num);
     device_contexts_.resize(outputs_num);
   }
   ~OutputActor() override = default;
@@ -56,20 +57,25 @@ class OutputActor : public AbstractActor {
   void Init() override;
 
   // The output actor collects loop count when receive the input control of loop count actor.
-  void CollectLoopCount(size_t loop_count, OpContext<DeviceTensor> *const context);
+  void RunOpControl(AID *const input_control, OpContext<DeviceTensor> *const context) override;
 
   // The output actor collects output result when receive the data of actor.
-  void CollectOutput(const AnfNodePtr &output_node, size_t output_index, size_t output_position,
-                     OpContext<DeviceTensor> *const context);
+  void RunOpData(OpData<DeviceTensor> *const input_data, OpContext<DeviceTensor> *const context) override;
 
   // The graph output need be set new device address every step or loop, to avoid that the device address
   // context of tensor be rewritten in the next step or next loop.
   void UpdateOutputDeviceAddress();
 
+  // Get the member.
+  size_t loop_count() const { return loop_count_; }
+  size_t outputs_num() const { return outputs_num_; }
   std::vector<TensorPtr> &outputs() { return outputs_; }
 
  private:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
+
+  TensorPtr CreateOutputTensor(const AnfNodePtr &output_node, size_t output_index, size_t output_position);
 
   // The loop count is constant, the current count is increased after each step running finished.
   // Collect the output result in the last loop which is represented by "loop_count_ - current_count_ == 1".
@@ -79,9 +85,11 @@ class OutputActor : public AbstractActor {
   // The outputs.
   std::vector<TensorPtr> outputs_;
   std::vector<KernelWithIndex> output_nodes_;
+  std::vector<DeviceTensor *> output_device_tensors_;
   size_t outputs_num_;
   size_t current_outputs_num_;
-  bool need_loop_count_;
+
+  std::map<KernelWithIndex, DeviceTensorPtr> output_node_to_tensor_device_address_;
 };
 
 using OutputActorPtr = std::shared_ptr<OutputActor>;

@@ -25,16 +25,20 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameNeighborExchange = "NeighborExchange";
+/// \brief NeighborExchange sends data from the local rank to ranks in the send_rank_ids.
+/// Refer to Python API @ref mindspore.ops.NeighborExchange for more details.
 class MS_CORE_API NeighborExchange : public PrimitiveC {
  public:
+  /// \brief Constructor.
   NeighborExchange() : PrimitiveC(kNameNeighborExchange) {}
+  /// \brief Destructor.
   ~NeighborExchange() = default;
   MS_DECLARE_PARENT(NeighborExchange, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.NeighborExchange for the inputs.
   void Init() {}
 };
 AbstractBasePtr NeighborExchangeInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                       const std::vector<AbstractBasePtr> &input_args);
-using PrimNeighborExchangePtr = std::shared_ptr<NeighborExchange>;
 }  // namespace ops
 }  // namespace mindspore
 

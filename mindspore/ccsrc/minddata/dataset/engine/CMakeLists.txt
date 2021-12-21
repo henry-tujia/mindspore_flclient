@@ -27,6 +27,7 @@ set(SRC_FILES_LIST
         consumers/pull_based_tree_consumer.cc
         consumers/tree_consumer.cc
         serdes.cc
+        tree_modifier.cc
         )
 if(ENABLE_PYTHON)
     set(SRC_FILES_LIST
@@ -42,13 +43,14 @@ if(ENABLE_PYTHON)
     target_include_directories(engine PRIVATE ${pybind11_INCLUDE_DIRS})
 endif()
 
-add_dependencies(engine engine-datasetops
-                    engine-datasetops-source
-                    engine-opt
-                    engine-gnn
-                    engine-cache-client
-                    engine-datasetops-mapop
-                    )
+add_dependencies(engine
+    engine-datasetops
+    engine-datasetops-source
+    engine-opt
+    engine-gnn
+    engine-cache-client
+    engine-datasetops-mapop
+    )
 
 if(NOT ENABLE_SECURITY)
     add_dependencies(engine engine-perf)

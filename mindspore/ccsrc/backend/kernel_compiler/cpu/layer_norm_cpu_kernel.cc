@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "backend/kernel_compiler/cpu/layer_norm_cpu_kernel.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "runtime/device/cpu/cpu_device_address.h"
@@ -20,8 +21,14 @@
 
 namespace mindspore {
 namespace kernel {
+namespace {
+constexpr size_t kLayerNormInputsNum = 3;
+constexpr size_t kLayerNormOutputsNum = 3;
+}  // namespace
+
 void LayerNormCPUKernel::InitKernel(const CNodePtr &kernel_node) {
-  CheckParam(kernel_node);
+  MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   dtype_ = AnfAlgo::GetInputDeviceDataType(kernel_node, 0);
   std::vector<size_t> x_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
   auto begin_norm_axis = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, "begin_norm_axis");
@@ -42,18 +49,22 @@ void LayerNormCPUKernel::InitKernel(const CNodePtr &kernel_node) {
     param_num_ *= x_shape[i];
   }
   if (block_num_ == 0 || block_size_ == 0) {
-    MS_LOG(EXCEPTION) << "LayerNormCPUKernel input shape error, input shape: " << x_shape;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of 'input_x' should be at least 1, but got "
+                      << Vector2Str(x_shape);
   }
 }
 
 bool LayerNormCPUKernel::Launch(const std::vector<kernel::AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &,
                                 const std::vector<kernel::AddressPtr> &outputs) {
+  CHECK_KERNEL_INPUTS_NUM(inputs.size(), kLayerNormInputsNum, kernel_name_);
+  CHECK_KERNEL_OUTPUTS_NUM(outputs.size(), kLayerNormOutputsNum, kernel_name_);
   if (dtype_ == kNumberTypeFloat16) {
     LaunchKernel<float16>(inputs, outputs);
   } else if (dtype_ == kNumberTypeFloat32 || dtype_ == kNumberTypeFloat64) {
     LaunchKernel<float>(inputs, outputs);
   } else {
-    MS_LOG(EXCEPTION) << "Input dtype only support float16, float32, float64!";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the dtype of 'input_x' should be float16, float32, or float64, but got " << dtype_;
   }
   return true;
 }
@@ -62,10 +73,10 @@ template <typename T>
 void LayerNormCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) {
   size_t f_size = sizeof(T);
   if (inputs[1]->size != f_size * param_num_ || inputs[2]->size != f_size * param_num_) {
-    MS_LOG(EXCEPTION) << "The product of gamma and beta's shape must be " << param_num_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the product of gamma and beta's shape must be " << param_num_;
   }
   if (outputs[1]->size != f_size * block_num_ || outputs[2]->size != f_size * block_num_) {
-    MS_LOG(EXCEPTION) << "The product of mean and var's shape must be " << block_num_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the product of mean and var's shape must be " << block_num_;
   }
   auto x = reinterpret_cast<T *>(inputs[0]->addr);
   auto gamma = reinterpret_cast<T *>(inputs[1]->addr);
@@ -110,17 +121,6 @@ void LayerNormCPUKernel::LaunchKernel(const std::vector<AddressPtr> &inputs, con
     (void)tasks.emplace_back(block);
   }
   (void)common::ThreadPool::GetInstance().SyncRun(tasks);
-}
-
-void LayerNormCPUKernel::CheckParam(const CNodePtr &kernel_node) {
-  size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
-  if (input_num != 3) {
-    MS_LOG(EXCEPTION) << "LayerNormCPUKernel needs 3 inputs, but gets " << input_num;
-  }
-  size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
-  if (output_num != 3) {
-    MS_LOG(EXCEPTION) << "LayerNormCPUKernel expects 3 output, but gets" << output_num;
-  }
 }
 }  // namespace kernel
 }  // namespace mindspore

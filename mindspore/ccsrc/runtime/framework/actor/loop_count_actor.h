@@ -20,9 +20,9 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include <unordered_map>
 #include <map>
 #include <utility>
+#include "utils/hash_map.h"
 #include "runtime/framework/actor/actor_common.h"
 #include "runtime/framework/actor/debug_aware_actor.h"
 #include "runtime/framework/device_tensor_store.h"
@@ -43,22 +43,26 @@ class LoopCountActor : public DebugAwareActor {
 
   ~LoopCountActor() override = default;
 
-  // The loop count actor run when receive the input control.
-  void RunOpControl(AID *const input_control, OpContext<DeviceTensor> *const context) override;
-
   // The callback waits for the memory manager actor to finish all the message processing.
   void OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) override;
 
   // The debug related operation interface.
   void SendDebugReq(OpContext<DeviceTensor> *const context) override;
-  // The callback after debug finished.
-  void OnDebugFinish(OpContext<DeviceTensor> *const context) override;
+
+  // Get the member.
+  size_t loop_count() const { return loop_count_; }
+  const AID &data_prepare_aid() const { return data_prepare_aid_; }
+  const std::vector<AID> &entrance_aids() const { return entrance_aids_; }
+
+ protected:
+  void Run(OpContext<DeviceTensor> *const context) override;
+  void SendOutput(OpContext<DeviceTensor> *const context) override;
 
  private:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
 
   void IncreaseLoopCount(OpContext<DeviceTensor> *const context);
-  void SendOutput(OpContext<DeviceTensor> *const context);
 
   // The loop count is constant, the current count is increased after each step running finished.
   size_t loop_count_;
@@ -66,9 +70,9 @@ class LoopCountActor : public DebugAwareActor {
   // The total running count represents the toal step running count.
   size_t total_running_count_;
 
-  // The output controls contain the data prepare actor and output actor.
+  // The actors which need be handled separately by loop count actor.
   AID data_prepare_aid_;
-  AID output_aid_;
+  std::vector<AID> entrance_aids_;
 };
 
 using LoopCountActorPtr = std::shared_ptr<LoopCountActor>;

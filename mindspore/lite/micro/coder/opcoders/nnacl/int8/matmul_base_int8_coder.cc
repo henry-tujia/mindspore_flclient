@@ -179,12 +179,16 @@ int MatMulBaseInt8Coder::DoCode(CoderContext *const context) {
             "nnacl/common_func.h",
             "nnacl/int8/common_func_int8.h",
             "nnacl/int8/matmul_int8.h",
+            "nnacl/int8/fixed_point.h",
+            "nnacl/int8/relux_int8.h",
             "wrapper/int8/matmul_int8_wrapper.h",
           },
           {
             "common_func.c",
             "common_func_int8.c",
             "matmul_int8.c",
+            "fixed_point.c",
+            "relux_int8.c",
             "matmul_int8_wrapper.c",
           });
   std::string value_str_end = ";\n";
@@ -221,7 +225,7 @@ int MatMulBaseInt8Coder::DoCode(CoderContext *const context) {
   for (int i = 0; i < param_->batch; i++) {
     std::string current_src_a = a_ptr_str + "+" + std::to_string(i * param_->row_ * param_->deep_);
     if (param_->a_transpose_) {
-      code.CodeFunction("RowMajor2Col16x4MajorInt8", current_src_a, param_->deep_, param_->row_, pack_a_ptr_);
+      code.CodeFunction("RowMajor2Col16x4MajorInt8", current_src_a, pack_a_ptr_, param_->deep_, param_->row_);
       code.CodeFunction("CalcInputSums", current_src_a, param_->row_, param_->deep_, "tmp_weight_zp", input_sums_,
                         ColMajor);
     } else {

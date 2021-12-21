@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@
 #include <utility>
 #include <string>
 #include <memory>
-#include <unordered_map>
 #include <map>
 #include <mutex>
+#include <unordered_map>
 
 #include "pybind11/pybind11.h"
 
@@ -72,11 +72,10 @@ class GraphExecutorPy : public std::enable_shared_from_this<GraphExecutorPy> {
   ~GraphExecutorPy();
 
   const std::string &phase() const { return phase_; }
+  const std::map<std::string, std::string> &jit_config() const { return jit_config_; }
   void SaveCompiledGraph(const std::string &phase);
-  bool CompileInner(const py::object &source_obj, const py::tuple &args, const py::object &phase_obj, bool use_vm,
-                    const std::string &queue_name);
-  bool Compile(const py::object &source_obj, const py::tuple &args, const py::object &phase_obj, bool use_vm,
-               const std::string &queue_name);
+  bool CompileInner(const py::object &source_obj, const py::tuple &args, const py::object &phase_obj, bool use_vm);
+  bool Compile(const py::object &source_obj, const py::tuple &args, const py::object &phase_obj, bool use_vm);
 
   void ProcessVmArg(const py::tuple &args, const std::string &phase, VectorRef *arg_list);
 
@@ -87,6 +86,10 @@ class GraphExecutorPy : public std::enable_shared_from_this<GraphExecutorPy> {
   FuncGraphPtr GetGradGraph(const std::string &phase);
   void SetGradGraph(const FuncGraphPtr &grad_graph, const std::string &phase);
   py::bytes GetFuncGraphProto(const std::string &phase, const std::string &type);
+#ifndef ENABLE_SECURITY
+  py::bytes GetOptimizeGraphProto(const std::string &phase);
+#endif
+  void SetJitConfig(const py::dict &jit_config);
   compile::VmEvalFuncPtr GetVmEvalFunc(const std::string &phase);
   bool HasCompiled(const std::string &phase) const;
 
@@ -104,12 +107,21 @@ class GraphExecutorPy : public std::enable_shared_from_this<GraphExecutorPy> {
   size_t GetNumOpsInfo(const std::string &phase);
   void SetNumOpsInfo(size_t);
   py::dict GetAllreduceFusion(const std::string &phase);
-  void DelNetRes(const std::string &id);
+  void DelNetRes(const py::set &id);
   void ReleaseResource(const py::object &phase_obj);
   static void ClearRes();
+  void set_queue_name(const std::string &queue_name) { queue_name_ = queue_name; }
+  void set_enable_tuple_broaden(bool enable_tuple_broaden) { enable_tuple_broaden_ = enable_tuple_broaden; }
+  void set_compile_cache_dep_files(const py::list &compile_cache_dep_files) {
+    compile_cache_dep_files_ = compile_cache_dep_files;
+  }
+  void set_weights_values(const py::dict &weights) { weights_ = weights; }
 #ifdef ENABLE_DEBUGGER
   static bool GetDebugTerminate() { return debugger_terminate_; }
-  static void DebugTerminate(bool val) { debugger_terminate_ = val; }
+  static void DebugTerminate(bool val, bool exit_success) {
+    debugger_terminate_ = val;
+    exit_success_ = exit_success;
+  }
   void TerminateDebugger();
 #endif
 
@@ -131,16 +143,25 @@ class GraphExecutorPy : public std::enable_shared_from_this<GraphExecutorPy> {
   static std::mutex instance_lock_;
 #ifdef ENABLE_DEBUGGER
   static bool debugger_terminate_;
+  static bool exit_success_;
 #endif
   std::map<std::string, py::dict> stra_dict_;
   std::string phase_ = "";
+  std::map<std::string, std::string> jit_config_;
   std::map<std::string, size_t> phase_to_num_op_info_;
+  std::string queue_name_;
+  bool enable_tuple_broaden_{false};
+  py::list compile_cache_dep_files_;
+  py::dict weights_;
 };
 using GraphExecutorPyPtr = std::shared_ptr<GraphExecutorPy>;
 
+std::string GetJitLevel();
+
 void CheckArgsValid(const py::tuple &args);
 // Generate a key for mapping function graph
-py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object> &args);
+py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object> &args,
+                                bool enable_tuple_broaden = false);
 py::bool_ VerifyInputSignature(const py::list &input_signature, const py::tuple &inputs);
 
 bool InitDistribute(const std::map<std::string, std::string> &options);

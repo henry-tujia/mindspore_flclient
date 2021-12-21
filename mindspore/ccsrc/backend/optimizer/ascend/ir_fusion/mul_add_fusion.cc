@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "frontend/optimizer/opt.h"
 #include "backend/optimizer/common/helper.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
@@ -72,10 +71,6 @@ const AnfNodePtr MulAddFusion::Process(const FuncGraphPtr &graph, const AnfNodeP
     return nullptr;
   }
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::MulAddFusion)) {
-    return node;
-  }
-
   CNodePtr mul = nullptr;
   size_t mul_index = 0;
   if (!GetMul(graph, add, &mul, &mul_index) || mul == nullptr || mul_index == 0) {
@@ -95,7 +90,7 @@ const AnfNodePtr MulAddFusion::Process(const FuncGraphPtr &graph, const AnfNodeP
     return nullptr;
   }
   inputs.push_back(another_input_node);
-  auto fusion_node = graph->NewCNode(inputs);
+  auto fusion_node = NewCNode(inputs, graph);
   fusion_node->set_scope(add->scope());
   fusion_node->set_abstract(add->abstract());
   return fusion_node;

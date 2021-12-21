@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +25,6 @@
 #include <utility>
 #include <deque>
 #include <algorithm>
-#ifdef OFFLINE_DBG_MODE
-#include "debugger/offline_debug/offline_logger.h"
-#endif
 #include "debug/tensor_data.h"
 #ifdef ONLINE_DBG_MODE
 #include "debug/data_dump/dump_json_parser.h"
@@ -35,7 +32,11 @@ namespace mindspore {
 #endif
 class TensorLoader {
  public:
+#ifndef __APPLE__
   TensorLoader() : iter_num_(-1), mem_total_(0), mem_usage_(0) {}
+#else
+  TensorLoader() : mem_total_(0), mem_usage_(0) {}
+#endif
 
   ~TensorLoader() { EmptyTensor(); }
 
@@ -93,12 +94,8 @@ class TensorLoader {
     key_name += (":" + std::to_string(tensor->GetDeviceId()) + ":" + std::to_string(tensor->GetRootGraphId()) + ":" +
                  std::to_string(tensor->GetIsOutput()) + ":" + std::to_string(tensor->GetSlot()));
     if (tensor_list_map_.find(key_name) != tensor_list_map_.end() &&
-        tensor->GetIteration() == tensor_list_map_[key_name]->GetIteration() - 1) {
+        tensor->GetIteration() == tensor_list_map_[key_name]->GetPrevIteration()) {
       key_name += ":prev";
-    }
-    auto iter = tensor_list_map_.find(key_name);
-    if (iter != tensor_list_map_.end()) {
-      iter->second->DeleteDataPtr();
     }
 #endif
     tensor_list_map_[key_name] = tensor;  // use [] instead of insert to ensure latest value
@@ -119,10 +116,6 @@ class TensorLoader {
     if (iter != tensor_list_map_.end()) return iter->second;
     return nullptr;
   }
-
-  uint32_t GetIterNum() const { return iter_num_; }
-
-  std::map<std::string, std::shared_ptr<TensorData>> GetTensorMap() { return tensor_list_map_; }
 
   std::shared_ptr<TensorData> GetPrevTensor(const std::string &tensor_name) {
     if (tensor_list_map_.find(tensor_name + ":prev") != tensor_list_map_.end()) {
@@ -151,8 +144,6 @@ class TensorLoader {
   }
 
   void EmptyCurrentTensor() { tensor_list_map_.clear(); }
-
-  void set_iter_num(uint32_t iter_num) { this->iter_num_ = iter_num; }
 
   bool EnableMemoryControl() { return mem_total_ > 0; }
 
@@ -185,13 +176,18 @@ class TensorLoader {
       // wait until there is any not-in-use candidate to be evicted from cache
       evict_cond.wait(lk, [&] { return !cache_evict_queue_.empty(); });
       candidate_name = cache_evict_queue_.front();
-      candidates_size = tensor_list_map_[candidate_name]->GetByteSize();
+      cache_evict_queue_.pop_front();
       // evict candidate tensor
       lock_.lock();
-      tensor_list_map_[candidate_name]->DeleteDataPtr();
+      auto tensor = GetTensor(candidate_name);
+      if (tensor == nullptr) {
+        MS_LOG(INFO) << "Tensor: " << candidate_name << " has already been evicted.";
+        lock_.unlock();
+        continue;
+      }
+      candidates_size = tensor->GetByteSize();
       tensor_list_map_.erase(candidate_name);
       lock_.unlock();
-      cache_evict_queue_.pop_front();
       mem_usage_ = std::max(uint64_t(0), mem_usage_ - candidates_size);
       MS_LOG(INFO) << "Evict tensor: " << candidate_name;
     }
@@ -228,7 +224,7 @@ class TensorLoader {
       return DumpJsonParser::DumpToFile(path, node->GetDataPtr(), host_size, host_shape, host_type);
     }
     MS_LOG(INFO) << "Tensor name:" << tensor_name << " not found in tensor_list_map_";
-    return true;
+    return false;
   }
 #endif
 
@@ -236,7 +232,9 @@ class TensorLoader {
   // the pair is (device_id, iteration)
   std::map<std::string, std::shared_ptr<TensorData>> tensor_list_map_;
   std::map<std::string, std::shared_ptr<TensorData>> prev_tensor_list_map_;
+#ifndef __APPLE__
   uint32_t iter_num_;
+#endif
   std::mutex lock_;
   std::mutex mem_lock_;
   uint64_t mem_total_;

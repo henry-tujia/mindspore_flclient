@@ -83,7 +83,7 @@ void CreateMultyModel1(mindspore::schema::MetaGraphT *meta_graph) {
 
   /* tensors */
   auto tensor0 = std::make_unique<mindspore::schema::TensorT>();
-  tensor0->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor0->nodeType = mindspore::lite::NodeType_Parameter;
   tensor0->format = mindspore::schema::Format_NHWC;
   tensor0->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor0->dims = {1, 1, 1, 1};
@@ -91,7 +91,7 @@ void CreateMultyModel1(mindspore::schema::MetaGraphT *meta_graph) {
   tensor0->name = "tensor0";
 
   auto tensor1 = std::make_unique<mindspore::schema::TensorT>();
-  tensor1->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor1->nodeType = mindspore::lite::NodeType_Parameter;
   tensor1->format = mindspore::schema::Format_NHWC;
   tensor1->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor1->dims = {1, 1, 1, 1};
@@ -99,7 +99,7 @@ void CreateMultyModel1(mindspore::schema::MetaGraphT *meta_graph) {
   tensor1->name = "tensor1";
 
   auto tensor2 = std::make_unique<mindspore::schema::TensorT>();
-  tensor2->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor2->nodeType = mindspore::lite::NodeType_Parameter;
   tensor2->format = mindspore::schema::Format_NHWC;
   tensor2->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor2->dims = {1, 1, 1, 1};
@@ -107,7 +107,7 @@ void CreateMultyModel1(mindspore::schema::MetaGraphT *meta_graph) {
   tensor2->name = "tensor2";
 
   auto tensor3 = std::make_unique<mindspore::schema::TensorT>();
-  tensor3->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor3->nodeType = mindspore::lite::NodeType_Parameter;
   tensor3->format = mindspore::schema::Format_NHWC;
   tensor3->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor3->dims = {1, 1, 1, 1};
@@ -115,7 +115,7 @@ void CreateMultyModel1(mindspore::schema::MetaGraphT *meta_graph) {
   tensor3->name = "tensor3";
 
   auto tensor4 = std::make_unique<mindspore::schema::TensorT>();
-  tensor4->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor4->nodeType = mindspore::lite::NodeType_Parameter;
   tensor4->format = mindspore::schema::Format_NHWC;
   tensor4->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor4->dims = {1, 1, 1, 1};
@@ -187,7 +187,7 @@ void CreateMultyModel2(mindspore::schema::MetaGraphT *meta_graph) {
 
   /* tensors */
   auto tensor0 = std::make_unique<mindspore::schema::TensorT>();
-  tensor0->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor0->nodeType = mindspore::lite::NodeType_Parameter;
   tensor0->format = mindspore::schema::Format_NHWC;
   tensor0->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor0->dims = {1, 2, 2, 1};
@@ -195,7 +195,7 @@ void CreateMultyModel2(mindspore::schema::MetaGraphT *meta_graph) {
   tensor0->name = "tensor0";
 
   auto tensor1 = std::make_unique<mindspore::schema::TensorT>();
-  tensor1->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor1->nodeType = mindspore::lite::NodeType_Parameter;
   tensor1->format = mindspore::schema::Format_NHWC;
   tensor1->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor1->dims = {1, 2, 2, 1};
@@ -203,7 +203,7 @@ void CreateMultyModel2(mindspore::schema::MetaGraphT *meta_graph) {
   tensor1->name = "tensor1";
 
   auto tensor2 = std::make_unique<mindspore::schema::TensorT>();
-  tensor2->nodeType = mindspore::lite::NodeType_ValueNode;
+  tensor2->nodeType = mindspore::lite::NodeType_Parameter;
   tensor2->format = mindspore::schema::Format_NHWC;
   tensor2->dataType = mindspore::TypeId::kNumberTypeFloat32;
   tensor2->dims = {1, 2, 2, 1};
@@ -227,7 +227,7 @@ void CheckResult(std::vector<mindspore::kernel::LiteKernel *> kernels, int mode)
    *          cos     exp   where   sin
    * CPU       *       *      *      *
    * GPU       *       *             *
-   * NPU       *                     *
+   * NPU       *       *             *
    *
    * */
 
@@ -240,12 +240,12 @@ void CheckResult(std::vector<mindspore::kernel::LiteKernel *> kernels, int mode)
 
   } else if (mode == NPU_CPU) {
     ASSERT_EQ(3, kernels.size());
-    /* NPU : cos */
+    /* NPU : cos exp */
     auto subgraph0 = kernels.at(0);
     ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kDelegate, subgraph0->desc().arch);
-    /* CPU : exp where */
+    /* CPU : where */
     auto subgraph1 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(1));
-    ASSERT_EQ(2, subgraph1->nodes().size());
+    ASSERT_EQ(1, subgraph1->nodes().size());
     ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kCPU, subgraph1->desc().arch);
     /* NPU : sin */
     auto subgraph2 = kernels.at(2);
@@ -269,33 +269,25 @@ void CheckResult(std::vector<mindspore::kernel::LiteKernel *> kernels, int mode)
 
   } else if (mode == NPU_GPU_CPU) {
     /* NPU > GPU >  CPU */
-    ASSERT_EQ(4, kernels.size());
-    /* NPU : cos */
-    auto subgraph0 = kernels.at(0);
-    ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kDelegate, subgraph0->desc().arch);
-    /* GPU : to_format exp to_format */
-    auto subgraph1 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(1));
-    ASSERT_EQ(3, subgraph1->nodes().size());
-    ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kGPU, subgraph1->desc().arch);
+    ASSERT_EQ(3, kernels.size());
+    /* NPU : cos exp */
+    auto subgraph1 = kernels.at(0);
+    ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kDelegate, subgraph1->desc().arch);
     /* CPU : where */
-    auto subgraph2 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(2));
+    auto subgraph2 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(1));
     ASSERT_EQ(1, subgraph2->nodes().size());
     ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kCPU, subgraph2->desc().arch);
     /* NPU : sin */
-    auto subgraph3 = kernels.at(3);
+    auto subgraph3 = kernels.at(2);
     ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kDelegate, subgraph3->desc().arch);
   } else if (mode == NPU2) {
     /* NPU > GPU */
-    ASSERT_EQ(2, kernels.size());
-    /* NPU : cos */
+    ASSERT_EQ(1, kernels.size());
+    /* NPU : cos exp */
     auto subgraph0 = kernels.at(0);
     ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kDelegate, subgraph0->desc().arch);
-    /* GPU : to_format exp to_format */
-    auto subgraph1 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(1));
-    ASSERT_EQ(3, subgraph1->nodes().size());
-    ASSERT_EQ(mindspore::kernel::KERNEL_ARCH::kGPU, subgraph1->desc().arch);
   } else if (mode == GPU_NPU2) {
-    /* NPU > GPU */
+    /* GPU > NPU */
     ASSERT_EQ(1, kernels.size());
     /* GPU : to_format cos exp to_format */
     auto subgraph1 = reinterpret_cast<mindspore::kernel::SubGraphKernel *>(kernels.at(0));
@@ -371,7 +363,7 @@ TEST_F(MultipleDeviceTest, NewApi1) {
   context->MutableDeviceInfo().push_back(std::make_shared<mindspore::GPUDeviceInfo>());
 
   mindspore::Model *model = new mindspore::Model();
-  auto ret = model->Build(content, size, mindspore::kFlatBuffer, context);
+  auto ret = model->Build(content, size, mindspore::kMindIR_Opt, context);
   ASSERT_EQ(false, ret.IsOk());
 
   delete model;
@@ -383,13 +375,11 @@ TEST_F(MultipleDeviceTest, NewApi2) {
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::CPUDeviceInfo>());
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::GPUDeviceInfo>());
 
-  mindspore::lite::InnerContext inner_context;
-  mindspore::A2L_ConvertContext(&context, &inner_context);
-
-  ASSERT_EQ(inner_context.device_list_.size(), 3);
-  ASSERT_EQ(inner_context.device_list_.at(0).device_type_, mindspore::lite::DT_NPU);
-  ASSERT_EQ(inner_context.device_list_.at(1).device_type_, mindspore::lite::DT_CPU);
-  ASSERT_EQ(inner_context.device_list_.at(2).device_type_, mindspore::lite::DT_GPU);
+  auto inner_context = std::shared_ptr<mindspore::lite::InnerContext>(mindspore::ContextUtils::Convert(&context));
+  ASSERT_EQ(inner_context->device_list_.size(), 3);
+  ASSERT_EQ(inner_context->device_list_.at(0).device_type_, mindspore::lite::DT_NPU);
+  ASSERT_EQ(inner_context->device_list_.at(1).device_type_, mindspore::lite::DT_CPU);
+  ASSERT_EQ(inner_context->device_list_.at(2).device_type_, mindspore::lite::DT_GPU);
 }
 
 TEST_F(MultipleDeviceTest, NewApi3) {
@@ -397,12 +387,10 @@ TEST_F(MultipleDeviceTest, NewApi3) {
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::CPUDeviceInfo>());
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::KirinNPUDeviceInfo>());
 
-  mindspore::lite::InnerContext inner_context;
-  mindspore::A2L_ConvertContext(&context, &inner_context);
-
-  ASSERT_EQ(inner_context.device_list_.size(), 2);
-  ASSERT_EQ(inner_context.device_list_.at(0).device_type_, mindspore::lite::DT_CPU);
-  ASSERT_EQ(inner_context.device_list_.at(1).device_type_, mindspore::lite::DT_NPU);
+  auto inner_context = std::shared_ptr<mindspore::lite::InnerContext>(mindspore::ContextUtils::Convert(&context));
+  ASSERT_EQ(inner_context->device_list_.size(), 2);
+  ASSERT_EQ(inner_context->device_list_.at(0).device_type_, mindspore::lite::DT_CPU);
+  ASSERT_EQ(inner_context->device_list_.at(1).device_type_, mindspore::lite::DT_NPU);
 }
 
 TEST_F(MultipleDeviceTest, NewApi4) {
@@ -410,12 +398,10 @@ TEST_F(MultipleDeviceTest, NewApi4) {
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::GPUDeviceInfo>());
   context.MutableDeviceInfo().push_back(std::make_shared<mindspore::CPUDeviceInfo>());
 
-  mindspore::lite::InnerContext inner_context;
-  mindspore::A2L_ConvertContext(&context, &inner_context);
-
-  ASSERT_EQ(inner_context.device_list_.size(), 2);
-  ASSERT_EQ(inner_context.device_list_.at(0).device_type_, mindspore::lite::DT_GPU);
-  ASSERT_EQ(inner_context.device_list_.at(1).device_type_, mindspore::lite::DT_CPU);
+  auto inner_context = std::shared_ptr<mindspore::lite::InnerContext>(mindspore::ContextUtils::Convert(&context));
+  ASSERT_EQ(inner_context->device_list_.size(), 2);
+  ASSERT_EQ(inner_context->device_list_.at(0).device_type_, mindspore::lite::DT_GPU);
+  ASSERT_EQ(inner_context->device_list_.at(1).device_type_, mindspore::lite::DT_CPU);
 }
 
 TEST_F(MultipleDeviceTest, NewApi5) {
@@ -436,7 +422,7 @@ TEST_F(MultipleDeviceTest, NewApi5) {
   context->MutableDeviceInfo().push_back(std::make_shared<mindspore::CPUDeviceInfo>());
 
   auto model_impl = std::make_shared<mindspore::ModelImpl>();
-  auto ret = model_impl->Build(content, size, mindspore::kFlatBuffer, context);
+  auto ret = model_impl->Build(content, size, mindspore::kMindIR_Opt, context);
   ASSERT_EQ(mindspore::kSuccess, ret.StatusCode());
 
   CheckResult(reinterpret_cast<const mindspore::lite::LiteSession *>(model_impl->GetSession())->get_kernels(),
@@ -481,7 +467,7 @@ TEST_F(MultipleDeviceTest, NewApi6) {
   context->MutableDeviceInfo().push_back(std::make_shared<mindspore::GPUDeviceInfo>());
 
   auto model_impl = std::make_shared<mindspore::ModelImpl>();
-  auto ret = model_impl->Build(content, size, mindspore::kFlatBuffer, context);
+  auto ret = model_impl->Build(content, size, mindspore::kMindIR_Opt, context);
   ASSERT_EQ(mindspore::kSuccess, ret.StatusCode());
 
   CheckResult(reinterpret_cast<const mindspore::lite::LiteSession *>(model_impl->GetSession())->get_kernels(),
@@ -525,7 +511,7 @@ TEST_F(MultipleDeviceTest, NewApi7) {
   context->MutableDeviceInfo().push_back(std::make_shared<mindspore::GPUDeviceInfo>());
 
   auto model_impl = std::make_shared<mindspore::ModelImpl>();
-  auto ret = model_impl->Build(content, size, mindspore::kFlatBuffer, context);
+  auto ret = model_impl->Build(content, size, mindspore::kMindIR_Opt, context);
   ASSERT_EQ(mindspore::kSuccess, ret.StatusCode());
 
   CheckResult(reinterpret_cast<const mindspore::lite::LiteSession *>(model_impl->GetSession())->get_kernels(),
@@ -550,7 +536,7 @@ TEST_F(MultipleDeviceTest, NewApi8) {
   context->MutableDeviceInfo().push_back(std::make_shared<mindspore::KirinNPUDeviceInfo>());
 
   auto model_impl = std::make_shared<mindspore::ModelImpl>();
-  auto ret = model_impl->Build(content, size, mindspore::kFlatBuffer, context);
+  auto ret = model_impl->Build(content, size, mindspore::kMindIR_Opt, context);
   ASSERT_EQ(mindspore::kSuccess, ret.StatusCode());
 
   CheckResult(reinterpret_cast<const mindspore::lite::LiteSession *>(model_impl->GetSession())->get_kernels(),

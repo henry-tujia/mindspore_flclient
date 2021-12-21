@@ -17,39 +17,12 @@
 #include "tools/converter/quantizer/weight_quantizer.h"
 #include <list>
 #include <string>
-#include <vector>
 #include <utility>
-#include <unordered_map>
+#include <set>
 #include "tools/optimizer/common/gllo_utils.h"
-#include "tools/converter/preprocess/image_preprocess.h"
-
-using std::string;
-using std::vector;
+#include "src/common/log_util.h"
 
 namespace mindspore::lite::quant {
-WeightQuantizer::WeightQuantizer(FuncGraphPtr graph, const converter::Flags &config) : Quantizer(std::move(graph)) {
-  auto quant_size = config.commonQuantParam.min_quant_weight_size;
-  this->bit_num_ = config.commonQuantParam.bit_num;
-  if (this->bit_num_ == 0) {
-    type_id_ = kNumberTypeInt16;
-    this->is_mixed_bit_ = true;
-  }
-  quant_strategy_ = std::make_unique<QuantStrategy>(quant_size, config.commonQuantParam.min_quant_weight_channel);
-  // parse param for fixed bit quant.
-  if (!this->is_mixed_bit_) {
-    quant_max_ = (1 << (unsigned int)(this->bit_num_ - 1)) - 1;
-    quant_min_ = -(1 << (unsigned int)(this->bit_num_ - 1));
-    // parse type_id_
-    if (this->bit_num_ > 0 && this->bit_num_ <= kMaxBit) {
-      type_id_ = kNumberTypeInt8;
-    } else if (this->bit_num_ <= (kMaxBit * 2)) {
-      type_id_ = kNumberTypeInt16;
-    } else {
-      MS_LOG(ERROR) << "invalid input bits";
-    }
-  }
-}
-
 WeightQuantizer::~WeightQuantizer() {
   for (const auto &fp32_output_tensor : fp32_output_tensors_) {
     for (const auto &kv : fp32_output_tensor) {
@@ -58,261 +31,78 @@ WeightQuantizer::~WeightQuantizer() {
   }
 }
 
-STATUS WeightQuantizer::SetAbstract(const tensor::TensorPtr &tensor_info, const ParameterPtr &param_node,
-                                    const PrimitivePtr &primitive) {
-  MS_CHECK_TRUE_MSG(tensor_info != nullptr, RET_NULL_PTR, "tensor_info is nullptr.");
-  MS_CHECK_TRUE_MSG(param_node != nullptr, RET_NULL_PTR, "param_node is nullptr.");
-  MS_CHECK_TRUE_MSG(primitive != nullptr, RET_NULL_PTR, "primitive is nullptr.");
-
-  // set dtype
-  tensor_info->set_data_type(type_id_);
-  auto abstract_base = param_node->abstract();
-  if (abstract_base == nullptr) {
-    MS_LOG(ERROR) << "Abstract of parameter is nullptr, " << param_node->name();
-    return RET_ERROR;
-  }
-  if (!utils::isa<abstract::AbstractTensorPtr>(abstract_base)) {
-    MS_LOG(ERROR) << "Abstract of parameter should be anstract tensor, " << param_node->name();
-    return RET_ERROR;
-  }
-  auto abstract_tensor = utils::cast<abstract::AbstractTensorPtr>(abstract_base);
-  MS_ASSERT(abstract_tensor != nullptr);
-  abstract_tensor->element()->set_type(TypeIdToType(type_id_));
-  auto quant_param_holder = GetCNodeQuantHolder(primitive);
-  quant_param_holder->set_quant_type(schema::QuantType_QUANT_WEIGHT);
-
-  weight_quantized_tensors_.insert({tensor_info, param_node});
-  return RET_OK;
-}
-
-STATUS WeightQuantizer::DoConvQuantize(const CNodePtr &cnode) {
+int WeightQuantizer::DoWeightQuantize(const FuncGraphPtr &func_graph, const CNodePtr &cnode) {
+  CHECK_NULL_RETURN(cnode);
   auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
-  if (primitive == nullptr) {
-    MS_LOG(ERROR) << "primitive is nullptr";
-    return RET_ERROR;
+  CHECK_NULL_RETURN(primitive);
+  WeightQuantType weight_quant_type = WeightQuantType::FIXED_BIT_PER_CHANNEL;
+  auto manager = api::FuncGraphManager::Manage(func_graph, true);
+  CHECK_NULL_RETURN(manager);
+  std::set<PrimitivePtr> per_layer_primitive_types = {prim::kPrimAdam, prim::kPrimSGD, prim::kPrimApplyMomentum};
+  if (CheckNodeInSet(cnode, per_layer_primitive_types)) {
+    weight_quant_type = WeightQuantType::FIXED_BIT_PER_LAYER;
   }
-
-  auto input_node = cnode->input(2);
-  if (!input_node->isa<Parameter>()) {
-    return RET_ERROR;
-  }
-
-  ParameterPtr param_node;
-  tensor::TensorPtr tensor_info;
-
-  GetLiteParameter(input_node, &param_node, &tensor_info);
-  if (param_node == nullptr || tensor_info == nullptr) {
-    MS_LOG(ERROR) << "GetLiteParameter error";
-    return RET_ERROR;
-  }
-
-  if (tensor_info->data_type() != mindspore::kNumberTypeFloat32) {
-    MS_LOG(WARNING) << cnode->fullname_with_scope() << " weight data type is not fp32 but " << tensor_info->data_type();
-    return RET_OK;
-  }
-  auto status = RET_ERROR;
-  if (is_mixed_bit_) {
-    type_id_ = kNumberTypeInt16;
-    status = MixedBitQuantFilter(tensor_info, primitive, QuantType_WeightQuant, WeightQuantType::MIXED_BIT_PER_LAYER,
-                                 type_id_, flags.mixedBitWeightQuantParam.init_scale, 1);
-  } else if (type_id_ == kNumberTypeInt8) {
-    status = FixedBitQuantFilter<int8_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                         bit_num_, WeightQuantType::FIXED_BIT_PER_CHANNEL, type_id_);
-  } else if (type_id_ == kNumberTypeInt16) {
-    status = FixedBitQuantFilter<int16_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                          bit_num_, WeightQuantType::FIXED_BIT_PER_CHANNEL, type_id_);
-  }
-  if (status == RET_CONTINUE) {
-    return RET_OK;
-  } else if (status != RET_OK) {
-    MS_LOG(ERROR) << "MixedBitQuantFilter failed : " << status;
-    return status;
-  }
-  status = SetAbstract(tensor_info, param_node, primitive);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "SetAbstract failed : " << status;
-    return RET_ERROR;
-  }
-  return RET_OK;
-}
-
-STATUS WeightQuantizer::DoMulQuantize(const CNodePtr &cnode) {
-  MS_ASSERT(cnode != nullptr);
-  for (size_t i = 1; i < cnode->size(); i++) {
-    auto inputNode = cnode->input(i);
-    if (inputNode->isa<Parameter>()) {
-      auto param_node = inputNode->cast<ParameterPtr>();
-      if ((param_node != nullptr) && param_node->has_default()) {
-        auto tensor_info = std::static_pointer_cast<tensor::Tensor>(param_node->default_param());
-        if ((tensor_info != nullptr) && (tensor_info->data_type() == mindspore::kNumberTypeFloat32) &&
-            (tensor_info->Size() > 0) && (tensor_info->data_c() != nullptr)) {
-          auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
-          if (primitive == nullptr) {
-            MS_LOG(ERROR) << "primitive is nullptr";
-            return RET_ERROR;
-          }
-
-          auto status = RET_ERROR;
-          auto weight_quant_type = WeightQuantType::FIXED_BIT_PER_CHANNEL;
-          if (i == 3) {
-            weight_quant_type = WeightQuantType::FIXED_BIT_PER_LAYER;
-          }
-          if (is_mixed_bit_) {
-            status =
-              MixedBitQuantFilter(tensor_info, primitive, QuantType_WeightQuant, WeightQuantType::MIXED_BIT_PER_LAYER,
-                                  type_id_, flags.mixedBitWeightQuantParam.init_scale, i - 1);
-          } else if (type_id_ == kNumberTypeInt8) {
-            status = FixedBitQuantFilter<int8_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                                 bit_num_, weight_quant_type, type_id_, i - 1);
-          } else if (type_id_ == kNumberTypeInt16) {
-            status = FixedBitQuantFilter<int16_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                                  bit_num_, weight_quant_type, type_id_, i - 1);
-          }
-          if (status == RET_CONTINUE) {
-            continue;
-          } else if (status != RET_OK) {
-            MS_LOG(ERROR) << cnode->fullname_with_scope() << " input " << i
-                          << " MixedBitQuantFilter failed : " << status;
-            return status;
-          }
-          status = SetAbstract(tensor_info, param_node, primitive);
-          if (status != RET_OK) {
-            MS_LOG(ERROR) << cnode->fullname_with_scope() << " input " << i << " SetAbstract failed : " << status;
-            return RET_ERROR;
-          }
-        }
-      }
-    }
-  }
-  return RET_OK;
-}
-
-STATUS WeightQuantizer::DoLstmQuantize(const CNodePtr &cnode) {
-  MS_CHECK_FALSE(cnode == nullptr, RET_NULL_PTR);
-  auto op_name = cnode->fullname_with_scope();
-
-  auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
-  MS_CHECK_FALSE(primitive == nullptr, RET_NULL_PTR);
-
-  if (cnode->inputs().size() < 4) {
-    MS_LOG(ERROR) << op_name << " inputs is " << cnode->inputs().size();
-    return RET_ERROR;
-  }
-
-  auto status = ProcessLstmWeightByIndex(cnode, primitive, 2);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "Process lstm weight i failed.";
-    return RET_ERROR;
-  }
-  status = ProcessLstmWeightByIndex(cnode, primitive, 3);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "Process lstm weight h failed.";
-    return RET_ERROR;
-  }
-  if (cnode->inputs().size() > 4) {
-    status = ProcessLstmWeightByIndex(cnode, primitive, 4);
-    if (status != RET_OK) {
-      MS_LOG(ERROR) << "Process lstm bias failed.";
-      return RET_ERROR;
-    }
-  }
-
-  return status;
-}
-
-STATUS WeightQuantizer::DoGatherQuantize(const CNodePtr &cnode) {
-  MS_CHECK_FALSE(cnode == nullptr, RET_NULL_PTR);
-  auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
-  MS_CHECK_FALSE(primitive == nullptr, RET_NULL_PTR);
-  auto first_input = cnode->input(1);
-  ParameterPtr param_node;
-  tensor::TensorPtr tensor_info;
-  GetLiteParameter(first_input, &param_node, &tensor_info);
-  if (param_node == nullptr || tensor_info == nullptr || tensor_info->data_type() != TypeId::kNumberTypeFloat32) {
-    MS_LOG(INFO) << "This Gather op " << cnode->fullname_with_scope() << " can not quant weight";
-    return RET_OK;
-  }
-
-  if (tensor_info->Size() / sizeof(float) < quant_strategy_->m_weight_size_) {
-    MS_LOG(INFO) << cnode->fullname_with_scope() << " param cnt: " << (tensor_info->Size() / sizeof(float)) << " < "
-                 << quant_strategy_->m_weight_size_;
-    return RET_OK;
-  }
-
-  auto status = RET_ERROR;
-  if (is_mixed_bit_) {
-    status = MixedBitQuantFilter(tensor_info, primitive, QuantType_WeightQuant, WeightQuantType::MIXED_BIT_PER_LAYER,
-                                 type_id_, flags.mixedBitWeightQuantParam.init_scale, 0);
-  } else if (type_id_ == kNumberTypeInt8) {
-    status = FixedBitQuantFilter<int8_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                         bit_num_, WeightQuantType::FIXED_BIT_PER_LAYER, type_id_, 0);
-  } else if (type_id_ == kNumberTypeInt16) {
-    status = FixedBitQuantFilter<int16_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                          bit_num_, WeightQuantType::FIXED_BIT_PER_LAYER, type_id_, 0);
-  }
-  if (status == RET_CONTINUE) {
-    return RET_OK;
-  } else if (status != RET_OK) {
-    MS_LOG(ERROR) << "MixedBitQuantFilter failed : " << status;
-    return status;
-  }
-  status = SetAbstract(tensor_info, param_node, primitive);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "SetAbstract failed : " << status;
-    return RET_ERROR;
-  }
-  return RET_OK;
-}
-
-STATUS WeightQuantizer::DoOptimizerQuantize(const CNodePtr &cnode) {
-  MS_CHECK_TRUE_RET(cnode != nullptr, RET_NULL_PTR);
-  auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
-  MS_CHECK_TRUE_RET(primitive != nullptr, RET_NULL_PTR);
-
-  std::vector<int> weight_indices = {2};
+  std::vector<int> weight_indices;
   if (opt::CheckPrimitiveType(cnode, prim::kPrimAdam)) {
     weight_indices = {2, 3};
-  }
-  if (opt::CheckPrimitiveType(cnode, prim::kPrimSGD)) {
+  } else if (opt::CheckPrimitiveType(cnode, prim::kPrimSGD)) {
     weight_indices = {4, 6};
+  } else if (opt::CheckPrimitiveType(cnode, prim::kPrimApplyMomentum)) {
+    weight_indices = {2};
+  } else {
+    for (size_t i = 1; i < cnode->size(); ++i) {
+      weight_indices.push_back(i);
+    }
   }
-
-  for (int idx : weight_indices) {
+  for (auto idx : weight_indices) {
     auto input = cnode->input(idx);
-    if (!quant_strategy_->CanTensorQuantized(input)) {
-      MS_LOG(INFO) << "Input " << idx << "of Optimizer is not quantizable";
+    ParameterPtr parameter;
+    tensor::TensorPtr tensor_info;
+    GetLiteParameter(input, &parameter, &tensor_info);
+    if (parameter == nullptr || tensor_info == nullptr || tensor_info->data_type() != TypeId::kNumberTypeFloat32) {
+      MS_LOG(INFO) << "This op " << cnode->fullname_with_scope() << " can not quant weight";
       continue;
     }
-    ParameterPtr param_node;
-    tensor::TensorPtr tensor_info;
-    GetLiteParameter(input, &param_node, &tensor_info);
-    if (param_node == nullptr || tensor_info == nullptr || tensor_info->data_type() != TypeId::kNumberTypeFloat32) {
-      MS_LOG(INFO) << "This Gather op " << cnode->fullname_with_scope() << " can not quant weight";
-      return RET_OK;
+    int preferred_dim = GetPreferredDim(primitive, idx - 1, ConvertShapeVectorToInt32(tensor_info->shape()));
+    auto quant_strategy = std::make_unique<QuantStrategy>(flags_.commonQuantParam.min_quant_weight_size,
+                                                          flags_.commonQuantParam.min_quant_weight_channel,
+                                                          flags_.commonQuantParam.skip_quant_node);
+    CHECK_NULL_RETURN(quant_strategy);
+    if (!quant_strategy->CanTensorQuantized(cnode, input, preferred_dim)) {
+      MS_LOG(INFO) << input->fullname_with_scope() << " is not quantizable";
+      continue;
     }
-
+    // support for matmul shared weight
+    auto node_map = manager->node_users();
+    auto node_user = node_map[input];
+    auto tmp_weight_quant_type = weight_quant_type;
+    if (node_user.size() > 1 && opt::CheckPrimitiveType(cnode, prim::kPrimMatMul)) {
+      MS_LOG(INFO) << input->fullname_with_scope() << " is shared weight.";
+      tmp_weight_quant_type = WeightQuantType::FIXED_BIT_PER_LAYER;
+    }
     auto status = RET_ERROR;
-    if (type_id_ == kNumberTypeInt8) {
-      status = FixedBitQuantFilter<int8_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                           bit_num_, WeightQuantType::FIXED_BIT_PER_LAYER, type_id_, idx - 1);
+    if (is_mixed_bit_) {
+      status = MixedBitQuantFilter(parameter, tensor_info, primitive, QuantType_QUANT_WEIGHT,
+                                   WeightQuantType::MIXED_BIT_PER_LAYER, type_id_, mixed_bit_init_scale_, idx - 1);
+    } else if (type_id_ == kNumberTypeInt8) {
+      status = FixedBitQuantFilter<int8_t>(parameter, tensor_info, primitive, QuantType_QUANT_WEIGHT, quant_max_,
+                                           quant_min_, bit_num_, tmp_weight_quant_type, type_id_, idx - 1);
     } else if (type_id_ == kNumberTypeInt16) {
-      status = FixedBitQuantFilter<int16_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                            bit_num_, WeightQuantType::FIXED_BIT_PER_LAYER, type_id_, idx - 1);
+      status = FixedBitQuantFilter<int16_t>(parameter, tensor_info, primitive, QuantType_QUANT_WEIGHT, quant_max_,
+                                            quant_min_, bit_num_, tmp_weight_quant_type, type_id_, idx - 1);
     }
-    if (status != RET_OK && status != RET_CONTINUE) {
-      MS_LOG(ERROR) << "MixedBitQuantFilter failed : " << status;
+    if (status == RET_NO_CHANGE) {
+      continue;
+    } else if (status != RET_OK) {
+      MS_LOG(ERROR) << "QuantFilter failed : " << status;
       return status;
     }
-    status = SetAbstract(tensor_info, param_node, primitive);
-    if (status != RET_OK) {
-      MS_LOG(ERROR) << "SetAbstract failed : " << status;
-      return RET_ERROR;
-    }
+    weight_quantized_tensors_.insert(tensor_info);
   }
   return RET_OK;
 }
 
-STATUS WeightQuantizer::DoMarkWeightQuantizeIfQuantized(const CNodePtr &cnode) {
+int WeightQuantizer::DoMarkWeightQuantizeIfQuantized(const CNodePtr &cnode) {
   MS_CHECK_TRUE_RET(cnode != nullptr, RET_NULL_PTR);
   auto primitive = GetValueNode<PrimitivePtr>(cnode->input(0));
   if (primitive == nullptr) {
@@ -342,55 +132,7 @@ STATUS WeightQuantizer::DoMarkWeightQuantizeIfQuantized(const CNodePtr &cnode) {
   return RET_OK;
 }
 
-STATUS WeightQuantizer::ProcessLstmWeightByIndex(const CNodePtr &cnode, const PrimitivePtr &primitive,
-                                                 const int &index) {
-  MS_CHECK_TRUE_RET(cnode != nullptr, RET_NULL_PTR);
-  MS_CHECK_TRUE_RET(primitive != nullptr, RET_NULL_PTR);
-  auto op_name = cnode->fullname_with_scope();
-  auto weight_i = cnode->input(index);
-  ParameterPtr param_node;
-
-  tensor::TensorPtr tensor_info;
-  GetLiteParameter(weight_i, &param_node, &tensor_info);
-  if (param_node == nullptr || tensor_info == nullptr) {
-    MS_LOG(INFO) << "LSTM input index " << index << " is not weight";
-    return RET_OK;
-  }
-  if (tensor_info->data_type() != TypeId::kNumberTypeFloat32) {
-    MS_LOG(WARNING) << "tensor_info tensor type is: " << tensor_info->data_type() << " not quant";
-    return RET_OK;
-  }
-  if (tensor_info->Size() / sizeof(float) < quant_strategy_->m_weight_size_) {
-    MS_LOG(INFO) << op_name << " weight_i cnt: " << (tensor_info->Size() / sizeof(float)) << " < "
-                 << quant_strategy_->m_weight_size_;
-    return RET_OK;
-  }
-  auto status = RET_ERROR;
-  if (is_mixed_bit_) {
-    status = MixedBitQuantFilter(tensor_info, primitive, QuantType_WeightQuant, WeightQuantType::MIXED_BIT_PER_LAYER,
-                                 type_id_, flags.mixedBitWeightQuantParam.init_scale, index - 1);
-  } else if (type_id_ == kNumberTypeInt8) {
-    status = FixedBitQuantFilter<int8_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                         bit_num_, WeightQuantType::FIXED_BIT_PER_CHANNEL, type_id_, index - 1);
-  } else if (type_id_ == kNumberTypeInt16) {
-    status = FixedBitQuantFilter<int16_t>(tensor_info, primitive, QuantType_WeightQuant, quant_max_, quant_min_,
-                                          bit_num_, WeightQuantType::FIXED_BIT_PER_CHANNEL, type_id_, index - 1);
-  }
-  if (status == RET_CONTINUE) {
-    return RET_OK;
-  } else if (status != RET_OK) {
-    MS_LOG(ERROR) << "MixedBitQuantFilter failed : " << status;
-    return status;
-  }
-  status = SetAbstract(tensor_info, param_node, primitive);
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "SetAbstract failed : " << status;
-    return RET_ERROR;
-  }
-  return RET_OK;
-}
-
-STATUS WeightQuantizer::MarkWeightQuantizationInNodes(const FuncGraphPtr &func_graph) {
+int WeightQuantizer::MarkWeightQuantizationInNodes(const FuncGraphPtr &func_graph) {
   MS_CHECK_TRUE_RET(func_graph != nullptr, RET_NULL_PTR);
   for (auto &cnode : func_graph->GetOrderedCnodes()) {
     auto primitive = GetValueNode<std::shared_ptr<ops::PrimitiveC>>(cnode->input(0));
@@ -407,7 +149,8 @@ STATUS WeightQuantizer::MarkWeightQuantizationInNodes(const FuncGraphPtr &func_g
   return RET_OK;
 }
 
-STATUS WeightQuantizer::DoQuantize(FuncGraphPtr func_graph) {
+int WeightQuantizer::DoQuantize(const FuncGraphPtr &func_graph, double init_scale) {
+  mixed_bit_init_scale_ = init_scale;
   MS_CHECK_TRUE_RET(func_graph != nullptr, RET_NULL_PTR);
   weight_quantized_tensors_.clear();
 
@@ -418,36 +161,15 @@ STATUS WeightQuantizer::DoQuantize(FuncGraphPtr func_graph) {
       continue;
     }
     auto op_name = cnode->fullname_with_scope();
-
-    if (quant_strategy_->CanConvOpQuantized(cnode)) {
-      auto status = DoConvQuantize(cnode);
+    std::set<PrimitivePtr> support_primitive_types = {prim::kPrimConv2DFusion, prim::kPrimConv2dTransposeFusion,
+                                                      prim::kPrimMatMul,       prim::kPrimFullConnection,
+                                                      prim::kPrimLstm,         prim::kPrimGather,
+                                                      prim::kPrimAdam,         prim::kPrimSGD,
+                                                      prim::kPrimApplyMomentum};
+    if (CheckNodeInSet(cnode, support_primitive_types)) {
+      auto status = DoWeightQuantize(func_graph, cnode);
       if (status != RET_OK) {
-        MS_LOG(ERROR) << "DoConvQuantize error";
-        return RET_ERROR;
-      }
-    } else if (quant_strategy_->CanMulOpQuantized(cnode)) {
-      auto status = DoMulQuantize(cnode);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "DoMulQuantize error";
-        return RET_ERROR;
-      }
-    } else if (opt::CheckPrimitiveType(cnode, prim::kPrimLstm)) {
-      auto status = DoLstmQuantize(cnode);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "DoLstmQuantize error";
-        return RET_ERROR;
-      }
-    } else if (opt::CheckPrimitiveType(cnode, prim::kPrimGather)) {
-      auto status = DoGatherQuantize(cnode);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "DoGatherQuantize error";
-        return RET_ERROR;
-      }
-    } else if ((opt::CheckPrimitiveType(cnode, prim::kPrimAdam)) || (opt::CheckPrimitiveType(cnode, prim::kPrimSGD)) ||
-               (opt::CheckPrimitiveType(cnode, prim::kPrimApplyMomentum))) {
-      auto status = DoOptimizerQuantize(cnode);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "DoOptimizerQuantize error";
+        MS_LOG(ERROR) << "DoWeightQuantize error";
         return RET_ERROR;
       }
     } else {
@@ -456,4 +178,6 @@ STATUS WeightQuantizer::DoQuantize(FuncGraphPtr func_graph) {
   }
   return MarkWeightQuantizationInNodes(func_graph);
 }
+
+int WeightQuantizer::DoQuantize(FuncGraphPtr func_graph) { return DoQuantize(func_graph, mixed_bit_init_scale_); }
 }  // namespace mindspore::lite::quant

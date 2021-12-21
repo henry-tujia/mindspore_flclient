@@ -17,11 +17,12 @@
 #include "runtime/device/gpu/gpu_device_address.h"
 #include <vector>
 #include <memory>
-#include "runtime/device/gpu/gpu_device_manager.h"
 #include "utils/log_adapter.h"
 #include "utils/ms_context.h"
-#include "runtime/device/gpu/gpu_memory_allocator.h"
 #include "ir/tensor.h"
+#include "runtime/device/gpu/gpu_device_manager.h"
+#include "runtime/device/gpu/gpu_memory_allocator.h"
+#include "runtime/hardware/gpu/gpu_device_context.h"
 #ifdef ENABLE_DEBUGGER
 #include "debug/debug_services.h"
 #include "debug/tensor_load.h"
@@ -82,6 +83,17 @@ bool GPUDeviceAddress::SyncHostToDevice(size_t size, const void *host_ptr) const
     MS_LOG(INFO) << "Sync memory size is inconsistent, host size: " << size << ", device size " << size_;
   }
 
+  // Bind device by device name and device id on the current thread.
+  if (device_name_ != "") {
+    auto device_context =
+      device::DeviceContextManager::GetInstance().GetOrCreateDeviceContext({device_name_, device_id_});
+    auto gpu_device_context = dynamic_cast<GPUDeviceContext *>(device_context);
+    MS_EXCEPTION_IF_NULL(gpu_device_context);
+    if (!gpu_device_context->BindDeviceToCurrentThread()) {
+      MS_LOG(EXCEPTION) << "BindDeviceToCurrentThread failed.";
+    }
+  }
+
   auto &stream = GPUDeviceManager::GetInstance().default_stream();
   MS_EXCEPTION_IF_NULL(stream);
   if (!GPUDeviceManager::GetInstance().CopyHostMemToDeviceAsync(ptr_, host_ptr, size, stream)) {
@@ -129,8 +141,8 @@ GPUDeviceAddress::~GPUDeviceAddress() { ClearDeviceMemory(); }
 
 #ifdef ENABLE_DEBUGGER
 bool GPUDeviceAddress::LoadMemToHost(const std::string &tensor_name, int execution_order, const std::string &host_fmt,
-                                     const ShapeVector &host_shape, TypeId host_type, size_t slot,
-                                     bool keep_prev) const {
+                                     const ShapeVector &host_shape, TypeId host_type, size_t slot, bool keep_prev,
+                                     uint32_t root_graph_id) const {
   bool ret = false;
   if (size_ == 0) {
     return true;
@@ -142,6 +154,10 @@ bool GPUDeviceAddress::LoadMemToHost(const std::string &tensor_name, int executi
     return true;
   }
 
+  if (host_type > TypeId::kNumberTypeEnd || host_type < TypeId::kNumberTypeBegin || host_type == kNumberTypeComplex64) {
+    MS_LOG(INFO) << "Cannot create tensor with type: " << TypeIdLabel(host_type);
+    return false;
+  }
   mindspore::tensor::TensorPtr out_tensor = std::make_shared<tensor::Tensor>(host_type, host_shape);
   size_t host_size = out_tensor->data().nbytes();
   auto ret_rt_memcpy = SyncDeviceToHost(host_shape, host_size, host_type, out_tensor->data_c());
@@ -150,6 +166,7 @@ bool GPUDeviceAddress::LoadMemToHost(const std::string &tensor_name, int executi
     return ret;
   }
   auto tensor_data = std::make_shared<mindspore::TensorData>();
+  MS_EXCEPTION_IF_NULL(tensor_data);
   tensor_data->SetName(tensor_name);
   tensor_data->SetExecutionOrder(execution_order);
   tensor_data->SetSlot(slot);
@@ -158,6 +175,7 @@ bool GPUDeviceAddress::LoadMemToHost(const std::string &tensor_name, int executi
   tensor_data->SetByteSize(out_tensor->data().nbytes());
   tensor_data->SetType((unsigned int)host_type);
   tensor_data->SetShape(out_tensor->shape());
+  tensor_data->SetRootGraphId(root_graph_id);
   ret = Debugger::GetInstance()->LoadNewTensor(tensor_data, keep_prev);
   MS_LOG(INFO) << "E2E tensor name is " << tensor_name;
   return ret;

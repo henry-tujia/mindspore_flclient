@@ -25,7 +25,7 @@ namespace mindspore {
 std::set<mindspore::schema::PrimitiveType> nchw_nodes = {
   schema::PrimitiveType_Conv2DFusion,  schema::PrimitiveType_Conv2dTransposeFusion, schema::PrimitiveType_Resize,
   schema::PrimitiveType_MaxPoolFusion, schema::PrimitiveType_AvgPoolFusion,         schema::PrimitiveType_ScaleFusion,
-  schema::PrimitiveType_CropAndResize};
+  schema::PrimitiveType_CropAndResize, schema::PrimitiveType_InstanceNorm};
 
 int NPUTransformPass::InsertPreNodes(NPUOp *op, std::vector<NPUOp *> *trans_ops) {
   bool is_input_op = op->in_ops().empty();
@@ -36,6 +36,10 @@ int NPUTransformPass::InsertPreNodes(NPUOp *op, std::vector<NPUOp *> *trans_ops)
   if (!is_input_op && it == op->in_ops().end()) {
     MS_LOG(ERROR) << "NPU Transform pass does not find in op with 4d output";
     return RET_ERROR;
+  }
+  if (op->inputs().front().format() == Format::NCHW) {
+    // input format is already NCHW, no need to insert transpose.
+    return RET_OK;
   }
   if (is_input_op || nchw_nodes.find((*it)->type()) == nchw_nodes.end()) {
     NPUOp *pre_op = nullptr;
@@ -58,7 +62,10 @@ int NPUTransformPass::InsertPreNodes(NPUOp *op, std::vector<NPUOp *> *trans_ops)
 
     // Create pre transform op: Nhwc2Nchw
     auto *trans_op = NPUPassUtils::CreateNhwc2NchwOp({op->inputs()[0]}, pre_trans_outputs, name);
-
+    if (trans_op == nullptr) {
+      MS_LOG(ERROR) << "Create Nhwc2Nchw transpose op failed.";
+      return RET_ERROR;
+    }
     trans_ops->push_back(trans_op);
 
     // Set in_ops, out_ops, inputs, outputs for transform op
@@ -115,6 +122,10 @@ int NPUTransformPass::InsertPostNodes(NPUOp *op, std::vector<NPUOp *> *trans_ops
     std::vector<mindspore::MSTensor> nc2nh_outputs{op->outputs().at(0)};
     // Create post transform op: Nchw2Nhwc
     auto *post_trans_op = NPUPassUtils::CreateNchw2NhwcOp({*nc2nh_tensor}, nc2nh_outputs, name);
+    if (post_trans_op == nullptr) {
+      MS_LOG(ERROR) << "Create Nchw2Nhwc transpose op failed.";
+      return RET_ERROR;
+    }
     // Set in_ops, out_ops, inputs, outputs for transform op
     NPUPassUtils::UpdateOp(post_trans_op, {op}, {}, post_trans_op->inputs(), post_trans_op->outputs());
     trans_ops->push_back(post_trans_op);
@@ -140,6 +151,10 @@ int NPUTransformPass::InsertPostNodes(NPUOp *op, std::vector<NPUOp *> *trans_ops
     // Create post transform op: Nchw2Nhwc
     auto *post_trans_op =
       NPUPassUtils::CreateNchw2NhwcOp({*nc2nh_tensor}, nc2nh_outputs, name + "_" + std::to_string(i));
+    if (post_trans_op == nullptr) {
+      MS_LOG(ERROR) << "Create Nchw2Nhwc transpose op failed.";
+      return RET_ERROR;
+    }
     // Set in_ops, out_ops, inputs, outputs for transform op
     NPUPassUtils::UpdateOp(post_trans_op, {op}, {post_insert_op}, post_trans_op->inputs(), post_trans_op->outputs());
     trans_ops->push_back(post_trans_op);
@@ -171,7 +186,7 @@ int NPUTransformPass::Run(NPUGraph *subgraph) {
       i++;
       continue;
     }
-    if (op->type() == schema::PrimitiveType_Resize && op->inputs()[0].Shape()[1] > op->outputs()[0].Shape()[1]) {
+    if (op->type() == schema::PrimitiveType_InstanceNorm && op->inputs().front().format() == mindspore::Format::NCHW) {
       i++;
       continue;
     }

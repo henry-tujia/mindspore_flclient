@@ -1,16 +1,4 @@
 # find exec
-find_package(Python3 COMPONENTS Interpreter)
-if(NOT Python3_FOUND)
-    message(FATAL_ERROR "No python3 found.")
-endif()
-
-set(PYTHON ${Python3_EXECUTABLE})
-set(PYTHON_VERSION ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR})
-
-if(NOT (PYTHON_VERSION MATCHES "3.9" OR PYTHON_VERSION MATCHES "3.8" OR PYTHON_VERSION MATCHES "3.7"))
-    message(FATAL_ERROR "FIND PYTHON VERSION ${PYTHON_VERSION} BUT CAN NOT MATCH PYTHON VERSION 3.9 OR 3.8 OR 3.7")
-endif()
-
 find_package(Git)
 if(NOT GIT_FOUND)
     message("No git found.")
@@ -21,6 +9,13 @@ set(GIT ${GIT_EXECUTABLE})
 # set path
 set(MS_ROOT_DIR ${CPACK_CMAKE_SOURCE_DIR})
 set(MS_PACK_ROOT_DIR ${CPACK_PACK_ROOT_DIR})
+
+set(PYTHON ${CPACK_PYTHON_EXE})
+set(PYTHON_VERSION ${CPACK_PYTHON_VERSION})
+
+if(NOT (PYTHON_VERSION MATCHES "3.9" OR PYTHON_VERSION MATCHES "3.8" OR PYTHON_VERSION MATCHES "3.7"))
+    message(FATAL_ERROR "FIND PYTHON VERSION ${PYTHON_VERSION} BUT CAN NOT MATCH PYTHON VERSION 3.9 OR 3.8 OR 3.7")
+endif()
 
 # set package file name
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -37,16 +32,18 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     string(TOLOWER linux_${CMAKE_HOST_SYSTEM_PROCESSOR} PLATFORM_TAG)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
     if(PYTHON_VERSION MATCHES "3.9")
-        set(PY_TAGS "py39-none")
+        set(PY_TAGS "cp39-cp39")
     elseif(PYTHON_VERSION MATCHES "3.8")
-        set(PY_TAGS "py38-none")
+        set(PY_TAGS "cp38-cp38")
     elseif(PYTHON_VERSION MATCHES "3.7")
-        set(PY_TAGS "py37-none")
+        set(PY_TAGS "cp37-cp37m")
     else()
         message("Could not find 'Python 3.9' OR 'Python 3.8' or 'Python 3.7'")
         return()
     endif()
-    set(PLATFORM_TAG "any")
+    string(REGEX MATCH "[0-9]+.[0-9]+" MACOSX_SDK_VERSION "${CPACK_OSX_DEPLOYMENT_TARGET}")
+    string(REPLACE "." "_" MACOSX_PACKAGE_VERSION "${MACOSX_SDK_VERSION}")
+    string(TOLOWER macosx_${MACOSX_PACKAGE_VERSION}_${CMAKE_HOST_SYSTEM_PROCESSOR} PLATFORM_TAG)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     if(PYTHON_VERSION MATCHES "3.9")
         set(PY_TAGS "cp39-cp39")

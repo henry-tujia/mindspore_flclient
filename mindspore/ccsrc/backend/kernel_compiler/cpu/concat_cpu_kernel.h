@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,10 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_CONCAT_CPU_KERNEL_H_
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_CPU_CONCAT_CPU_KERNEL_H_
+
 #include <vector>
 #include <memory>
+
 #include "backend/kernel_compiler/cpu/cpu_kernel.h"
 #include "backend/kernel_compiler/cpu/cpu_kernel_factory.h"
 
@@ -34,12 +37,11 @@ class ConcatCPUKernel : public CPUKernel {
               const std::vector<AddressPtr> &outputs) override;
 
  private:
-  void CheckParam(const CNodePtr &kernel_node) const;
-  int axis_ = 0;
-  CNodeWeakPtr node_wpt_;
+  int axis_{0};
 };
 
-MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, float);
+MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, float)
+MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, double)
 MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, int8_t)
 MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, int16_t)
 MS_REG_CPU_KERNEL_T(Concat, KernelAttr(), ConcatCPUKernel, int32_t)

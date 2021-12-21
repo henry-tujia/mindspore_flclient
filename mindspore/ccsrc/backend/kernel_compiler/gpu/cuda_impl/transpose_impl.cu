@@ -18,6 +18,10 @@
 
 #include "transpose_impl.cuh"
 #include "runtime/device/gpu/cuda_common.h"
+#include "utils/complex.h"
+
+template <typename T>
+using Complex = mindspore::utils::Complex<T>;
 
 template <typename T>
 __global__ void Transpose(const size_t size, const T *input, const size_t *input_shape, const size_t *input_axis,
@@ -51,14 +55,12 @@ __global__ void Transpose(const size_t size, const T *input, const size_t *input
 
     output[newpos] = input[pos];
   }
-  return;
 }
 template <typename T>
 void CalTranspose(const size_t size, const T *input, const size_t *input_shape, const size_t *input_axis,
                   const size_t shape_size, T *output, cudaStream_t cuda_stream) {
   Transpose<<<GET_BLOCKS(size), GET_THREADS, 0, cuda_stream>>>(size, input, input_shape, input_axis, shape_size,
                                                                output);
-  return;
 }
 
 template void CalTranspose<double>(const size_t size, const double *input, const size_t *input_shape,
@@ -75,4 +77,10 @@ template void CalTranspose<int>(const size_t size, const int *input, const size_
                                 cudaStream_t cuda_stream);
 template void CalTranspose<int64_t>(const size_t size, const int64_t *input, const size_t *input_shape,
                                     const size_t *input_axis, const size_t shape_size, int64_t *output,
+                                    cudaStream_t cuda_stream);
+template void CalTranspose<Complex<float>>(const size_t size, const Complex<float> *input, const size_t *input_shape,
+                                const size_t *input_axis, const size_t shape_size, Complex<float> *output,
+                                cudaStream_t cuda_stream);
+template void CalTranspose<Complex<double>>(const size_t size, const Complex<double> *input, const size_t *input_shape,
+                                    const size_t *input_axis, const size_t shape_size, Complex<double> *output,
                                     cudaStream_t cuda_stream);

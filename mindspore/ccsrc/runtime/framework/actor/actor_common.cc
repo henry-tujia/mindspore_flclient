@@ -20,31 +20,28 @@
 
 namespace mindspore {
 namespace runtime {
-void ComputeThreadNums(size_t *actor_thread_num, size_t *OMP_thread_num, size_t *max_thread_num) {
+bool ActorDispatcher::is_multi_thread_execution_ = true;
+
+void ComputeThreadNums(size_t *actor_thread_num, size_t *actor_and_kernel_thread_num) {
   MS_EXCEPTION_IF_NULL(actor_thread_num);
-  MS_EXCEPTION_IF_NULL(OMP_thread_num);
-  MS_EXCEPTION_IF_NULL(max_thread_num);
-  size_t cpu_core_num = std::thread::hardware_concurrency() - 1;
-  const size_t kMaxThreadNum = 23;
+  MS_EXCEPTION_IF_NULL(actor_and_kernel_thread_num);
+  const size_t cpu_core_num = std::thread::hardware_concurrency() - 1;
+  // Compute the actor thread num.
   const size_t kActorThreadMaxNum = 5;
   // The MemoryManagerActor binds single thread, and the other actors share one thread at least, so the min num is 2.
   const size_t kActorThreadMinNum = 2;
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
-  // The pyNative mode is the step execution strategy, so only need the kActorThreadMinNum.
-  if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
-    *actor_thread_num = kActorThreadMinNum;
-  } else {
-    *actor_thread_num = cpu_core_num < kActorThreadMinNum ? kActorThreadMinNum : cpu_core_num;
-    *actor_thread_num = *actor_thread_num > kActorThreadMaxNum ? kActorThreadMaxNum : *actor_thread_num;
-  }
+  *actor_thread_num = cpu_core_num < kActorThreadMinNum ? kActorThreadMinNum : cpu_core_num;
+  *actor_thread_num = *actor_thread_num > kActorThreadMaxNum ? kActorThreadMaxNum : *actor_thread_num;
 
-  const size_t kOMPThreadMaxNum = 8;
-  *OMP_thread_num = cpu_core_num < kOMPThreadMaxNum ? cpu_core_num : kOMPThreadMaxNum;
-  *max_thread_num = cpu_core_num > *actor_thread_num ? cpu_core_num : (*actor_thread_num + 1);
-  if (*max_thread_num > kMaxThreadNum) {
-    *max_thread_num = kMaxThreadNum;
-  }
+  // Compute the actor and kernel thread num.
+  const size_t kKernelThreadMaxNum = 23;
+  const size_t kActorAndKernelThreadMaxNum = kKernelThreadMaxNum + *actor_thread_num;
+  *actor_and_kernel_thread_num = cpu_core_num > *actor_thread_num ? cpu_core_num : (*actor_thread_num + 1);
+  *actor_and_kernel_thread_num = *actor_and_kernel_thread_num > kActorAndKernelThreadMaxNum
+                                   ? kActorAndKernelThreadMaxNum
+                                   : *actor_and_kernel_thread_num;
 }
 
 bool IsDeviceQueueDSActor(const AnfNodePtr &node, GraphExecutionStrategy strategy) {
@@ -108,7 +105,7 @@ bool IsInternalParameter(const AnfNodePtr &node, const KernelGraphPtr &graph) {
 
 bool IsKernelActor(const AnfNodePtr &node, GraphExecutionStrategy strategy) {
   MS_EXCEPTION_IF_NULL(node);
-  if (!node->isa<CNode>()) {
+  if (!AnfUtils::IsRealCNodeKernel(node)) {
     return false;
   }
 
@@ -138,18 +135,6 @@ bool IsPersistentDeviceTensor(const AnfNodePtr &node) {
   return false;
 }
 
-bool IsGatherActor(const AnfNodePtr &front_node,
-                   const std::unordered_map<std::string, OpActor<DeviceTensor> *> &actor_name_to_actor) {
-  if (front_node->isa<Parameter>() && (!AnfAlgo::IsParameterWeight(front_node->cast<ParameterPtr>())) &&
-      front_node->func_graph() != nullptr) {
-    const auto &func_graph = front_node->func_graph();
-    if (func_graph != nullptr && actor_name_to_actor.find(func_graph->ToString()) != actor_name_to_actor.end()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool Copy(const DeviceTensor *dst_device_tensor, const DeviceTensor *src_device_tensor) {
   MS_EXCEPTION_IF_NULL(dst_device_tensor);
   MS_EXCEPTION_IF_NULL(src_device_tensor);
@@ -167,6 +152,10 @@ bool Copy(const DeviceTensor *dst_device_tensor, const DeviceTensor *src_device_
   } else if (dst_device_tensor->DeviceType() == device::DeviceAddressType::kCPU) {
     // Other device tensor copy to CPU device tensor.
     return src_device_tensor->SyncDeviceToHost(copy_size, dst_device_tensor->GetMutablePtr());
+  } else if (dst_device_tensor->DeviceType() == src_device_tensor->DeviceType()) {
+    return dst_device_tensor->SyncDeviceToDevice(ShapeVector(), src_device_tensor->GetSize(),
+                                                 src_device_tensor->type_id(), src_device_tensor->GetPtr(),
+                                                 src_device_tensor->format());
   } else {
     MS_LOG(ERROR) << "Invalid device type, src device type: " << src_device_tensor->DeviceType()
                   << ", dst device type: " << dst_device_tensor->DeviceType();
@@ -217,6 +206,101 @@ KernelWithIndex FetchFrontNodeWithIndexByGraphOutput(const KernelWithIndex &outp
     front_node_with_index = output_with_index;
   }
   return front_node_with_index;
+}
+
+KernelGraphPtr FetchKernelGraph(const AnfNodePtr &node) {
+  MS_EXCEPTION_IF_NULL(node);
+  const auto &func_graph = node->func_graph();
+  if (func_graph == nullptr) {
+    return nullptr;
+  } else {
+    return func_graph->cast<KernelGraphPtr>();
+  }
+}
+
+KernelTransformType FetchKernelTransformType(const AnfNodePtr &node, const KernelGraphPtr &graph,
+                                             const std::vector<AnfNodePtr> &host_parameters,
+                                             GraphExecutionStrategy strategy) {
+  // Fetch kernel graph.
+  KernelGraphPtr kernel_graph = nullptr;
+  if (graph == nullptr) {
+    kernel_graph = FetchKernelGraph(node);
+  } else {
+    kernel_graph = graph;
+  }
+  if (kernel_graph == nullptr) {
+    return KernelTransformType::kUnknown;
+  }
+
+  // In sink mode, the data exchange between child graphs is expressed as parameters. These parameters are stored
+  // in the graph and should be obtained from the super kernel actor.
+  if (kernel_graph->is_executing_sink() &&
+      ((node == nullptr) || node->isa<CNode>() || kernel_graph->IsChildGraphResult(node))) {
+    return KernelTransformType::kSuperKernelActor;
+  }
+
+  KernelTransformType type = KernelTransformType::kUnknown;
+  MS_EXCEPTION_IF_NULL(node);
+  if (IsDeviceQueueDSActor(node, strategy)) {
+    type = KernelTransformType::kDeviceDataSourceActor;
+  } else if (IsHostQueueDSActor(node, kernel_graph, host_parameters, strategy)) {
+    type = KernelTransformType::kHostDataSourceActor;
+  } else if (IsKernelActor(node, strategy)) {
+    type = KernelTransformType::kKernelActor;
+  } else if (IsInternalParameter(node, kernel_graph)) {
+    type = KernelTransformType::kInternalParameter;
+  } else if (IsPersistentDeviceTensor(node)) {
+    type = KernelTransformType::kDeviceTensorStore;
+  } else {
+    // May exist the from kernel that no need link in the pynative mode.
+    MS_LOG(DEBUG) << "Invalid from kernel: " << node->DebugString();
+  }
+
+  return type;
+}
+
+std::string FetchActorName(KernelTransformType kernel_type, const std::string &actor_set_name, const AnfNodePtr &node,
+                           const KernelGraphPtr &graph) {
+  // Fetch kernel graph.
+  KernelGraphPtr kernel_graph = nullptr;
+  if (graph == nullptr) {
+    kernel_graph = FetchKernelGraph(node);
+  } else {
+    kernel_graph = graph;
+  }
+  if (kernel_graph == nullptr) {
+    return "";
+  }
+
+  std::string actor_name = "";
+  switch (kernel_type) {
+    case KernelTransformType::kSuperKernelActor:
+      actor_name = kernel_graph->ToString() + "_SuperKernelActor";
+      break;
+    case KernelTransformType::kDeviceDataSourceActor:
+      actor_name = actor_set_name + "_DeviceDSActor" + "_" + std::to_string(kernel_graph->graph_id());
+      break;
+    case KernelTransformType::kHostDataSourceActor:
+      actor_name = actor_set_name + "_HostDSActor";
+      break;
+    case KernelTransformType::kKernelActor:
+      MS_EXCEPTION_IF_NULL(node);
+      actor_name = node->fullname_with_scope();
+      break;
+    default:
+      break;
+  }
+  return actor_name;
+}
+
+bool NeedSyncByTensor(const DeviceTensor *dst_device_addr, const DeviceTensor *src_device_addr) {
+  MS_EXCEPTION_IF_NULL(dst_device_addr);
+  MS_EXCEPTION_IF_NULL(src_device_addr);
+  if (src_device_addr->DeviceType() != dst_device_addr->DeviceType()) {
+    return false;
+  }
+  return (src_device_addr->format() != dst_device_addr->format() ||
+          src_device_addr->type_id() != dst_device_addr->type_id());
 }
 }  // namespace runtime
 }  // namespace mindspore

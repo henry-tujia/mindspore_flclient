@@ -34,14 +34,16 @@ class CPUSession : public SessionBasic {
  protected:
   void UnifyMindIR(const KernelGraphPtr &graph) override { SessionBasic::UnifyMindIR(graph); }
   void CreateOutputTensors(const GraphId &graph_id, const std::vector<tensor::TensorPtr> &input_tensors, VectorRef *,
-                           std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node) override;
+                           std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node,
+                           KernelMapTensor *node_to_tensor) override;
   GraphId CompileGraphImpl(const AnfNodePtrList &lst, const AnfNodePtrList &outputs) override;
   void PreExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph, const std::vector<tensor::TensorPtr> &inputs,
                        VectorRef *const outputs) override;
   void PostExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph, const std::vector<tensor::TensorPtr> &inputs,
                         VectorRef *const outputs) override;
   void ExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph) override;
-  ParameterPtr CreateNewParameterFromParameter(const AnfNodePtr &anf, KernelGraph *graph) override;
+  ParameterPtr CreateNewParameterFromParameter(const AnfNodePtr &anf, KernelGraph *graph, const std::string &) override;
+  void GraphKernelOptimize(const std::shared_ptr<KernelGraph> &kernel_graph);
   void Optimize(const std::shared_ptr<KernelGraph> &kernel_graph);
   KernelGraphPtr BuildOpImpl(const OpRunInfo &op_run_info, const GraphInfo &graph_info,
                              const std::vector<tensor::TensorPtr> &input_tensors,
@@ -56,7 +58,6 @@ class CPUSession : public SessionBasic {
 
  private:
   void Reorder(std::vector<CNodePtr> *node_list);
-  void ProcessCast(const std::shared_ptr<KernelGraph> &kernel_graph);
   void SetKernelInfo(const KernelGraph *kernel_graph);
   void BuildKernel(const KernelGraph *kernel_graph);
   void SetOutputFlags(const VectorRef &base_ref);

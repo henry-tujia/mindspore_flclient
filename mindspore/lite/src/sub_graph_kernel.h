@@ -28,8 +28,8 @@
 #include "src/common/log_adapter.h"
 #include "src/common/version_manager.h"
 #include "src/cpu_info.h"
-#ifdef ENABLE_ARM64
-#include "src/common/utils.h"
+#if defined(ENABLE_ARM) && defined(ENABLE_FP16)
+#include "nnacl/constant_of_shape_parameter.h"
 #endif
 
 namespace mindspore::kernel {
@@ -76,24 +76,13 @@ class SubGraphKernel : public LiteKernel {
     nodes_.clear();
   }
 
-  void FindInoutKernels(const std::vector<kernel::LiteKernel *> &scope_kernels) override {
-    LiteKernel::FindInoutKernels(scope_kernels);
-    std::vector<kernel::LiteKernel *> new_scope_kernels = {};
-    new_scope_kernels.insert(new_scope_kernels.end(), this->in_kernels().begin(), this->in_kernels().end());
-    new_scope_kernels.insert(new_scope_kernels.end(), this->out_kernels().begin(), this->out_kernels().end());
-    new_scope_kernels.insert(new_scope_kernels.end(), nodes_.begin(), nodes_.end());
-    for (auto *node : nodes_) {
-      node->FindInoutKernels(new_scope_kernels);
-    }
-  }
-
   bool IsReady(const std::vector<lite::Tensor *> &scope_tensors) override {
     return std::all_of(this->in_nodes_.begin(), this->in_nodes_.end(),
                        [&](LiteKernel *kernel) { return kernel->IsReady(scope_tensors); });
   }
 
   // called while compiling graph. Call node->Prepare() by default.
-  int Prepare() override;
+  int Prepare() override { return RET_OK; };
   // called before Run
   int Execute() override { return Execute(nullptr, nullptr); }
 
@@ -106,7 +95,7 @@ class SubGraphKernel : public LiteKernel {
 
   void InitInputTensorInitRefCount();
 
-  int Init() override { return mindspore::lite::RET_OK; }
+  virtual int SetFp16Attr() { return mindspore::lite::RET_OK; }
 
   std::string ToString() const override;
 
@@ -141,7 +130,7 @@ class CpuSubGraph : public SubGraphKernel {
 
   ~CpuSubGraph() override { delete this->executor_; }
   int Prepare() override;
-  int Init() override { return SubGraphKernel::Init(); }
+  int SetFp16Attr() override { return SubGraphKernel::SetFp16Attr(); }
   int Execute() override { return Execute(nullptr, nullptr); }
   int Execute(const KernelCallBack &before, const KernelCallBack &after) override;
 };
@@ -172,11 +161,11 @@ class CpuFp16SubGraph : public CpuSubGraph {
   }
 
   ~CpuFp16SubGraph() override = default;
-  int Init() override {
+  int SetFp16Attr() override {
     const auto *context = this->Context();
     MS_ASSERT(context != nullptr);
     support_fp16_ = context->device_and_pkg_support_fp16();
-    return CpuSubGraph::Init();
+    return CpuSubGraph::SetFp16Attr();
   }
 
   int Prepare() override {
@@ -196,6 +185,20 @@ class CpuFp16SubGraph : public CpuSubGraph {
         auto *dst_data = reinterpret_cast<int32_t *>(dst_tensor->data());
         if (dst_data[0] == kNumberTypeFloat32) {
           dst_data[0] = kNumberTypeFloat16;
+        }
+        auto outputs = node->out_tensors();
+        MS_ASSERT(outputs.size() == 1);
+        auto output = outputs.front();
+        MS_ASSERT(output != nullptr);
+        if (output->data_type() == kNumberTypeFloat32) {
+          output->set_data_type(kNumberTypeFloat16);
+        }
+      } else if (node->type() == schema::PrimitiveType_ConstantOfShape) {
+        auto param = node->op_parameter();
+        MS_ASSERT(param != nullptr);
+        if (static_cast<TypeId>(reinterpret_cast<ConstantOfShapeParameter *>(param)->data_type_ ==
+                                kNumberTypeFloat32)) {
+          reinterpret_cast<ConstantOfShapeParameter *>(param)->data_type_ = kNumberTypeFloat16;
         }
         auto outputs = node->out_tensors();
         MS_ASSERT(outputs.size() == 1);
@@ -225,7 +228,6 @@ class CustomSubGraph : public SubGraphKernel {
 
   ~CustomSubGraph() override { delete this->executor_; }
   int Prepare() override;
-  int Init() override { return SubGraphKernel::Init(); }
   int Execute() override { return Execute(nullptr, nullptr); }
   int Execute(const KernelCallBack &before, const KernelCallBack &after) override;
 };

@@ -60,6 +60,8 @@ const unsigned int MAX_CALL_DEPTH_DEFAULT = 1000;
 const std::set<std::string> kTargetSet = {kCPUDevice, kGPUDevice, kAscendDevice, kDavinciDevice};
 // The default max available device memory is 1024GB.
 const float kDefaultMaxDeviceMemory = 1024;
+// The default memory pool block size is 1.0G.
+const float kDefaultMempoolBlockSize = 1.0;
 
 // enum definition for MindSpore Context Parameter
 enum MsCtxParam : unsigned {
@@ -72,7 +74,6 @@ enum MsCtxParam : unsigned {
   MS_CTX_ENABLE_GRAPH_KERNEL,
   MS_CTX_ENABLE_HCCL,
   MS_CTX_ENABLE_LOOP_SINK,
-  MS_CTX_ENABLE_MEM_SCHEDULER,
   MS_CTX_ENABLE_PYNATIVE_HOOK,
   MS_CTX_ENABLE_PYNATIVE_INFER,
   MS_CTX_ENABLE_REDUCE_PRECISION,
@@ -87,8 +88,6 @@ enum MsCtxParam : unsigned {
   MS_CTX_ENABLE_PARALLEL_SPLIT,
   MS_CTX_ENABLE_INFER_OPT,
   MS_CTX_GRAD_FOR_SCALAR,
-  MS_CTX_SAVE_COMPILE_CACHE,
-  MS_CTX_LOAD_COMPILE_CACHE,
   MS_CTX_ENABLE_MINDRT,
   MS_CTX_ALREADY_SET_ENABLE_MINDRT,
   MS_CTX_ENABLE_PYNATIVE_SYNCHRONIZE,
@@ -111,6 +110,7 @@ enum MsCtxParam : unsigned {
   // parameter of type float
   MS_CTX_TYPE_FLOAT_BEGIN = MS_CTX_TYPE_UINT32_END,
   MS_CTX_MAX_DEVICE_MEMORY = MS_CTX_TYPE_FLOAT_BEGIN,
+  MS_CTX_MEMPOOL_BLOCK_SIZE,
   MS_CTX_TYPE_FLOAT_END,
 
   // parameter of type string
@@ -121,6 +121,7 @@ enum MsCtxParam : unsigned {
   MS_CTX_PROFILING_OPTIONS,
   MS_CTX_SAVE_DUMP_PATH,
   MS_CTX_SAVE_GRAPHS_PATH,
+  MS_CTX_COMPILE_CACHE_PATH,
   MS_CTX_VARIABLE_MEMORY_MAX_SIZE,
   MS_CTX_PYTHON_EXE_PATH,
   MS_CTX_KERNEL_BUILD_SERVER_DIR,

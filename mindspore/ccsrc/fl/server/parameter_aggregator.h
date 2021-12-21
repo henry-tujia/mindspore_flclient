@@ -77,11 +77,6 @@ class ParameterAggregator {
 
   // Launch aggregators/optimizers of this ParameterAggregator in order.
   bool LaunchAggregators();
-  bool LaunchOptimizers();
-
-  // The implementation for primitive Pull in parameter server training mode.
-  // Every call of this method will increase the count for pull by 1.
-  AddressPtr Pull();
 
   // Different from the method Pull, this method simply returns the weight of this ParameterAggregator without causing
   // any change of status.
@@ -98,7 +93,6 @@ class ParameterAggregator {
   bool IsOptimizingDone() const;
   bool IsPullingDone() const;
 
-  // Return whether this parameter requires aggragation.
   bool requires_aggr() const;
 
  private:
@@ -111,22 +105,21 @@ class ParameterAggregator {
   // The memory assigned can be accessed by MemoryRegister. The memory could be weights, gradients, learning_rate,
   // momentum, etc.
   template <typename K>
-  bool AssignMemory(K server_kernel, const CNodePtr &cnode, const ReuseKernelNodeInfo &reuse_kernel_node_inputs_info,
+  bool AssignMemory(const K server_kernel, const CNodePtr &cnode,
+                    const ReuseKernelNodeInfo &reuse_kernel_node_inputs_info,
                     const std::shared_ptr<MemoryRegister> &memory_register);
 
   // Generate kernel parameters for aggregation/optimizer kernels. All the parameters is registered and stored in
   // memory_register.
   bool GenerateAggregationKernelParams(const std::shared_ptr<kernel::AggregationKernel> &aggr_kernel,
                                        const std::shared_ptr<MemoryRegister> &memory_register);
-  bool GenerateOptimizerKernelParams(const std::shared_ptr<kernel::OptimizerKernel> &optim_kernel,
-                                     const std::shared_ptr<MemoryRegister> &memory_register);
 
   // The selection of the aggregation algorithm depends on multiple factors. For example, server mode, user
   // configuration, etc.
   std::vector<std::string> SelectAggregationAlgorithm(const CNodePtr &cnode);
 
   // Judge whether the parameter needs to be aggregated.
-  bool JudgeRequiresAggr(const CNodePtr &cnode);
+  bool JudgeRequiredAggr(const CNodePtr &cnode);
 
   ServerMode server_mode_;
   size_t required_push_count_;

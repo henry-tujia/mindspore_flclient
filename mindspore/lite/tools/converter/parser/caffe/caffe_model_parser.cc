@@ -25,7 +25,6 @@
 #include "tools/common/graph_util.h"
 #include "tools/common/protobuf_utils.h"
 #include "tools/common/tensor_util.h"
-#include "tools/converter/ops/ops_def.h"
 #include "ir/func_graph.h"
 #include "tools/converter/converter_flags.h"
 #include "tools/converter/converter_context.h"
@@ -35,6 +34,9 @@
 #include "tools/converter/parser/unify_format.h"
 #include "nnacl/op_base.h"
 #include "src/common/log_util.h"
+#include "ops/make_tuple.h"
+#include "ops/return.h"
+#include "ops/tuple_get_item.h"
 
 using mindspore::converter::kFmkTypeCaffe;
 namespace mindspore::lite {
@@ -47,6 +49,42 @@ constexpr size_t kFcWeightSecondShapeIndex = 1;
 constexpr size_t kFcBiasFirstShapeIndex = 0;
 constexpr size_t kFcBiasSecondShapeIndex = 1;
 constexpr size_t kFcBiasThirdShapeIndex = 2;
+
+STATUS CheckCaffeModel(const caffe::NetParameter &caffe_model, const caffe::NetParameter &caffe_weight) {
+  std::set<std::string> providers;
+  std::set<std::string> consumers;
+  for (int i = 0; i < caffe_model.input_size(); i++) {
+    const auto &input = caffe_model.input(i);
+    if (providers.count(input) != 0) {
+      MS_LOG(ERROR) << "Top repeated";
+      return RET_ERROR;
+    }
+    providers.insert(input);
+  }
+  for (const auto &layer : caffe_model.layers()) {
+    for (const auto &top : layer.top()) {
+      if (providers.count(top) != 0) {
+        MS_LOG(ERROR) << "Top repeated";
+        return RET_ERROR;
+      }
+      providers.insert(top);
+    }
+    for (const auto &bottom : layer.bottom()) {
+      if (consumers.count(bottom) != 0) {
+        MS_LOG(ERROR) << "Bottom repeated";
+        return RET_ERROR;
+      }
+      consumers.insert(bottom);
+    }
+  }
+  for (const auto &consumer : consumers) {
+    if (providers.count(consumer) == 0) {
+      MS_LOG(ERROR) << "Bottom and top mismatch";
+      return RET_ERROR;
+    }
+  }
+  return RET_OK;
+}
 }  // namespace
 bool IsSkipedLayer(const caffe::LayerParameter &layer) {
   if (layer.type() == "Input" || layer.type() == "Dropout" || layer.type() == "Split") {
@@ -90,6 +128,12 @@ api::FuncGraphPtr CaffeModelParser::Parse(const converter::ConverterParameters &
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
     return nullptr;
   }
+  status = CheckCaffeModel(caffe_model_, caffe_weight_);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "Input caffe model error: " << status;
+    ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
+    return nullptr;
+  }
   res_graph_ = std::make_shared<FuncGraph>();
   MS_CHECK_TRUE_RET(res_graph_ != nullptr, nullptr);
   status = ConvertGraphInputs();
@@ -113,11 +157,9 @@ api::FuncGraphPtr CaffeModelParser::Parse(const converter::ConverterParameters &
   auto value_ptr = MakeValue(static_cast<int>(converter::kFmkTypeCaffe));
   MS_CHECK_TRUE_RET(value_ptr != nullptr, nullptr);
   res_graph_->set_attr("fmk", value_ptr);
-  std::set<FuncGraphPtr> all_func_graphs = {};
   auto func_graph = std::dynamic_pointer_cast<FuncGraph>(res_graph_);
   MS_CHECK_TRUE_RET(func_graph != nullptr, nullptr);
-  GetAllFuncGraph(func_graph, &all_func_graphs);
-  if ((status = CommonAnfAdjust(all_func_graphs)) != RET_OK) {
+  if ((status = CommonAnfAdjust(func_graph)) != RET_OK) {
     MS_LOG(ERROR) << "AdjustForAnf failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
     return nullptr;
@@ -267,8 +309,8 @@ STATUS CaffeModelParser::ConvertGraphInputsOfLayer() {
       }
       auto parameter = res_graph_->add_parameter();
       MSLITE_CHECK_PTR(parameter);
-      std::vector<int64_t> shape = ConverterContext::GetInstance()->GetGraphInputTensorShape(layer.name());
-      if (ConverterContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape.empty()) {
+      std::vector<int64_t> shape = ConverterInnerContext::GetInstance()->GetGraphInputTensorShape(layer.name());
+      if (ConverterInnerContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape.empty()) {
         MS_LOG(WARNING) << "Can not find name in map. name is " << layer.name();
       }
       if (shape.empty()) {
@@ -283,7 +325,6 @@ STATUS CaffeModelParser::ConvertGraphInputsOfLayer() {
       }
       parameter->set_abstract(abstract);
       parameter->set_name(layer.name());
-      ConverterContext::GetInstance()->AddGraphInputTensorNames(layer.name());
       nodes_.insert(std::pair(layer.top(0), parameter));
     }
   }
@@ -294,8 +335,8 @@ STATUS CaffeModelParser::ConvertGraphInputsOfShape() {
   for (int i = 0; i < caffe_model_.input_shape_size(); i++) {
     auto shape = caffe_model_.input_shape(i);
     std::vector<int64_t> shape_vector =
-      ConverterContext::GetInstance()->GetGraphInputTensorShape(caffe_model_.input(i));
-    if (ConverterContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape_vector.empty()) {
+      ConverterInnerContext::GetInstance()->GetGraphInputTensorShape(caffe_model_.input(i));
+    if (ConverterInnerContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape_vector.empty()) {
       MS_LOG(WARNING) << "Can not find name in map. name is " << caffe_model_.input(i);
     }
     if (shape_vector.empty()) {
@@ -317,7 +358,6 @@ STATUS CaffeModelParser::ConvertGraphInputsOfShape() {
     }
     parameter->set_abstract(abstract);
     parameter->set_name(caffe_model_.input(i));
-    ConverterContext::GetInstance()->AddGraphInputTensorNames(caffe_model_.input(i));
     nodes_.insert(std::pair(caffe_model_.input(i), parameter));
   }
   return RET_OK;
@@ -326,8 +366,8 @@ STATUS CaffeModelParser::ConvertGraphInputsOfShape() {
 STATUS CaffeModelParser::ConvertGraphInputsOfDim() {
   const int default_input_dim_size = 4;
   for (int i = 0; i < caffe_model_.input_size(); i++) {
-    std::vector<int64_t> shape = ConverterContext::GetInstance()->GetGraphInputTensorShape(caffe_model_.input(i));
-    if (ConverterContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape.empty()) {
+    std::vector<int64_t> shape = ConverterInnerContext::GetInstance()->GetGraphInputTensorShape(caffe_model_.input(i));
+    if (ConverterInnerContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape.empty()) {
       MS_LOG(WARNING) << "Can not find name in map. name is " << caffe_model_.input(i);
     }
     if (shape.empty()) {
@@ -350,7 +390,6 @@ STATUS CaffeModelParser::ConvertGraphInputsOfDim() {
     }
     parameter->set_abstract(abstract);
     parameter->set_name(caffe_model_.input(i));
-    ConverterContext::GetInstance()->AddGraphInputTensorNames(caffe_model_.input(i));
     nodes_.insert(std::pair(caffe_model_.input(i), parameter));
   }
   return RET_OK;
@@ -379,7 +418,7 @@ STATUS CaffeModelParser::ConvertGraphOutputs() {
   caffeInspector.InspectModel(caffe_model_);
   if (caffeInspector.GetGraphOutput().size() > 1) {
     std::vector<AnfNodePtr> make_tuple_inputs;
-    auto make_tuple_prim_ptr = std::make_shared<lite::MakeTuple>();
+    auto make_tuple_prim_ptr = std::make_shared<ops::MakeTuple>();
     MSLITE_CHECK_PTR(make_tuple_prim_ptr);
     auto make_tuple_prim = NewValueNode(make_tuple_prim_ptr);
     MSLITE_CHECK_PTR(make_tuple_prim);
@@ -397,7 +436,7 @@ STATUS CaffeModelParser::ConvertGraphOutputs() {
     make_tuple_cnode->set_fullname_with_scope("return tuple");
 
     std::vector<AnfNodePtr> op_inputs;
-    auto return_prim_ptr = std::make_shared<lite::Return>();
+    auto return_prim_ptr = std::make_shared<ops::Return>();
     MSLITE_CHECK_PTR(return_prim_ptr);
     auto value_node = NewValueNode(return_prim_ptr);
     MSLITE_CHECK_PTR(value_node);
@@ -408,7 +447,7 @@ STATUS CaffeModelParser::ConvertGraphOutputs() {
     cnode->set_fullname_with_scope("Return");
     res_graph_->set_return(cnode);
   } else {
-    auto returnPrim = std::make_shared<lite::Return>();
+    auto returnPrim = std::make_shared<ops::Return>();
     MSLITE_CHECK_PTR(returnPrim);
     auto valueNode = NewValueNode(returnPrim);
     MSLITE_CHECK_PTR(valueNode);
@@ -429,7 +468,7 @@ STATUS CaffeModelParser::ConvertGraphOutputs() {
     res_graph_->set_return(returnCnode);
   }
   // save original output tensor names.
-  ConverterContext::GetInstance()->SetGraphOutputTensorNames(caffeInspector.GetGraphOutput());
+  ConverterInnerContext::GetInstance()->SetGraphOutputTensorNames(caffeInspector.GetGraphOutput());
   return RET_OK;
 }
 
@@ -453,12 +492,21 @@ STATUS CaffeModelParser::ConvertBlobs(const caffe::LayerParameter &layer, std::v
   }
   for (int i = 0; i < layer.blobs_size(); i++) {
     std::vector<int32_t> shape;
-    ConvertShape(layer.blobs(i), &shape);
+    auto ret = ConvertShape(layer.blobs(i), &shape);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "ConvertShape failed.";
+      return ret;
+    }
 
-    FcSqueezeWeightBias(layer, i, &shape);
+    ret = FcSqueezeWeightBias(layer, i, &shape);
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "FcSqueezeWeightBias failed.";
+      return ret;
+    }
 
     // cal Weight num
     auto parameter = res_graph_->add_parameter();
+    MSLITE_CHECK_PTR(parameter);
     auto type_ptr = TypeIdToType(TypeId::kNumberTypeFloat32);
     std::vector<int64_t> shape_vector;
     (void)std::transform(shape.begin(), shape.end(), std::back_inserter(shape_vector),
@@ -538,7 +586,7 @@ STATUS CaffeModelParser::ConvertTop(const caffe::LayerParameter &layer, const CN
       return RET_ERROR;
     }
     abstract_list.emplace_back(abstract);
-    auto tuple_get_item_prim_ptr = std::make_shared<lite::TupleGetItem>();
+    auto tuple_get_item_prim_ptr = std::make_shared<ops::TupleGetItem>();
     if (tuple_get_item_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new TupleGetItem failed";
       return RET_NULL_PTR;

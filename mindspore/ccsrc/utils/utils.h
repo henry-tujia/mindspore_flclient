@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 
 #include "utils/log_adapter.h"
 #include "ir/dtype/type.h"
@@ -80,6 +81,7 @@ constexpr auto kBNTrainingReduceOpName = "BNTrainingReduce";
 constexpr auto kBNTrainingUpdateOpName = "BNTrainingUpdate";
 constexpr auto kBNTrainingUpdateV2OpName = "BNTrainingUpdateV2";
 constexpr auto kBNTrainingUpdateV3OpName = "BNTrainingUpdateV3";
+constexpr auto kNonMaxSuppressionV3OpName = "NonMaxSuppressionV3";
 constexpr auto kSimpleMeanGradOpName = "SimpleMeanGrad";
 constexpr auto kMeanGradOpName = "MeanGrad";
 constexpr auto kSliceOpName = "Slice";
@@ -94,8 +96,10 @@ constexpr auto kUnsortedSegmentProdOpName = "UnsortedSegmentProd";
 constexpr auto kUnsortedSegmentMinOpName = "UnsortedSegmentMin";
 constexpr auto kFlattenGradOpName = "FlattenGrad";
 constexpr auto kExpandDimsOpName = "ExpandDims";
+constexpr auto kDynamicReshapeOpName = "DynamicReshape";
 constexpr auto kReshapeOpName = "Reshape";
 constexpr auto kTransposeOpName = "Transpose";
+constexpr auto kTransposeNODOpName = "TransposeNOD";
 constexpr auto kSplitOpName = "Split";
 constexpr auto kSplitVOpName = "SplitV";
 constexpr auto kSparseApplyAdagradOpName = "SparseApplyAdagrad";
@@ -212,6 +216,8 @@ constexpr auto kFusedCastAdamWeightDecayName = "FusedCastAdamWeightDecay";
 constexpr auto kFusedAdamName = "FusedAdam";
 constexpr auto kFusedSparseAdamName = "FusedSparseAdam";
 constexpr auto kFusedMatMulBiasAddName = "FusedMatMulBiasAdd";
+constexpr auto kDeadNodeName = "DeadNode";
+constexpr auto kPolyNodeName = "PolyNode";
 constexpr auto kApplyAdagradV2OpName = "ApplyAdagradV2";
 constexpr auto kSparseApplyAdagradV2OpName = "SparseApplyAdagradV2";
 constexpr auto kSparseApplyFtrlOpName = "SparseApplyFtrl";
@@ -276,6 +282,8 @@ constexpr auto kBasicLSTMCellWeightGradOpName = "BasicLSTMCellWeightGrad";
 constexpr auto kBasicLSTMCellInputGradOpName = "BasicLSTMCellInputGrad";
 constexpr auto kBasicLSTMCellOpName = "BasicLSTMCell";
 constexpr auto kDynamicRNNOpName = "DynamicRNN";
+constexpr auto kLSTMOpName = "LSTM";
+constexpr auto kLSTMGradOpName = "LSTMGrad";
 constexpr auto kLSTMInputGradOpName = "LSTMInputGrad";
 constexpr auto kDynamicGRUV2OpName = "DynamicGRUV2";
 constexpr auto kGRUV2HiddenGradOpName = "GRUV2HiddenGrad";
@@ -292,6 +300,7 @@ constexpr auto kBasicLSTMCellCStateGradV2OpName = "BasicLSTMCellCStateGradV2";
 constexpr auto kMatMulOpName = "MatMul";
 constexpr auto kMatMulV2OpName = "MatMulV2";
 constexpr auto kBatchMatMulOpName = "BatchMatMul";
+constexpr auto kBatchMatMulV2OpName = "BatchMatMulV2";
 constexpr auto kBroadcastToOpName = "BroadcastTo";
 constexpr auto kFusedAddReluV2Name = "FusedAddReluV2";
 constexpr auto kFusedAddReluGradV2Name = "FusedAddReluGradV2";
@@ -299,6 +308,12 @@ constexpr auto kDropoutOpName = "Dropout";
 constexpr auto kDropoutGradOpName = "DropoutGrad";
 constexpr auto kDropoutGenMaskOpName = "DropoutGenMask";
 constexpr auto kDropoutDoMaskOpName = "DropoutDoMask";
+constexpr auto kGammaOpName = "Gamma";
+constexpr auto kPoissonOpName = "Poisson";
+constexpr auto kStandardLaplaceOpName = "StandardLaplace";
+constexpr auto kStandardNormalOpName = "StandardNormal";
+constexpr auto kUniformIntOpName = "UniformInt";
+constexpr auto kUniformRealOpName = "UniformReal";
 constexpr auto kSubAndFilterOpName = "SubAndFilter";
 constexpr auto kPadAndShiftOpName = "PadAndShift";
 constexpr auto kSparseSoftmaxCrossEntropyWithLogitsOpName = "SparseSoftmaxCrossEntropyWithLogits";
@@ -330,10 +345,12 @@ constexpr auto kHcomOpTypeReduceScatter = "HcomReduceScatter";
 
 // attr key name
 constexpr auto kAttrInputNames = "input_names";
+constexpr auto kAttrAttrNames = "attr_names";
 constexpr auto kAttrIsAICPUKernel = "is_AICPU_kernel";
 constexpr auto kIsBackendCast = "is_backed_cast";
 constexpr auto kAttrOutputNames = "output_names";
 constexpr auto kAttrAsync = "async";
+constexpr auto kAttrOffload = "offload";
 constexpr auto kAttrVisited = "visited";
 constexpr auto kAttrShape = "shape";
 constexpr auto kAttrMomentum = "momentum";
@@ -352,6 +369,7 @@ constexpr auto kAttrPerm = "perm";
 constexpr auto kAttrTransposeFirst = "transpose_first";
 constexpr auto kAttrAtomicAddMemSize = "automic_add_mem_size";
 constexpr auto kAttrAtomicOutputIndexs = "atomic_output_clean_indexs";
+constexpr auto kAttrNeedAtomic = "need_atomic";
 constexpr auto kAttrAtomicWorkspaceIndexs = "atomic_workspace_clean_indexs";
 constexpr auto kAttrSwitchCondition = "switch_condition";
 constexpr auto kAttrDataType = "data_type";
@@ -379,6 +397,7 @@ constexpr auto kAttrN = "n";
 constexpr auto kAttrLabelForInsertStreamActive = "label_for_insert_stream_active";
 constexpr auto kAttrFpBpEnd = "fpbp_end";
 constexpr auto kAttrFusion = "fusion";
+constexpr auto kAttrNotDelayFusion = "not_delay_fusion";
 constexpr auto kAttrGroup = "group";
 constexpr auto kAttrGroups = "groups";
 constexpr auto kAttrGroupBack = "group_back";
@@ -429,6 +448,8 @@ constexpr auto kAttrConcatDim = "concat_dim";
 constexpr auto kAttrSplitCount = "split_count";
 constexpr auto kAttrSendRankIds = "send_rank_ids";
 constexpr auto kAttrRecvRankIds = "recv_rank_ids";
+constexpr auto kAttrSendLens = "send_lens";
+constexpr auto kAttrRecvLens = "recv_lens";
 constexpr auto kAttrRankSize = "rank_size";
 constexpr auto kAttrPadDimSize = "pad_dim_size";
 constexpr auto kAttrPaddings = "paddings";
@@ -454,6 +475,7 @@ constexpr auto kAttrPadding = "padding";
 constexpr auto kAttrNonTask = "non_task";
 constexpr auto kAttrIsGrad = "is_grad";
 constexpr auto kAttrRecompute = "recompute";
+constexpr auto kAttrSliceActivation = "slice_activation";
 constexpr auto kAttrNeedCseAfterRecompute = "need_cse_after_recompute";
 constexpr auto kAttrParallelDimInfo = "parallel_dim_info";
 constexpr auto kAttrParallelFusionType = "parallel_fusion_type";
@@ -471,6 +493,25 @@ constexpr auto kAttrMultiCallEnd = "multicall_end";
 constexpr auto kAttrProfilingIterEnd = "PROFILING_ITER_END";
 constexpr auto kAttrHiddenSize = "hidden_size";
 constexpr auto kAttrInputSize = "input_size";
+constexpr auto kAttrDstType = "dst_type";
+constexpr auto kAttrDump = "dump";
+constexpr auto kAttrSkipNopOpAddr = "skip_nop_op_addr";
+constexpr auto kAttrFixedInputFormat = "fixed_input_format";
+constexpr auto kAttrFixedOutputFormat = "fixed_output_format";
+constexpr auto kAttrFixedInputDeviceShape = "fixed_input_device_shape";
+constexpr auto kAttrFixedOutputDeviceShape = "fixed_output_device_shape";
+constexpr auto kAttrInputToAttrIdx = "input_to_attr_idx";
+constexpr auto kAttrInputToAttrName = "input_to_attr_name";
+constexpr auto kAttrFuncType = "func_type";
+constexpr auto kAttrCustAicpu = "cust_aicpu";
+constexpr auto kAttrIsInternalOutput = "is_internal_output";
+
+// custom operator func type
+constexpr auto kCustomTypeAOT = "aot";
+constexpr auto kCustomTypePyfunc = "pyfunc";
+constexpr auto kCustomTypeTbe = "tbe";
+constexpr auto kCustomTypeAICPU = "aicpu";
+const std::set<std::string> kCustomTypeAkg = {"ir_builder", "tvm_compute", "hybrid"};
 
 // primal attr key name
 constexpr auto kPrimalAttrForwardNodeName = "forward_node_name";
@@ -478,10 +519,10 @@ constexpr auto kPrimalAttrForwardNodeName = "forward_node_name";
 // attr value
 constexpr auto kValueTargetSwitch = "target_switch";
 constexpr auto kValueTargetOther = "target_other";
+constexpr auto kValueTrue = "true";
 
 // env key
 constexpr auto kGraphOpRun = "GRAPH_OP_RUN";
-constexpr auto kEnableMemScheduler = "ENABLE_MEM_SCHEDULER";
 
 // some size
 const size_t kShape4dDims = 4;
@@ -500,6 +541,9 @@ const int kValueNodeTensorMask = 2;
 constexpr auto kNCHWShapeSize = 4;
 
 // define special index in special node
+constexpr auto kDefaultStreamIndex = 0;
+constexpr auto kIndependentStreamIndex = 1;
+constexpr auto kWorldGroupStreamIndex = 2;
 constexpr auto kAnfPrimitiveIndex = 0;
 constexpr auto kFirstDataInputIndex = 1;
 constexpr auto kRealInputNodeIndexInTupleGetItem = 1;
@@ -608,6 +652,11 @@ const std::set<std::string> kOpFormatList = {kOpFormat_DEFAULT,
                                              kOpFormat_DHWNC,
                                              kOpFormat_DHWCN};
 
+constexpr auto kSliceStart = "start";
+constexpr auto kSliceStop = "stop";
+constexpr auto kSliceStep = "step";
+const std::map<std::string, size_t> kSliceAttrToIndex = {{kSliceStart, 1}, {kSliceStop, 2}, {kSliceStep, 3}};
+
 const std::set<std::string> kDefaultCompatibleFormat = {kOpFormat_ND, kOpFormat_NCHW, kOpFormat_NHWC, kOpFormat_HWCN,
                                                         kOpFormat_NCDHW};
 
@@ -649,10 +698,14 @@ const std::set<std::string> kOptOperatorSet = {kMomentumOpName,
                                                kCombineMomentumOpName,
                                                kSparseApplyProximalAdagradOpName};
 
+const std::set<std::string> kNodeWithSeedOperators = {kGammaOpName,          kPoissonOpName,    kStandardLaplaceOpName,
+                                                      kStandardNormalOpName, kUniformIntOpName, kUniformRealOpName};
 const std::set<std::string> kPosteriorOperatorSet = {kPullOpName};
 
 const std::set<std::string> kOpCacheBlackList = {kUniformCandidateSamplerOpName, kInitDatasetQueueOpName,
                                                  kGetNextOpName};
+
+const std::set<std::string> kOpNeedSetFlushZeroModeList = {kLSTMOpName, kLSTMGradOpName};
 
 const std::set<std::string> kOpNotSupportMultiThreadExecList = {kAvgPoolOpName, kAvgPoolGradOpName, kMaxPoolOpName,
                                                                 kBatchNorm, kBatchNormGradOpName};
@@ -664,9 +717,10 @@ const std::set<std::string> kHWSpecialFormatSet = {
 
 const std::set<TypeId> kFloatDataTypeSet = {kNumberTypeFloat16, kNumberTypeFloat32};
 
-const std::set<std::string> kComputeDepend = {kUniqueOpName,       kComputeAccidentalHitsOpName, kSubAndFilterOpName,
-                                              kPadAndShiftOpName,  kCTCGreedyDecoderOpName,      kDropoutGenMaskOpName,
-                                              kMaskedSelectOpName, kDynamicStitchOpName,         kGetNextOpName};
+const std::set<std::string> kComputeDepend = {
+  kUniqueOpName,           kComputeAccidentalHitsOpName, kSubAndFilterOpName, kPadAndShiftOpName,
+  kCTCGreedyDecoderOpName, kDropoutGenMaskOpName,        kMaskedSelectOpName, kDynamicStitchOpName,
+  kGetNextOpName,          kNonMaxSuppressionV3OpName};
 
 const std::set<std::string> k3DFormatSet = {kOpFormat_NCDHW, kOpFormat_NDC1HWC0, kOpFormat_FRACTAL_Z_3D,
                                             kOpFormat_NDHWC, kOpFormat_DHWCN,    kOpFormat_DHWNC};
@@ -677,6 +731,10 @@ const std::set<std::string> kNoPaddingFormatSet = {kOpFormat_ChannelLast, kOpFor
 const std::set<std::string> DynamicShapeConstInputToAttr = {
   kCastOpName,       kExpandDimsOpName, kReshapeOpName,   kEmbeddingLookupOpName, kReduceMinOpName,
   kReduceMeanOpName, kReduceMaxOpName,  kReduceAllOpName, kReduceAnyOpName,       kConcatOpName};
+
+const std::set<std::string> DynamicShapeConstInputToAttrCPU = {
+  kCastOpName,      kExpandDimsOpName, kEmbeddingLookupOpName, kReduceMinOpName, kReduceMeanOpName,
+  kReduceMaxOpName, kReduceAllOpName,  kReduceAnyOpName,       kConcatOpName,    kReduceSumOpName};
 
 const std::set<std::string> DynamicShapeConstInputToAttrGPU = {
   kCastOpName,      kExpandDimsOpName, kReshapeOpName,   kEmbeddingLookupOpName, kTransposeOpName, kReduceSumOpName,

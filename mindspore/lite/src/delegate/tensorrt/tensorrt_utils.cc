@@ -17,22 +17,13 @@
 #include "src/delegate/tensorrt/tensorrt_utils.h"
 #include <cuda_runtime_api.h>
 #include <map>
+#include <numeric>
+#include <functional>
 
 namespace mindspore::lite {
-nvinfer1::Dims ConvertCudaDims(const std::vector<int64_t> &shape) {
-  nvinfer1::Dims dims{};
-  if (!shape.empty() && shape.size() <= static_cast<size_t>(dims.MAX_DIMS)) {
-    dims.nbDims = shape.size();
-    for (int i = 0; i < dims.nbDims; i++) {
-      dims.d[i] = shape[i];
-    }
-  } else {
-    MS_LOG(ERROR) << "invalid shape.";
-  }
-  return dims;
-}
 nvinfer1::Dims ConvertCudaDims(int data, size_t size) {
   nvinfer1::Dims dims{};
+  dims.nbDims = -1;
   if (size > static_cast<size_t>(dims.MAX_DIMS)) {
     MS_LOG(ERROR) << "invalid shape size: " << size;
     return dims;
@@ -46,6 +37,7 @@ nvinfer1::Dims ConvertCudaDims(int data, size_t size) {
 
 nvinfer1::Dims ConvertCudaDims(const void *data, int64_t size) {
   nvinfer1::Dims dims{};
+  dims.nbDims = -1;
   if (size > static_cast<int64_t>(dims.MAX_DIMS)) {
     MS_LOG(ERROR) << "invalid shape size: " << size;
     return dims;
@@ -58,12 +50,40 @@ nvinfer1::Dims ConvertCudaDims(const void *data, int64_t size) {
   return dims;
 }
 
+bool SameDims(nvinfer1::Dims dims, const std::vector<int64_t> &shape) {
+  if (dims.nbDims != static_cast<int>(shape.size())) {
+    return false;
+  }
+  // dynamic dim, only channel dim know
+  for (int i = 0; i < dims.nbDims; i++) {
+    if (dims.d[i] == -1) {
+      continue;
+    }
+    if (dims.d[i] != shape[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::vector<int64_t> ConvertMSShape(const nvinfer1::Dims dims) {
   std::vector<int64_t> shape;
   for (int i = 0; i < dims.nbDims; i++) {
     shape.push_back(dims.d[i]);
   }
   return shape;
+}
+
+std::vector<int64_t> NHWC2NCHW(std::vector<int64_t> nhwc_shape) {
+  std::vector<int64_t> nchw_shape;
+  if (nhwc_shape.size() != DIMENSION_4D) {
+    return nhwc_shape;
+  }
+  nchw_shape.push_back(nhwc_shape[kNHWC_N]);
+  nchw_shape.push_back(nhwc_shape[kNHWC_C]);
+  nchw_shape.push_back(nhwc_shape[kNHWC_H]);
+  nchw_shape.push_back(nhwc_shape[kNHWC_W]);
+  return nchw_shape;
 }
 
 nvinfer1::IShuffleLayer *SetTranspose(nvinfer1::INetworkDefinition *network, const nvinfer1::ITensor &input,
@@ -78,17 +98,19 @@ nvinfer1::IShuffleLayer *SetTranspose(nvinfer1::INetworkDefinition *network, con
 }
 
 nvinfer1::DataType ConvertDataType(DataType type_id) {
-  std::map<DataType, nvinfer1::DataType> data_type_map = {{DataType::kNumberTypeInt8, nvinfer1::DataType::kINT8},
-                                                          {DataType::kNumberTypeInt32, nvinfer1::DataType::kINT32},
-                                                          {DataType::kNumberTypeFloat32, nvinfer1::DataType::kFLOAT},
-                                                          {DataType::kNumberTypeFloat16, nvinfer1::DataType::kHALF}};
+  std::map<DataType, nvinfer1::DataType> data_type_map = {
+    {DataType::kNumberTypeInt8, nvinfer1::DataType::kINT8},
+    {DataType::kNumberTypeInt32, nvinfer1::DataType::kINT32},
+    {DataType::kNumberTypeFloat32, nvinfer1::DataType::kFLOAT},
+    {DataType::kNumberTypeFloat16, nvinfer1::DataType::kHALF},
+  };
   auto iter = data_type_map.find(type_id);
   nvinfer1::DataType data_type;
   if (iter != data_type_map.end()) {
     data_type = iter->second;
   } else {
     data_type = nvinfer1::DataType::kFLOAT;
-    MS_LOG(WARNING) << "invalid data_type for TensorRT, need check";
+    MS_LOG(WARNING) << "invalid data_type for TensorRT, need check: " << static_cast<int>(type_id);
   }
   return data_type;
 }
@@ -105,12 +127,18 @@ nvinfer1::IShuffleLayer *NCHW2NHWC(nvinfer1::INetworkDefinition *network, const 
   return SetTranspose(network, input, perm);
 }
 
-nvinfer1::ITensor *ConvertConstantTensor(nvinfer1::INetworkDefinition *network, const mindspore::MSTensor &ms_tensor) {
+nvinfer1::ITensor *ConvertConstantTensor(nvinfer1::INetworkDefinition *network, const mindspore::MSTensor &ms_tensor,
+                                         const std::string &op_name) {
   if (network == nullptr) {
     MS_LOG(ERROR) << "network is null for ConvertConstantTensor";
     return nullptr;
   }
   nvinfer1::Dims dims = ConvertCudaDims(ms_tensor.Shape());
+  if (dims.nbDims == -1) {
+    MS_LOG(WARNING) << "ConvertCudaDims failed for " << op_name;
+    dims.nbDims = 1;
+    dims.d[0] = 1;
+  }
   nvinfer1::DataType data_type = ConvertDataType(ms_tensor.DataType());
   if (ms_tensor.Data() == nullptr) {
     MS_LOG(ERROR) << "ConvertConstantTensor from a MSTensor with nullptr data: " << ms_tensor.Name();
@@ -122,20 +150,26 @@ nvinfer1::ITensor *ConvertConstantTensor(nvinfer1::INetworkDefinition *network, 
     MS_LOG(ERROR) << "create constant_tensor failed.";
     return nullptr;
   }
-  auto name = ms_tensor.Name() + "_constant_layer";
+  auto name = ms_tensor.Name() + "_" + op_name;
   constant_tensor->setName(name.c_str());
   return constant_tensor->getOutput(0);
 }
 
 nvinfer1::ITensor *ConvertScalarToITensor(nvinfer1::INetworkDefinition *network, size_t shape_size, const void *value,
-                                          const DataType data_type) {
+                                          const DataType data_type, const std::string &op_name) {
   nvinfer1::Dims dims = ConvertCudaDims(1, shape_size);
+  if (dims.nbDims == -1) {
+    MS_LOG(ERROR) << "ConvertCudaDims failed for " << op_name;
+    return nullptr;
+  }
   nvinfer1::Weights weights{ConvertDataType(data_type), value, 1};
   nvinfer1::IConstantLayer *constant_tensor = network->addConstant(dims, weights);
   if (constant_tensor == nullptr) {
     MS_LOG(ERROR) << "create constant_tensor failed.";
     return nullptr;
   }
+  auto name = op_name + "_constant";
+  constant_tensor->setName(name.c_str());
   return constant_tensor->getOutput(0);
 }
 
@@ -152,7 +186,8 @@ ActivationParams ConvertActivationType(schema::ActivationType activation_type) {
     {schema::ActivationType_THRESHOLDRELU,
      ActivationParams{nvinfer1::ActivationType::kTHRESHOLDED_RELU, true, 0, false, 0}},
     {schema::ActivationType_RELU6, ActivationParams{nvinfer1::ActivationType::kCLIP, true, 0, true, 6}},
-    {schema::ActivationType_RELU1, ActivationParams{nvinfer1::ActivationType::kCLIP, true, 0, true, 1}}};
+    {schema::ActivationType_RELU1, ActivationParams{nvinfer1::ActivationType::kCLIP, true, 0, true, 1}},
+    {schema::ActivationType_HARD_TANH, ActivationParams{nvinfer1::ActivationType::kCLIP, true, -1, true, 1}}};
   auto iter = action_map.find(activation_type);
   ActivationParams action_param = ActivationParams{nvinfer1::ActivationType::kRELU, false, 0, false, 0};
   if (iter != action_map.end()) {
@@ -164,7 +199,8 @@ ActivationParams ConvertActivationType(schema::ActivationType activation_type) {
 }
 
 nvinfer1::ITensor *ConvertTensorWithExpandDims(nvinfer1::INetworkDefinition *network,
-                                               const mindspore::MSTensor &ms_tensor, size_t expand_shape_size) {
+                                               const mindspore::MSTensor &ms_tensor, size_t expand_shape_size,
+                                               const std::string &op_name) {
   if (network == nullptr) {
     MS_LOG(ERROR) << "network is null for ConvertConstantTensor";
     return nullptr;
@@ -180,6 +216,10 @@ nvinfer1::ITensor *ConvertTensorWithExpandDims(nvinfer1::INetworkDefinition *net
     }
   }
   nvinfer1::Dims dims = ConvertCudaDims(shape);
+  if (dims.nbDims == -1) {
+    MS_LOG(ERROR) << "ConvertCudaDims failed for " << op_name;
+    return nullptr;
+  }
   nvinfer1::DataType data_type = ConvertDataType(ms_tensor.DataType());
   if (ms_tensor.Data() == nullptr) {
     MS_LOG(ERROR) << "ConvertTensorWithExpandDims from a MSTensor with nullptr data";
@@ -191,7 +231,7 @@ nvinfer1::ITensor *ConvertTensorWithExpandDims(nvinfer1::INetworkDefinition *net
     MS_LOG(ERROR) << "create constant_tensor failed.";
     return nullptr;
   }
-  auto name = ms_tensor.Name() + "_constant_layer";
+  auto name = ms_tensor.Name() + "_" + op_name;
   constant_tensor->setName(name.c_str());
   return constant_tensor->getOutput(0);
 }
@@ -257,34 +297,45 @@ nvinfer1::Weights ConvertWeight(const mindspore::MSTensor &ms_tensor) {
   return weights;
 }
 
-void SetCudaDevice(std::shared_ptr<GPUDeviceInfo> device_info_) {
+int SetCudaDevice(std::shared_ptr<GPUDeviceInfo> device_info_) {
+  return SetCudaDevice(static_cast<int>(device_info_->GetDeviceID()));
+}
+
+int SetCudaDevice(int device_id) {
   int device = 0;
   auto ret = cudaGetDevice(&device);
   if (ret != cudaSuccess) {
-    MS_LOG(WARNING) << "cudaGetDevice failed, device is untrustable. error code: " << ret;
+    MS_LOG(ERROR) << "cudaGetDevice failed, device is untrustable. error code: " << ret;
+    return RET_ERROR;
   }
-  int set_device_id = static_cast<int>(device_info_->GetDeviceID());
+  int set_device_id = device_id;
   int deviceCnt = 0;
 
   ret = cudaGetDeviceCount(&deviceCnt);
   if (ret != cudaSuccess) {
     MS_LOG(ERROR) << "cudaGetDeviceCount failed.";
-    return;
+    return RET_ERROR;
   }
 
   if (set_device_id > deviceCnt - 1) {
-    MS_LOG(WARNING) << "invalid input device id as " << set_device_id << " for current device count " << deviceCnt;
-  } else if (device != set_device_id) {
+    MS_LOG(ERROR) << "invalid input device id as " << set_device_id << " for current device count " << deviceCnt;
+    return RET_ERROR;
+  }
+  if (device != set_device_id) {
     ret = cudaSetDevice(set_device_id);
     if (ret != cudaSuccess) {
-      MS_LOG(WARNING) << "cudaSetDevice failed, error code: " << ret;
+      MS_LOG(ERROR) << "cudaSetDevice failed, error code: " << ret;
+      return RET_ERROR;
     }
   }
   if (cudaGetDevice(&device) != cudaSuccess) {
-    MS_LOG(WARNING) << "cudaGetDevice failed, device is untrustable.";
+    MS_LOG(ERROR) << "cudaGetDevice failed, device is untrustable.";
+    return RET_ERROR;
   }
-  MS_LOG(INFO) << "cuda is running on device: " << device;
+  MS_LOG(DEBUG) << "cuda is running on device: " << device;
+  return RET_OK;
 }
+
 Format GetOutputFormat(Format input_format, nvinfer1::Permutation perm) {
   if (input_format == Format::NHWC) {
     if (perm.order[0] == 0 && perm.order[1] == 3 && perm.order[2] == 2 && perm.order[3] == 1) {
@@ -368,5 +419,67 @@ void PackNHWCToNCHWFp16(const void *src, void *dst, size_t batches, size_t plane
       }
     }
   }
+}
+std::string GetTensorFormat(nvinfer1::ITensor *trt_tensor, mindspore::Format format) {
+  nvinfer1::Dims dims = trt_tensor->getDimensions();
+  std::string out_string = "tensor " + std::string(trt_tensor->getName()) + ": format (NHWC:1, NCHW:0) is " +
+                           std::to_string(static_cast<int>(format)) + ", dims is ";
+  std::string dim_string = "[";
+  for (int i = 0; i < dims.nbDims; i++) {
+    dim_string += std::to_string(dims.d[i]);
+    if (i != dims.nbDims - 1) {
+      dim_string += ", ";
+    }
+  }
+  dim_string += "]";
+  out_string += dim_string;
+  return out_string;
+}
+nvinfer1::ReduceOperation ConvertTRTReduceMode(schema::ReduceMode mode) {
+  std::map<schema::ReduceMode, nvinfer1::ReduceOperation> reduce_ops_ = {
+    {schema::ReduceMode::ReduceMode_ReduceMean, nvinfer1::ReduceOperation::kAVG},
+    {schema::ReduceMode::ReduceMode_ReduceMax, nvinfer1::ReduceOperation::kMAX},
+    {schema::ReduceMode::ReduceMode_ReduceMin, nvinfer1::ReduceOperation::kMIN},
+    {schema::ReduceMode::ReduceMode_ReduceProd, nvinfer1::ReduceOperation::kPROD},
+    {schema::ReduceMode::ReduceMode_ReduceSum, nvinfer1::ReduceOperation::kSUM},
+  };
+  auto iter = reduce_ops_.find(mode);
+  nvinfer1::ReduceOperation trt_mode;
+  if (iter != reduce_ops_.end()) {
+    trt_mode = iter->second;
+  } else {
+    trt_mode = nvinfer1::ReduceOperation::kAVG;
+    MS_LOG(WARNING) << "invalid reduce for TensorRT, need check: " << static_cast<int>(mode);
+  }
+  return trt_mode;
+}
+nvinfer1::ITensor *PreprocessInputs2SameDim(nvinfer1::INetworkDefinition *network,
+                                            const ITensorHelper &input_tensor_helper) {
+  nvinfer1::ITensor *output = input_tensor_helper.trt_tensor_;
+  if (input_tensor_helper.trt_tensor_->getDimensions().nbDims == DIMENSION_4D && !input_tensor_helper.same_format_) {
+    if (input_tensor_helper.format_ == Format::NCHW) {
+      // transpose: NCHW->NHWC
+      nvinfer1::IShuffleLayer *transpose_layer_in = NCHW2NHWC(network, *input_tensor_helper.trt_tensor_);
+      if (transpose_layer_in == nullptr) {
+        MS_LOG(ERROR) << "op action convert failed";
+        return nullptr;
+      }
+      transpose_layer_in->setName((std::string(output->getName()) + "_input_transpose2NHWC").c_str());
+      output = transpose_layer_in->getOutput(0);
+    } else {
+      // transpose: NHWC->NCHW
+      nvinfer1::IShuffleLayer *transpose_layer_in = NHWC2NCHW(network, *input_tensor_helper.trt_tensor_);
+      if (transpose_layer_in == nullptr) {
+        MS_LOG(ERROR) << "op action convert failed";
+        return nullptr;
+      }
+      transpose_layer_in->setName((std::string(output->getName()) + "_input_transpose2NCHW").c_str());
+      output = transpose_layer_in->getOutput(0);
+    }
+  }
+  return output;
+}
+int GetDimsVolume(const nvinfer1::Dims &dims) {
+  return std::accumulate(dims.d, dims.d + dims.nbDims, 1, std::multiplies<int64_t>());
 }
 }  // namespace mindspore::lite

@@ -201,6 +201,9 @@ static void ResizeBilinear1C(const unsigned char *src, int src_width, int src_he
       int16_t *row1_ptr1 = row1_ptr;
       for (int x = 0; x < dst_width; x++) {
         const unsigned char *src_start_p = src_start + x_offset[x];
+        if ((src_start_p + 3 - src) >= (src_width * src_height)) {
+          continue;
+        }
         row1_ptr1[x] = (src_start_p[0] * x_weight_p[0] + src_start_p[3] * x_weight_p[1]) >> 4;
         x_weight_p += 2;
       }
@@ -251,6 +254,14 @@ static bool Conv2DImplement(const LiteMat &src, const LiteMat &kernel, T2 *dst, 
   int border_y = static_cast<int>(kernel.height_ / 2);
 
   LiteMat pad_mat;
+
+  if ((border_x > INT_MAX / 2) || (src.width_ > INT_MAX - 2 * border_x)) {
+    return false;
+  }
+  if ((border_y > INT_MAX / 2) || (src.height_ > INT_MAX - 2 * border_y)) {
+    return false;
+  }
+
   pad_mat.Init(src.width_ + 2 * border_x, src.height_ + 2 * border_y, src.channel_, src.data_type_);
 
   if (!Pad(src, pad_mat, border_y, border_y, border_x, border_x, pad_type)) {
@@ -368,6 +379,9 @@ bool ResizeBilinear(const LiteMat &src, LiteMat &dst, int dst_w, int dst_h) {
   }
   if (dst.IsEmpty()) {
     (void)dst.Init(dst_w, dst_h, src.channel_, LDataType::UINT8);
+    if (dst.IsEmpty()) {
+      return false;
+    }
   } else if (dst.height_ != dst_h || dst.width_ != dst_w || dst.channel_ != src.channel_) {
     return false;
   } else if (dst.data_type_ != LDataType::UINT8) {
@@ -954,10 +968,17 @@ bool Merge(const std::vector<LiteMat> &mv, LiteMat &dst) {
   return true;
 }
 
+inline bool CheckInt(const std::vector<int> &nums) {
+  if (std::any_of(nums.begin(), nums.end(), [](const auto &num) { return num < 0; })) {
+    return false;
+  }
+  return true;
+}
+
 bool Pad(const LiteMat &src, LiteMat &dst, int top, int bottom, int left, int right, PaddBorderType pad_type,
          uint8_t fill_b_or_gray, uint8_t fill_g, uint8_t fill_r) {
   RETURN_FALSE_IF_LITEMAT_EMPTY(src);
-  if (top < 0 || bottom < 0 || left < 0 || right < 0) {
+  if (!CheckInt({top, bottom, left, right})) {
     return false;
   }
   if (src.width_ > std::numeric_limits<int>::max() - left ||
@@ -1447,9 +1468,7 @@ void SVBkSb(int m, int n, int nb, LiteMat w, LiteMat u, LiteMat v, const LiteMat
   int nm = std::min(m, n);
 
   for (int i = 0; i < n; i++) {
-    for (int j = 0; j < nb; j++) {
-      dst.ptr<T>(i)[0] = 0;
-    }
+    dst.ptr<T>(i)[0] = 0;
   }
 
   for (int i = 0; i < nm; i++) {
@@ -1624,7 +1643,7 @@ bool GetAffineTransform(std::vector<Point> src_point, std::vector<Point> dst_poi
   return true;
 }
 
-bool ConvertRgbToBgr(const LiteMat &src, LDataType data_type, int w, int h, LiteMat &mat) {
+bool ConvertRgbToBgr(const LiteMat &src, const LDataType &data_type, int w, int h, LiteMat &mat) {
   if (data_type == LDataType::UINT8) {
     if (src.IsEmpty()) {
       return false;

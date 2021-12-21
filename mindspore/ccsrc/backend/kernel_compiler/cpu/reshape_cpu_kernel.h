@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 Huawei Technologies Co., Ltd
+ * Copyright 2021-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,11 +33,6 @@ class ReshapeCPUKernel : public CPUKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs) override;
-
- private:
-  CNodeWeakPtr node_wpt_;
-  TypeId x_data_type_{kNumberTypeInt32};
-  size_t type_size_ = 4;
 };
 
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeInt8).AddOutputAttr(kNumberTypeInt8), ReshapeCPUKernel);
@@ -50,6 +45,8 @@ MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeInt64).AddOutput
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutputAttr(kNumberTypeBool), ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
                   ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
+                  ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8),
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeUInt16).AddOutputAttr(kNumberTypeUInt16),
@@ -58,6 +55,17 @@ MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeUInt32).AddOutpu
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Reshape, KernelAttr().AddInputAttr(kNumberTypeUInt64).AddOutputAttr(kNumberTypeUInt64),
                   ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(
+  Reshape,
+  KernelAttr().AddInputAttr(kNumberTypeFloat32).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeFloat32),
+  ReshapeCPUKernel)
+MS_REG_CPU_KERNEL(
+  Reshape,
+  KernelAttr().AddInputAttr(kNumberTypeFloat64).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeFloat64),
+  ReshapeCPUKernel)
+MS_REG_CPU_KERNEL(
+  Reshape, KernelAttr().AddInputAttr(kNumberTypeInt32).AddInputAttr(kNumberTypeInt32).AddOutputAttr(kNumberTypeInt32),
+  ReshapeCPUKernel);
 
 MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeInt8).AddOutputAttr(kNumberTypeInt8), ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeInt16).AddOutputAttr(kNumberTypeInt16),
@@ -68,6 +76,8 @@ MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeInt64).AddOutput
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutputAttr(kNumberTypeBool), ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
+                  ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Flatten, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8),
                   ReshapeCPUKernel);
@@ -90,6 +100,8 @@ MS_REG_CPU_KERNEL(FlattenGrad, KernelAttr().AddInputAttr(kNumberTypeBool).AddOut
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(FlattenGrad, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
                   ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(FlattenGrad, KernelAttr().AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
+                  ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(FlattenGrad, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8),
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(FlattenGrad, KernelAttr().AddInputAttr(kNumberTypeUInt16).AddOutputAttr(kNumberTypeUInt16),
@@ -111,6 +123,8 @@ MS_REG_CPU_KERNEL(ExpandDims, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutp
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(ExpandDims, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
                   ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(ExpandDims, KernelAttr().AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
+                  ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(ExpandDims, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8),
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(ExpandDims, KernelAttr().AddInputAttr(kNumberTypeUInt16).AddOutputAttr(kNumberTypeUInt16),
@@ -129,6 +143,8 @@ MS_REG_CPU_KERNEL(Squeeze, KernelAttr().AddInputAttr(kNumberTypeInt64).AddOutput
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Squeeze, KernelAttr().AddInputAttr(kNumberTypeBool).AddOutputAttr(kNumberTypeBool), ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Squeeze, KernelAttr().AddInputAttr(kNumberTypeFloat32).AddOutputAttr(kNumberTypeFloat32),
+                  ReshapeCPUKernel);
+MS_REG_CPU_KERNEL(Squeeze, KernelAttr().AddInputAttr(kNumberTypeFloat64).AddOutputAttr(kNumberTypeFloat64),
                   ReshapeCPUKernel);
 MS_REG_CPU_KERNEL(Squeeze, KernelAttr().AddInputAttr(kNumberTypeUInt8).AddOutputAttr(kNumberTypeUInt8),
                   ReshapeCPUKernel);

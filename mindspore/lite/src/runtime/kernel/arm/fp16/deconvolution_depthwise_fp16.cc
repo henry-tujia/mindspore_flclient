@@ -74,13 +74,14 @@ int DeconvolutionDepthwiseFp16CPUKernel::MallocWeightBiasData() {
   int pack_weight_size = C8NUM * OC8 * weight_tensor->Height() * weight_tensor->Width();
 
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, pack_weight_size * sizeof(float16_t));
     packed_weight_ = reinterpret_cast<float16_t *>(malloc(pack_weight_size * sizeof(float16_t)));
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "Malloc buffer failed.";
       return RET_ERROR;
     }
   }
-
+  CHECK_LESS_RETURN(MAX_MALLOC_SIZE, C8NUM * OC8 * sizeof(float16_t));
   bias_data_ = malloc(C8NUM * OC8 * sizeof(float16_t));
   if (bias_data_ == nullptr) {
     MS_LOG(ERROR) << "Malloc buffer failed.";
@@ -99,7 +100,7 @@ void DeconvolutionDepthwiseFp16CPUKernel::PackWeight() {
                            1, weight_tensor->Height() * weight_tensor->Width(), weight_tensor->Batch());
 }
 
-int DeconvolutionDepthwiseFp16CPUKernel::Init() {
+int DeconvolutionDepthwiseFp16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(conv_param_);
@@ -141,7 +142,7 @@ int DeconvolutionDepthwiseFp16CPUKernel::ReSize() {
     MS_LOG(ERROR) << "InitSlideParam failed!";
     return ret;
   }
-  ret = ConvolutionBaseCPUKernel::Init();
+  ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }

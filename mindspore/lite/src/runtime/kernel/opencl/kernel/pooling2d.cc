@@ -35,19 +35,19 @@ namespace mindspore {
 namespace kernel {
 int PoolingOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_1 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   if (in_tensors_[0]->shape().size() != DIMENSION_4D) {
-    MS_LOG(ERROR) << "Only support 4d tensor.";
+    MS_LOG(WARNING) << "Only support 4d tensor.";
     return RET_ERROR;
   }
   if (parameter_->pool_mode_ != PoolMode_MaxPool && parameter_->pool_mode_ != PoolMode_AvgPool) {
-    MS_LOG(ERROR) << "Init `Pooling2d` kernel failed, unsupported pool mode!";
+    MS_LOG(WARNING) << "Init `Pooling2d` kernel failed, unsupported pool mode!";
     return RET_ERROR;
   }
   if (parameter_->act_type_ != ActType_No && parameter_->act_type_ != ActType_Relu) {
-    MS_LOG(ERROR) << "Unsupported activation type " << parameter_->act_type_;
+    MS_LOG(WARNING) << "Unsupported activation type " << parameter_->act_type_;
     return RET_ERROR;
   }
   return RET_OK;
@@ -61,8 +61,8 @@ int PoolingOpenCLKernel::BuildKernel() {
     kernel_name = "AvgPooling2d";
   }
 
-  if (parameter_->global_ &&
-      (parameter_->window_h_ >= LOCAL_CACHE_THREAD || parameter_->window_w_ >= LOCAL_CACHE_THREAD)) {
+  if (parameter_->global_ && (parameter_->window_h_ >= static_cast<int>(LOCAL_CACHE_THREAD) ||
+                              parameter_->window_w_ >= static_cast<int>(LOCAL_CACHE_THREAD))) {
     kernel_name += "_global";
     is_use_local_ = true;
   }

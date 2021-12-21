@@ -15,21 +15,28 @@
  */
 
 #include "include/api/model.h"
+#ifdef GPU_TENSORRT
+#include <cuda_runtime.h>
+#endif
+#ifdef ENABLE_LITE_ACL
+#include "acl/acl_base.h"
+#endif
 #include <mutex>
-#include "include/api/types.h"
-#include "include/api/context.h"
 #include "include/api/callback/callback.h"
+#include "include/api/context.h"
 #include "include/api/dual_abi_helper.h"
-#include "src/cxx_api/model/model_impl.h"
-#include "src/cxx_api/callback/callback_impl.h"
-#include "src/cxx_api/callback/callback_adapter.h"
+#include "include/api/types.h"
 #include "src/common/log_adapter.h"
+#include "src/cxx_api/callback/callback_adapter.h"
+#include "src/cxx_api/callback/callback_impl.h"
+#include "src/cxx_api/model/model_impl.h"
 
 namespace mindspore {
 std::mutex g_impl_init_lock;
 
 Status Model::Build(const void *model_data, size_t data_size, ModelType model_type,
-                    const std::shared_ptr<Context> &model_context, const Key &dec_key, const std::string &dec_mode) {
+                    const std::shared_ptr<Context> &model_context, const Key &dec_key,
+                    const std::vector<char> &dec_mode) {
   if (impl_ == nullptr) {
     std::unique_lock<std::mutex> impl_lock(g_impl_init_lock);
     impl_ = std::shared_ptr<ModelImpl>(new (std::nothrow) ModelImpl());
@@ -46,8 +53,9 @@ Status Model::Build(const void *model_data, size_t data_size, ModelType model_ty
   return kSuccess;
 }
 
-Status Model::Build(const std::string &model_path, ModelType model_type, const std::shared_ptr<Context> &model_context,
-                    const Key &dec_key, const std::string &dec_mode) {
+Status Model::Build(const std::vector<char> &model_path, ModelType model_type,
+                    const std::shared_ptr<Context> &model_context, const Key &dec_key,
+                    const std::vector<char> &dec_mode) {
   if (impl_ == nullptr) {
     std::unique_lock<std::mutex> impl_lock(g_impl_init_lock);
     impl_ = std::shared_ptr<ModelImpl>(new (std::nothrow) ModelImpl());
@@ -57,7 +65,7 @@ Status Model::Build(const std::string &model_path, ModelType model_type, const s
     }
   }
 
-  Status ret = impl_->Build(model_path, model_type, model_context);
+  Status ret = impl_->Build(CharToString(model_path), model_type, model_context);
   if (ret != kSuccess) {
     return ret;
   }
@@ -100,6 +108,24 @@ Status Model::Resize(const std::vector<MSTensor> &inputs, const std::vector<std:
   return impl_->Resize(inputs, dims);
 }
 
+Status Model::UpdateWeights(const std::vector<MSTensor> &new_weights) {
+  if (impl_ == nullptr) {
+    MS_LOG(ERROR) << "Model implement is null.";
+    return kLiteNullptr;
+  }
+  return impl_->UpdateWeights(new_weights);
+}
+
+Status Model::RunStep(const MSKernelCallBack &before, const MSKernelCallBack &after) {
+  if (impl_ == nullptr) {
+    MS_LOG(ERROR) << "Model implement is null.";
+    return kLiteNullptr;
+  }
+  auto inputs = impl_->GetInputs();
+  auto outputs = impl_->GetOutputs();
+  return impl_->Predict(inputs, &outputs, before, after);
+}
+
 Status Model::Predict(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs,
                       const MSKernelCallBack &before, const MSKernelCallBack &after) {
   if (impl_ == nullptr) {
@@ -109,13 +135,13 @@ Status Model::Predict(const std::vector<MSTensor> &inputs, std::vector<MSTensor>
   return impl_->Predict(inputs, outputs, before, after);
 }
 
-Status Model::PredictWithPreprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs,
+Status Model::PredictWithPreprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs,
                                     const MSKernelCallBack &before, const MSKernelCallBack &after) {
   MS_LOG(ERROR) << "Unsupported Feature.";
   return kLiteNotSupport;
 }
 
-Status Model::Preprocess(const std::vector<MSTensor> &inputs, std::vector<MSTensor> *outputs) {
+Status Model::Preprocess(const std::vector<std::vector<MSTensor>> &inputs, std::vector<MSTensor> *outputs) {
   MS_LOG(ERROR) << "Unsupported Feature.";
   return kLiteNotSupport;
 }
@@ -130,7 +156,35 @@ Model::Model() : impl_(nullptr) {}
 Model::~Model() {}
 
 bool Model::CheckModelSupport(enum DeviceType device_type, ModelType model_type) {
-  MS_LOG(ERROR) << "Unsupported feature.";
+  if (device_type == kCPU) {
+    return true;
+  }
+#ifdef GPU_TENSORRT
+  if (device_type == kGPU) {
+    int driver_version = 0;
+    int ret = cudaDriverGetVersion(&driver_version);
+    if (ret != cudaSuccess || driver_version == 0) {
+      MS_LOG(WARNING) << "No nvidia GPU driver.";
+      return false;
+    }
+    return true;
+  }
+#endif
+#ifdef ENABLE_LITE_ACL
+  if (device_type == kAscend || device_type == kAscend310) {
+    const char *soc_name_c = aclrtGetSocName();
+    if (soc_name_c == nullptr) {
+      MS_LOG(WARNING) << "aclrtGetSocName failed.";
+      return false;
+    }
+    std::string soc_name(soc_name_c);
+    if (soc_name.find("910") != std::string::npos) {
+      MS_LOG(WARNING) << "Device not support, aclrtGetSocName: " << soc_name;
+      return false;
+    }
+    return true;
+  }
+#endif
   return false;
 }
 
@@ -151,6 +205,17 @@ std::vector<MSTensor> Model::GetOutputs() {
   }
   return impl_->GetOutputs();
 }
+
+#ifdef ENABLE_OPENGL_TEXTURE
+Status Model::BindGLTexture2DMemory(const std::map<std::string, GLuint> &inputGLTexture,
+                                    std::map<std::string, GLuint> *outputGLTexture) {
+  if (impl_ == nullptr) {
+    MS_LOG(ERROR) << "Model implement is null.";
+    return kLiteError;
+  }
+  return impl_->BindGLTexture2DMemory(inputGLTexture, outputGLTexture);
+}
+#endif
 
 MSTensor Model::GetInputByTensorName(const std::vector<char> &name) {
   if (impl_ == nullptr) {
@@ -186,7 +251,7 @@ std::vector<MSTensor> Model::GetOutputsByNodeName(const std::vector<char> &node_
   return impl_->GetOutputsByNodeName(CharToString(node_name));
 }
 
-Status Model::LoadConfig(const std::string &config_path) {
+Status Model::LoadConfig(const std::vector<char> &config_path) {
   std::unique_lock<std::mutex> impl_lock(g_impl_init_lock);
   if (impl_ != nullptr) {
     MS_LOG(ERROR) << "impl_ illegal in LoadConfig.";
@@ -199,12 +264,25 @@ Status Model::LoadConfig(const std::string &config_path) {
     return Status(kLiteFileError, "Fail to load config file.");
   }
 
-  auto ret = impl_->LoadConfig(config_path);
+  auto ret = impl_->LoadConfig(CharToString(config_path));
   if (ret != kSuccess) {
     MS_LOG(ERROR) << "impl_ LoadConfig failed,";
     return Status(kLiteFileError, "Invalid config file.");
   }
   return kSuccess;
+}
+
+Status Model::UpdateConfig(const std::vector<char> &section,
+                           const std::pair<std::vector<char>, std::vector<char>> &config) {
+  std::unique_lock<std::mutex> impl_lock(g_impl_init_lock);
+  if (impl_ == nullptr) {
+    impl_ = std::shared_ptr<ModelImpl>(new (std::nothrow) ModelImpl());
+  }
+  if (impl_ != nullptr) {
+    return impl_->UpdateConfig(CharToString(section), {CharToString(config.first), CharToString(config.second)});
+  }
+  MS_LOG(ERROR) << "Model implement is null!";
+  return kLiteFileError;
 }
 
 Status Model::SetTrainMode(bool train) {
@@ -235,6 +313,23 @@ Status Model::ApplyGradients(const std::vector<MSTensor> &gradients) {
   return impl_->ApplyGradients(gradients);
 }
 
+std::vector<MSTensor> Model::GetFeatureMaps() const {
+  std::vector<MSTensor> empty;
+  if (impl_ == nullptr) {
+    MS_LOG(ERROR) << "Model implement is null.";
+    return empty;
+  }
+  return impl_->GetFeatureMaps();
+}
+
+Status Model::UpdateFeatureMaps(const std::vector<MSTensor> &new_weights) {
+  if ((impl_ == nullptr) || (impl_->session_ == nullptr)) {
+    MS_LOG(ERROR) << "Model is null.";
+    return kLiteUninitializedObj;
+  }
+  return impl_->UpdateFeatureMaps(new_weights);
+}
+
 std::vector<MSTensor> Model::GetOptimizerParams() const {
   std::vector<MSTensor> empty;
   if (impl_ == nullptr) {
@@ -253,7 +348,7 @@ Status Model::SetOptimizerParams(const std::vector<MSTensor> &params) {
   return impl_->SetOptimizerParams(params);
 }
 
-Status Model::InitMetrics(std::vector<Metrics *> metrics) {
+Status Model::InitMetrics(const std::vector<Metrics *> metrics) {
   if (impl_ == nullptr) {
     MS_LOG(ERROR) << "Model implement is null.";
     return kLiteUninitializedObj;

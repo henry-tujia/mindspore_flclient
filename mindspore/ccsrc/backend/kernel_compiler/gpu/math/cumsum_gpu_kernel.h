@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,14 @@ constexpr int kMaxDimsSize = 3;
 template <typename T>
 class CumSumGpuKernel : public GpuKernel {
  public:
-  CumSumGpuKernel() : exclusive_(false), reverse_(false), axis_(0), input_size_0_(0), stride_(0), stride2_(0) {}
+  CumSumGpuKernel()
+      : exclusive_(false),
+        reverse_(false),
+        is_null_input_(false),
+        axis_(0),
+        input_size_0_(0),
+        stride_(0),
+        stride2_(0) {}
   ~CumSumGpuKernel() = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -37,6 +44,9 @@ class CumSumGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     T *output_addr = GetDeviceAddress<T>(outputs, 0);
     T *ws_addr = GetDeviceAddress<T>(workspace, 0);
@@ -51,6 +61,12 @@ class CumSumGpuKernel : public GpuKernel {
     }
     input_size_0_ = sizeof(T);
     shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(shape_);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'CumSumGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     axis_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "axis"));
     exclusive_ = GetAttr<bool>(kernel_node, "exclusive");
     reverse_ = GetAttr<bool>(kernel_node, "reverse");
@@ -93,6 +109,7 @@ class CumSumGpuKernel : public GpuKernel {
   }
   bool exclusive_;
   bool reverse_;
+  bool is_null_input_;
   int axis_;
   size_t input_size_0_;
   size_t stride_;

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,9 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
+#include "utils/hash_map.h"
 #include "frontend/optimizer/opt.h"
 #include "frontend/parallel/strategy.h"
 #include "frontend/parallel/tensor_layout/tensor_redistribution.h"
@@ -69,7 +69,11 @@ void Redistribution(const std::pair<AnfNodePtr, int64_t> &node_pair, const Opera
                     const CNodePtr &middle_node, int64_t index, TensorRedistribution tensor_redistribution,
                     const CNodePtr &pre_node);
 
-bool StrategyFound(std::unordered_map<std::string, ValuePtr> attrs);
+bool StrategyFound(const mindspore::HashMap<std::string, ValuePtr> &attrs);
+
+bool AttrFound(const mindspore::HashMap<std::string, ValuePtr> &attrs, const std::string &target);
+
+AnfNodePtr GetAccuGrad(const std::vector<AnfNodePtr> &parameters, const std::string &weight_name);
 
 void MarkForwardCNode(const FuncGraphPtr &root);
 
@@ -84,7 +88,8 @@ void InsertVirtualDivOp(const VirtualDivOp &virtual_div_op, const CNodePtr &node
 
 std::pair<AnfNodePtr, bool> FindParameter(const AnfNodePtr &node, const FuncGraphPtr &func_graph);
 
-std::pair<bool, CNodePtr> FindCNode(const AnfNodePtr &anode, const std::string &name, const FuncGraphPtr &func_graph);
+std::pair<bool, CNodePtr> FindCNode(const AnfNodePtr &anode, const std::string &name, const FuncGraphPtr &func_graph,
+                                    size_t max_depth);
 
 // Generate and init parallel operator
 OperatorInfoPtr OperatorInstance(const PrimitivePtr &prim, const PrimitiveAttrs &attrs,
@@ -109,10 +114,15 @@ std::string SetParallelShape(const AnfNodePtr &parameter, const std::pair<AnfNod
 // change parameters'shape in resource
 void CoverSliceShape(const FuncGraphPtr &root);
 
+void LableBatchSizeSplit(const CNodePtr &node);
+
 void SetVirtualDatasetStrategy(const CNodePtr &node);
 bool IsInsertVirtualOutput(const FuncGraphPtr &root);
+
+void SetStridedSliceSplitStrategy(const std::vector<AnfNodePtr> &all_nodes);
+
 // Create parallel operator for primitive node(has strategy)
-void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes, bool is_training = true);
+void ExtractInformation(const std::vector<AnfNodePtr> &all_nodes);
 
 TensorLayout GetInputLayoutFromCNode(const std::pair<AnfNodePtr, int64_t> &node_pair);
 

@@ -46,11 +46,10 @@ class ScatterNdUpdateCPUKernel : public CPUKernel {
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs) override;
 
+ private:
   template <typename T>
   void LaunchKernel(const std::vector<AddressPtr> &inputs, const std::vector<kernel::AddressPtr> &outputs);
 
- private:
-  void Check(const CNodePtr &kernel_node);
   TypeId dtype_{kTypeUnknown};
   int unit_size_{0};
   size_t num_units_{0};
@@ -72,6 +71,54 @@ MS_REG_CPU_KERNEL(TensorScatterUpdate,
                     .AddInputAttr(kNumberTypeInt32)
                     .AddInputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat32),
+                  ScatterNdUpdateCPUKernel);
+
+MS_REG_CPU_KERNEL(ScatterNdUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeFloat64)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeFloat64)
+                    .AddOutputAttr(kNumberTypeFloat64),
+                  ScatterNdUpdateCPUKernel);
+
+MS_REG_CPU_KERNEL(TensorScatterUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeFloat64)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeFloat64)
+                    .AddOutputAttr(kNumberTypeFloat64),
+                  ScatterNdUpdateCPUKernel);
+
+MS_REG_CPU_KERNEL(ScatterNdUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddOutputAttr(kNumberTypeInt32),
+                  ScatterNdUpdateCPUKernel)
+
+MS_REG_CPU_KERNEL(TensorScatterUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddOutputAttr(kNumberTypeInt32),
+                  ScatterNdUpdateCPUKernel);
+
+MS_REG_CPU_KERNEL(ScatterNdUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeInt64)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt64)
+                    .AddOutputAttr(kNumberTypeInt64),
+                  ScatterNdUpdateCPUKernel)
+
+MS_REG_CPU_KERNEL(TensorScatterUpdate,
+                  KernelAttr()
+                    .AddInputAttr(kNumberTypeInt64)
+                    .AddInputAttr(kNumberTypeInt32)
+                    .AddInputAttr(kNumberTypeInt64)
+                    .AddOutputAttr(kNumberTypeInt64),
                   ScatterNdUpdateCPUKernel);
 }  // namespace kernel
 }  // namespace mindspore

@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <future>
 #include <limits>
 #include <memory>
 #include <bitset>
@@ -25,7 +26,6 @@
 
 #ifdef OFFLINE_DBG_MODE
 #include "base/float16.h"
-#include "offline_debug/offline_logger.h"
 #endif
 
 #ifdef ONLINE_DBG_MODE
@@ -84,18 +84,17 @@ double VarianceAndMeanCalculator::GetMean() const { return mean; }
 double VarianceAndMeanCalculator::GetVariance() const {
   if (count > 1) {
     return m2 / (count - 1);
-  } else {
-    return 0.0;
   }
+  return 0.0;
 }
 
 double VarianceAndMeanCalculator::GetStandardDeviation() { return sqrt(GetVariance()); }
 
 template <typename T>
-TensorSummary<T>::TensorSummary(void *current_tensor_ptr, void *const previous_tensor_ptr, uint32_t num_elements,
-                                uint32_t prev_num_elements)
-    : current_tensor_ptr_(reinterpret_cast<T *>(current_tensor_ptr)),
-      prev_tensor_ptr_(reinterpret_cast<T *>(previous_tensor_ptr)),
+TensorSummary<T>::TensorSummary(const void *current_tensor_ptr, const void *const previous_tensor_ptr,
+                                uint32_t num_elements, uint32_t prev_num_elements)
+    : current_tensor_ptr_(reinterpret_cast<const T *>(current_tensor_ptr)),
+      prev_tensor_ptr_(reinterpret_cast<const T *>(previous_tensor_ptr)),
       num_elements_(num_elements),
       prev_num_elements_(prev_num_elements),
       min_(std::numeric_limits<double>::max()),
@@ -125,9 +124,15 @@ void TensorSummary<T>::SummarizeTensor(const std::vector<DebugServices::watchpoi
         MS_LOG(DEBUG) << "Current and previous tensor are not the same size.";
       }
     }
-    inf_count_ += std::isinf(current_value);
-    nan_count_ += std::isnan(current_value);
-    zero_count_ += (current_value == 0);
+    if (std::isinf(current_value)) {
+      inf_count_ += 1;
+    }
+    if (std::isnan(current_value)) {
+      nan_count_ += 1;
+    }
+    if (current_value == 0) {
+      zero_count_ += 1;
+    }
     max_ = std::max(max_, current_value);
     min_ = std::min(min_, current_value);
     if (mean_sd_cal_enabled_) {
@@ -140,11 +145,11 @@ void TensorSummary<T>::SummarizeTensor(const std::vector<DebugServices::watchpoi
       range_count.second->ProcessElement(current_value);
     }
     for (auto &mean : means_) {
-      if (mean.first == "curr_prev_diff_mean") {
+      if (mean.first.compare("curr_prev_diff_mean") == 0) {
         mean.second->ProcessElement(std::abs(current_value - previous_value));
-      } else if (mean.first == "abs_prev_mean") {
+      } else if (mean.first.compare("abs_prev_mean") == 0) {
         mean.second->ProcessElement(std::abs(previous_value));
-      } else if (mean.first == "abs_current_mean") {
+      } else if (mean.first.compare("abs_current_mean") == 0) {
         mean.second->ProcessElement(std::abs(current_value));
       }
     }
@@ -156,7 +161,59 @@ void TensorSummary<T>::TensorStatistics(DbgDataType dtype_value) {
   if (dtype_value == DT_BOOL) {
     is_bool_ = true;
   }
-  double sum_elements = 0.0;
+  const int default_threads = 32;
+  const int default_elements_per_thread = 10000;
+
+  if (num_elements_ <= default_elements_per_thread) {
+    return TensorStatisticsSingleThread();
+  }
+  int desired_threads = num_elements_ / default_elements_per_thread;
+  int actual_threads = std::min(desired_threads, default_threads);
+  int actual_elements_per_thread = num_elements_ / actual_threads;
+
+  // Use multithread to calculate statistic on chunks of data
+  void *previous_tensor_ptr = nullptr;
+  size_t offset = 0;
+  std::vector<std::unique_ptr<TensorSummary<T>>> summary_vec;
+  std::vector<std::future<void>> summary_future_vec;
+  for (int i = 0; i < actual_threads; i++) {
+    int num_elements_for_thread;
+    if (i == actual_threads - 1) {
+      num_elements_for_thread = num_elements_ - offset;
+    } else {
+      num_elements_for_thread = actual_elements_per_thread;
+    }
+    summary_vec.emplace_back(std::make_unique<TensorSummary<T>>(current_tensor_ptr_ + offset, previous_tensor_ptr,
+                                                                num_elements_for_thread, 0));
+    summary_future_vec.emplace_back(
+      std::async(std::launch::async, &TensorSummary<T>::TensorStatisticsSingleThread, summary_vec[i].get()));
+    offset += num_elements_for_thread;
+  }
+
+  // Aggregate results of all chunks
+  num_elements_ = 0;  // Let current tensor weight 0 in the aggregation
+  for (unsigned int i = 0; i < summary_future_vec.size(); i++) {
+    summary_future_vec[i].wait();
+    summary_future_vec[i].get();
+    auto &cur_summary = *(summary_vec[i]);
+    num_elements_ += cur_summary.num_elements_;
+    min_ = std::min(min_, cur_summary.min_);
+    max_ = std::max(max_, cur_summary.max_);
+    double avg_delta = cur_summary.avg_ - avg_;
+    avg_ += avg_delta * (cur_summary.num_elements_ / num_elements_);
+    neg_zero_count_ += cur_summary.neg_zero_count_;
+    pos_zero_count_ += cur_summary.pos_zero_count_;
+    neg_inf_count_ += cur_summary.neg_inf_count_;
+    pos_inf_count_ += cur_summary.pos_inf_count_;
+    inf_count_ += cur_summary.inf_count_;
+    nan_count_ += cur_summary.nan_count_;
+    zero_count_ += cur_summary.zero_count_;
+  }
+}
+
+template <typename T>
+void TensorSummary<T>::TensorStatisticsSingleThread() {
+  MeanCalculator mean_calc = MeanCalculator();
   for (size_t i = 0; i < num_elements_; ++i) {
     auto current_value = static_cast<double>(current_tensor_ptr_[i]);
     if (std::isinf(current_value)) {
@@ -166,8 +223,12 @@ void TensorSummary<T>::TensorStatistics(DbgDataType dtype_value) {
         neg_inf_count_ += 1;
       }
     }
-    zero_count_ += (current_value == 0);
-    nan_count_ += std::isnan(current_value);
+    if (current_value == 0) {
+      zero_count_ += 1;
+    }
+    if (std::isnan(current_value)) {
+      nan_count_ += 1;
+    }
     if (!(std::isnan(current_value) || std::isinf(current_value))) {
       // only considering tensor elements with value
       if (std::signbit(current_value) && !(current_value == 0)) {
@@ -177,11 +238,10 @@ void TensorSummary<T>::TensorStatistics(DbgDataType dtype_value) {
       }
       max_ = std::max(max_, current_value);
       min_ = std::min(min_, current_value);
-      sum_elements += current_value;
+      mean_calc.ProcessElement(current_value);
     }
   }
-  int value_count = zero_count_ + neg_zero_count_ + pos_zero_count_;
-  avg_ = sum_elements / value_count;
+  avg_ = mean_calc.GetMean();
 }
 
 template <typename T>
@@ -193,9 +253,9 @@ std::tuple<bool, int, std::vector<DebugServices::parameter_t>> TensorSummary<T>:
   std::bitset<bit_size> error_code;
   CONDITION_TYPE type = wp.condition.type;
   // bit 0 denotes presence of nan
-  error_code.set(0, nan_count_ > 0);
+  (void)error_code.set(0, nan_count_ > 0);
   // bit 1 denotes presence of inf
-  error_code.set(1, inf_count_ > 0);
+  (void)error_code.set(1, inf_count_ > 0);
 
   if (type == CONDITION_TYPE::HAS_NAN) {
     error_code.reset();
@@ -245,27 +305,35 @@ double_t TensorSummary<T>::StatLookup(const std::string &parameter_name, const D
 
   if (param_type == "max") {
     return max_;
-  } else if (param_type == "min") {
+  }
+  if (param_type == "min") {
     return min_;
-  } else if (param_type == "max_min") {
+  }
+  if (param_type == "max_min") {
     return max_ - min_;
-  } else if (param_type == "mean") {
+  }
+  if (param_type == "mean") {
     return current_mean_variance_.GetMean();
-  } else if (param_type == "sd") {
+  }
+  if (param_type == "sd") {
     return current_mean_variance_.GetStandardDeviation();
-  } else if (param_type == "abs_mean") {
+  }
+  if (param_type == "abs_mean") {
     if (means_.find("abs_current_mean") != means_.end()) {
       return means_["abs_current_mean"]->GetMean();
     }
-  } else if (param_type == "abs_mean_update_ratio" && prev_tensor_ptr_) {
+  }
+  if (param_type == "abs_mean_update_ratio" && prev_tensor_ptr_) {
     if (means_.find("curr_prev_diff_mean") != means_.end() && means_.find("abs_prev_mean") != means_.end()) {
       return means_["curr_prev_diff_mean"]->GetMean() / (means_["abs_prev_mean"]->GetMean() + epsilon_);
     }
-  } else if (param_type == "range_percentage") {
+  }
+  if (param_type == "range_percentage") {
     if (range_counts_.find(wp.id) != range_counts_.end()) {
       return range_counts_[wp.id]->GetPercentInRange();
     }
-  } else if (param_type == "zero_percentage") {
+  }
+  if (param_type == "zero_percentage") {
     return GetZeroValPercent();
   }
   return std::numeric_limits<double_t>::quiet_NaN();
@@ -276,13 +344,17 @@ double_t TensorSummary<T>::StatLookup(const DebugServices::watchpoint_t &wp) {
   CONDITION_TYPE type = wp.condition.type;
   if (type == CONDITION_TYPE::MAX_LT || type == CONDITION_TYPE::MAX_GT) {
     return max_;
-  } else if (type == CONDITION_TYPE::MIN_LT || type == CONDITION_TYPE::MIN_GT) {
+  }
+  if (type == CONDITION_TYPE::MIN_LT || type == CONDITION_TYPE::MIN_GT) {
     return min_;
-  } else if (type == CONDITION_TYPE::MEAN_LT || type == CONDITION_TYPE::MEAN_GT) {
+  }
+  if (type == CONDITION_TYPE::MEAN_LT || type == CONDITION_TYPE::MEAN_GT) {
     return current_mean_variance_.GetMean();
-  } else if (type == CONDITION_TYPE::SD_LT || type == CONDITION_TYPE::SD_GT) {
+  }
+  if (type == CONDITION_TYPE::SD_LT || type == CONDITION_TYPE::SD_GT) {
     return current_mean_variance_.GetStandardDeviation();
-  } else if (type == CONDITION_TYPE::MAX_MIN_GT || type == CONDITION_TYPE::MAX_MIN_LT) {
+  }
+  if (type == CONDITION_TYPE::MAX_MIN_GT || type == CONDITION_TYPE::MAX_MIN_LT) {
     return max_ - min_;
   }
   return std::numeric_limits<double_t>::quiet_NaN();
@@ -305,10 +377,10 @@ void TensorSummary<T>::InitCalculators(const std::vector<DebugServices::watchpoi
     if (wp.allclose_enabled() && prev_tensor_ptr_) {
       all_close_[wp_id] = std::make_unique<AllCloseCalculator>();
       if (!wp.parameter_list[0].disabled) {
-        all_close_[wp_id]->set_atol(wp.parameter_list[0].value);
+        all_close_[wp_id]->set_rtol(wp.parameter_list[0].value);
       }
       if (!wp.parameter_list[1].disabled) {
-        all_close_[wp_id]->set_rtol(wp.parameter_list[1].value);
+        all_close_[wp_id]->set_atol(wp.parameter_list[1].value);
       }
     } else if (wp.range_enabled()) {
       range_counts_[wp_id] = std::make_unique<RangeCountCalculator>();
@@ -319,10 +391,10 @@ void TensorSummary<T>::InitCalculators(const std::vector<DebugServices::watchpoi
         range_counts_[wp_id]->set_range_end_inclusive(wp.parameter_list[1].value);
       }
     } else if (wp.tensor_update_ratio_mean_enabled() && prev_tensor_ptr_) {
-      means_.insert({"curr_prev_diff_mean", std::make_unique<MeanCalculator>()});
-      means_.insert({"abs_prev_mean", std::make_unique<MeanCalculator>()});
+      (void)means_.emplace("curr_prev_diff_mean", std::make_unique<MeanCalculator>());
+      (void)means_.emplace("abs_prev_mean", std::make_unique<MeanCalculator>());
     } else if (wp.abs_mean_enabled()) {
-      means_.insert({"abs_current_mean", std::make_unique<MeanCalculator>()});
+      (void)means_.emplace("abs_current_mean", std::make_unique<MeanCalculator>());
     }
   }
 }

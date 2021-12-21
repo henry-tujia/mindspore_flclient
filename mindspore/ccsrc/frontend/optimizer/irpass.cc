@@ -50,6 +50,7 @@
 #include "frontend/optimizer/irpass/switch_or_switch_layer_defer_inline.h"
 #include "frontend/optimizer/irpass/call_graph_tuple_transform.h"
 #include "frontend/optimizer/irpass/recompute_prepare.h"
+#include "frontend/optimizer/irpass/real_op_eliminate.h"
 
 namespace mindspore {
 namespace opt {
@@ -90,7 +91,8 @@ OptimizeIRPassLib::OptimizeIRPassLib() {
   tuple_list_convert_item_index_to_positive_ = MakeSubstitution(
     std::make_shared<TupleListConvertItemIndexToPositive>(), "tuple_list_convert_item_index_to_positive",
     {prim::kPrimTupleGetItem, prim::kPrimTupleSetItem, prim::kPrimListGetItem, prim::kPrimListSetItem});
-
+  make_slice_get_slice_eliminator_ = MakeSubstitution(std::make_shared<MakeSliceSliceGetItemEliminator>(),
+                                                      "make_slice_get_slice_eliminator", {prim::kPrimSliceGetItem});
   tile_eliminate_ = MakeSubstitution(std::make_shared<TileEliminater>(), "tile_eliminate", prim::kPrimTile);
   cast_eliminate_ = MakeSubstitution(std::make_shared<CastEliminater>(), "cast_eliminate", prim::kPrimCast);
   reshape_eliminate_ = MakeSubstitution(std::make_shared<ReshapeEliminater>(), "reshape_eliminate", prim::kPrimReshape);
@@ -107,7 +109,7 @@ OptimizeIRPassLib::OptimizeIRPassLib() {
                                                   "mini_step_allgather_replace", prim::kPrimMiniStepAllGather);
   micro_step_allgather_replace_ = MakeSubstitution(std::make_shared<MicroStepAllGatherPass>(),
                                                    "micro_step_allgather_replace", prim::kPrimMicroStepAllGather);
-  virtual_add_elim_ = MakeSubstitution(std::make_shared<VirtualAddEliminater>(), "virtual add", prim::kPrimVirtualAdd);
+  virtual_add_elim_ = MakeSubstitution(std::make_shared<VirtualAddEliminater>(), "virtual_add", prim::kPrimVirtualAdd);
   check_bprop_eliminate_ =
     MakeSubstitution(std::make_shared<CheckBpropEliminater>(), "check_bprop_eliminate", prim::kPrimCheckBprop);
   reset_defer_inline_ =
@@ -115,6 +117,7 @@ OptimizeIRPassLib::OptimizeIRPassLib() {
   depend_value_elim_ = MakeSubstitution(std::make_shared<DependValueElim>(), "depend_value_elim", prim::kPrimDepend);
   all_reduce_const_elim_ =
     MakeSubstitution(std::make_shared<AllReduceConstElim>(), "reduce_all_const_elim", prim::kPrimAllReduce);
+  real_op_eliminate_ = MakeSubstitution(std::make_shared<RealOpEliminate>(), "real_op_eliminate", prim::kPrimRealInner);
 
   // Env Item Eliminate
   env_get_item_eliminate_ =
@@ -264,9 +267,9 @@ OptimizeIRPassLib::OptimizeIRPassLib() {
 }
 
 ResolveIRPassLib::ResolveIRPassLib() {
-  // In resolver_getattr_resolve_, some patterns have priority over others.
-  resolver_getattr_resolve_ = MakeSubstitution(std::make_shared<ResolverGetAttrResolve>(), "getattr_resolve",
-                                               {prim::kPrimGetAttr, prim::kPrimResolve}, opt::CHECK_RENORM, true);
+  // In resolver_, some patterns have priority over others.
+  resolver_ = MakeSubstitution(std::make_shared<Resolver>(), "getattr_resolve",
+                               {prim::kPrimGetAttr, prim::kPrimResolve}, opt::CHECK_RENORM, true);
 }
 
 InferenceOptPrepareLib::InferenceOptPrepareLib() {

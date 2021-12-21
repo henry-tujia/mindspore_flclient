@@ -37,7 +37,7 @@ int ConcatOpenCLKernel::RunAxis0() {
   MS_ASSERT(dst_data);
   auto dst_origin = cl::array<cl::size_type, 3U>{0, 0, 0};
   auto *out_image = allocator_->GetImage(dst_data);
-  for (int i = 0; i < in_tensors_.size(); i++) {
+  for (size_t i = 0; i < in_tensors_.size(); i++) {
     auto src_data = weight_ptrs_.at(i) == nullptr ? in_tensors_[i]->data() : weight_ptrs_.at(i);
     if (allocator_->GetImageSize(src_data, &img_size) != RET_OK) {
       MS_LOG(ERROR) << "GetImageSize failed.";
@@ -78,20 +78,20 @@ void ConcatGetWorkGroup(const std::vector<size_t> &global, std::vector<size_t> *
 int ConcatOpenCLKernel::CheckSpecs() {
   if ((in_tensors_.size() < INPUT_TENSOR_SIZE_2 || in_tensors_.size() > INPUT_TENSOR_SIZE_6) ||
       out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   auto param = reinterpret_cast<ConcatParameter *>(this->op_parameter_);
   auto out_tensors_shape_size = out_tensors_[0]->shape().size();
   MS_LOG(DEBUG) << " concat at axis=:  " << param->axis_;
   if (out_tensors_shape_size > DIMENSION_4D) {
-    MS_LOG(ERROR) << " GPU Unsupported shape.size > 4 ";
+    MS_LOG(WARNING) << " GPU Unsupported shape.size > 4 ";
     return RET_ERROR;
   }
   for (auto &in_tensor : in_tensors_) {
     auto in_tensors_shape_size = in_tensor->shape().size();
     if (in_tensors_shape_size > DIMENSION_4D) {
-      MS_LOG(ERROR) << " GPU Unsupported in_tensor shape.size > 4 ";
+      MS_LOG(WARNING) << " GPU Unsupported in_tensor shape.size > 4 ";
       return RET_ERROR;
     }
   }
@@ -100,7 +100,7 @@ int ConcatOpenCLKernel::CheckSpecs() {
     axis_ += in_tensors_.front()->shape().size();
   }
   if (axis_ < 0 || axis_ > 3) {
-    MS_LOG(ERROR) << " only support axis >= 0 and axis <= 3 ";
+    MS_LOG(WARNING) << " only support axis >= 0 and axis <= 3 ";
     return RET_ERROR;
   }
   if (out_tensors_shape_size < 4 && type() == PrimitiveType_Concat && axis_ != 0) {
@@ -109,12 +109,12 @@ int ConcatOpenCLKernel::CheckSpecs() {
     } else if (out_tensors_shape_size == DIMENSION_3D) {
       axis_ = axis_ + 1;
     } else {
-      MS_LOG(ERROR) << " Unsupported axis =:  " << axis_ << "  shape().size()=:  " << out_tensors_shape_size;
+      MS_LOG(WARNING) << " Unsupported axis =:  " << axis_ << "  shape().size()=:  " << out_tensors_shape_size;
       return RET_ERROR;
     }
   }
   if (in_tensors_.size() < INPUT_TENSOR_SIZE_2 || in_tensors_.size() > INPUT_TENSOR_SIZE_6) {
-    MS_LOG(ERROR) << "unsupported input size :" << in_tensors_.size();
+    MS_LOG(WARNING) << "unsupported input size :" << in_tensors_.size();
     return RET_ERROR;
   }
   return RET_OK;
@@ -125,7 +125,7 @@ int ConcatOpenCLKernel::SetConstArgs() {
   size_t dtype = ocl_runtime_->GetFp16Enable() ? sizeof(cl_half) : sizeof(cl_float);
   stride_w = img_info.RowPitch() / dtype;
   cl_int4 output_shape_ = {};
-  for (int i = 0; i < out_tensors_[0]->shape().size(); ++i) {
+  for (size_t i = 0; i < out_tensors_[0]->shape().size(); ++i) {
     output_shape_.s[i] = out_tensors_[0]->shape()[i];
   }
   Broadcast2GpuShape(out_shape_.s, output_shape_.s, out_tensors_[0]->shape().size(), 1);
@@ -133,7 +133,7 @@ int ConcatOpenCLKernel::SetConstArgs() {
   if (axis_ == 3 && !Align_) {
     for (auto &in_tensor : in_tensors_) {
       cl_int4 temp = {};
-      for (int j = 0; j < in_tensor->shape().size(); ++j) {
+      for (size_t j = 0; j < in_tensor->shape().size(); ++j) {
         temp.s[j] = in_tensor->shape()[j];
       }
       Broadcast2GpuShape(in_shape_.s, temp.s, in_tensor->shape().size(), 1);
@@ -149,7 +149,7 @@ int ConcatOpenCLKernel::SetConstArgs() {
   } else {
     for (auto &in_tensor : in_tensors_) {
       cl_int4 temp = {};
-      for (int j = 0; j < in_tensor->shape().size(); ++j) {
+      for (size_t j = 0; j < in_tensor->shape().size(); ++j) {
         temp.s[j] = in_tensor->shape()[j];
       }
       Broadcast2GpuShape(in_shape_.s, temp.s, in_tensor->shape().size(), 1);
@@ -282,7 +282,7 @@ int ConcatOpenCLKernel::Run() {
     return RunAxis0();
   }
   int arg_cn = 0;
-  for (int i = 0; i < in_tensors_.size(); ++i) {
+  for (size_t i = 0; i < in_tensors_.size(); ++i) {
     auto input_ptr = weight_ptrs_.at(i) == nullptr ? in_tensors_[i]->data() : weight_ptrs_.at(i);
     if (ocl_runtime_->SetKernelArg(kernel_, arg_cn++, input_ptr) != CL_SUCCESS) {
       MS_LOG(ERROR) << "SetKernelArg failed.";

@@ -17,6 +17,7 @@
 #include "src/runtime/kernel/arm/fp16/deconvolution_winograd_fp16.h"
 
 using mindspore::lite::RET_ERROR;
+using mindspore::lite::RET_MEMORY_FAILED;
 using mindspore::lite::RET_NULL_PTR;
 using mindspore::lite::RET_OK;
 
@@ -64,16 +65,6 @@ void DeConvWinogradFp16CPUKernel::FreeResizeBuf() {
     free(tile_input_);
     tile_input_ = nullptr;
   }
-
-  if (tile_output_ != nullptr) {
-    free(tile_output_);
-    tile_output_ = nullptr;
-  }
-
-  if (nc4hw4_output_ != nullptr) {
-    free(nc4hw4_output_);
-    nc4hw4_output_ = nullptr;
-  }
   return;
 }
 
@@ -114,12 +105,6 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
   deconv_param_->input_plane_ = conv_param_->input_h_ * conv_param_->input_w_;
   deconv_param_->output_plane_ = conv_param_->output_h_ * conv_param_->output_w_;
 
-  nc4hw4_output_ =
-    reinterpret_cast<float16_t *>(malloc(deconv_param_->oc_up4_ * deconv_param_->output_plane_ * sizeof(float16_t)));
-  if (nc4hw4_output_ == nullptr) {
-    return RET_NULL_PTR;
-  }
-
   deconv_param_->in_tile_w_count_ = UP_DIV(conv_param_->input_w_, DECONV_WINOGRAD_DEFAULT_UNIT);
   deconv_param_->in_tile_h_count_ = UP_DIV(conv_param_->input_h_, DECONV_WINOGRAD_DEFAULT_UNIT);
 
@@ -132,7 +117,7 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
   thread_stride_hw_ = UP_DIV(deconv_param_->output_plane_, thread_num_hw_);
 
   int size = deconv_param_->thread_num_ * DECONV_WINOGRAD_DEFAULT_UNIT * DECONV_WINOGRAD_DEFAULT_UNIT *
-             DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up4_;
+             DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up_;
   tile_input_ = reinterpret_cast<float16_t *>(malloc(size * sizeof(float16_t)));
   if (tile_input_ == nullptr) {
     return RET_NULL_PTR;
@@ -141,12 +126,6 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
 
   deconv_param_->out_tile_w_ = (DECONV_WINOGRAD_DEFAULT_UNIT - 1) * conv_param_->stride_w_ + conv_param_->kernel_w_;
   deconv_param_->out_tile_h_ = (DECONV_WINOGRAD_DEFAULT_UNIT - 1) * conv_param_->stride_h_ + conv_param_->kernel_h_;
-  size = deconv_param_->thread_num_ * deconv_param_->out_tile_w_ * deconv_param_->out_tile_h_ *
-         DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->oc_up4_;
-  tile_output_ = reinterpret_cast<float16_t *>(malloc(size * sizeof(float16_t)));
-  if (tile_output_ == nullptr) {
-    return RET_NULL_PTR;
-  }
 
   for (int i = 0; i < deconv_param_->compute_size_; i++) {
     DeConvComputeUnit &unit = deconv_param_->compute_units_[i];
@@ -157,7 +136,7 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
       if (deconv_param_->a_buffer_[unit.winograd_.kh_].buf_init_ == false) {
         deconv_param_->a_buffer_[unit.winograd_.kh_].buf_init_ = true;
 
-        size = unit.winograd_.kh_ * unit.winograd_.kw_ * DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up4_;
+        size = unit.winograd_.kh_ * unit.winograd_.kw_ * DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up_;
         deconv_param_->a_buffer_[unit.winograd_.kh_].middle_buffer_ =
           malloc(deconv_param_->thread_num_ * size * sizeof(float16_t));
         if (deconv_param_->a_buffer_[unit.winograd_.kh_].middle_buffer_ == nullptr) {
@@ -171,17 +150,17 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
       }
 
       unit.winograd_.b_buffer_ = malloc(deconv_param_->thread_num_ * unit.winograd_.kh_ * unit.winograd_.kw_ *
-                                        deconv_param_->oc_up4_ * DECONV_WINOGRAD_DEFAULT_TILE * sizeof(float16_t));
+                                        deconv_param_->oc_up_ * DECONV_WINOGRAD_DEFAULT_TILE * sizeof(float16_t));
       if (unit.winograd_.b_buffer_ == nullptr) {
         return RET_NULL_PTR;
       }
       unit.tmp_buffer_ = malloc(deconv_param_->thread_num_ * unit.winograd_.kh_ * unit.winograd_.kw_ *
-                                deconv_param_->oc_div4_ * DECONV_WINOGRAD_DEFAULT_TILE * C4NUM * sizeof(float16_t));
+                                deconv_param_->oc_div_ * DECONV_WINOGRAD_DEFAULT_TILE * C4NUM * sizeof(float16_t));
       if (unit.tmp_buffer_ == nullptr) {
         return RET_NULL_PTR;
       }
     } else {
-      unit.tmp_buffer_ = malloc(deconv_param_->thread_num_ * deconv_param_->oc_div4_ * unit.w_size_ * unit.h_size_ *
+      unit.tmp_buffer_ = malloc(deconv_param_->thread_num_ * deconv_param_->oc_div_ * unit.w_size_ * unit.h_size_ *
                                 DECONV_WINOGRAD_DEFAULT_TILE * C4NUM * sizeof(float16_t));
       if (unit.tmp_buffer_ == nullptr) {
         return RET_NULL_PTR;
@@ -192,11 +171,12 @@ int DeConvWinogradFp16CPUKernel::InitParameter() {
 }
 
 int DeConvWinogradFp16CPUKernel::DoDeconv(int task_id) {
+  // It is better than continuous cutting because it uses locks to merge after fully paralleling.
   for (int tile_index = task_id; tile_index < deconv_param_->in_tile_count_; tile_index += deconv_param_->thread_num_) {
     float16_t *tile_in = tile_input_ + task_id * DECONV_WINOGRAD_DEFAULT_UNIT * DECONV_WINOGRAD_DEFAULT_UNIT *
-                                         DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up4_;
+                                         DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->ic_up_;
     int size = deconv_param_->out_tile_w_ * deconv_param_->out_tile_h_ * DECONV_WINOGRAD_DEFAULT_TILE *
-               deconv_param_->oc_div4_ * C4NUM;
+               deconv_param_->oc_div_ * C4NUM;
     float16_t *tile_out = tile_output_ + task_id * size;
     memset(tile_out, 0, size * sizeof(float16_t));
 
@@ -206,8 +186,12 @@ int DeConvWinogradFp16CPUKernel::DoDeconv(int task_id) {
 
     DeconvWgFp16(nhwc_input_, tile_in, tile_out, start_index, calculate_count, conv_param_, deconv_param_, task_id);
 
-    std::unique_lock<std::mutex> merge_lock(lock_);
+    std::unique_lock<std::mutex> merge_lock(nc4hw4_mutex_);
+    nc4hw4_cond_var_.wait(merge_lock, [&] { return tile_index == completed_index_ + 1; });
+
     DeconvWgPostFp16(tile_out, nc4hw4_output_, conv_param_, deconv_param_, calculate_count, tile_index);
+    completed_index_++;
+    nc4hw4_cond_var_.notify_all();
   }
   return RET_OK;
 }
@@ -257,10 +241,10 @@ int DeConvWinogradFp16CPUKernel::InitComputeParam() {
   conv_param_->kernel_h_ = weight_tensor->Height();
 
   deconv_param_->kernel_plane_ = conv_param_->kernel_w_ * conv_param_->kernel_h_;
-  deconv_param_->ic_div4_ = UP_DIV(conv_param_->input_channel_, C4NUM);
-  deconv_param_->oc_div4_ = UP_DIV(conv_param_->output_channel_, C4NUM);
-  deconv_param_->ic_up4_ = deconv_param_->ic_div4_ * C4NUM;
-  deconv_param_->oc_up4_ = deconv_param_->oc_div4_ * C4NUM;
+  deconv_param_->ic_div_ = UP_DIV(conv_param_->input_channel_, C4NUM);
+  deconv_param_->oc_div_ = UP_DIV(conv_param_->output_channel_, C4NUM);
+  deconv_param_->ic_up_ = deconv_param_->ic_div_ * C4NUM;
+  deconv_param_->oc_up_ = deconv_param_->oc_div_ * C4NUM;
 
   deconv_param_->compute_size_ = 0;
   for (int si_h = 0; si_h < conv_param_->stride_h_; si_h++) {
@@ -306,14 +290,14 @@ int DeConvWinogradFp16CPUKernel::InitComputeParam() {
         unit.winograd_.kw_ = unit.w_size_ + DECONV_WINOGRAD_DEFAULT_UNIT - 1;
 
         unit.winograd_.b_buffer_ = nullptr;
-        unit.weight_ = malloc(unit.winograd_.kh_ * unit.winograd_.kw_ * deconv_param_->oc_up4_ *
-                              deconv_param_->ic_up4_ * sizeof(float16_t));
+        unit.weight_ = malloc(unit.winograd_.kh_ * unit.winograd_.kw_ * deconv_param_->oc_up_ * deconv_param_->ic_up_ *
+                              sizeof(float16_t));
         if (unit.weight_ == nullptr) {
           return RET_NULL_PTR;
         }
       } else {
         unit.use_winograd_ = false;
-        unit.weight_ = malloc(h_size * w_size * deconv_param_->ic_up4_ * deconv_param_->oc_up4_ * sizeof(float16_t));
+        unit.weight_ = malloc(h_size * w_size * deconv_param_->ic_up_ * deconv_param_->oc_up_ * sizeof(float16_t));
         if (unit.weight_ == nullptr) {
           return RET_NULL_PTR;
         }
@@ -345,12 +329,12 @@ int DeConvWinogradFp16CPUKernel::InitDataParam() {
   }
 
   /* bias */
-  bias_data_ = malloc(deconv_param_->oc_up4_ * sizeof(float16_t));
+  bias_data_ = malloc(deconv_param_->oc_up_ * sizeof(float16_t));
   if (bias_data_ == nullptr) {
     MS_LOG(ERROR) << "malloc bias_data_ failed.";
     return RET_ERROR;
   }
-  memset(bias_data_, 0, deconv_param_->oc_up4_ * sizeof(float16_t));
+  memset(bias_data_, 0, deconv_param_->oc_up_ * sizeof(float16_t));
   if (in_tensors_.size() == kInputSize2) {
     auto bias_tensor = in_tensors_.at(kBiasIndex);
     CHECK_NULL_RETURN(bias_tensor);
@@ -372,7 +356,7 @@ int DeConvWinogradFp16CPUKernel::ReSize() {
   CHECK_NULL_RETURN(deconv_param_);
 
   FreeResizeBuf();
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "ConvolutionBaseCPUKernel init failed!";
     return ret;
@@ -398,7 +382,7 @@ int DeConvWinogradFp16CPUKernel::ReSize() {
   return RET_OK;
 }
 
-int DeConvWinogradFp16CPUKernel::Init() {
+int DeConvWinogradFp16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_.at(kInputIndex));
@@ -433,6 +417,37 @@ int DeConvWinogradFp16CPUKernel::Init() {
   return ReSize();
 }
 
+int DeConvWinogradFp16CPUKernel::InitRunBuf() {
+  int size = deconv_param_->oc_up_ * deconv_param_->output_plane_;
+  nc4hw4_output_ = reinterpret_cast<float16_t *>(ctx_->allocator->Malloc(size * sizeof(float16_t)));
+  if (nc4hw4_output_ == nullptr) {
+    MS_LOG(ERROR) << "de conv wg Malloc nc4hw4_output_ error!";
+    return RET_MEMORY_FAILED;
+  }
+
+  size = deconv_param_->thread_num_ * deconv_param_->out_tile_w_ * deconv_param_->out_tile_h_ *
+         DECONV_WINOGRAD_DEFAULT_TILE * deconv_param_->oc_up_;
+  tile_output_ = reinterpret_cast<float16_t *>(ctx_->allocator->Malloc(size * sizeof(float16_t)));
+  if (tile_output_ == nullptr) {
+    MS_LOG(ERROR) << "de conv wg Malloc tile_output_ error!";
+    return RET_MEMORY_FAILED;
+  }
+  return RET_OK;
+}
+
+void DeConvWinogradFp16CPUKernel::FreeRunBuf() {
+  if (nc4hw4_output_ != nullptr) {
+    ctx_->allocator->Free(nc4hw4_output_);
+    nc4hw4_output_ = nullptr;
+  }
+
+  if (tile_output_ != nullptr) {
+    ctx_->allocator->Free(tile_output_);
+    tile_output_ = nullptr;
+  }
+  return;
+}
+
 int DeConvWinogradFp16CPUKernel::Run() {
   auto input_tensor = in_tensors_.at(kInputIndex);
   auto output_tensor = out_tensors_.at(kOutputIndex);
@@ -441,18 +456,27 @@ int DeConvWinogradFp16CPUKernel::Run() {
   CHECK_NULL_RETURN(input_ptr);
   CHECK_NULL_RETURN(output_ptr);
 
+  if (InitRunBuf() != RET_OK) {
+    MS_LOG(ERROR) << "InitRunBuf fail!";
+    FreeRunBuf();
+    return RET_ERROR;
+  }
+
   if (!valid_weight_shape_) {
     if (InitComputeParam() != RET_OK) {
       MS_LOG(ERROR) << "InitDataParam error!";
+      FreeRunBuf();
       return RET_ERROR;
     }
     if (!valid_weight_shape_ || InitParameter() != RET_OK) {
       MS_LOG(ERROR) << "InitDataParam error!";
+      FreeRunBuf();
       return RET_ERROR;
     }
   }
   if (IsRepack() && InitDataParam() != RET_OK) {
     MS_LOG(ERROR) << "InitDataParam error!";
+    FreeRunBuf();
     return RET_ERROR;
   }
 
@@ -460,20 +484,23 @@ int DeConvWinogradFp16CPUKernel::Run() {
     nhwc_input_ = input_ptr + batch_index * deconv_param_->input_plane_ * conv_param_->input_channel_;
     nhwc_output_ = output_ptr + batch_index * deconv_param_->output_plane_ * conv_param_->output_channel_;
 
-    ::memset(nc4hw4_output_, 0, deconv_param_->output_plane_ * deconv_param_->oc_div4_ * C4NUM * sizeof(float16_t));
+    ::memset(nc4hw4_output_, 0, deconv_param_->output_plane_ * deconv_param_->oc_div_ * C4NUM * sizeof(float16_t));
+    completed_index_ = -1;
     auto ret = ParallelLaunch(this->ms_context_, DeConvWgFp16Run, this, deconv_param_->thread_num_);
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "DeConvWgFp16Run failed!";
+      FreeRunBuf();
       return ret;
     }
     // post bias activate and nhwc
     ret = ParallelLaunch(this->ms_context_, DeConvWgPostFp16Run, this, thread_num_hw_);
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "DeConvWgPostFp16Run failed!";
+      FreeRunBuf();
       return ret;
     }
   }
-
+  FreeRunBuf();
   return RET_OK;
 }
 }  // namespace mindspore::kernel

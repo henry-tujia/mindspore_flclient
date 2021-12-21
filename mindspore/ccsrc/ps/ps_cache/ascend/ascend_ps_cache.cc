@@ -28,6 +28,7 @@
 #include "proto/attr.pb.h"
 #include "proto/node_def.pb.h"
 #include "runtime/rt.h"
+#include "acl/acl_rt.h"
 
 using mindspore::kernel::Address;
 using AddressPtr = std::shared_ptr<Address>;
@@ -129,16 +130,28 @@ bool AscendPsCache::InitDevice(uint32_t device_id, const void *context) {
 }
 
 void *AscendPsCache::MallocMemory(size_t size) {
-  return device::ascend::AscendMemoryPool::GetInstance().AllocTensorMem(size);
+  const auto device_addr = device::ascend::AscendMemoryPool::GetInstance().AllocTensorMem(size);
+  if (device_addr == nullptr) {
+    MS_LOG(EXCEPTION) << "Fail to alloc memory, size: " << size;
+  }
+  return device_addr;
+}
+
+void AscendPsCache::FreeMemory(void *device_addr) {
+  device::ascend::AscendMemoryPool::GetInstance().FreeTensorMem(device_addr);
 }
 
 bool AscendPsCache::MallocConstantMemory(size_t cache_vocab_size) {
   offset_addr_ = reinterpret_cast<int *>(device::ascend::AscendMemoryPool::GetInstance().AllocTensorMem(sizeof(int)));
-  MS_ERROR_IF_NULL(offset_addr_);
+  if (offset_addr_ == nullptr) {
+    MS_LOG(EXCEPTION) << "Fail to alloc memory, size: " << sizeof(int);
+  }
   rtMemset(offset_addr_, sizeof(int), 0, sizeof(int));
   cache_vocab_size_addr_ =
     reinterpret_cast<int *>(device::ascend::AscendMemoryPool::GetInstance().AllocTensorMem(sizeof(int)));
-  MS_ERROR_IF_NULL(cache_vocab_size_addr_);
+  if (cache_vocab_size_addr_ == nullptr) {
+    MS_LOG(EXCEPTION) << "Fail to alloc memory, size: " << sizeof(int);
+  }
   int copy_value = SizeToInt(cache_vocab_size);
   if (!CopyHostMemToDevice(cache_vocab_size_addr_, &copy_value, sizeof(int))) {
     return false;
@@ -190,9 +203,9 @@ bool AscendPsCache::SynchronizeStream() {
 bool AscendPsCache::CopyHostMemToDevice(void *dst, const void *src, size_t size) {
   MS_ERROR_IF_NULL(dst);
   MS_ERROR_IF_NULL(src);
-  auto ret = rtMemcpyAsync(dst, size, src, size, RT_MEMCPY_HOST_TO_DEVICE, stream_);
+  auto ret = aclrtMemcpyAsync(dst, size, src, size, ACL_MEMCPY_HOST_TO_DEVICE, stream_);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "rtMemcpyAsync failed, the error num is:" << ret;
+    MS_LOG(ERROR) << "aclrtMemcpyAsync failed, the error num is:" << ret;
     return false;
   }
   return true;
@@ -201,9 +214,9 @@ bool AscendPsCache::CopyHostMemToDevice(void *dst, const void *src, size_t size)
 bool AscendPsCache::CopyDeviceMemToHost(void *dst, const void *src, size_t size) {
   MS_ERROR_IF_NULL(dst);
   MS_ERROR_IF_NULL(src);
-  auto ret = rtMemcpyAsync(dst, size, src, size, RT_MEMCPY_DEVICE_TO_HOST, stream_);
+  auto ret = aclrtMemcpyAsync(dst, size, src, size, ACL_MEMCPY_DEVICE_TO_HOST, stream_);
   if (ret != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "rtMemcpyAsync failed, the error num is:" << ret;
+    MS_LOG(ERROR) << "aclrtMemcpyAsync failed, the error num is:" << ret;
     return false;
   }
   return true;

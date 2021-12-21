@@ -81,8 +81,8 @@ ResizeInt8CPUKernel::~ResizeInt8CPUKernel() {
   multiplier_ = nullptr;
 }
 
-int ResizeInt8CPUKernel::Init() {
-  auto ret = ResizeBaseCPUKernel::Init();
+int ResizeInt8CPUKernel::Prepare() {
+  auto ret = ResizeBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }
@@ -94,9 +94,11 @@ int ResizeInt8CPUKernel::Init() {
     return RET_ERROR;
   }
   auto input = in_tensors_.at(0);
+  CHECK_LESS_RETURN(input->quant_params().size(), 1);
   quant_in_->zp_ = input->quant_params().front().zeroPoint;
   quant_in_->scale_ = input->quant_params().front().scale;
   auto output = out_tensors_.at(0);
+  CHECK_LESS_RETURN(output->quant_params().size(), 1);
   quant_out_->zp_ = output->quant_params().front().zeroPoint;
   quant_out_->scale_ = output->quant_params().front().scale;
 

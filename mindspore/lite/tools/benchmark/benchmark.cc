@@ -28,11 +28,18 @@
 #include "src/common/common.h"
 #include "src/tensor.h"
 #include "nnacl/nnacl_common.h"
+#include "tools/common/string_util.h"
 #ifdef ENABLE_ARM64
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 #include <asm/unistd.h>
 #include <unistd.h>
+#endif
+#ifdef SUPPORT_NNIE
+#include "include/hi_common.h"
+#include "include/hi_comm_vb.h"
+#include "include/mpi_sys.h"
+#include "include/mpi_vb.h"
 #endif
 
 namespace mindspore {
@@ -41,6 +48,35 @@ namespace {
 constexpr float kNumUsPerMs = 1000.;
 constexpr auto kBenchmarkInputNames = "MSLITE_BENCH_INPUT_NAMES";
 }  // namespace
+
+int Benchmark::LoadInput() {
+#ifdef ENABLE_OPENGL_TEXTURE
+  if (flags_->enable_gl_texture_ == true) {
+    if (lite::Benchmark::LoadGLTexture() != RET_OK) {
+      MS_LOG(ERROR) << "Generate input GLTexture error";
+      return RET_ERROR;
+    }
+    return RET_OK;
+  }
+#endif
+
+  if (flags_->in_data_file_.empty()) {
+    auto status = GenerateInputData();
+    if (status != RET_OK) {
+      std::cerr << "Generate input data error " << status << std::endl;
+      MS_LOG(ERROR) << "Generate input data error " << status;
+      return status;
+    }
+  } else {
+    auto status = ReadInputFile();
+    if (status != RET_OK) {
+      std::cerr << "ReadInputFile error, " << status << std::endl;
+      MS_LOG(ERROR) << "ReadInputFile error, " << status;
+      return status;
+    }
+  }
+  return RET_OK;
+}
 
 int Benchmark::GenerateInputData() {
   for (auto tensor : ms_inputs_) {
@@ -64,6 +100,148 @@ int Benchmark::GenerateInputData() {
   }
   return RET_OK;
 }
+
+#ifdef ENABLE_OPENGL_TEXTURE
+int Benchmark::GenerateGLTexture(std::map<std::string, GLuint> *input_gl_texture,
+                                 std::map<std::string, GLuint> *output_gl_texture) {
+  for (auto tensor : ms_inputs_) {
+    MS_ASSERT(tensor != nullptr);
+    float *input_data = reinterpret_cast<float *>(malloc(tensor->Size()));
+    if (input_data == nullptr) {
+      MS_LOG(ERROR) << "new input_data failed";
+      return RET_ERROR;
+    }
+    int status = GenerateRandomData(tensor->Size(), input_data, tensor->data_type());
+    if (status != RET_OK) {
+      std::cerr << "GenerateRandomData for inTensor failed: " << status << std::endl;
+      MS_LOG(ERROR) << "GenerateRandomData for inTensor failed:" << status;
+      return status;
+    }
+    status = FillGLTextureToTensor(input_gl_texture, tensor, tensor->tensor_name(), input_data);
+    free(input_data);
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "Fill GLTexture to input tensor" << status;
+      return status;
+    }
+  }
+  for (const auto &[name, tensor] : ms_outputs_) {
+    MS_ASSERT(tensor != nullptr);
+    auto status = FillGLTextureToTensor(output_gl_texture, tensor, name);
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "Fill GLTexture to output tensor" << status;
+      return status;
+    }
+  }
+  return RET_OK;
+}
+
+int Benchmark::FillGLTextureToTensor(std::map<std::string, GLuint> *gl_texture, mindspore::tensor::MSTensor *tensor,
+                                     std::string name, void *data) {
+  auto image_id = 0;
+
+  int width = 1, height = 1, channel = 1;
+  if (tensor->shape().size() == DIMENSION_2D) {
+    height = tensor->shape()[kNHWC_N];
+    channel = tensor->shape()[kNHWC_H];
+  } else if (tensor->shape().size() == DIMENSION_3D) {
+    width = tensor->shape()[kNHWC_H];
+    height = tensor->shape()[kNHWC_N];
+    channel = tensor->shape()[kNHWC_C];
+  } else if (tensor->shape().size() == DIMENSION_4D) {
+    width = tensor->shape()[kNHWC_W];
+    height = tensor->shape()[kNHWC_H];
+    channel = tensor->shape()[kNHWC_C];
+  } else {
+    MS_LOG(ERROR) << "the tensor shape is not support";
+    return RET_ERROR;
+  }
+
+  if (data == nullptr) {
+    image_id = gl_runtime_.GLCreateTexture(width, height, channel);
+  } else {
+    image_id = gl_runtime_.CopyHostToDeviceTexture(data, width, height, channel);
+  }
+
+  if (image_id != GL_NONE) {
+    gl_texture->insert(std::pair<std::string, GLuint>(name, image_id));
+  } else {
+    MS_LOG(ERROR) << "glMemPool CopyHostToDeviceTexture failed";
+  }
+  return RET_OK;
+}
+
+int Benchmark::LoadGLTexture() {
+  std::map<std::string, GLuint> input_gl_texture;
+  std::map<std::string, GLuint> output_gl_texture;
+
+  if (flags_->in_data_file_.empty()) {
+    auto status = GenerateGLTexture(&input_gl_texture, &output_gl_texture);
+    if (status != RET_OK) {
+      std::cerr << "Generate input GLTexture error " << status << std::endl;
+      MS_LOG(ERROR) << "Generate input GLTexture error " << status;
+      return status;
+    }
+  } else {
+    auto status = ReadGLTextureFile(&input_gl_texture, &output_gl_texture);
+    if (status != RET_OK) {
+      std::cerr << "ReadGLTextureFile error, " << status << std::endl;
+      MS_LOG(ERROR) << "ReadGLTextureFile error, " << status;
+      return status;
+    }
+  }
+  auto status = session_->BindGLTexture2DMemory(input_gl_texture, &output_gl_texture);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "BindGLTexture2DMemory failed";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int Benchmark::ReadGLTextureFile(std::map<std::string, GLuint> *input_gl_texture,
+                                 std::map<std::string, GLuint> *output_gl_texture) {
+  if (ms_inputs_.empty()) {
+    return RET_OK;
+  }
+  if (this->flags_->in_data_type_ == kImage) {
+    MS_LOG(ERROR) << "Not supported image input";
+    return RET_ERROR;
+  } else {
+    for (size_t i = 0; i < flags_->input_data_list_.size(); i++) {
+      auto tensor = ms_inputs_.at(i);
+      MS_ASSERT(tensor != nullptr);
+      size_t size;
+      char *bin_buf = ReadFile(flags_->input_data_list_[i].c_str(), &size);
+      if (bin_buf == nullptr) {
+        MS_LOG(ERROR) << "ReadFile return nullptr";
+        return RET_ERROR;
+      }
+      auto tensor_data_size = tensor->Size();
+      if (size != tensor_data_size) {
+        std::cerr << "Input binary file size error, required: " << tensor_data_size << ", in fact: " << size
+                  << std::endl;
+        MS_LOG(ERROR) << "Input binary file size error, required: " << tensor_data_size << ", in fact: " << size;
+        delete[] bin_buf;
+        return RET_ERROR;
+      }
+      auto status = FillGLTextureToTensor(input_gl_texture, tensor, tensor->tensor_name(), bin_buf);
+      delete[] bin_buf;
+      if (status != RET_OK) {
+        MS_LOG(ERROR) << "Fill GLTexture to input tensor" << status;
+        return status;
+      }
+    }
+  }
+  for (const auto &[name, tensor] : ms_outputs_) {
+    MS_ASSERT(tensor != nullptr);
+    auto status = FillGLTextureToTensor(output_gl_texture, tensor, name);
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "Fill GLTexture to output tensor" << status;
+      return status;
+    }
+  }
+  return RET_OK;
+}
+#endif
 
 int Benchmark::ReadInputFile() {
   if (ms_inputs_.empty()) {
@@ -113,46 +291,16 @@ int Benchmark::ReadInputFile() {
   return RET_OK;
 }
 
-int Benchmark::ReadTensorData(std::ifstream &in_file_stream, const std::string &tensor_name,
-                              const std::vector<size_t> &dims) {
-  std::string line;
-  getline(in_file_stream, line);
-  std::stringstream line_stream(line);
-  if (this->benchmark_data_.find(tensor_name) != this->benchmark_data_.end()) {
-    return RET_OK;
-  }
-  tensor::MSTensor *tensor = session_->GetOutputByTensorName(tensor_name);
-  if (tensor == nullptr) {
-    MS_LOG(ERROR) << "Get tensor failed, tensor name: " << tensor_name;
-    return RET_ERROR;
-  }
-  std::vector<float> data;
-  std::vector<std::string> strings_data;
-  size_t shape_size = std::accumulate(dims.begin(), dims.end(), 1, std::multiplies<size_t>());
-  if (tensor->data_type() == kObjectTypeString) {
-    strings_data.push_back(line);
-    for (size_t i = 1; i < shape_size; i++) {
-      getline(in_file_stream, line);
-      strings_data.push_back(line);
-    }
+int Benchmark::GetDataTypeByTensorName(const std::string &tensor_name) {
+  auto tensor = session_->GetOutputByTensorName(tensor_name);
+  if (tensor != nullptr) {
+    return tensor->data_type();
   } else {
-    for (size_t i = 0; i < shape_size; i++) {
-      float tmp_data;
-      line_stream >> tmp_data;
-      data.push_back(tmp_data);
-    }
+    return kTypeUnknown;
   }
-  auto *check_tensor = new (std::nothrow) CheckTensor(dims, data, strings_data);
-  if (check_tensor == nullptr) {
-    MS_LOG(ERROR) << "New CheckTensor failed, tensor name: " << tensor_name;
-    return RET_ERROR;
-  }
-  this->benchmark_tensor_names_.push_back(tensor_name);
-  this->benchmark_data_.insert(std::make_pair(tensor_name, check_tensor));
-  return RET_OK;
 }
 
-void Benchmark::InitContext(const std::shared_ptr<Context> &context) {
+int Benchmark::InitContext(const std::shared_ptr<Context> &context) {
   auto &cpu_device_ctx = context->device_list_[0];
   if (flags_->cpu_bind_mode_ == MID_CPU || flags_->cpu_bind_mode_ == HIGHER_CPU) {
     cpu_device_ctx.device_info_.cpu_device_info_.cpu_bind_mode_ = CpuBindMode(flags_->cpu_bind_mode_);
@@ -164,6 +312,29 @@ void Benchmark::InitContext(const std::shared_ptr<Context> &context) {
   if (flags_->device_ == "GPU") {
     DeviceContext gpu_device_ctx{DT_GPU, {false}};
     gpu_device_ctx.device_info_.gpu_device_info_.enable_float16_ = flags_->enable_fp16_;
+#ifdef ENABLE_OPENGL_TEXTURE
+    if (flags_->enable_gl_texture_) {
+      gpu_device_ctx.device_info_.gpu_device_info_.enable_gl_texture_ = true;
+
+      EGLContext *gl_context = new (std::nothrow) EGLContext();
+      if (gl_context == nullptr) {
+        MS_LOG(ERROR) << "new EGLContext failed";
+        return RET_ERROR;
+      } else {
+        *gl_context = eglGetCurrentContext();
+      }
+      gpu_device_ctx.device_info_.gpu_device_info_.gl_context_ = gl_context;
+
+      EGLDisplay *gl_display = new (std::nothrow) EGLDisplay();
+      if (gl_display == nullptr) {
+        MS_LOG(ERROR) << "new EGLDisplay failed";
+        return RET_ERROR;
+      } else {
+        *gl_display = eglGetCurrentDisplay();
+      }
+      gpu_device_ctx.device_info_.gpu_device_info_.gl_display_ = gl_display;
+    }
+#endif
     context->device_list_.push_back(gpu_device_ctx);
   }
 
@@ -175,20 +346,52 @@ void Benchmark::InitContext(const std::shared_ptr<Context> &context) {
 
   context->thread_num_ = flags_->num_threads_;
   context->enable_parallel_ = flags_->enable_parallel_;
+
+  return RET_OK;
+}
+
+tensor::MSTensor *Benchmark::GetTensorByNodeShape(const std::vector<size_t> &node_shape) {
+  std::vector<tensor::MSTensor *> match_tensors;
+  std::vector<int> shape_vector;
+  (void)std::transform(node_shape.begin(), node_shape.end(), std::back_inserter(shape_vector),
+                       [](const size_t &value) { return static_cast<int>(value); });
+  auto tensors = session_->GetOutputs();
+  for (auto &out_tensor_pair : tensors) {
+    if (out_tensor_pair.second->shape() == shape_vector) {
+      match_tensors.emplace_back(out_tensor_pair.second);
+    }
+  }
+  if (match_tensors.empty() || match_tensors.size() != 1) {
+    MS_LOG(ERROR) << "get tensor by node shape failed";
+    return nullptr;
+  }
+  return match_tensors.front();
+}
+
+tensor::MSTensor *Benchmark::GetTensorByNameOrShape(const std::string &node_or_tensor_name,
+                                                    const std::vector<size_t> &dims) {
+  tensor::MSTensor *tensor = session_->GetOutputByTensorName(node_or_tensor_name);
+  if (tensor == nullptr) {
+    MS_LOG(INFO) << "Cannot find output node: " << node_or_tensor_name
+                 << " or node has more than one output tensor, switch to GetOutputByTensorName";
+    auto tensors = session_->GetOutputsByNodeName(node_or_tensor_name);
+    if (!tensors.empty() && tensors.size() == 1) {
+      tensor = tensors.front();
+    } else {
+      return GetTensorByNodeShape(dims);
+    }
+  }
+  return tensor;
 }
 
 int Benchmark::CompareOutput() {
   std::cout << "================ Comparing Output data ================" << std::endl;
   float total_bias = 0;
   int total_size = 0;
-  // check the output tensor name.
-  if (this->benchmark_tensor_names_ != session_->GetOutputTensorNames()) {
-    MS_LOG(ERROR) << "The output tensor name is wrong.";
-    return RET_ERROR;
-  }
+
   for (const auto &calib_tensor : benchmark_data_) {
     std::string tensor_name = calib_tensor.first;
-    tensor::MSTensor *tensor = session_->GetOutputByTensorName(tensor_name);
+    tensor::MSTensor *tensor = GetTensorByNameOrShape(tensor_name, calib_tensor.second->shape);
     if (tensor == nullptr) {
       MS_LOG(ERROR) << "Get tensor failed, tensor name: " << tensor_name;
       return RET_ERROR;
@@ -198,7 +401,28 @@ int Benchmark::CompareOutput() {
       std::vector<std::string> output_strings = MSTensorToStrings(tensor);
       ret = CompareStringData(tensor_name, calib_tensor.second->strings_data, output_strings);
     } else {
+#ifdef ENABLE_OPENGL_TEXTURE
+      if (flags_->enable_gl_texture_) {
+        auto *gltexture_id = reinterpret_cast<GLuint *>(tensor->data());
+        float *hostptr = reinterpret_cast<float *>(gl_runtime_.CopyDeviceTextureToHost(*gltexture_id));
+        if (hostptr == nullptr) {
+          MS_LOG(ERROR) << "CopyDeviceTextureToHost failed";
+          return RET_ERROR;
+        }
+        auto *new_tensor = new (std::nothrow) lite::Tensor(kNumberTypeFloat, tensor->shape());
+        MS_CHECK_TRUE_MSG(new_tensor != nullptr, RET_ERROR, "new tensor failed");
+        new_tensor->set_data(hostptr);
+        if (new_tensor->MutableData() == nullptr) {
+          MS_LOG(ERROR) << "CopyDeviceTextureToHost failed";
+          return RET_ERROR;
+        }
+        ret = CompareDataGetTotalBiasAndSize(tensor_name, new_tensor, &total_bias, &total_size);
+      } else {
+        ret = CompareDataGetTotalBiasAndSize(tensor_name, tensor, &total_bias, &total_size);
+      }
+#else
       ret = CompareDataGetTotalBiasAndSize(tensor_name, tensor, &total_bias, &total_size);
+#endif
     }
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "Error in CompareData";
@@ -277,7 +501,7 @@ int Benchmark::MarkPerformance() {
   std::cout << "Running warm up loops..." << std::endl;
   for (int i = 0; i < flags_->warm_up_loop_count_; i++) {
     auto status = session_->RunGraph();
-    if (status != 0) {
+    if (status != RET_OK) {
       MS_LOG(ERROR) << "Inference error " << status;
       std::cerr << "Inference error " << status << std::endl;
       return status;
@@ -298,7 +522,7 @@ int Benchmark::MarkPerformance() {
     session_->BindThread(true);
     auto start = GetTimeUs();
     auto status = session_->RunGraph(before_call_back_, after_call_back_);
-    if (status != 0) {
+    if (status != RET_OK) {
       MS_LOG(ERROR) << "Inference error " << status;
       std::cerr << "Inference error " << status;
       return status;
@@ -355,8 +579,21 @@ int Benchmark::MarkPerformance() {
 int Benchmark::MarkAccuracy() {
   MS_LOG(INFO) << "MarkAccuracy";
   std::cout << "MarkAccuracy" << std::endl;
-
-  auto status = PrintInputData();
+  int status = 0;
+#ifdef ENABLE_OPENGL_TEXTURE
+  if (flags_->enable_gl_texture_) {
+    for (auto in_tensor : ms_inputs_) {
+      auto *input = reinterpret_cast<GLuint *>(in_tensor->data());
+      float *hostptr = reinterpret_cast<float *>(gl_runtime_.CopyDeviceTextureToHost(*input));
+      size_t print_num = 20;
+      gl_runtime_.PrintImage2DData(hostptr, 1, 1, print_num);
+    }
+  } else {
+    status = PrintInputData();
+  }
+#else
+  status = PrintInputData();
+#endif
   if (status != RET_OK) {
     MS_LOG(ERROR) << "PrintInputData error " << status;
     std::cerr << "PrintInputData error " << status << std::endl;
@@ -374,11 +611,28 @@ int Benchmark::MarkAccuracy() {
     std::cerr << "Read calib data error " << status << std::endl;
     return status;
   }
-  status = CompareOutput();
-  if (status != RET_OK) {
-    MS_LOG(ERROR) << "Compare output error " << status;
-    std::cerr << "Compare output error " << status << std::endl;
-    return status;
+  auto use_cosine_distance_threshold = getenv("COSINE_DISTANCE_THRESHOLD");
+  if (use_cosine_distance_threshold != nullptr) {
+    double cosine_distance_threshold;
+    auto ret_bool = lite::ConvertDoubleNum(use_cosine_distance_threshold, &cosine_distance_threshold);
+    if (!ret_bool) {
+      MS_LOG(ERROR) << "Compare output error " << status;
+      std::cerr << "Compare output error " << status << std::endl;
+      return RET_ERROR;
+    }
+    status = CompareOutputByCosineDistance(static_cast<float>(cosine_distance_threshold));
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "Compare output error by consine distance" << status;
+      std::cerr << "Compare output error by consine distance" << status << std::endl;
+      return status;
+    }
+  } else {
+    status = CompareOutput();
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "Compare output error " << status;
+      std::cerr << "Compare output error " << status << std::endl;
+      return status;
+    }
   }
   return RET_OK;
 }
@@ -398,13 +652,12 @@ int Benchmark::PrintInputData() {
       }
       continue;
     }
-    size_t print_num = std::min(input->ElementsNum(), 20);
+    size_t print_num = std::min(static_cast<int>(input->ElementsNum()), 20);
     const void *in_data = input->MutableData();
     if (in_data == nullptr) {
       MS_LOG(ERROR) << "in_data is nullptr.";
       return RET_ERROR;
     }
-
     for (size_t j = 0; j < print_num; j++) {
       if (tensor_data_type == TypeId::kNumberTypeFloat32 || tensor_data_type == TypeId::kNumberTypeFloat) {
         std::cout << static_cast<const float *>(in_data)[j] << " ";
@@ -432,7 +685,11 @@ int Benchmark::RunBenchmark() {
   auto start_prepare_time = GetTimeUs();
   // Load graph
   std::string model_name = flags_->model_file_.substr(flags_->model_file_.find_last_of(DELIM_SLASH) + 1);
-
+#ifdef ENABLE_OPENGL_TEXTURE
+  if (flags_->enable_gl_texture_) {
+    gl_runtime_.Init();
+  }
+#endif
   MS_LOG(INFO) << "start reading model file";
   std::cout << "start reading model file" << std::endl;
   size_t size = 0;
@@ -455,16 +712,19 @@ int Benchmark::RunBenchmark() {
     std::cerr << "New context failed while running " << model_name.c_str() << std::endl;
     return RET_ERROR;
   }
-
-  (void)InitContext(context);
-
+  auto ret = InitContext(context);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "InitContext failed while running ", model_name.c_str();
+    std::cout << "InitContext failed while running ", model_name.c_str();
+    return ret;
+  }
   session_ = session::LiteSession::CreateSession(context.get());
   if (session_ == nullptr) {
     MS_LOG(ERROR) << "CreateSession failed while running ", model_name.c_str();
     std::cout << "CreateSession failed while running ", model_name.c_str();
     return RET_ERROR;
   }
-  auto ret = session_->CompileGraph(model.get());
+  ret = session_->CompileGraph(model.get());
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "CompileGraph failed while running ", model_name.c_str();
     std::cout << "CompileGraph failed while running ", model_name.c_str();
@@ -481,43 +741,33 @@ int Benchmark::RunBenchmark() {
   if (model != nullptr && !flags_->dump_tensor_data_) {
     model->Free();
   }
-
   ms_inputs_ = session_->GetInputs();
+  ms_outputs_ = session_->GetOutputs();
   auto end_prepare_time = GetTimeUs();
   MS_LOG(INFO) << "PrepareTime = " << static_cast<float>(end_prepare_time - start_prepare_time) / kNumUsPerMs << " ms";
   std::cout << "PrepareTime = " << static_cast<float>(end_prepare_time - start_prepare_time) / kNumUsPerMs << " ms"
             << std::endl;
-
   // Check input names
   if (CheckInputNames() != RET_OK) {
     MS_LOG(ERROR) << "Check input names failed.";
     return RET_ERROR;
   }
-
   // Load input
   MS_LOG(INFO) << "start generate input data";
-  auto status = LoadInput();
-  if (status != 0) {
+  if (LoadInput() != 0) {
     MS_LOG(ERROR) << "Generate input data error";
-    return status;
+    return RET_ERROR;
   }
   if (!flags_->benchmark_data_file_.empty()) {
-    status = MarkAccuracy();
-    for (auto &data : benchmark_data_) {
-      data.second->shape.clear();
-      data.second->data.clear();
-      delete data.second;
-      data.second = nullptr;
-    }
-    benchmark_data_.clear();
-    if (status != 0) {
+    auto status = MarkAccuracy();
+    if (status != RET_OK) {
       MS_LOG(ERROR) << "Run MarkAccuracy error: " << status;
       std::cout << "Run MarkAccuracy error: " << status << std::endl;
       return status;
     }
   } else {
-    status = MarkPerformance();
-    if (status != 0) {
+    auto status = MarkPerformance();
+    if (status != RET_OK) {
       MS_LOG(ERROR) << "Run MarkPerformance error: " << status;
       std::cout << "Run MarkPerformance error: " << status << std::endl;
       return status;
@@ -726,7 +976,7 @@ std::string DumpMSTensor(tensor::MSTensor *tensor) {
   }
   return oss.str();
 }
-
+#ifndef BENCHMARK_CLIP_JSON
 std::string GenerateOutputFileName(tensor::MSTensor *tensor, const std::string &op_name, const std::string &file_type,
                                    const size_t &idx) {
   std::string file_name = op_name;
@@ -742,12 +992,13 @@ std::string GenerateOutputFileName(tensor::MSTensor *tensor, const std::string &
   if (kTypeIdMap.find(tensor->data_type()) != kTypeIdMap.end()) {
     file_name += kTypeIdMap.at(tensor->data_type());
   }
-  auto tensor_format = static_cast<schema::Format>(static_cast<lite::Tensor *>(tensor)->format());
+  auto tensor_format = static_cast<lite::Tensor *>(tensor)->format();
   if (kTensorFormatMap.find(tensor_format) != kTensorFormatMap.end()) {
     file_name += "_" + kTensorFormatMap.at(tensor_format) + ".bin";
   }
   return file_name;
 }
+#endif
 }  // namespace
 
 int Benchmark::InitPrintTensorDataCallbackParameter() {
@@ -776,6 +1027,7 @@ int Benchmark::InitPrintTensorDataCallbackParameter() {
   return RET_OK;
 }
 int Benchmark::InitDumpTensorDataCallbackParameter() {
+#ifndef BENCHMARK_CLIP_JSON
   // before callback
   before_call_back_ = [&](const std::vector<mindspore::tensor::MSTensor *> &before_inputs,
                           const std::vector<mindspore::tensor::MSTensor *> &before_outputs,
@@ -821,6 +1073,7 @@ int Benchmark::InitDumpTensorDataCallbackParameter() {
     }
     return true;
   };
+#endif
   return RET_OK;
 }
 
@@ -838,6 +1091,97 @@ int Benchmark::CheckInputNames() {
     MS_LOG(ERROR) << "The input names are not the same as ones of the original model.";
     return RET_ERROR;
   }
+  return RET_OK;
+}
+
+int Benchmark::CompareOutputByCosineDistance(float cosine_distance_threshold) {
+  std::cout << "================ Comparing Output data by Cosine Distance================" << std::endl;
+  float total_cosine_distance = 0;
+  int total_size = 0;
+  for (const auto &calib_tensor : benchmark_data_) {
+    std::string tensor_name = calib_tensor.first;
+    tensor::MSTensor *tensor = session_->GetOutputByTensorName(tensor_name);
+    if (tensor == nullptr) {
+      MS_LOG(ERROR) << "Get tensor failed, tensor name: " << tensor_name;
+      return RET_ERROR;
+    }
+    int ret;
+    if (tensor->data_type() == kObjectTypeString) {
+      std::cerr << tensor->tensor_name() << " data type is kObjectTypeString, can not compared data " << std::endl;
+      return RET_ERROR;
+    } else {
+      ret = CompareDataGetTotalCosineDistanceAndSize(tensor_name, tensor, &total_cosine_distance, &total_size);
+    }
+    if (ret != RET_OK) {
+      MS_LOG(ERROR) << "Error in CompareData";
+      std::cerr << "Error in CompareData" << std::endl;
+      std::cout << "=======================================================" << std::endl << std::endl;
+      return ret;
+    }
+  }
+  float mean_cosine_distance;
+  if (total_size != 0) {
+    mean_cosine_distance = total_cosine_distance / float_t(total_size);
+  } else {
+    mean_cosine_distance = 0;
+  }
+
+  std::cout << "Cosine distance of all nodes/tensors: " << mean_cosine_distance << std::endl;
+  std::cout << "=======================================================" << std::endl << std::endl;
+
+  if (mean_cosine_distance < cosine_distance_threshold) {
+    MS_LOG(ERROR) << "cosine distance of all nodes/tensors is too big: " << mean_cosine_distance;
+    std::cerr << "Mean cosine distance of all nodes/tensors is too big: " << mean_cosine_distance << std::endl;
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int Benchmark::CompareDataGetTotalCosineDistanceAndSize(const std::string &name, tensor::MSTensor *tensor,
+                                                        float *total_cosine_distance, int *total_size) {
+  float cos = 0;
+  auto mutableData = tensor->MutableData();
+  if (mutableData == nullptr) {
+    MS_LOG(ERROR) << "mutableData is nullptr.";
+    return RET_ERROR;
+  }
+  int ret = RET_ERROR;
+  switch (tensor->data_type()) {
+    case TypeId::kNumberTypeFloat:
+    case TypeId::kNumberTypeFloat32: {
+      ret = CompareDatabyCosineDistance<float>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    case TypeId::kNumberTypeInt8: {
+      ret = CompareDatabyCosineDistance<int8_t>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    case TypeId::kNumberTypeUInt8: {
+      ret = CompareDatabyCosineDistance<uint8_t>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    case TypeId::kNumberTypeInt32: {
+      ret = CompareDatabyCosineDistance<int32_t>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    case TypeId::kNumberTypeInt16: {
+      ret = CompareDatabyCosineDistance<int16_t>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    case TypeId::kNumberTypeBool: {
+      ret = CompareDatabyCosineDistance<bool>(name, tensor->shape(), mutableData, &cos);
+      break;
+    }
+    default:
+      MS_LOG(ERROR) << "Datatype " << tensor->data_type() << " is not supported.";
+      return RET_ERROR;
+  }
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "CompareData failed, name: " << name;
+    return RET_ERROR;
+  }
+  *total_cosine_distance += cos;
+  *total_size += 1;
   return RET_OK;
 }
 

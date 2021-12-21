@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
+#include "utils/hash_map.h"
 #include "base/core_ops.h"
 #include "frontend/operator/ops.h"
 #include "frontend/optimizer/optimizer.h"
@@ -74,7 +74,7 @@ static ParameterUsersInfo FindRefKeyNodeUsers(const RefKeyPair &ref_key_pair, bo
     if ((c == nullptr) || !IsValueNode<Primitive>(c->input(0)) || !IsCareNode(c)) {
       continue;
     }
-    parameter_user_info.second.second.add(candidate);
+    parameter_user_info.second.second.insert(candidate);
   }
 
   // Find the corresponding Parameter being used
@@ -91,12 +91,12 @@ static ParameterUsersInfo FindRefKeyNodeUsers(const RefKeyPair &ref_key_pair, bo
     if ((c == nullptr) || !IsValueNode<Primitive>(c->input(0)) || !IsCareNode(c)) {
       continue;
     }
-    (void)parameter_user_info.second.second.insert(candidate);
+    parameter_user_info.second.second.insert(candidate);
   }
   return parameter_user_info;
 }
 
-static ParameterUsersInfo FindParameterNodeUsers(const AnfNodePtr &node, bool (*IsCareNode)(const CNodePtr &)) {
+static ParameterUsersInfo FindParameterNodeUsers(const AnfNodePtr &node) {
   // In this case, node is a Parameter
   ParameterUsersInfo parameter_user_info;
   MS_EXCEPTION_IF_NULL(node->func_graph());
@@ -114,14 +114,14 @@ static ParameterUsersInfo FindParameterNodeUsers(const AnfNodePtr &node, bool (*
         if (cnode == nullptr || !cnode->has_user_data<OperatorInfo>() || IsSomePrimitive(cnode, RECEIVE)) {
           continue;
         }
-        (void)parameter_user_info.second.second.insert(node_user);
+        parameter_user_info.second.second.insert(node_user);
       }
     } else {
       auto c = candidate_node->cast<CNodePtr>();
       if (c == nullptr || !c->has_user_data<OperatorInfo>() || IsSomePrimitive(c, RECEIVE)) {
         continue;
       }
-      (void)parameter_user_info.second.second.insert(candidate);
+      parameter_user_info.second.second.insert(candidate);
     }
   }
   parameter_user_info.first = node->cast<ParameterPtr>()->name();
@@ -156,13 +156,16 @@ ParameterUsersInfo FindParameterUsers(const AnfNodePtr &node, bool (*IsCareNode)
     return FindRefKeyNodeUsers(cnode_with_refkeys, IsCareNode);
   } else if (node->isa<Parameter>()) {
     // the node is a parameter node
-    return FindParameterNodeUsers(node, IsCareNode);
+    return FindParameterNodeUsers(node);
   }
 
   return parameter_users_info;
 }
 
-static bool IsUsedParameter(const FuncGraphPtr &graph, const AnfNodePtr &parameter) {
+static bool IsUsedParameter(const FuncGraphPtr &graph, const AnfNodePtr &parameter, size_t max_depth) {
+  if (max_depth > MAX_RECURSIVE_DEPTH) {
+    MS_LOG(EXCEPTION) << "Recursive call is larger than 100000.";
+  }
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(parameter);
   auto manager = graph->manager();
@@ -175,8 +178,8 @@ static bool IsUsedParameter(const FuncGraphPtr &graph, const AnfNodePtr &paramet
     if (IsValueNode<FuncGraph>(use_node->input(0))) {
       auto graph_sub = GetValueNode<FuncGraphPtr>(use_node->input(0));
       auto parameters = graph_sub->parameters();
-      auto parameter_sub = parameters[node_user.second - 1];
-      return IsUsedParameter(graph_sub, parameter_sub);
+      auto parameter_sub = parameters[IntToSize(node_user.second - 1)];
+      return IsUsedParameter(graph_sub, parameter_sub, max_depth + 1);
     }
     if (use_node->input(0)->isa<CNode>()) {
       auto cnode = use_node->input(0)->cast<CNodePtr>();
@@ -185,8 +188,8 @@ static bool IsUsedParameter(const FuncGraphPtr &graph, const AnfNodePtr &paramet
       }
       auto graph_sub = GetValueNode<FuncGraphPtr>(cnode->input(1));
       auto parameters = graph_sub->parameters();
-      auto parameter_sub = parameters[node_user.second - 1];
-      return IsUsedParameter(graph_sub, parameter_sub);
+      auto parameter_sub = parameters[IntToSize(node_user.second - 1)];
+      return IsUsedParameter(graph_sub, parameter_sub, max_depth + 1);
     }
     return true;
   }
@@ -225,15 +228,15 @@ static ParameterSliceInfo GetParameterSliceInfo(const std::pair<AnfNodePtr, int6
     size_t input_tensor_info_size = op_info->inputs_tensor_info().size();
     if (SizeToLong(input_tensor_info_size) <= user_input_index - 1) {
       MS_LOG(EXCEPTION) << op_info->name() << ": the size of inputs tensor info is " << input_tensor_info_size
-                        << ", but the index is " << user_input_index - 1;
+                        << ", but the index is " << (user_input_index - 1);
     }
-    tensor_info = op_info->inputs_tensor_info()[user_input_index - 1];
+    tensor_info = op_info->inputs_tensor_info()[LongToSize(user_input_index - 1)];
   }
 
   ParameterSliceInfo parameter_slice_info;
   parameter_slice_info.slice_shape = tensor_info.slice_shape();
   parameter_slice_info.group_ranks = GetGroupByTensorInfo(tensor_info);
-  MS_LOG(DEBUG) << "The op name is " << op_info->name() << ", the parameter index is " << user_input_index - 1
+  MS_LOG(DEBUG) << "The op name is " << op_info->name() << ", the parameter index is " << (user_input_index - 1)
                 << ", the slice shape is " << tensor_info.slice_shape() << ", the origin shape is "
                 << tensor_info.shape() << ", the group rank list is " << parameter_slice_info.group_ranks;
   return parameter_slice_info;
@@ -242,19 +245,20 @@ static ParameterSliceInfo GetParameterSliceInfo(const std::pair<AnfNodePtr, int6
 void CheckParameterSplit(const std::vector<AnfNodePtr> &all_nodes) {
   for (auto &node : all_nodes) {
     ParameterUsersInfo parameter_users_info = FindParameterUsers(node, IsParallelCareNode);
-    auto users_set = parameter_users_info.second.second;
+    auto &users_set = parameter_users_info.second.second;
     if (users_set.size() <= 1) {
       continue;
     }
 
     auto parameter_name = parameter_users_info.first;
     MS_LOG(INFO) << "The parameter: " << parameter_name << " has " << users_set.size() << " users";
-    auto first_user = users_set.pop();
+    auto &first_user = users_set.front();
     ParameterSliceInfo parameter_slice_info = GetParameterSliceInfo(first_user);
     Shape first_user_slice_shape = parameter_slice_info.slice_shape;
     RankList first_user_group_list = parameter_slice_info.group_ranks;
 
-    for (auto &user : users_set) {
+    for (auto iter = users_set.begin() + 1; iter != users_set.end(); ++iter) {
+      auto &user = *iter;
       ParameterSliceInfo user_slice_info = GetParameterSliceInfo(user);
       Shape user_slice_shape = user_slice_info.slice_shape;
       RankList user_group_list = user_slice_info.group_ranks;
@@ -348,7 +352,7 @@ void HandleNoUsedParameter(const FuncGraphPtr &root) {
   auto dev_num = g_device_manager->stage_device_num();
   auto parameters = root->parameters();
   for (auto &parameter : parameters) {
-    if (IsUsedParameter(root, parameter)) {
+    if (IsUsedParameter(root, parameter, 0)) {
       continue;
     }
     auto parameter_shape = GetNodeShape(parameter);
@@ -356,7 +360,7 @@ void HandleNoUsedParameter(const FuncGraphPtr &root) {
       continue;
     }
     Shape slice_shape = parameter_shape[0];
-    if (slice_shape.empty()) {
+    if (slice_shape.empty() || slice_shape[0] < dev_num) {
       continue;
     }
     slice_shape[0] = slice_shape[0] / dev_num;
@@ -370,7 +374,7 @@ void HandleNoUsedParameter(const FuncGraphPtr &root) {
   }
 }
 
-static bool IsFullySplitParameter(const ParameterPtr &param_ptr) {
+bool IsFullySplitParameter(const ParameterPtr &param_ptr, size_t allow_repeat_num) {
   auto tensor_layout = param_ptr->user_data<parallel::TensorLayout>();
   if (tensor_layout == nullptr) {
     return false;
@@ -387,7 +391,7 @@ static bool IsFullySplitParameter(const ParameterPtr &param_ptr) {
     return false;
   }
 
-  if (group_devices.size() == 1) {
+  if (group_devices.size() <= allow_repeat_num) {
     MS_LOG(INFO) << "The parameter: " << param_ptr->name() << " is fully split";
     return true;
   }
@@ -403,9 +407,9 @@ static void InsertFullySplitParamGradAccu(const std::pair<AnfNodePtr, int> &node
     return;
   }
   OperatorAttrs attrs;
-  auto py_instance = CreatOpInstance(attrs, "_VirtualAdd", "grad_accu");
+  auto py_instance = CreateOpInstance(attrs, "_VirtualAdd", "grad_accu");
   auto value_node = NewValueNode(py_instance);
-  std::vector<AnfNodePtr> virtual_node_input = {value_node, cnode->input(node_user.second), accu_parameter};
+  std::vector<AnfNodePtr> virtual_node_input = {value_node, cnode->input(IntToSize(node_user.second)), accu_parameter};
   auto graph = cnode->func_graph();
   auto virtual_node = graph->NewCNode(virtual_node_input);
   manager->SetEdge(cnode, node_user.second, virtual_node);
@@ -449,6 +453,8 @@ void HandleFullySplitParameters(const FuncGraphPtr &root) {
 
 void SetClonedTensorShapeForOptimizer(const FuncGraphPtr &root) {
   MS_EXCEPTION_IF_NULL(root);
+  auto grad_accumulation_shard = ParallelContext::GetInstance()->grad_accumulation_shard();
+
   for (auto &cloned_parameter_node : root->parameters()) {
     MS_EXCEPTION_IF_NULL(cloned_parameter_node);
     auto cloned_parameter = cloned_parameter_node->cast<ParameterPtr>();
@@ -508,11 +514,20 @@ void SetClonedTensorShapeForOptimizer(const FuncGraphPtr &root) {
       // from pipeline or grad accumulation
       if (param_name.find(ACCU_GRADS) != std::string::npos) {
         auto slice_shape = cloned_from_parameter->user_data<TensorLayout>()->slice_shape().array();
-        std::shared_ptr<abstract::BaseShape> parallel_shape = std::make_shared<abstract::Shape>(slice_shape);
+        auto opt_shard_group = tensor_layout->opt_shard_group();
+        auto opt_shard_shape = cloned_from_parameter->user_data<TensorLayout>()->opt_shard_slice_shape();
+        std::shared_ptr<abstract::BaseShape> parallel_shape = nullptr;
+        // set opt shard shape if the pipeline sharding is set
+        if (grad_accumulation_shard && !opt_shard_group.empty()) {
+          parallel_shape = std::make_shared<abstract::Shape>(opt_shard_shape);
+        } else {
+          parallel_shape = std::make_shared<abstract::Shape>(slice_shape);
+        }
         MS_EXCEPTION_IF_NULL(parallel_shape);
         cloned_abstract->set_shape(parallel_shape);
         // in opt shard, accu_grad's shape is different from the original param's shape
-        if (ParallelContext::GetInstance()->enable_parallel_optimizer()) {
+        // if the grad_accumulation_shard is enabled, the accu_grads will be a opt-sharded shape
+        if (!grad_accumulation_shard && ParallelContext::GetInstance()->enable_parallel_optimizer()) {
           TensorLayout new_layout = *tensor_layout;
           new_layout.set_opt_shard_group("");
           tensor_layout = std::make_shared<TensorLayout>(new_layout);
@@ -522,6 +537,13 @@ void SetClonedTensorShapeForOptimizer(const FuncGraphPtr &root) {
       }
       cloned_parameter->set_user_data<TensorLayout>(tensor_layout);
       cloned_parameter_node->set_abstract(cloned_abstract);
+      // copy the fusion tag
+      auto cloned_param_info = cloned_parameter->param_info();
+      MS_EXCEPTION_IF_NULL(cloned_param_info);
+      auto cloned_from_param_info = cloned_from_parameter->param_info();
+      MS_EXCEPTION_IF_NULL(cloned_from_param_info);
+      cloned_param_info->set_comm_fusion(cloned_from_param_info->comm_fusion());
+
       MS_LOG(INFO) << "The parameter: " << cloned_parameter->name()
                    << " is cloned, the be cloned parameter is: " << cloned_from_parameter->name()
                    << ", clone index is:  " << cloned_index;
@@ -532,30 +554,78 @@ void SetClonedTensorShapeForOptimizer(const FuncGraphPtr &root) {
   }
 }
 
+// For adafactor optimizer, the relationship between parameter and state's shape as follows:
+// 1) parameter: [A, B, C, D] (shape_size > 2), exp_avg_sq_row: [A, B, C], exp_avg_sq_col: [A, B, D], exp_avg_sq: [1]
+//    If the parameter is opt shard, the exp_avg_sq_row and exp_avg_sq_col need to be shard accordingly.
+//
+// 2) parameter: [A, B] (shape_size = 2), exp_avg_sq_row: [A], exp_avg_sq_col: [B], exp_avg_sq: [1]
+//    If the parameter is opt shard, the exp_avg_sq_row needs to be shard accordingly.
+//
+// 3) parameter: [A] (shape_size = 1), exp_avg_sq_row: [1], exp_avg_sq_col: [1], exp_avg_sq: [A]
+//    If the parameter is opt shard, the exp_avg_sq needs to be shard accordingly.
+static bool AdafactorStateIsOptShard(const std::string &opt_shard_group, size_t shape_size,
+                                     const std::string &param_name, const std::string &state_name) {
+  if (opt_shard_group.empty()) {
+    return false;
+  }
+
+  std::string exp_row_name = EXP_AVG_SQ_ROW + param_name;
+  std::string exp_col_name = EXP_AVG_SQ_COL + param_name;
+  std::string exp_avg_name = EXP_AVG_SQ + param_name;
+
+  if (shape_size > 2 && state_name == exp_avg_name) {
+    return false;
+  }
+
+  if (shape_size == 2 && (state_name == exp_col_name || state_name == exp_avg_name)) {
+    return false;
+  }
+
+  if (shape_size == 1 && (state_name == exp_row_name || state_name == exp_col_name)) {
+    return false;
+  }
+
+  MS_LOG(INFO) << "The parameter " << param_name << " is opt shard";
+  return true;
+}
+
+static bool IsOriginWeight(const ParameterPtr &param) {
+  std::string param_name = param->name();
+  if (param_name.find(EXP_AVG) != std::string::npos) {
+    return false;
+  }
+
+  auto tensor_layout = param->user_data<TensorLayout>();
+  if (tensor_layout == nullptr) {
+    return false;
+  }
+
+  return true;
+}
+
 void HandleAdaFactorOpt(const FuncGraphPtr &root) {
   MS_EXCEPTION_IF_NULL(root);
   for (auto &param_node : root->parameters()) {
     MS_EXCEPTION_IF_NULL(param_node);
     auto param = param_node->cast<ParameterPtr>();
     MS_EXCEPTION_IF_NULL(param);
-    std::string param_name = param->name();
 
-    if (param_name.find(EXP_AVG) != std::string::npos) {
-      continue;
-    }
-
-    auto tensor_layout = param->user_data<TensorLayout>();
-    if (tensor_layout == nullptr) {
+    if (!IsOriginWeight(param)) {
       continue;
     }
 
     int64_t row_col_count = 0;
     int64_t exp_avg_sq_count = 0;
     for (auto &row_col_node : root->parameters()) {
+      if (row_col_count == 2 && exp_avg_sq_count == 1) {
+        break;
+      }
+
       MS_EXCEPTION_IF_NULL(row_col_node);
       auto row_col_param = row_col_node->cast<ParameterPtr>();
       MS_EXCEPTION_IF_NULL(row_col_param);
       std::string row_col_param_name = row_col_param->name();
+      std::string param_name = param->name();
       std::string exp_row_name = EXP_AVG_SQ_ROW + param_name;
       std::string exp_col_name = EXP_AVG_SQ_COL + param_name;
       std::string exp_avg_name = EXP_AVG_SQ + param_name;
@@ -565,14 +635,23 @@ void HandleAdaFactorOpt(const FuncGraphPtr &root) {
         continue;
       }
 
+      auto tensor_layout = param->user_data<TensorLayout>();
+      MS_EXCEPTION_IF_NULL(tensor_layout);
       auto slice_shape = tensor_layout->slice_shape().array();
+      Shape opt_shard_slice_shape = slice_shape;
+      if (!tensor_layout->opt_shard_group().empty()) {
+        opt_shard_slice_shape = tensor_layout->opt_shard_slice_shape();
+      }
+
       auto shape_size = slice_shape.size();
       bool is_row_or_col_param = (row_col_param_name == exp_row_name) || (row_col_param_name == exp_col_name);
       if (is_row_or_col_param && shape_size <= 1) {
+        row_col_count++;
         continue;
       }
 
       if (row_col_param_name == exp_avg_name && shape_size != 1) {
+        exp_avg_sq_count++;
         continue;
       }
 
@@ -581,12 +660,13 @@ void HandleAdaFactorOpt(const FuncGraphPtr &root) {
       auto tensor_map = tensor_layout->tensor_map().array();
 
       if (row_col_param_name == exp_row_name) {
-        slice_shape.pop_back();
+        opt_shard_slice_shape.pop_back();
         origin_shape.pop_back();
         tensor_map.pop_back();
         row_col_count++;
       } else if (row_col_param_name == exp_col_name) {
-        (void)slice_shape.erase(slice_shape.begin() + static_cast<different_type>(SECOND_FROM_END(shape_size)));
+        (void)opt_shard_slice_shape.erase(opt_shard_slice_shape.begin() +
+                                          static_cast<different_type>(SECOND_FROM_END(shape_size)));
         (void)origin_shape.erase(origin_shape.begin() + static_cast<different_type>(SECOND_FROM_END(shape_size)));
         (void)tensor_map.erase(tensor_map.begin() + static_cast<different_type>(SECOND_FROM_END(shape_size)));
         row_col_count++;
@@ -599,19 +679,19 @@ void HandleAdaFactorOpt(const FuncGraphPtr &root) {
         MS_LOG(EXCEPTION) << "Init tensor layout failed";
       }
 
+      if (AdafactorStateIsOptShard(tensor_layout->opt_shard_group(), shape_size, param_name, row_col_param_name)) {
+        new_tensor_layout.set_opt_shard_group(tensor_layout->opt_shard_group());
+      }
+
       auto cloned_abstract = row_col_node->abstract()->Clone();
       MS_EXCEPTION_IF_NULL(cloned_abstract);
-      std::shared_ptr<abstract::BaseShape> parallel_shape = std::make_shared<abstract::Shape>(slice_shape);
+      std::shared_ptr<abstract::BaseShape> parallel_shape = std::make_shared<abstract::Shape>(opt_shard_slice_shape);
       MS_EXCEPTION_IF_NULL(parallel_shape);
       cloned_abstract->set_shape(parallel_shape);
       row_col_param->set_user_data<TensorLayout>(std::make_shared<TensorLayout>(new_tensor_layout));
       row_col_node->set_abstract(cloned_abstract);
       MS_LOG(INFO) << "Set the slice shape for " << row_col_param_name << ", origin shape is " << origin_shape
-                   << ", new slice shape is " << slice_shape;
-
-      if (row_col_count == 2 || exp_avg_sq_count == 1) {
-        break;
-      }
+                   << ", new slice shape is " << opt_shard_slice_shape;
     }
   }
 }

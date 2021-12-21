@@ -29,18 +29,33 @@
 #include "minddata/dataset/audio/ir/kernels/bass_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/complex_norm_ir.h"
+#include "minddata/dataset/audio/ir/kernels/compute_deltas_ir.h"
 #include "minddata/dataset/audio/ir/kernels/contrast_ir.h"
+#include "minddata/dataset/audio/ir/kernels/db_to_amplitude_ir.h"
 #include "minddata/dataset/audio/ir/kernels/dc_shift_ir.h"
 #include "minddata/dataset/audio/ir/kernels/deemph_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/detect_pitch_frequency_ir.h"
+#include "minddata/dataset/audio/ir/kernels/dither_ir.h"
 #include "minddata/dataset/audio/ir/kernels/equalizer_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/fade_ir.h"
+#include "minddata/dataset/audio/ir/kernels/flanger_ir.h"
 #include "minddata/dataset/audio/ir/kernels/frequency_masking_ir.h"
+#include "minddata/dataset/audio/ir/kernels/gain_ir.h"
 #include "minddata/dataset/audio/ir/kernels/highpass_biquad_ir.h"
 #include "minddata/dataset/audio/ir/kernels/lfilter_ir.h"
 #include "minddata/dataset/audio/ir/kernels/lowpass_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/magphase_ir.h"
 #include "minddata/dataset/audio/ir/kernels/mu_law_decoding_ir.h"
+#include "minddata/dataset/audio/ir/kernels/mu_law_encoding_ir.h"
+#include "minddata/dataset/audio/ir/kernels/overdrive_ir.h"
+#include "minddata/dataset/audio/ir/kernels/phaser_ir.h"
+#include "minddata/dataset/audio/ir/kernels/riaa_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/sliding_window_cmn_ir.h"
+#include "minddata/dataset/audio/ir/kernels/spectrogram_ir.h"
 #include "minddata/dataset/audio/ir/kernels/time_masking_ir.h"
 #include "minddata/dataset/audio/ir/kernels/time_stretch_ir.h"
+#include "minddata/dataset/audio/ir/kernels/treble_biquad_ir.h"
+#include "minddata/dataset/audio/ir/kernels/vol_ir.h"
 
 namespace mindspore {
 namespace dataset {
@@ -150,6 +165,17 @@ PYBIND_REGISTER(
       }));
   }));
 
+PYBIND_REGISTER(
+  ComputeDeltasOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::ComputeDeltasOperation, TensorOperation, std::shared_ptr<audio::ComputeDeltasOperation>>(
+      *m, "ComputeDeltasOperation")
+      .def(py::init([](int32_t win_length, BorderType pad_mode) {
+        auto compute_deltas = std::make_shared<audio::ComputeDeltasOperation>(win_length, pad_mode);
+        THROW_IF_ERROR(compute_deltas->ValidateParams());
+        return compute_deltas;
+      }));
+  }));
+
 PYBIND_REGISTER(ContrastOperation, 1, ([](const py::module *m) {
                   (void)
                     py::class_<audio::ContrastOperation, TensorOperation, std::shared_ptr<audio::ContrastOperation>>(
@@ -160,6 +186,17 @@ PYBIND_REGISTER(ContrastOperation, 1, ([](const py::module *m) {
                         return contrast;
                       }));
                 }));
+
+PYBIND_REGISTER(
+  DBToAmplitudeOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::DBToAmplitudeOperation, TensorOperation, std::shared_ptr<audio::DBToAmplitudeOperation>>(
+      *m, "DBToAmplitudeOperation")
+      .def(py::init([](float ref, float power) {
+        auto db_to_amplitude = std::make_shared<audio::DBToAmplitudeOperation>(ref, power);
+        THROW_IF_ERROR(db_to_amplitude->ValidateParams());
+        return db_to_amplitude;
+      }));
+  }));
 
 PYBIND_REGISTER(DCShiftOperation, 1, ([](const py::module *m) {
                   (void)py::class_<audio::DCShiftOperation, TensorOperation, std::shared_ptr<audio::DCShiftOperation>>(
@@ -181,6 +218,37 @@ PYBIND_REGISTER(
         return deemph_biquad;
       }));
   }));
+
+PYBIND_REGISTER(DetectPitchFrequencyOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::DetectPitchFrequencyOperation, TensorOperation,
+                                   std::shared_ptr<audio::DetectPitchFrequencyOperation>>(
+                    *m, "DetectPitchFrequencyOperation")
+                    .def(py::init([](int32_t sample_rate, float frame_time, int32_t win_length, int32_t freq_low,
+                                     int32_t freq_high) {
+                      auto detect_pitch_frequency = std::make_shared<audio::DetectPitchFrequencyOperation>(
+                        sample_rate, frame_time, win_length, freq_low, freq_high);
+                      THROW_IF_ERROR(detect_pitch_frequency->ValidateParams());
+                      return detect_pitch_frequency;
+                    }));
+                }));
+
+PYBIND_REGISTER(DensityFunction, 0, ([](const py::module *m) {
+                  (void)py::enum_<DensityFunction>(*m, "DensityFunction", py::arithmetic())
+                    .value("DE_DENSITYFUNCTION_TPDF", DensityFunction::kTPDF)
+                    .value("DE_DENSITYFUNCTION_RPDF", DensityFunction::kRPDF)
+                    .value("DE_DENSITYFUNCTION_GPDF", DensityFunction::kGPDF)
+                    .export_values();
+                }));
+
+PYBIND_REGISTER(DitherOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::DitherOperation, TensorOperation, std::shared_ptr<audio::DitherOperation>>(
+                    *m, "DitherOperation")
+                    .def(py::init([](DensityFunction density_function, bool noise_shaping) {
+                      auto dither = std::make_shared<audio::DitherOperation>(density_function, noise_shaping);
+                      THROW_IF_ERROR(dither->ValidateParams());
+                      return dither;
+                    }));
+                }));
 
 PYBIND_REGISTER(EqualizerBiquadOperation, 1, ([](const py::module *m) {
                   (void)py::class_<audio::EqualizerBiquadOperation, TensorOperation,
@@ -213,6 +281,32 @@ PYBIND_REGISTER(FadeOperation, 1, ([](const py::module *m) {
                     }));
                 }));
 
+PYBIND_REGISTER(Modulation, 0, ([](const py::module *m) {
+                  (void)py::enum_<Modulation>(*m, "Modulation", py::arithmetic())
+                    .value("DE_MODULATION_SINUSOIDAL", Modulation::kSinusoidal)
+                    .value("DE_MODULATION_TRIANGULAR", Modulation::kTriangular)
+                    .export_values();
+                }));
+
+PYBIND_REGISTER(Interpolation, 0, ([](const py::module *m) {
+                  (void)py::enum_<Interpolation>(*m, "Interpolation", py::arithmetic())
+                    .value("DE_INTERPOLATION_LINEAR", Interpolation::kLinear)
+                    .value("DE_INTERPOLATION_QUADRATIC", Interpolation::kQuadratic)
+                    .export_values();
+                }));
+
+PYBIND_REGISTER(FlangerOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::FlangerOperation, TensorOperation, std::shared_ptr<audio::FlangerOperation>>(
+                    *m, "FlangerOperation")
+                    .def(py::init([](int32_t sample_rate, float delay, float depth, float regen, float width,
+                                     float speed, float phase, Modulation modulation, Interpolation interpolation) {
+                      auto flanger = std::make_shared<audio::FlangerOperation>(sample_rate, delay, depth, regen, width,
+                                                                               speed, phase, modulation, interpolation);
+                      THROW_IF_ERROR(flanger->ValidateParams());
+                      return flanger;
+                    }));
+                }));
+
 PYBIND_REGISTER(
   FrequencyMaskingOperation, 1, ([](const py::module *m) {
     (void)
@@ -225,6 +319,16 @@ PYBIND_REGISTER(
           return frequency_masking;
         }));
   }));
+
+PYBIND_REGISTER(GainOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::GainOperation, TensorOperation, std::shared_ptr<audio::GainOperation>>(
+                    *m, "GainOperation")
+                    .def(py::init([](float gain_db) {
+                      auto gain = std::make_shared<audio::GainOperation>(gain_db);
+                      THROW_IF_ERROR(gain->ValidateParams());
+                      return gain;
+                    }));
+                }));
 
 PYBIND_REGISTER(
   HighpassBiquadOperation, 1, ([](const py::module *m) {
@@ -258,14 +362,104 @@ PYBIND_REGISTER(
       }));
   }));
 
+PYBIND_REGISTER(MagphaseOperation, 1, ([](const py::module *m) {
+                  (void)
+                    py::class_<audio::MagphaseOperation, TensorOperation, std::shared_ptr<audio::MagphaseOperation>>(
+                      *m, "MagphaseOperation")
+                      .def(py::init([](float power) {
+                        auto magphase = std::make_shared<audio::MagphaseOperation>(power);
+                        THROW_IF_ERROR(magphase->ValidateParams());
+                        return magphase;
+                      }));
+                }));
+
 PYBIND_REGISTER(
   MuLawDecodingOperation, 1, ([](const py::module *m) {
     (void)py::class_<audio::MuLawDecodingOperation, TensorOperation, std::shared_ptr<audio::MuLawDecodingOperation>>(
       *m, "MuLawDecodingOperation")
-      .def(py::init([](int quantization_channels) {
+      .def(py::init([](int32_t quantization_channels) {
         auto mu_law_decoding = std::make_shared<audio::MuLawDecodingOperation>(quantization_channels);
         THROW_IF_ERROR(mu_law_decoding->ValidateParams());
         return mu_law_decoding;
+      }));
+  }));
+
+PYBIND_REGISTER(
+  MuLawEncodingOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::MuLawEncodingOperation, TensorOperation, std::shared_ptr<audio::MuLawEncodingOperation>>(
+      *m, "MuLawEncodingOperation")
+      .def(py::init([](int32_t quantization_channels) {
+        auto mu_law_encoding = std::make_shared<audio::MuLawEncodingOperation>(quantization_channels);
+        THROW_IF_ERROR(mu_law_encoding->ValidateParams());
+        return mu_law_encoding;
+      }));
+  }));
+
+PYBIND_REGISTER(OverdriveOperation, 1, ([](const py::module *m) {
+                  (void)
+                    py::class_<audio::OverdriveOperation, TensorOperation, std::shared_ptr<audio::OverdriveOperation>>(
+                      *m, "OverdriveOperation")
+                      .def(py::init([](float gain, float color) {
+                        auto overdrive = std::make_shared<audio::OverdriveOperation>(gain, color);
+                        THROW_IF_ERROR(overdrive->ValidateParams());
+                        return overdrive;
+                      }));
+                }));
+
+PYBIND_REGISTER(PhaserOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::PhaserOperation, TensorOperation, std::shared_ptr<audio::PhaserOperation>>(
+                    *m, "PhaserOperation")
+                    .def(py::init([](int32_t sample_rate, float gain_in, float gain_out, float delay_ms, float decay,
+                                     float mod_speed, bool sinusoidal) {
+                      auto phaser = std::make_shared<audio::PhaserOperation>(sample_rate, gain_in, gain_out, delay_ms,
+                                                                             decay, mod_speed, sinusoidal);
+                      THROW_IF_ERROR(phaser->ValidateParams());
+                      return phaser;
+                    }));
+                }));
+
+PYBIND_REGISTER(
+  RiaaBiquadOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::RiaaBiquadOperation, TensorOperation, std::shared_ptr<audio::RiaaBiquadOperation>>(
+      *m, "RiaaBiquadOperation")
+      .def(py::init([](int32_t sample_rate) {
+        auto riaa_biquad = std::make_shared<audio::RiaaBiquadOperation>(sample_rate);
+        THROW_IF_ERROR(riaa_biquad->ValidateParams());
+        return riaa_biquad;
+      }));
+  }));
+
+PYBIND_REGISTER(SlidingWindowCmnOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::SlidingWindowCmnOperation, TensorOperation,
+                                   std::shared_ptr<audio::SlidingWindowCmnOperation>>(*m, "SlidingWindowCmnOperation")
+                    .def(py::init([](int32_t cmn_window, int32_t min_cmn_window, bool center, bool norm_vars) {
+                      auto sliding_window_cmn = std::make_shared<audio::SlidingWindowCmnOperation>(
+                        cmn_window, min_cmn_window, center, norm_vars);
+                      THROW_IF_ERROR(sliding_window_cmn->ValidateParams());
+                      return sliding_window_cmn;
+                    }));
+                }));
+
+PYBIND_REGISTER(WindowType, 0, ([](const py::module *m) {
+                  (void)py::enum_<WindowType>(*m, "WindowType", py::arithmetic())
+                    .value("DE_BARTLETT", WindowType::kBartlett)
+                    .value("DE_BLACKMAN", WindowType::kBlackman)
+                    .value("DE_HAMMING", WindowType::kHamming)
+                    .value("DE_HANN", WindowType::kHann)
+                    .value("DE_KAISER", WindowType::kKaiser)
+                    .export_values();
+                }));
+
+PYBIND_REGISTER(
+  SpectrogramOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::SpectrogramOperation, TensorOperation, std::shared_ptr<audio::SpectrogramOperation>>(
+      *m, "SpectrogramOperation")
+      .def(py::init([](int32_t n_fft, int32_t win_length, int32_t hop_length, int32_t pad, WindowType window,
+                       float power, bool normalized, bool center, BorderType pad_mode, bool onesided) {
+        auto spectrogram = std::make_shared<audio::SpectrogramOperation>(n_fft, win_length, hop_length, pad, window,
+                                                                         power, normalized, center, pad_mode, onesided);
+        THROW_IF_ERROR(spectrogram->ValidateParams());
+        return spectrogram;
       }));
   }));
 
@@ -292,5 +486,33 @@ PYBIND_REGISTER(
       }));
   }));
 
+PYBIND_REGISTER(
+  TrebleBiquadOperation, 1, ([](const py::module *m) {
+    (void)py::class_<audio::TrebleBiquadOperation, TensorOperation, std::shared_ptr<audio::TrebleBiquadOperation>>(
+      *m, "TrebleBiquadOperation")
+      .def(py::init([](int32_t sample_rate, float gain, float central_freq, float Q) {
+        auto treble_biquad = std::make_shared<audio::TrebleBiquadOperation>(sample_rate, gain, central_freq, Q);
+        THROW_IF_ERROR(treble_biquad->ValidateParams());
+        return treble_biquad;
+      }));
+  }));
+
+PYBIND_REGISTER(VolOperation, 1, ([](const py::module *m) {
+                  (void)py::class_<audio::VolOperation, TensorOperation, std::shared_ptr<audio::VolOperation>>(
+                    *m, "VolOperation")
+                    .def(py::init([](float gain, GainType gain_type) {
+                      auto vol = std::make_shared<audio::VolOperation>(gain, gain_type);
+                      THROW_IF_ERROR(vol->ValidateParams());
+                      return vol;
+                    }));
+                }));
+
+PYBIND_REGISTER(GainType, 0, ([](const py::module *m) {
+                  (void)py::enum_<GainType>(*m, "GainType", py::arithmetic())
+                    .value("DE_GAINTYPE_AMPLITUDE", GainType::kAmplitude)
+                    .value("DE_GAINTYPE_POWER", GainType::kPower)
+                    .value("DE_GAINTYPE_DB", GainType::kDb)
+                    .export_values();
+                }));
 }  // namespace dataset
 }  // namespace mindspore

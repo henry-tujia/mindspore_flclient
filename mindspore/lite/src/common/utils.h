@@ -26,6 +26,7 @@
 #include "src/common/log_adapter.h"
 #include "tools/common/option.h"
 #include "include/errorcode.h"
+#include "ir/dtype/type_id.h"
 
 namespace mindspore {
 namespace lite {
@@ -40,6 +41,8 @@ const int MSEC = 1000;
 uint64_t GetTimeUs();
 
 bool IsSupportSDot();
+
+size_t GetMaxMallocSize();
 
 #ifdef __ANDROID__
 uint32_t getHwCap(int hwcap_type);
@@ -162,6 +165,8 @@ inline bool StartsWithPrefix(const std::string &source, const std::string &prefi
 // split string
 std::vector<std::string> StrSplit(const std::string &str, const std::string &pattern);
 
+bool ConvertStrToInt(const std::string &str, int *value);
+
 // tokenize string
 std::vector<std::string> Tokenize(const std::string &src, const std::string &delimiters,
                                   const Option<size_t> &maxTokenNum = Option<size_t>(None()));
@@ -198,6 +203,42 @@ inline Option<bool> GenericParseValue(const std::string &value) {
   }
 
   return Option<bool>(None());
+}
+
+inline size_t DataTypeSize(TypeId type) {
+  switch (type) {
+    case kNumberTypeFloat64:
+      return sizeof(double);
+    case kNumberTypeFloat:
+    case kNumberTypeFloat32:
+      return sizeof(float);
+    case kNumberTypeInt8:
+      return sizeof(int8_t);
+    case kNumberTypeUInt8:
+      return sizeof(uint8_t);
+    case kNumberTypeFloat16:
+    case kNumberTypeInt16:
+      return sizeof(int16_t);
+    case kNumberTypeInt32:
+      return sizeof(int32_t);
+    case kNumberTypeInt64:
+      return sizeof(int64_t);
+    case kNumberTypeUInt16:
+      return sizeof(uint16_t);
+    case kNumberTypeUInt32:
+      return sizeof(uint32_t);
+    case kNumberTypeUInt64:
+      return sizeof(uint64_t);
+    case kNumberTypeBool:
+      return sizeof(bool);
+    case kObjectTypeString:
+      return sizeof(char);
+    case kObjectTypeTensorType:
+      return 0;
+    default:
+      MS_LOG(ERROR) << "Not support the type: " << type;
+      return 0;
+  }
 }
 
 }  // namespace lite

@@ -36,36 +36,42 @@ class DumpJsonParser {
   void Parse();
   static bool DumpToFile(const std::string &filename, const void *data, size_t len, const ShapeVector &shape,
                          TypeId type);
-  void CopyJsonToDir(uint32_t device_id);
-  void CopyHcclJsonToDir(uint32_t device_id);
-  void CopyMSCfgJsonToDir(uint32_t device_id);
+  void CopyDumpJsonToDir(uint32_t rank_id);
+  void CopyHcclJsonToDir(uint32_t rank_id);
+  void CopyMSCfgJsonToDir(uint32_t rank_id);
   bool NeedDump(const std::string &op_full_name) const;
   void MatchKernel(const std::string &kernel_name);
   void PrintUnusedKernel();
+  bool IsStatisticDump() const;
+  bool IsTensorDump() const;
+  bool IsFullDump() const;
   bool IsDumpIter(uint32_t iteration) const;
   bool DumpAllIter();
-  bool IsSingleIter();
 
   bool async_dump_enabled() const { return async_dump_enabled_; }
   bool e2e_dump_enabled() const { return e2e_dump_enabled_; }
   uint32_t dump_mode() const { return dump_mode_; }
   std::string path() const { return path_; }
+  std::string saved_data() const { return saved_data_; }
   std::string iteration_string() const { return iteration_; }
   std::string net_name() const { return net_name_; }
-  uint32_t input_output() const { return input_output_; }
   uint32_t op_debug_mode() const { return op_debug_mode_; }
   bool trans_flag() const { return trans_flag_; }
   uint32_t cur_dump_iter() const { return cur_dump_iter_; }
   void UpdateDumpIter() { ++cur_dump_iter_; }
+  bool FileFormatIsNpy() const { return file_format_ == JsonFileFormat::FORMAT_NPY; }
   bool GetIterDumpFlag() const;
   bool InputNeedDump() const;
   bool OutputNeedDump() const;
   std::string GetOpOverflowBinPath(uint32_t graph_id) const;
-  void UpdateNeedDumpKernels(NotNull<const session::KernelGraph *> kernel_graph);
+  void GetCellDumpFlag(const session::KernelGraph &kernel_graph);
+  void UpdateNeedDumpKernels(const session::KernelGraph &kernel_graph);
 
   void ClearGraph() { graphs_.clear(); }
   void SaveGraph(session::KernelGraph *graph) { (void)graphs_.emplace_back(graph); }
   const std::vector<session::KernelGraph *> &graphs() const { return graphs_; }
+  enum JsonDumpMode { DUMP_ALL = 0, DUMP_KERNEL = 1, DUMP_KERNELS_WITH_FLAG = 2 };
+  enum JsonFileFormat { FORMAT_NPY = 0, FORMAT_BIN = 1 };
 
  private:
   DumpJsonParser() = default;
@@ -78,11 +84,14 @@ class DumpJsonParser {
   uint32_t dump_mode_{0};
   std::string path_;
   std::string net_name_;
+  std::string saved_data_;
   std::string iteration_;
   uint32_t input_output_{0};
   std::map<std::string, uint32_t> kernels_;
+  std::vector<std::string> cell_dump_kernels_;
   std::set<uint32_t> support_devices_;
   uint32_t op_debug_mode_{0};
+  JsonFileFormat file_format_;
   bool trans_flag_{false};
   uint32_t cur_dump_iter_{0};
   bool already_parsed_{false};
@@ -99,12 +108,14 @@ class DumpJsonParser {
   void ParseDumpMode(const nlohmann::json &content);
   void ParseDumpPath(const nlohmann::json &content);
   void ParseNetName(const nlohmann::json &content);
+  void ParseSavedData(const nlohmann::json &content);
   void ParseIteration(const nlohmann::json &content);
   void ParseInputOutput(const nlohmann::json &content);
   void ParseKernels(const nlohmann::json &content);
   void ParseSupportDevice(const nlohmann::json &content);
   bool ParseEnable(const nlohmann::json &content);
   void ParseOpDebugMode(const nlohmann::json &content);
+  void ParseFileFormat(const nlohmann::json &content);
 
   void JudgeDumpEnabled();
   void JsonConfigToString();

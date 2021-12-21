@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,49 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <sys/stat.h>
+#include "minddata/dataset/engine/perf/dataset_iterator_tracing.h"
 #include <fstream>
 #include <string>
-#include "minddata/dataset/engine/perf/dataset_iterator_tracing.h"
+#ifndef ENABLE_ANDROID
+#include "utils/log_adapter.h"
+#else
+#include "mindspore/lite/src/common/log_adapter.h"
+#endif
 #include "minddata/dataset/util/path.h"
 #include "mindspore/core/utils/ms_utils.h"
 
 namespace mindspore {
 namespace dataset {
 
-Status DatasetIteratorTracing::Record(const int32_t type, const int32_t extra_info, const int32_t batch_num,
-                                      const int32_t value, const uint64_t time_stamp) {
-  // Format: "type extra-info batch-num value"
-  // type: 0: time,  1: connector size
-  // extra-info: if type is 0 - 0: pipeline time, 1: push tdt time, 2: batch time
-  //             if type is 1 - connector capacity
-  // batch-num: batch number
-  // value: if type is 0 - value is time(ms)
-  //        if type is 1 - value is connector size
-  // Examples:
-  // 0 0 20 10 - The 20th batch took 10ms to get data from pipeline.
-  // 1 64 20 5 - Connector size is 5 when get the 20th batch.Connector capacity is 64.
-  std::string data = std::to_string(type) + " " + std::to_string(extra_info) + " " + std::to_string(batch_num) + " " +
-                     std::to_string(value) + " " + std::to_string(time_stamp);
-  value_.emplace_back(data);
-  return Status::OK();
-}
-
-Status DatasetIteratorTracing::Init(const std::string &dir_path, const std::string &device_id) {
-  file_path_ = (Path(dir_path) / Path("dataset_iterator_profiling_" + device_id + ".txt")).ToString();
-  return Status::OK();
-}
-
-Status DatasetIteratorTracing::ChangeFileMode() {
-  if (value_.empty()) {
-    return Status::OK();
-  }
-
-  if (chmod(common::SafeCStr(file_path_), S_IRUSR | S_IWUSR) == -1) {
-    std::string err_str = "Change file mode failed," + file_path_;
-    return Status(StatusCode::kMDUnexpectedError, err_str);
-  }
-  return Status::OK();
+Path DatasetIteratorTracing::GetFileName(const std::string &dir_path, const std::string &rank_id) {
+  return Path(dir_path) / Path("dataset_iterator_profiling_" + rank_id + ".txt");
 }
 }  // namespace dataset
 }  // namespace mindspore

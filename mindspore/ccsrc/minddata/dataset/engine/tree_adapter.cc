@@ -21,6 +21,7 @@
 #ifndef ENABLE_ANDROID
 #include "minddata/dataset/engine/opt/optional/tensor_op_fusion_pass.h"
 #include "minddata/dataset/engine/opt/pre/cache_transform_pass.h"
+#include "minddata/dataset/engine/opt/pre/node_offload_pass.h"
 #include "minddata/dataset/engine/opt/post/repeat_pass.h"
 #endif
 #include "minddata/dataset/engine/opt/pass.h"
@@ -60,6 +61,14 @@ Status TreeAdapter::PrePass(std::shared_ptr<DatasetNode> ir) {
   if (usage_ == kDeGetter) actions.emplace_back(std::make_unique<GetterPass>());
 #ifndef ENABLE_ANDROID
   actions.emplace_back(std::make_unique<CacheTransformPass>());
+
+  std::unique_ptr<NodeOffloadPass> offload = std::make_unique<NodeOffloadPass>();
+  // Checks nodes for offload removal
+  bool offload_mod = false;
+  // Checks ir_tree nodes for offload removal
+  offload->Run(ir, &offload_mod);
+  // Creates JSON object of offload nodes.
+  offload_json_ = offload->GetOffloadJson();
 #endif
   // Vector of flags for each action
   std::vector<bool> modified(actions.size(), false);
@@ -69,7 +78,8 @@ Status TreeAdapter::PrePass(std::shared_ptr<DatasetNode> ir) {
     RETURN_IF_NOT_OK(actions[i]->Run(ir, &m));
     modified[i] = m;
   }
-  MS_LOG(INFO) << "Pre pass complete.";
+
+  MS_LOG(INFO) << "Pre pass offload complete.";
   return Status::OK();
 }
 
@@ -150,12 +160,9 @@ Status TreeAdapter::BuildExecutionTreeRecur(std::shared_ptr<DatasetNode> ir, std
 
 Status TreeAdapter::Build(std::shared_ptr<DatasetNode> root_ir) {
   RETURN_UNEXPECTED_IF_NULL(root_ir);
-  // This will evolve in the long run
+  // Create ExecutionTree
   tree_ = std::make_unique<ExecutionTree>();
-  // disable profiling if this is only a getter pass
-#ifndef ENABLE_SECURITY
-  if (usage_ == kDeGetter) tree_->GetProfilingManager()->DisableProfiling();
-#endif
+
   // Build the Execution tree from the child of the IR root node, which represent the root of the input IR tree
   std::shared_ptr<DatasetOp> root_op;
   RETURN_IF_NOT_OK(BuildExecutionTreeRecur(root_ir->Children()[0], &root_op));
@@ -220,21 +227,26 @@ Status TreeAdapter::GetNext(TensorRow *row) {
   RETURN_UNEXPECTED_IF_NULL(tree_);
   RETURN_UNEXPECTED_IF_NULL(row);
   row->clear();  // make sure row is empty
-#ifndef ENABLE_SECURITY
-  bool isProfilingEnable = tree_->GetProfilingManager()->IsProfilingEnable();
-#endif
 
   // When cur_db_ is a nullptr, it means this is the first call to get_next, launch ExecutionTree
   if (!launched_) {
     RETURN_IF_NOT_OK(Launch());
   }
+  // Record profiling info
+#ifndef ENABLE_SECURITY
+  uint64_t start_time = 0;
+  if (tracing_ != nullptr) {
+    start_time = ProfilingTime::GetCurMilliSecond();
+  }
+#endif
 
   RETURN_IF_NOT_OK(tree_->root()->GetNextRow(row));  // first buf can't be eof or empty buf with none flag
   if (row->eoe()) {                                  // return empty tensor if 1st buf is a ctrl buf (no rows)
-    MS_LOG(INFO) << "End of data iteration.";
+    MS_LOG(INFO) << "End of data iteration.  cur_batch_num_: " << cur_batch_num_;
 #ifndef ENABLE_SECURITY
-    if (isProfilingEnable) {
+    if (profiling_manager_ != nullptr) {
       tree_->SetEpochEnd();
+      profiling_manager_->RecordEndOfEpoch(cur_batch_num_);
     }
 #endif
     return Status::OK();
@@ -252,8 +264,11 @@ Status TreeAdapter::GetNext(TensorRow *row) {
     cur_batch_num_++;
     cur_connector_size_ = tree_->root()->ConnectorSize();
     cur_connector_capacity_ = tree_->root()->ConnectorCapacity();
-    RETURN_IF_NOT_OK(
-      tracing_->Record(CONNECTOR_DEPTH, cur_connector_capacity_, cur_batch_num_, cur_connector_size_, end_time));
+    // push time is 0ms in dataset iterator since no devices are involved
+    tracing_->Record(TIME, TDT_PUSH_TIME, cur_batch_num_, 0, end_time);
+    tracing_->Record(TIME, BATCH_TIME, cur_batch_num_, end_time - start_time, end_time);
+    tracing_->Record(TIME, PIPELINE_TIME, cur_batch_num_, end_time - start_time, end_time);
+    tracing_->Record(CONNECTOR_DEPTH, cur_connector_capacity_, cur_batch_num_, cur_connector_size_, end_time);
   }
 #endif
   return Status::OK();
@@ -263,22 +278,10 @@ Status TreeAdapter::Launch() {
   CHECK_FAIL_RETURN_UNEXPECTED(tree_ != nullptr, "Tree is a nullptr.");
   RETURN_IF_NOT_OK(tree_->Launch());
   launched_ = true;
-  // Profiling
-  std::shared_ptr<Tracing> node;
-#ifndef ENABLE_SECURITY
-  Status s = tree_->GetProfilingManager()->GetTracingNode(kDatasetIteratorTracingName, &node);
-#else
-  Status s = Status::OK();
-#endif
-  if (s.IsOk()) {
-#ifndef ENABLE_SECURITY
-    tracing_ = std::dynamic_pointer_cast<DatasetIteratorTracing>(node);
-#endif
-    cur_connector_size_ = tree_->root()->ConnectorSize();
-    cur_connector_capacity_ = tree_->root()->ConnectorCapacity();
-  }
   return Status::OK();
 }
+
+nlohmann::json TreeAdapter::GetOffloadJson() { return offload_json_; }
 
 }  // namespace dataset
 }  // namespace mindspore

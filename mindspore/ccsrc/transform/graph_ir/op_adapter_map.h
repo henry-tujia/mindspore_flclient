@@ -18,7 +18,7 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_ADAPTER_MAP_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_adapter_desc.h"
 
 namespace mindspore {
@@ -43,6 +43,7 @@ constexpr const char kNameSquare[] = "Square";
 constexpr const char kNameSquaredDifference[] = "SquaredDifference";
 constexpr const char kNamePow[] = "Pow";
 constexpr const char kNameBatchMatMul[] = "BatchMatMul";
+constexpr const char kNameBatchMatMulV2[] = "BatchMatMulV2";
 constexpr const char kNameStridedSlice[] = "StridedSlice";
 constexpr const char kNameStridedSliceGrad[] = "StridedSliceGrad";
 constexpr const char kNameExpandDims[] = "ExpandDims";
@@ -97,6 +98,8 @@ constexpr const char kNameSoftplusGrad[] = "SoftplusGrad";
 constexpr const char kNameElu[] = "Elu";
 constexpr const char kNameEluGrad[] = "EluGrad";
 constexpr const char kNameTensorScatterUpdate[] = "TensorScatterUpdate";
+constexpr const char kNameScatterElements[] = "ScatterElements";
+constexpr const char kNameNonZero[] = "NonZero";
 constexpr const char kNameScatterUpdate[] = "ScatterUpdate";
 constexpr const char kNameScatterNdUpdate[] = "ScatterNdUpdate";
 constexpr const char kNameScatterMax[] = "ScatterMax";
@@ -110,6 +113,7 @@ constexpr const char kNameSigmoidCrossEntropyWithLogitsGrad[] = "SigmoidCrossEnt
 constexpr const char kNameSigmoidCrossEntropyWithLogitsV2[] = "BCEWithLogitsLoss";
 constexpr const char kNameScatterNdD[] = "ScatterNd";
 constexpr const char kNamePadD[] = "Pad";
+constexpr const char kNamePadV1[] = "PadV1";
 constexpr const char kNameMirrorPad[] = "MirrorPad";
 constexpr const char kNameMirrorPadGrad[] = "MirrorPadGrad";
 constexpr const char kNameGatherNd[] = "GatherNd";
@@ -231,6 +235,9 @@ constexpr const char kNamePrelu[] = "PReLU";
 constexpr const char kNamePreluGrad[] = "PReLUGrad";
 constexpr const char kNameSigmoid[] = "Sigmoid";
 constexpr const char kNameSigmoidGrad[] = "SigmoidGrad";
+constexpr const char kNameHSwish[] = "HSwish";
+constexpr const char kNameHSwishGrad[] = "HSwishGrad";
+constexpr const char kNameHSigmoid[] = "HSigmoid";
 constexpr const char kNameL2Normalize[] = "L2Normalize";
 constexpr const char kNameL2NormalizeGrad[] = "L2NormalizeGrad";
 constexpr const char kNameSoftmax[] = "Softmax";
@@ -324,17 +331,25 @@ constexpr const char kNameShape[] = "Shape";
 constexpr const char kNameGather[] = "Gather";
 constexpr const char kNameUnsqueeze[] = "Unsqueeze";
 constexpr const char kNamePadV3[] = "PadV3";
+constexpr const char kNamePadV2[] = "PadV2";
 constexpr const char kNameGlobalAvgPool[] = "GlobalAveragePool";
 constexpr const char kNameStridedSliceV2[] = "StridedSliceV2";
 constexpr const char kNameBNInference[] = "BNInference";
 constexpr const char kNameDeconvolution[] = "Deconvolution";
+constexpr const char kNameUpsample[] = "Upsample";
+constexpr const char kNameConv2DTransposeD[] = "Conv2DTransposeD";
+constexpr const char kNameArgMaxV2[] = "ArgMaxV2";
+constexpr const char kNameResizeNearestNeighborV2[] = "ResizeNearestNeighborV2";
+constexpr const char kNameConv2DBackpropInputV2[] = "Conv2DBackpropInputV2";
+constexpr const char kNameConcatV2D[] = "ConcatV2D";
+constexpr const char kNameFillV1[] = "FillV1";
 
 class OpAdapterMap {
  public:
-  static std::unordered_map<std::string, OpAdapterDescPtr> &get();
+  static mindspore::HashMap<std::string, OpAdapterDescPtr> &get();
 
  private:
-  static std::unordered_map<std::string, OpAdapterDescPtr> adpt_map_;
+  static mindspore::HashMap<std::string, OpAdapterDescPtr> adpt_map_;
 };
 }  // namespace transform
 }  // namespace mindspore

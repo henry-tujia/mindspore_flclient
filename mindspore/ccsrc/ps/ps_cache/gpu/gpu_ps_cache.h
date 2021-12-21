@@ -30,6 +30,7 @@ class GPUPsCache : public PsCacheBasic {
   ~GPUPsCache() override = default;
   bool InitDevice(uint32_t device_id, const void *context) override;
   void *MallocMemory(size_t size) override;
+  void FreeMemory(void *device_addr) override;
   bool RecordEvent() override;
   bool SynchronizeEvent() override;
   bool SynchronizeStream() override;

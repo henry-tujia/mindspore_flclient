@@ -20,10 +20,10 @@
 #include <algorithm>
 #include <memory>
 #include <set>
-#include <unordered_map>
 #include <vector>
 #include <utility>
 
+#include "utils/hash_map.h"
 #include "ir/func_graph.h"
 #include "ir/func_graph_cloner.h"
 #include "frontend/optimizer/optimizer_caller.h"
@@ -75,7 +75,7 @@ class GetitemTransform {
   }
 
  private:
-  std::unordered_map<FuncGraphPtr, std::unordered_map<int64_t, FuncGraphPtr>> cache_;
+  mindspore::HashMap<FuncGraphPtr, mindspore::HashMap<int64_t, FuncGraphPtr>> cache_;
 };
 
 class GetItemTransformACrossGraph {
@@ -127,7 +127,7 @@ class GetItemTransformACrossGraph {
   }
 
  private:
-  std::unordered_map<FuncGraphPtr, std::unordered_map<int64_t, FuncGraphPtr>> cache_;
+  mindspore::HashMap<FuncGraphPtr, mindspore::HashMap<int64_t, FuncGraphPtr>> cache_;
 };
 
 bool HasMoreJ(const OptimizerPtr &optimizer) {
@@ -203,7 +203,7 @@ AbstractBasePtr ShrinkAbstract(const AbstractBasePtr &original_abstract,
                    std::back_inserter(shrunk_abstract_elements),
                    [abs_tuple_elements, before_shrink_tuple_size](const auto &node_and_index) {
                      if (node_and_index.index >= before_shrink_tuple_size) {
-                       MS_LOG(EXCEPTION) << "index should less than inputs size, index: " << node_and_index.index
+                       MS_LOG(EXCEPTION) << "index should be less than inputs size, index: " << node_and_index.index
                                          << ", abstract tuple size: " << before_shrink_tuple_size;
                      }
                      return abs_tuple_elements[node_and_index.index];
@@ -227,7 +227,7 @@ FuncGraphPtr ShrinkUnsedOutput(const FuncGraphPtr &fg, const std::vector<TpCNode
     const auto &new_fg_output_inputs = new_fg_output_cnode->inputs();
     constexpr auto kMinimalSize = 2;
     if (new_fg_output_inputs.size() <= kMinimalSize) {
-      MS_LOG(EXCEPTION) << "New fg output should at least 2 elements, but: " << new_fg_output->DebugString();
+      MS_LOG(EXCEPTION) << "New fg output should have at least 2 elements, but: " << new_fg_output->DebugString();
     }
     before_shrink_inputs_size = SizeToLong(new_fg_output_inputs.size() - 1);
     AnfNodePtrList shrunk_inputs{NewValueNode({prim::kPrimMakeTuple})};
@@ -235,7 +235,7 @@ FuncGraphPtr ShrinkUnsedOutput(const FuncGraphPtr &fg, const std::vector<TpCNode
     std::transform(tp_cnodes_and_index.cbegin(), tp_cnodes_and_index.cend(), std::back_inserter(shrunk_inputs),
                    [new_fg_output, new_fg_output_inputs, before_shrink_inputs_size](const auto &node_and_index) {
                      if (node_and_index.index >= before_shrink_inputs_size) {
-                       MS_LOG(EXCEPTION) << "index should less than inputs size, index: " << node_and_index.index
+                       MS_LOG(EXCEPTION) << "index should be less than inputs size, index: " << node_and_index.index
                                          << ", output: " << new_fg_output->DebugString();
                      }
                      return new_fg_output_inputs[node_and_index.index + 1];
@@ -251,7 +251,7 @@ FuncGraphPtr ShrinkUnsedOutput(const FuncGraphPtr &fg, const std::vector<TpCNode
     std::transform(tp_cnodes_and_index.cbegin(), tp_cnodes_and_index.cend(), std::back_inserter(shrunk_inputs),
                    [new_fg_output, value_tuple, before_shrink_inputs_size](const auto &node_and_index) {
                      if (node_and_index.index >= before_shrink_inputs_size) {
-                       MS_LOG(EXCEPTION) << "index should less than inputs size, index: " << node_and_index.index
+                       MS_LOG(EXCEPTION) << "index should be less than inputs size, index: " << node_and_index.index
                                          << ", output: " << new_fg_output->DebugString();
                      }
                      return (*value_tuple)[node_and_index.index];
@@ -516,7 +516,7 @@ class IncorporateGetitem : public AnfVisitor {
   CNodePtr fg_call_cnode_{nullptr};
   std::vector<AnfNodePtr> args_{};
   std::set<AnfNodePtr> processed_nodes_;
-  std::unordered_map<std::pair<FuncGraphPtr, std::vector<int64_t>>, FuncGraphPtr,
+  mindspore::HashMap<std::pair<FuncGraphPtr, std::vector<int64_t>>, FuncGraphPtr,
                      internal::FuncGraphIntVectorPairHasher>
     processed_fgs_;
   internal::GetitemTransform getitem_transform_;
@@ -865,7 +865,7 @@ class IncorporateGetitemSwitch : public AnfVisitor {
   bool is_in_get_{false}, is_in_switch_{false};
   std::vector<AnfNodePtr> args_{};
   std::set<AnfNodePtr> processed_nodes_;
-  std::unordered_map<std::pair<FuncGraphPtr, std::vector<int64_t>>, FuncGraphPtr,
+  mindspore::HashMap<std::pair<FuncGraphPtr, std::vector<int64_t>>, FuncGraphPtr,
                      internal::FuncGraphIntVectorPairHasher>
     processed_fgs_;
   internal::GetitemTransform getitem_transform_;

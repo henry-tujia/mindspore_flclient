@@ -95,7 +95,7 @@ Status ReshapeInfo::GetParameterInput() {
   }
   elements = dim_tuple->value();
   if (elements.size() != outputs_shape_[0].size()) {
-    MS_LOG(ERROR) << name_ << ": Elements size must equal to outputs shape[0] size.";
+    MS_LOG(ERROR) << name_ << ": Elements size must be equal to outputs shape[0] size.";
     return FAILED;
   }
 
@@ -146,6 +146,21 @@ Status ReshapeInfo::ComputeReplaceOp() {
     replace_op_info_ = redistribution_oplist_ptr->second;
   }
   MS_LOG(DEBUG) << name_ << ": replace op size = " << replace_op_.size();
+  if (replace_op_.size() == 1 && replace_op_.front().first == RESHAPE) {
+    int64_t shape_dim = 2;
+    auto value = replace_op_.front().second.second.front().first.second;
+    Shape dst_shape = GetValue<std::vector<int64_t>>(value);
+    Shape origin_dst_shape = GetValue<std::vector<int64_t>>(cnode_->input(shape_dim)->cast<ValueNodePtr>()->value());
+    if (dst_shape.size() == origin_dst_shape.size()) {
+      for (size_t i = 0; i < dst_shape.size(); ++i) {
+        if (origin_dst_shape[i] != dst_shape[i] && origin_dst_shape[i] != -1) {
+          return SUCCESS;
+        }
+      }
+      MS_LOG(INFO) << "The reshape would not change the target shape.";
+      replace_op_.front().second.second.front().first.second = MakeValue(origin_dst_shape);
+    }
+  }
   return SUCCESS;
 }
 
@@ -306,7 +321,7 @@ Status ReshapeInfo::InferDefaultLayout(const Shape &shape, TensorLayout *const l
   return Status::SUCCESS;
 }
 
-Status ReshapeInfo::Init(const StrategyPtr &strategy) {
+Status ReshapeInfo::Init(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
   auto reshape_skip_redis_iter = attrs_.find(SKIP_REDISTRIBUTION);
   if (reshape_skip_redis_iter != attrs_.end()) {
     MS_EXCEPTION_IF_NULL(reshape_skip_redis_iter->second);
@@ -319,8 +334,8 @@ Status ReshapeInfo::Init(const StrategyPtr &strategy) {
 
   ResetQueueMember();
   device_number();
-  if (strategy) {
-    if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
+  if (in_strategy) {
+    if (InitWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
       MS_LOG(ERROR) << name_ << ": Init failed.";
       return FAILED;
     }
@@ -362,16 +377,6 @@ Status ReshapeInfo::Init(const StrategyPtr &strategy) {
     MS_LOG(ERROR) << name_ << ": ComputeReplaceOp failed.";
     return status;
   }
-  return SUCCESS;
-}
-
-Status ReshapeInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success.";
   return SUCCESS;
 }
 
@@ -441,7 +446,7 @@ std::vector<StrategyPtr> ReshapeInfo::GenerateOpStrategies(int64_t) {
   return sp_vector;
 }
 
-Status ReshapeInfo::GenetateStrategyCosts(const std::vector<std::shared_ptr<StrategyWithCost>> &pre_stra_costs,
+Status ReshapeInfo::GenerateStrategyCosts(const std::vector<std::shared_ptr<StrategyWithCost>> &pre_stra_costs,
                                           const std::vector<std::shared_ptr<StrategyWithCost>> &next_stra_costs,
                                           int64_t out_index, int64_t in_index, bool is_prev_param,
                                           bool is_next_reshape) {
@@ -473,7 +478,7 @@ Status ReshapeInfo::GenetateStrategyCosts(const std::vector<std::shared_ptr<Stra
       InferTensorInfoByLayout();
       SetCostForReshape(reshape_stra);
     } else if (next_stra_costs.empty()) {
-      if (Init(nullptr) == FAILED) {
+      if (Init(nullptr, nullptr) == FAILED) {
         MS_LOG(ERROR) << "Failure:operator reshape init failed";
         return FAILED;
       }
@@ -498,7 +503,149 @@ Status ReshapeInfo::GenetateStrategyCosts(const std::vector<std::shared_ptr<Stra
   if (strategy_cost_.empty()) {
     return FAILED;
   }
+  MS_LOG(INFO) << "Print " << name() << "'s 'strategy_cost':";
+  for (auto &swc : strategy_cost_) {
+    MS_LOG(INFO) << name() << "'s strategy:";
+    PrintStrategy(swc->strategy_ptr);
+    MS_LOG(INFO) << "The corresponding cost: " << swc->cost_list[0]->computation_cost_ << ", "
+                 << swc->cost_list[0]->communication_cost_ << ", "
+                 << swc->cost_list[0]->communication_without_parameter_;
+    MS_LOG(INFO) << "Input layout: " << swc->inputs_ptr[0].tensor_layout().ToString();
+    MS_LOG(INFO) << "Output layout: " << swc->outputs_ptr[0].tensor_layout().ToString();
+  }
   return SUCCESS;
+}
+
+int64_t ReshapeInfo::GetSWCIndexByOutputLayoutWithZeroComm(const TensorLayout &output_layout) {
+  std::vector<std::pair<int64_t, double>> index_computation;
+  for (size_t i = 0; i < strategy_cost_.size(); ++i) {
+    const auto &swc = strategy_cost_[i];
+    if (swc->outputs_ptr[0].tensor_layout() == output_layout &&
+        swc->cost_list[0]->communication_without_parameter_ == 0.0) {
+      (void)index_computation.emplace_back(SizeToLong(i), swc->cost_list[0]->computation_cost_);
+    }
+  }
+  if (index_computation.empty()) {
+    MS_LOG(WARNING) << "There in no available strategy for zero communication cost for reshape: " << name();
+    return -1;
+  }
+  if (index_computation.size() > 1) {
+    MS_LOG(INFO) << "There are multiple strategies available for reshape: " << name();
+  }
+  std::sort(
+    index_computation.begin(), index_computation.end(),
+    [](const std::pair<int64_t, double> &a, const std::pair<int64_t, double> &b) { return a.second < b.second; });
+  return index_computation[0].first;
+}
+
+int64_t ReshapeInfo::GetSWCIndexByOutputLayoutWithMiniComm(const TensorLayout &output_layout) {
+  std::vector<std::pair<int64_t, double>> index_comm;
+  for (size_t i = 0; i < strategy_cost_.size(); ++i) {
+    const auto &swc = strategy_cost_[i];
+    if (swc->outputs_ptr[0].tensor_layout() == output_layout) {
+      (void)index_comm.emplace_back(SizeToLong(i), swc->cost_list[0]->communication_without_parameter_);
+    }
+  }
+  if (index_comm.empty()) {
+    MS_LOG(ERROR) << "There in no available strategy for zero communication cost for reshape: " << name();
+    return -1;
+  }
+  if (index_comm.size() > 1) {
+    MS_LOG(INFO) << "There are multiple strategies available for reshape: " << name();
+  }
+  std::sort(
+    index_comm.begin(), index_comm.end(),
+    [](const std::pair<int64_t, double> &a, const std::pair<int64_t, double> &b) { return a.second < b.second; });
+  return index_comm[0].first;
+}
+
+int64_t ReshapeInfo::GetSWCIndexByInputLayoutWithZeroComm(const TensorLayout &input_layout) {
+  std::vector<std::pair<int64_t, double>> index_computation;
+  for (size_t i = 0; i < strategy_cost_.size(); ++i) {
+    const auto &swc = strategy_cost_[i];
+    if (swc->inputs_ptr[0].tensor_layout() == input_layout &&
+        swc->cost_list[0]->communication_without_parameter_ == 0.0) {
+      (void)index_computation.emplace_back(SizeToLong(i), swc->cost_list[0]->computation_cost_);
+    }
+  }
+  if (index_computation.empty()) {
+    MS_LOG(WARNING) << "There in no available strategy for zero communication cost for reshape: " << name();
+    return -1;
+  }
+  if (index_computation.size() > 1) {
+    MS_LOG(INFO) << "There are multiple strategies available for reshape: " << name();
+  }
+  std::sort(
+    index_computation.begin(), index_computation.end(),
+    [](const std::pair<int64_t, double> &a, const std::pair<int64_t, double> &b) { return a.second < b.second; });
+  return index_computation[0].first;
+}
+
+int64_t ReshapeInfo::GetSWCIndexByInputLayoutWithMiniComm(const TensorLayout &input_layout) {
+  std::vector<std::pair<int64_t, double>> index_comm;
+  for (size_t i = 0; i < strategy_cost_.size(); ++i) {
+    const auto &swc = strategy_cost_[i];
+    if (swc->inputs_ptr[0].tensor_layout() == input_layout) {
+      (void)index_comm.emplace_back(SizeToLong(i), swc->cost_list[0]->communication_without_parameter_);
+    }
+  }
+  if (index_comm.empty()) {
+    MS_LOG(ERROR) << "There in no available strategy for zero communication cost for reshape: " << name();
+    return -1;
+  }
+  if (index_comm.size() > 1) {
+    MS_LOG(INFO) << "There are multiple strategies available for reshape: " << name();
+  }
+  std::sort(
+    index_comm.begin(), index_comm.end(),
+    [](const std::pair<int64_t, double> &a, const std::pair<int64_t, double> &b) { return a.second < b.second; });
+  return index_comm[0].first;
+}
+
+bool ReshapeInfo::CheckStrategyConsistencyByOutputLayout(int64_t swc_index, const TensorLayout &output_layout) {
+  if (swc_index == -1 || swc_index >= SizeToLong(strategy_cost_.size())) {
+    MS_LOG(ERROR) << "The strategy_index: " << swc_index << " is out of range.";
+    return false;
+  }
+  const auto &swc = strategy_cost_[swc_index];
+  if (swc->outputs_ptr[0].tensor_layout() == output_layout) {
+    return true;
+  }
+  MS_LOG(WARNING) << name_ << "'s desired output layout is: " << output_layout.ToString() << ", while the selected "
+                  << "output layout is: " << swc->outputs_ptr[0].tensor_layout().ToString()
+                  << " and the input layout is: " << swc->inputs_ptr[0].tensor_layout().ToString();
+  return false;
+}
+
+bool ReshapeInfo::CheckStrategyConsistencyByInputLayout(int64_t swc_index, const TensorLayout &input_layout) {
+  if (swc_index == -1 || swc_index >= SizeToLong(strategy_cost_.size())) {
+    MS_LOG(ERROR) << "The strategy_index: " << swc_index << " is out of range.";
+    return false;
+  }
+  const auto &swc = strategy_cost_[swc_index];
+  if (swc->inputs_ptr[0].tensor_layout() == input_layout) {
+    return true;
+  }
+  MS_LOG(WARNING) << name_ << "'s desired input layout is:" << input_layout.ToString() << ", while the selected "
+                  << "input layout is: " << swc->inputs_ptr[0].tensor_layout().ToString()
+                  << " and the output layout is: " << swc->outputs_ptr[0].tensor_layout().ToString();
+  return false;
+}
+
+TensorLayout ReshapeInfo::GetInputLayoutBySWCIndex(int64_t swc_index) {
+  if (swc_index == -1 || swc_index >= SizeToLong(strategy_cost_.size())) {
+    MS_LOG(EXCEPTION) << "The strategy_index: " << swc_index << " is out of range.";
+  }
+  const auto &swc = strategy_cost_[swc_index];
+  return std::move(swc->inputs_ptr[0].tensor_layout());
+}
+
+TensorLayout ReshapeInfo::GetOutputLayoutBySWCIndex(int64_t swc_index) {
+  if (swc_index == -1 || swc_index >= SizeToLong(strategy_cost_.size())) {
+    MS_LOG(EXCEPTION) << "The strategy_index: " << swc_index << " is out of range.";
+  }
+  const auto &swc = strategy_cost_[swc_index];
+  return std::move(swc->outputs_ptr[0].tensor_layout());
 }
 }  // namespace parallel
 }  // namespace mindspore

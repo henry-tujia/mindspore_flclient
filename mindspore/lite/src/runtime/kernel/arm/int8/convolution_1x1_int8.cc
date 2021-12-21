@@ -139,14 +139,18 @@ void Convolution1x1Int8CPUKernel::FreeRunBuf() {
 void Convolution1x1Int8CPUKernel::CheckSupportOptimize() {
   support_optimize_ = false;
   matmul_func_ = MatMulInt8_4x16_r;
-#ifdef ENABLE_ARM64
+#if defined(ENABLE_ARM64)
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   if (mindspore::lite::IsSupportSDot()) {
     support_optimize_ = true;
     matmul_func_ = MatMulDpInt8_optimize_handler;
   } else {
+#endif
     support_optimize_ = false;
     matmul_func_ = nullptr;
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   }
+#endif
 #endif
   return;
 }
@@ -297,7 +301,7 @@ int Convolution1x1Int8CPUKernel::InitWeightBiasArm32() {
   return RET_OK;
 }
 
-int Convolution1x1Int8CPUKernel::Init() {
+int Convolution1x1Int8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   matmul_param_ = new (std::nothrow) MatMulParameter();
@@ -393,7 +397,7 @@ int Convolution1x1Int8CPUKernel::InitParam() {
 int Convolution1x1Int8CPUKernel::ReSize() {
   FreeResizeBuf();
 
-  int error_code = ConvolutionBaseCPUKernel::Init();
+  int error_code = ConvolutionBaseCPUKernel::Prepare();
   if (error_code != RET_OK) {
     MS_LOG(ERROR) << "Convolution base init failed.";
     return error_code;

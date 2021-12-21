@@ -72,10 +72,10 @@ class NotSupportOp {
   std::string fmk_type_;
 };
 
-class ConverterContext {
+class ConverterInnerContext {
  public:
-  static ConverterContext *GetInstance() {
-    static ConverterContext converter_context;
+  static ConverterInnerContext *GetInstance() {
+    static ConverterInnerContext converter_context;
     return &converter_context;
   }
 
@@ -112,19 +112,26 @@ class ConverterContext {
 
   const std::vector<std::string> GetGraphOutputTensorNames() const { return graph_output_tensor_names_; }
 
-  void AddGraphInputTensorNames(const std::string &input_name) { graph_input_tensor_names_.emplace_back(input_name); }
+  void SetExternalUsedConfigInfos(const std::string &section,
+                                  const std::map<std::string, std::string> &external_infos) {
+    if (external_used_config_infos_.find(section) != external_used_config_infos_.end()) {
+      MS_LOG(WARNING) << "This section " << section << " has been saved. Now, the content will be overwrite.";
+    }
+    external_used_config_infos_.emplace(section, external_infos);
+  }
 
-  const std::vector<std::string> GetGraphInputTensorNames() const { return graph_input_tensor_names_; }
+  const std::map<std::string, std::map<std::string, std::string>> &GetExternalUsedConfigInfos() {
+    return external_used_config_infos_;
+  }
 
  private:
-  ConverterContext() {}
-  virtual ~ConverterContext() = default;
-  std::map<int32_t, int32_t> tensor_data_type_map_;
+  ConverterInnerContext() = default;
+  virtual ~ConverterInnerContext() = default;
   std::map<int32_t, int32_t> graph_input_data_type_map_;
   std::map<int32_t, int32_t> graph_output_data_type_map_;
   std::map<std::string, std::vector<int64_t>> graph_input_tensor_shape_map_;
-  std::vector<std::string> graph_input_tensor_names_;
   std::vector<std::string> graph_output_tensor_names_;
+  std::map<std::string, std::map<std::string, std::string>> external_used_config_infos_;
 };
 }  // namespace lite
 }  // namespace mindspore

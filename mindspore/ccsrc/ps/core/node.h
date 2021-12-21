@@ -43,7 +43,8 @@ namespace mindspore {
 namespace ps {
 namespace core {
 constexpr int kTimeoutInSeconds = 30;
-constexpr int kCommTimeoutInSeconds = 3;
+constexpr int kCommTimeoutInSeconds = 10;
+constexpr int kCommTimeoutInThreeSeconds = 3;
 class Node {
  public:
   Node()
@@ -73,6 +74,9 @@ class Node {
   bool SendMessageSync(const std::shared_ptr<TcpClient> &client, const std::shared_ptr<MessageMeta> &, const Protos &,
                        const void *, size_t size, const uint32_t &timeout = kCommTimeoutInSeconds);
 
+  // Whether to enable disaster recovery.
+  bool EnableRecovery() const;
+
  protected:
   bool WaitForStart(const uint32_t &timeout);
 
@@ -92,9 +96,7 @@ class Node {
   void RunMessageCallback(const uint64_t &request_id);
 
   NodeInfo node_info_;
-  // Whether the cluster is ready
   std::atomic<bool> is_ready_;
-  // Whether the cluster is finished.
   std::atomic<bool> is_finish_;
 
   std::atomic<bool> is_already_stopped_;

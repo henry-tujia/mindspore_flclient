@@ -22,11 +22,11 @@
 #include <string>
 #include <queue>
 #include <map>
-#include <unordered_map>
 #include <set>
-#include <unordered_set>
 #include <stack>
 #include <atomic>
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "ir/func_graph.h"
 #include "ir/anf.h"
 #include "ir/graph_utils.h"
@@ -83,12 +83,14 @@ class KernelGraph : public FuncGraph {
     summary_node_exist_ = graph.summary_node_exist_;
     valid_inputs_ = graph.valid_inputs_;
     child_graph_order_ = graph.child_graph_order_;
-    input_ctrl_tensors_ = graph.input_ctrl_tensors_;
+    device_loop_ctrl_tensors_ = graph.device_loop_ctrl_tensors_;
+    device_loop_ctrl_params_ = graph.device_loop_ctrl_params_;
     parent_graph_ = graph.parent_graph_;
     start_label_ = graph.start_label_;
     end_goto_ = graph.end_goto_;
     internal_parameter_to_front_node_map_ = graph.internal_parameter_to_front_node_map_;
     graph_output_to_front_node_map_ = graph.graph_output_to_front_node_map_;
+    front_node_to_graph_output_map_ = graph.front_node_to_graph_output_map_;
     front_to_internal_outputs_map_ = graph.front_to_internal_outputs_map_;
     internal_outputs_to_front_map_ = graph.internal_outputs_to_front_map_;
     internal_outputs_tensor_map_ = graph.internal_outputs_tensor_map_;
@@ -122,6 +124,7 @@ class KernelGraph : public FuncGraph {
   }
   void ReplaceGraphInput(const AnfNodePtr &old_parameter, const AnfNodePtr &new_parameter);
   std::vector<AnfNodePtr> outputs() const;
+  CNodePtr NewCNode(std::vector<AnfNodePtr> &&inputs) override;
   CNodePtr NewCNode(const std::vector<AnfNodePtr> &inputs) override;
   CNodePtr NewCNodeWithInfos(const std::vector<AnfNodePtr> &inputs, const CNodePtr &ori_cnode = nullptr);
   void CreateKernelInfoFromNewParameter(const CNodePtr &cnode);
@@ -147,13 +150,13 @@ class KernelGraph : public FuncGraph {
   void set_root_graph_id(uint32_t root_graph_id) { root_graph_id_ = root_graph_id; }
 
   // and a new front to backend anf relation to maop
-  void FrontBackendlMapAdd(const AnfNodePtr &front_anf, const AnfNodePtr &backend_anf);
+  void FrontBackendMapAdd(const AnfNodePtr &front_anf, const AnfNodePtr &backend_anf);
   // replace old backend anf with new backend anf
   void FrontBackendlMapUpdate(const AnfNodePtr &old_backend_anf, const AnfNodePtr &new_backend_anf);
   // get backend anf by front anf
   AnfNodePtr GetBackendAnfByFrontAnf(const AnfNodePtr &front_anf);
   // get front anf by backend anf
-  AnfNodePtr GetFrontAnfByBackendAnf(const AnfNodePtr &backend_anf);
+  AnfNodePtr GetFrontAnfByBackendAnf(const AnfNodePtr &backend_anf) const;
   // check backend node whether exist in map
   bool BackendNodeExistInFrontBackendMap(const AnfNodePtr &backend_anf);
   // get value node by tensor
@@ -161,7 +164,7 @@ class KernelGraph : public FuncGraph {
   // add value node tensor relation map
   void TensorValueNodeMapAdd(const tensor::TensorPtr &tensor, const ValueNodePtr &value_node);
   // get all value nodes of graph
-  const std::unordered_set<ValueNodePtr> graph_value_nodes() const { return graph_value_nodes_; }
+  const mindspore::HashSet<ValueNodePtr> graph_value_nodes() const { return graph_value_nodes_; }
   // add value node to graph
   void AddValueNodeToGraph(const ValueNodePtr &value_node);
   // ref output is in map
@@ -172,12 +175,18 @@ class KernelGraph : public FuncGraph {
   void AddRefCorrespondPairs(const AnfWithOutIndex &final_pair, const AnfWithOutIndex &origin_pair);
   // get map
   std::map<AnfWithOutIndex, AnfWithOutIndex> GetRefMap() const { return ref_out_in_map_; }
+  // update ref map
+  void set_ref_out_in_map(const std::map<AnfWithOutIndex, AnfWithOutIndex> &ref_out_in_map) {
+    ref_out_in_map_ = ref_out_in_map;
+  }
   // check whether graph is executable
   bool executable() const { return executable_; }
   // set executable of graph
   void set_executable(bool executable) { executable_ = executable; }
+#ifndef ENABLE_SECURITY
   // set summary_node of graph
   void set_summary_node_exist(bool summary_node_exist) { summary_node_exist_ = summary_node_exist; }
+#endif
   // check whether exist summary node in graph
   bool summary_node_exist() const { return summary_node_exist_; }
   // set invalid inputs for control sink
@@ -199,12 +208,18 @@ class KernelGraph : public FuncGraph {
   // checkout whether current graph is leaf graph
   bool IsLeafGraph() const;
 
-  // set input_tensors pointer of control parameter
-  void set_input_ctrl_tensors(const std::shared_ptr<std::vector<tensor::TensorPtr>> &input_tensors_ptr) {
-    input_ctrl_tensors_ = input_tensors_ptr;
+  void set_device_loop_ctrl_tensors(const std::map<std::string, tensor::TensorPtr> &device_loop_ctrl_tensors) {
+    device_loop_ctrl_tensors_ = device_loop_ctrl_tensors;
   }
-  // get input_tensors pointer of control parameter
-  std::shared_ptr<std::vector<tensor::TensorPtr>> input_ctrl_tensors() const { return input_ctrl_tensors_; }
+  std::map<std::string, tensor::TensorPtr> device_loop_control_tensors() const { return device_loop_ctrl_tensors_; }
+
+  void set_device_loop_ctrl_params(const std::map<std::string, mindspore::ParameterPtr> &device_loop_ctrl_params) {
+    device_loop_ctrl_params_ = device_loop_ctrl_params;
+  }
+  const std::map<std::string, mindspore::ParameterPtr> device_loop_control_params() const {
+    return device_loop_ctrl_params_;
+  }
+
   // get parent kernel graph
   std::weak_ptr<KernelGraph> parent_graph() const { return parent_graph_; }
   // set parent kernel graph
@@ -232,6 +247,7 @@ class KernelGraph : public FuncGraph {
   bool IsUniqueTargetInternalOutput(const AnfNodePtr &node, size_t output_idx) const;
   void AddInternalOutputTensor(const AnfNodePtr &node, size_t output_idx, const tensor::TensorPtr &tensor);
   tensor::TensorPtr GetInternalOutputTensor(const AnfNodePtr &node, size_t output_idx);
+  AnfWithOutIndex GetGraphOutputByFrontNode(const AnfWithOutIndex &front_node) const;
 
   // Cache the internal parameter and corresponding to front node into internal_parameter_to_front_node_map_.
   void CacheInternalParameterToFrontNode(const AnfNodePtr &parameter, const AnfWithOutIndex &front_node_with_index);
@@ -241,17 +257,16 @@ class KernelGraph : public FuncGraph {
   FuncGraphPtr GetFuncGraph();
   // Cache the backend graph output nodes and corresponding to front nodes with output index into
   // graph_output_to_front_node_map_.
-  void CacheGraphOutputToFrontNodeWithIndex(const AnfNodePtr &backend_graph_output, const AnfNodePtr &front_node);
+  void CacheGraphOutputToFrontNodeWithIndex(const std::vector<AnfNodePtr> &backend_outputs,
+                                            const std::vector<AnfNodePtr> &front_outputs);
   AnfWithOutIndex GetFrontNodeWithIndexByGraphOutput(const AnfWithOutIndex &backend_graph_output_with_index) const;
-  // Update the related map of backend graph output nodes by modified backend output nodes.
-  void UpdateGraphOutputMap(const std::vector<AnfWithOutIndex> &old_outputs,
-                            const std::vector<AnfWithOutIndex> &new_outputs);
 
   uint32_t current_epoch() const { return current_epoch_; }
   void set_current_epoch(uint32_t epoch) { current_epoch_ = epoch; }
   void UpdateChildGraphOrder();
   const std::vector<AnfNodePtr> &child_graph_result() const { return child_graph_result_; }
   void AddChildGraphResult(const AnfNodePtr &parameter) { child_graph_result_.push_back(parameter); }
+  bool IsChildGraphResult(const AnfNodePtr &node);
   void set_child_graph_result(const std::vector<AnfNodePtr> &child_graph_result) {
     child_graph_result_ = child_graph_result;
   }
@@ -271,7 +286,9 @@ class KernelGraph : public FuncGraph {
   }
   void RemoveNodeFromGraph(const AnfNodePtr &node);
   void UpdateGraphDynamicAttr();
+  void SetGraphDynamicAttr(bool is_dynamic_shape) { is_dynamic_shape_ = is_dynamic_shape; }
   bool is_dynamic_shape() const { return is_dynamic_shape_; }
+  void UpdateGraphAquireGilAttr();
   void SetOptimizerFlag();
   void SetInputNodes();
   const std::vector<AnfNodePtr> &input_nodes() const { return input_nodes_; }
@@ -290,10 +307,7 @@ class KernelGraph : public FuncGraph {
 
   bool has_optimizer() const { return has_optimizer_; }
   bool IsUpdatedParameter(const ParameterPtr &param) const {
-    if (updated_parameters_.find(param) != updated_parameters_.end()) {
-      return true;
-    }
-    return false;
+    return updated_parameters_.find(param) != updated_parameters_.end();
   }
   // handle graph dependency
   void AddPreGraph(const std::shared_ptr<session::KernelGraph> &graph) {
@@ -301,6 +315,8 @@ class KernelGraph : public FuncGraph {
       pre_graphs_[graph->graph_id()] = graph;
     }
   }
+
+  mindspore::HashMap<uint32_t, std::weak_ptr<session::KernelGraph>> get_pre_graphs() const { return pre_graphs_; }
   void AddPostGraph(const std::shared_ptr<session::KernelGraph> &graph) {
     if (graph != nullptr) {
       post_graphs_[graph->graph_id()] = graph;
@@ -347,10 +363,10 @@ class KernelGraph : public FuncGraph {
   void InsertToSendRecvPair(const CNodePtr &allreduce, const std::pair<CNodePtr, CNodePtr> &send_recv_pair) {
     allreduce_to_send_recv_pairs_[allreduce] = send_recv_pair;
   }
-  const std::unordered_map<CNodePtr, std::pair<CNodePtr, CNodePtr>> &allreduce_from_send_recv_pairs() const {
+  const mindspore::HashMap<CNodePtr, std::pair<CNodePtr, CNodePtr>> &allreduce_from_send_recv_pairs() const {
     return allreduce_from_send_recv_pairs_;
   }
-  const std::unordered_map<CNodePtr, std::pair<CNodePtr, CNodePtr>> &allreduce_to_send_recv_pairs() const {
+  const mindspore::HashMap<CNodePtr, std::pair<CNodePtr, CNodePtr>> &allreduce_to_send_recv_pairs() const {
     return allreduce_to_send_recv_pairs_;
   }
 
@@ -368,12 +384,29 @@ class KernelGraph : public FuncGraph {
   bool is_all_nop_node() const { return is_all_nop_node_; }
   void set_is_all_nop_node(bool is_all_nop_node) { is_all_nop_node_ = is_all_nop_node; }
   std::map<AnfWithOutIndex, AnfWithOutIndex> graph_output_map() { return graph_output_to_front_node_map_; }
+  std::map<AnfWithOutIndex, AnfWithOutIndex> front_node_to_graph_output_map() {
+    return front_node_to_graph_output_map_;
+  }
 
   // The interface to set/get the graph GIL flag.
   void set_is_need_gil(bool flag) { is_need_gil_ = flag; }
   bool is_need_gil() { return is_need_gil_; }
 
-  bool isDatasetGraph() const;
+  bool IsDatasetGraph() const;
+
+  bool is_executing_sink() const { return is_executing_sink_; }
+  void set_is_executing_sink(bool is_executing_sink) { is_executing_sink_ = is_executing_sink; }
+  bool is_loop_count_sink() const { return is_loop_count_sink_; }
+  void set_is_loop_count_sink(bool is_loop_count_sink) { is_loop_count_sink_ = is_loop_count_sink; }
+  const mindspore::HashMap<AnfNodePtr, AnfNodePtr> &front_backend_anf_map() { return front_backend_anf_map_; }
+
+  AnfWithOutIndex GetElementInTupleBackendFrontIndexMap(const AnfNodePtr &back_node) {
+    auto iter = tuple_backend_front_anf_index_map_.find(back_node);
+    if (iter == tuple_backend_front_anf_index_map_.end()) {
+      return AnfWithOutIndex(nullptr, 0);
+    }
+    return iter->second;
+  }
 
  private:
   // remove value node form graph
@@ -381,21 +414,22 @@ class KernelGraph : public FuncGraph {
   void SetKernelInfoForNode(const AnfNodePtr &node) const;
   AnfNodePtr MakeValueNode(const AnfNodePtr &node) const;
   void EnqueueActiveNodes(const AnfNodePtr &node, std::queue<AnfNodePtr> *visit_queue,
-                          std::unordered_set<AnfNodePtr> *visited_nodes, bool comm_first = true);
+                          mindspore::HashSet<AnfNodePtr> *visited_nodes, bool comm_first = true);
   // update node edge list
   void UpdateNodeEdgeList(std::queue<AnfNodePtr> *seed_nodes);
   // add node depend edge by data edge
   void AddDependEdge(const AnfNodePtr &node, const AnfNodePtr &input, size_t depend_edge_num);
   std::vector<AnfNodePtr> GetOutputNodes(const AnfNodePtr &node);
-  AnfNodePtr TransValueNodeTuple(const AbstractBasePtr abstract, const ValuePtr &value);
+  AnfNodePtr TransValueNodeTuple(const AbstractBasePtr &abstract, const ValuePtr &value);
   AnfNodePtr TransParameterTuple(const AbstractBasePtr &abstract);
   AnfNodePtr TransCNodeTuple(const CNodePtr &node);
   AnfNodePtr CreatTupleGetItemNode(const AnfNodePtr &node, size_t output_idx);
   std::vector<CNodePtr> SortStartLabelAndEndGoto();
   // checkout whether loop exist in graph
   void CheckLoop();
-  uint32_t GetLoopNum(std::map<AnfNodePtr, size_t> none_zero_nodes);
+  uint32_t GetLoopNum(const std::map<AnfNodePtr, size_t> &none_zero_nodes);
   void GetLoopNodesByDFS(const AnfNodePtr &node, uint32_t *loop_num);
+  void PostNewCNode(const CNodePtr &cnode);
 
   // members
   std::shared_ptr<std::vector<AnfNodePtr>> inputs_;
@@ -407,20 +441,21 @@ class KernelGraph : public FuncGraph {
   uint32_t root_graph_id_{0};
 
   // record map bettween front anf and backend anf,use two map implement bidirectional map
-  std::unordered_map<AnfNodePtr, AnfNodePtr> front_backend_anf_map_;
-  std::unordered_map<AnfNodePtr, AnfNodePtr> backend_front_anf_map_;
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> front_backend_anf_map_;
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> backend_front_anf_map_;
+  mindspore::HashMap<AnfNodePtr, AnfWithOutIndex> tuple_backend_front_anf_index_map_;
   // there may be a tensor from ME backend ,a value ndoe will be create according the tensor,map record
-  std::unordered_map<tensor::TensorPtr, ValueNodePtr> tensor_to_value_node_map_;
+  mindspore::HashMap<tensor::TensorPtr, ValueNodePtr> tensor_to_value_node_map_;
   // include all value nodes
-  std::unordered_set<ValueNodePtr> graph_value_nodes_;
-  std::unordered_map<AnfNodePtr, size_t> node_input_num_;
-  std::unordered_map<AnfNodePtr, std::vector<std::pair<AnfNodePtr, size_t>>> node_input_edges_;
+  mindspore::HashSet<ValueNodePtr> graph_value_nodes_;
+  mindspore::HashMap<AnfNodePtr, size_t> node_input_num_;
+  mindspore::HashMap<AnfNodePtr, std::vector<std::pair<AnfNodePtr, size_t>>> node_input_edges_;
   // record map between ref final output anf with index and ref origin input with index
   std::map<AnfWithOutIndex, AnfWithOutIndex> ref_out_in_map_;
-  std::unordered_map<AnfNodePtr, std::vector<std::pair<AnfNodePtr, size_t>>> node_output_edges_;
+  mindspore::HashMap<AnfNodePtr, std::vector<std::pair<AnfNodePtr, size_t>>> node_output_edges_;
   std::map<std::string, std::pair<AnfNodePtr, int>> summary_nodes_;
   // parameters that will be updated when graph is executed
-  std::unordered_set<ParameterPtr> updated_parameters_;
+  mindspore::HashSet<ParameterPtr> updated_parameters_;
   // graph needn't execute
   bool executable_{false};
   // exist summary node in graph
@@ -431,8 +466,10 @@ class KernelGraph : public FuncGraph {
   // child graph execute order in parent graph
   std::vector<std::weak_ptr<KernelGraph>> child_graph_order_;
 
-  // input_tensors of control parameter
-  std::shared_ptr<std::vector<tensor::TensorPtr>> input_ctrl_tensors_;
+  // device loop control frontend tensors
+  std::map<std::string, tensor::TensorPtr> device_loop_ctrl_tensors_;
+  // device loop control backend nodes
+  std::map<std::string, mindspore::ParameterPtr> device_loop_ctrl_params_;
 
   // parameter graph
   std::weak_ptr<KernelGraph> parent_graph_;
@@ -443,29 +480,30 @@ class KernelGraph : public FuncGraph {
   // Internal parameter is not the origin parameter of func graph, it is the output of previous kernel graph which is
   // related to the input of this kernel graph. The first of unordered map is the input of this kernel graph, the second
   // of unordered map is front node corresponding to the output of previous kernel graph.
-  std::unordered_map<AnfNodePtr, AnfWithOutIndex> internal_parameter_to_front_node_map_;
+  mindspore::HashMap<AnfNodePtr, AnfWithOutIndex> internal_parameter_to_front_node_map_;
   // The first of map is the backend graph output of this kernel graph, the second of map is front node corresponding to
   // the backend node with index.
   std::map<AnfWithOutIndex, AnfWithOutIndex> graph_output_to_front_node_map_;
+  std::map<AnfWithOutIndex, AnfWithOutIndex> front_node_to_graph_output_map_;
 
-  std::unordered_map<AnfNodePtr, AnfNodePtr> front_to_internal_outputs_map_;
-  std::unordered_map<AnfNodePtr, std::unordered_map<size_t, std::pair<AnfNodePtr, bool>>>
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> front_to_internal_outputs_map_;
+  mindspore::HashMap<AnfNodePtr, mindspore::HashMap<size_t, std::pair<AnfNodePtr, bool>>>
     internal_outputs_to_front_map_;
-  std::unordered_map<AnfNodePtr, std::unordered_map<size_t, tensor::TensorPtr>> internal_outputs_tensor_map_;
+  mindspore::HashMap<AnfNodePtr, mindspore::HashMap<size_t, tensor::TensorPtr>> internal_outputs_tensor_map_;
   uint32_t current_epoch_;
-  std::unordered_map<AnfNodePtr, AnfNodePtr> tuple_parameter_to_make_tuple_map_;
+  mindspore::HashMap<AnfNodePtr, AnfNodePtr> tuple_parameter_to_make_tuple_map_;
   std::set<AnfNodePtr> visited_nodes_;
   std::map<AnfNodePtr, AnfNodePtr> edge_to_;
   std::stack<AnfNodePtr> loop_nodes_;
   std::vector<AnfNodePtr> input_nodes_;
   std::vector<tensor::TensorPtr> input_tensors_;
   KernelMapTensor output_node_to_tensor_;
-  std::unordered_map<uint32_t, std::weak_ptr<session::KernelGraph>> pre_graphs_;
-  std::unordered_map<uint32_t, std::weak_ptr<session::KernelGraph>> post_graphs_;
+  mindspore::HashMap<uint32_t, std::weak_ptr<session::KernelGraph>> pre_graphs_;
+  mindspore::HashMap<uint32_t, std::weak_ptr<session::KernelGraph>> post_graphs_;
   // The send/recv pairs inserted for allreduce, the key is allreduce kernel, the first of pair is send node, the second
   // of pair is recv node.
-  std::unordered_map<CNodePtr, std::pair<CNodePtr, CNodePtr>> allreduce_from_send_recv_pairs_;
-  std::unordered_map<CNodePtr, std::pair<CNodePtr, CNodePtr>> allreduce_to_send_recv_pairs_;
+  mindspore::HashMap<CNodePtr, std::pair<CNodePtr, CNodePtr>> allreduce_from_send_recv_pairs_;
+  mindspore::HashMap<CNodePtr, std::pair<CNodePtr, CNodePtr>> allreduce_to_send_recv_pairs_;
   std::atomic<size_t> pre_graph_finished_count_{0};
   std::atomic<size_t> post_graph_finished_count_{0};
   bool first_step_{true};
@@ -485,6 +523,11 @@ class KernelGraph : public FuncGraph {
 
   // Indicate whether the kernels in the graphs acquire Python GIL.
   bool is_need_gil_{false};
+
+  // Indicate whether the kernel graph sink to the device executing.
+  bool is_executing_sink_{false};
+  // Indicate whether the kernel graph loop sink to the device executing.
+  bool is_loop_count_sink_{false};
 };
 }  // namespace session
 using KernelGraphPtr = std::shared_ptr<session::KernelGraph>;

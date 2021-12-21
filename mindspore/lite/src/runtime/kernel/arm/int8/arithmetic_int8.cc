@@ -51,7 +51,9 @@ int ArithmeticsInt8Launch(void *cdata, int task_id, float lhs_scale, float rhs_s
 }
 }  // namespace
 
-int ArithmeticInt8CPUKernel::Init() {
+int ArithmeticInt8CPUKernel::Prepare() {
+  CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
+  CHECK_LESS_RETURN(out_tensors_.size(), 1);
   switch (op_parameter_->type_) {
     case PrimitiveType_Equal:
       arithmetic_run_ = ElementEqualInt8;
@@ -79,16 +81,19 @@ int ArithmeticInt8CPUKernel::Init() {
 
   auto *input0_tensor = in_tensors_.at(0);
   auto in0_quant_args = input0_tensor->quant_params();
+  CHECK_LESS_RETURN(in0_quant_args.size(), 1);
   quant_args_.in0_args_.scale_ = in0_quant_args.front().scale;
   quant_args_.in0_args_.zp_ = in0_quant_args.front().zeroPoint;
 
   auto *input1_tensor = in_tensors_.at(1);
   auto in1_quant_args = input1_tensor->quant_params();
+  CHECK_LESS_RETURN(in1_quant_args.size(), 1);
   quant_args_.in1_args_.scale_ = in1_quant_args.front().scale;
   quant_args_.in1_args_.zp_ = in1_quant_args.front().zeroPoint;
 
   auto *out_tensor = out_tensors_.at(kOutputIndex);
   auto out_quant_args = out_tensor->quant_params();
+  CHECK_LESS_RETURN(out_quant_args.size(), 1);
   quant_args_.out_args_.scale_ = out_quant_args.front().scale;
   quant_args_.out_args_.zp_ = out_quant_args.front().zeroPoint;
   if (!InferShapeDone()) {
@@ -102,9 +107,13 @@ int ArithmeticInt8CPUKernel::ReSize() { return RET_OK; }
 
 int ArithmeticInt8CPUKernel::DoArithmetic(int thread_id) {
   auto input0_data = reinterpret_cast<int8_t *>(in_tensors_[0]->MutableData());
-  auto input1_data1 = reinterpret_cast<int8_t *>(in_tensors_[1]->MutableData());
+  CHECK_NULL_RETURN(input0_data);
+  auto input1_data = reinterpret_cast<int8_t *>(in_tensors_[1]->MutableData());
+  CHECK_NULL_RETURN(input1_data);
   auto output_data = reinterpret_cast<uint8_t *>(out_tensors_[0]->MutableData());
+  CHECK_NULL_RETURN(output_data);
   auto element_num = out_tensors_[0]->ElementsNum();
+  MS_CHECK_GT(element_num, 0, RET_ERROR);
   auto param = reinterpret_cast<ArithmeticParameter *>(op_parameter_);
   int error_code;
   if (param->broadcasting_ && arithmetic_run_ != nullptr) {
@@ -122,7 +131,7 @@ int ArithmeticInt8CPUKernel::DoArithmetic(int thread_id) {
       return error_code;
     }
   } else if (arithmetic_run_ != nullptr) {
-    error_code = arithmetic_run_(input0_data, input1_data1, output_data, element_num, &quant_args_);
+    error_code = arithmetic_run_(input0_data, input1_data, output_data, element_num, &quant_args_);
     if (error_code != RET_OK) {
       MS_LOG(ERROR) << "Arithmetic run fail!ret: " << error_code;
       return error_code;
@@ -138,7 +147,10 @@ int ArithmeticInt8CPUKernel::Run() {
   auto param = reinterpret_cast<ArithmeticParameter *>(op_parameter_);
   if (param->broadcasting_) {
     auto input_data0 = reinterpret_cast<int8_t *>(in_tensors_[0]->MutableData());
+    CHECK_NULL_RETURN(input_data0);
     auto input_data1 = reinterpret_cast<int8_t *>(in_tensors_[1]->MutableData());
+    CHECK_NULL_RETURN(input_data1);
+    MS_CHECK_GT(out_tensors_[0]->Size(), 0, RET_ERROR);
     tile_data0_ = reinterpret_cast<int8_t *>(ms_context_->allocator->Malloc(out_tensors_[0]->Size()));
     tile_data1_ = reinterpret_cast<int8_t *>(ms_context_->allocator->Malloc(out_tensors_[0]->Size()));
     if (tile_data0_ == nullptr || tile_data1_ == nullptr) {

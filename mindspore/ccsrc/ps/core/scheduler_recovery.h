@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "ps/constants.h"
 #include "utils/log_adapter.h"
@@ -29,6 +30,7 @@
 #include "ps/ps_context.h"
 #include "ps/core/recovery_base.h"
 #include "ps/core/scheduler_node.h"
+#include "ps/core/node_info.h"
 
 namespace mindspore {
 namespace ps {
@@ -39,9 +41,6 @@ class SchedulerRecovery : public RecoveryBase {
   SchedulerRecovery() = default;
   ~SchedulerRecovery() override = default;
 
-  // Persist metadata to storage.
-  void Persist(const std::string &key, const std::string &value);
-
   bool Recover() override;
 
   // Get metadata from storage.
@@ -49,7 +48,7 @@ class SchedulerRecovery : public RecoveryBase {
 
  private:
   // The node_ will only be instantiated with worker/server node.
-  SchedulerNode *const node_;
+  SchedulerNode *const node_ = nullptr;
 };
 }  // namespace core
 }  // namespace ps

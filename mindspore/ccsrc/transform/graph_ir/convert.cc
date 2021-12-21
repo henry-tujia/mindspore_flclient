@@ -29,6 +29,7 @@
 #include "utils/config_manager.h"
 #include "utils/convert_utils.h"
 #include "utils/ms_context.h"
+#include "utils/check_convert_utils.h"
 #include "transform/graph_ir/op_adapter_map.h"
 #include "ops/state_ops.h"
 #include "ops/array_ops.h"
@@ -430,7 +431,7 @@ void DfGraphConvertor::BuildSaveCheckpointGraph() {
   size_t index = 0;
   string name;
 
-  int32_t count_size = std::count_if(vars_.begin(), vars_.end(), [](const std::pair<std::string, OperatorPtr> &it) {
+  int32_t count_size = std::count_if(vars_.begin(), vars_.end(), [](const auto &it) {
     return (it.second == nullptr || it.first.find("/") != std::string::npos);
   });
 
@@ -608,7 +609,7 @@ void DfGraphConvertor::TraceOutputFromTupleGetItem(const AnfNodePtr &anf_out) {
     auto op = handle.op;
     if (op != nullptr) {
       MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType() << ", out_name: " << handle.out;
-      graph_outputs_.emplace_back(std::make_pair(*op, handle.out));
+      graph_outputs_.emplace_back(*op, handle.out);
     } else {
       MS_LOG(EXCEPTION) << "tuple_getitem: " << anf_out->fullname_with_scope() << " is not converted";
     }
@@ -627,7 +628,7 @@ void DfGraphConvertor::TraceOutput(const AnfNodePtr node) {
   if (node->isa<ValueNode>()) {
     auto op = Convert(anf_out);
     if (op != nullptr) {
-      graph_outputs_.emplace_back(std::make_pair(*op, ""));
+      graph_outputs_.emplace_back(*op, "");
       AddGraphConstInput(op);
     }
     return;
@@ -677,7 +678,7 @@ void DfGraphConvertor::TraceOutput(const AnfNodePtr node) {
         }
       }
       MS_LOG(INFO) << "Add graph output: " << anf_out->fullname_with_scope() << ":" << index;
-      graph_outputs_.emplace_back(make_pair(*op, index));
+      graph_outputs_.emplace_back(*op, index);
     }
   }
 }
@@ -692,13 +693,13 @@ void DfGraphConvertor::TraceOutputFromParameter(const AnfNodePtr &anf_out) {
       OutHandler handle = it->second;
       auto op = handle.op;
       MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType() << ", out_name: " << handle.out;
-      graph_outputs_.emplace_back(make_pair(*op, handle.out));
+      graph_outputs_.emplace_back(*op, handle.out);
     } else {
       // common parameter case
       auto op = Convert(anf_out);
       if (op != nullptr) {
         MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType();
-        graph_outputs_.emplace_back(std::make_pair(*op, ""));
+        graph_outputs_.emplace_back(*op, "");
       }
     }
   }
@@ -891,6 +892,10 @@ DfGraphConvertor &DfGraphConvertor::BuildGraph() {
       auto name = std::static_pointer_cast<Parameter>(it)->name();
       //  the parameters which has not been converted to var
       if (vars_.find(name) == vars_.end()) {
+        if (HasAbstractMonad(it)) {
+          MS_LOG(INFO) << it->DebugString() << " is a monad parameter, skip.";
+          continue;
+        }
         auto op = Convert(it);
         MS_EXCEPTION_IF_NULL(op);
         MS_LOG(INFO) << "add not var input " << it->ToString() << ", index " << index;
@@ -899,13 +904,13 @@ DfGraphConvertor &DfGraphConvertor::BuildGraph() {
           return *this;
         }
         UpdateDataOpDesc(it, op);
-
         MS_LOG(INFO) << "add input " << it->ToString() << ", index " << index;
         (void)std::static_pointer_cast<Data>(op)->set_attr_index(index++);
         inputs.push_back(*op);
       } else if (vars_[name] != nullptr) {
         MS_LOG(INFO) << "add var input " << it->ToString();
         auto op = Convert(it);
+        UpdateConstOpDesc(it, vars_[name]);
         MS_EXCEPTION_IF_NULL(op);
         inputs.push_back(*op);
       }
@@ -938,19 +943,57 @@ DfGraphConvertor &DfGraphConvertor::BuildGraph() {
   return *this;
 }
 
+void DfGraphConvertor::UpdateConstOpDesc(const AnfNodePtr &it, const OperatorPtr &op) const {
+  if (!it->isa<Parameter>()) {
+    MS_LOG(DEBUG) << "It is not parameter, name: " << it->DebugString();
+    return;
+  }
+  auto para = it->cast<ParameterPtr>();
+  MS_EXCEPTION_IF_NULL(para);
+  std::string format = kOpFormat_NCHW;
+  std::string param_debug_info = para->DebugString();
+  auto param_format = param_format_.find(param_debug_info);
+  if (param_format != param_format_.end()) {
+    format = param_format->second;
+    MS_LOG(DEBUG) << "Parameter debug info: " << param_debug_info << ", format is " << format;
+  }
+  if (format == kOpFormat_NCHW) {
+    MS_LOG(DEBUG) << "Format is not changed, no need to update op desc, name: " << param_debug_info;
+    return;
+  }
+  if (!para->has_default()) {
+    MS_LOG(DEBUG) << "Parameter has no default, no need to update op desc, name: " << param_debug_info;
+    return;
+  }
+  auto value = para->default_param();
+  MS_EXCEPTION_IF_NULL(value);
+  auto tensor = value->cast<std::shared_ptr<tensor::Tensor>>();
+  MS_EXCEPTION_IF_NULL(tensor);
+  auto const_op_desc = TransformUtil::GetGeTensorDesc(tensor->shape_c(), tensor->data_type(), format);
+  if (const_op_desc == nullptr) {
+    MS_LOG(WARNING) << "Create parameter " << para->name() << " output descriptor failed!";
+    return;
+  }
+  (void)std::static_pointer_cast<Constant>(op)->update_output_desc_y(*const_op_desc);
+}
+
 void DfGraphConvertor::UpdateDataOpDesc(const AnfNodePtr &it, const OperatorPtr &op) const {
   auto node = std::static_pointer_cast<AnfNode>(it);
   if (node == nullptr) {
     MS_LOG(ERROR) << "Update data op descriptor failed! Invalid node.";
     return;
   }
-  auto normal_shape_ptr = dyn_cast<abstract::Shape>(node->Shape());
+
   std::vector<int64_t> shape;
-  if (normal_shape_ptr == nullptr) {
+  if (auto normal_shape_ptr = dyn_cast<abstract::Shape>(node->Shape()); normal_shape_ptr != nullptr) {
+    shape = normal_shape_ptr->shape();
+  } else if (auto no_shape_ptr = dyn_cast<abstract::NoShape>(node->Shape()); no_shape_ptr != nullptr) {
+    shape = {};
+  } else {
     MS_LOG(INFO) << "Invalid shape to update data op descriptor.";
     return;
   }
-  shape = normal_shape_ptr->shape();
+
   if (node->Type() == nullptr) {
     MS_LOG(INFO) << "Invalid type to update data op descriptor.";
     return;
@@ -1482,8 +1525,8 @@ std::vector<int64_t> DfGraphConvertor::CastToInt(const ValuePtr &value) {
     return {};
   }
   std::vector<int64_t> cur_value = {};
-  if (utils::isa<ValueSequeuePtr>(value)) {
-    auto val_seq_ptr = value->cast<ValueSequeuePtr>();
+  if (utils::isa<ValueSequencePtr>(value)) {
+    auto val_seq_ptr = value->cast<ValueSequencePtr>();
     MS_EXCEPTION_IF_NULL(val_seq_ptr);
     if (!val_seq_ptr->value().empty()) {
       auto first_val = val_seq_ptr->value().front();
@@ -1532,6 +1575,27 @@ void DfGraphConvertor::ConvertReshape(const CNodePtr node) {
   list = CastToInt(value);
 
   (void)op->SetAttr("shape", list);
+  op_cache_[node.get()] = op;
+}
+
+void DfGraphConvertor::ConvertConv2D(const CNodePtr node) {
+  MS_EXCEPTION_IF_NULL(node);
+  OpAdapterPtr adpt = FindAdapter(node, training_);
+  if (adpt == nullptr) {
+    return;
+  }
+  auto op = adpt->generate(node);
+  MS_EXCEPTION_IF_NULL(op);
+  auto value_node = node->input(0)->cast<ValueNodePtr>();
+  MS_EXCEPTION_IF_NULL(value_node);
+  MS_EXCEPTION_IF_NULL(value_node->value());
+  auto primitive = value_node->value()->cast<PrimitivePtr>();
+  MS_EXCEPTION_IF_NULL(primitive);
+  auto value = primitive->GetAttr("padding");
+  if (value != nullptr) {
+    std::string pad_mode = GetValue<std::string>(value);
+    (void)op->SetAttr("padding", pad_mode);
+  }
   op_cache_[node.get()] = op;
 }
 
@@ -1727,6 +1791,13 @@ bool DfGraphConvertor::CheckCNode(const std::string &name, const CNodePtr node) 
     return true;
   }
 
+  // Add attr pad mode to Conv2D
+  if (name == prim::kPrimConv2D->name() || name == prim::kPrimDepthwiseConv2dNative->name() ||
+      name == kNameConv2DBackpropInputV2) {
+    ConvertConv2D(node);
+    return true;
+  }
+
   // make_tuple is used for a dynamic_input, convert it to a vector of OutHandlers
   if (name == prim::kPrimMakeTuple->name()) {
     ConvertMakeTuple(node);
@@ -1769,7 +1840,7 @@ OperatorPtr DfGraphConvertor::ConvertCNode(const CNodePtr node) {
   (void)adpt->setAttr(op, node);
 
   // add into cache
-  (void)op_cache_.insert(std::make_pair(node.get(), op));
+  (void)op_cache_.emplace(node.get(), op);
 
   DrawCNode(node, adpt);
 
@@ -1800,17 +1871,26 @@ void DfGraphConvertor::SaveParamFormat(const CNodePtr node) {
   if (IsValueNode<Primitive>(op)) {
     auto prim = GetValueNode<PrimitivePtr>(op);
     for (auto attr : prim->attrs()) {
-      if (attr.first == "format" && attr.second->ToString() == "NCDHW") {
-        std::string format = attr.second->ToString();
-        auto inputs_size = node->size();
-        for (size_t i = 1; i < inputs_size; i++) {
+      if (attr.first == "format") {
+        std::string format;
+        if (attr.second->isa<Int64Imm>()) {
+          bool converted = CheckAndConvertUtils::ConvertAttrValueToString(prim->name(), "format", &attr.second);
+          if (converted) {
+            format = attr.second->ToString();
+          } else {
+            CheckAndConvertUtils::GetFormatStringVal(prim, &format);
+          }
+        }
+        if (format != "NCDHW" && format != "NHWC") {
+          break;
+        }
+        for (size_t i = 1; i < node->size(); i++) {
           auto input = node->input(i);
           if (input->isa<Parameter>()) {
             param_format_[input->DebugString()] = format;
             MS_LOG(DEBUG) << "Save Param " << input->DebugString() << " format: " << format;
           }
         }
-        continue;
       }
     }
   }
@@ -1882,7 +1962,6 @@ OperatorPtr DfGraphConvertor::ConvertValueNode(const ValueNodePtr node) {
   auto ge_tensor = const_op->get_attr_value();
   auto ge_desc = ge_tensor.GetTensorDesc();
   (void)const_op->update_output_desc_y(ge_desc);
-
   op_cache_[node.get()] = op;
   return op_cache_[node.get()];
 }

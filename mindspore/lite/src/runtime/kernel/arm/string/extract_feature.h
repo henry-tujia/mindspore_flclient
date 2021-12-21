@@ -19,7 +19,7 @@
 #include <vector>
 #include "src/inner_kernel.h"
 #include "include/context.h"
-#include "src/common/string_util.h"
+#include "src/common/string_utils.h"
 
 namespace mindspore::kernel {
 class ExtractFeatureCPUKernel : public InnerKernel {
@@ -29,7 +29,7 @@ class ExtractFeatureCPUKernel : public InnerKernel {
       : InnerKernel(parameter, inputs, outputs, ctx) {}
   ~ExtractFeatureCPUKernel() {}
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 

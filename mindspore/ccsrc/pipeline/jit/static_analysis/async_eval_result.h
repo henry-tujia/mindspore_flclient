@@ -42,34 +42,26 @@ using AsyncInferTaskPtr = std::shared_ptr<AsyncInferTask>;
 using AsyncAbstractPtr = std::shared_ptr<AsyncAbstract>;
 class AnalysisSchedule {
  public:
-  ~AnalysisSchedule() { Stop(); }
+  ~AnalysisSchedule() = default;
   AnalysisSchedule(const AnalysisSchedule &) = delete;
   AnalysisSchedule &operator=(const AnalysisSchedule &) = delete;
-  static AnalysisSchedule &GetInstance() { return instance_; }
-  static void SetThreadID(const std::string &caller);
-  static std::string &GetThreadID();
-  void HandleException(const std::exception &ex);
-  void Stop() {
-    notExit_ = false;
-    MS_LOG(DEBUG) << " Set AnalysisSchedule::Exit . The active thread count: " << activate_threads_.size()
-                  << " The infer_thread_count: " << infer_thread_count_
-                  << " schedule list size: " << scheduleList_.size();
+  static AnalysisSchedule &GetInstance() {
+    static AnalysisSchedule instance;
+    return instance;
   }
+  static void set_thread_id(const std::string &thread_id) { thread_id_ = thread_id; }
+  static std::string &thread_id() { return thread_id_; }
+  void HandleException(const std::exception &ex);
+  void Stop();
   void Wait();
   void Add2Schedule(const AsyncInferTaskPtr &async_infer_task_ptr);
   void Yield(const AsyncInferTask *asyncTask);
 
   void EnterWaiting() {
     {
-      MS_LOG(DEBUG) << " Require activate_thread_lock. The active thread count: " << activate_threads_.size()
-                    << " The infer_thread_count: " << infer_thread_count_
-                    << " schedule list size: " << scheduleList_.size();
       std::lock_guard<std::mutex> activeLock(activate_thread_lock_);
       activate_threads_.clear();
-      MS_LOG(DEBUG) << " Get activate_thread_lock. The active thread count: " << activate_threads_.size()
-                    << " The infer_thread_count: " << infer_thread_count_
-                    << " schedule list size: " << scheduleList_.size() << " thread: " << GetThreadID() + " "
-                    << (activate_threads_.size() > 0 ? activate_threads_.begin()->c_str() : "");
+      MS_LOG(DEBUG) << "Infer return to main thread.";
     }
     activate_thread_cv_.notify_one();
   }
@@ -78,7 +70,7 @@ class AnalysisSchedule {
     infer_thread_count_.fetch_add(1);
     MS_LOG(DEBUG) << " The active thread count: " << activate_threads_.size()
                   << " The infer_thread_count: " << infer_thread_count_
-                  << " schedule list size: " << scheduleList_.size();
+                  << " schedule list size: " << schedule_list_.size();
   }
 
   void DecreaseThreadCount() {
@@ -89,11 +81,11 @@ class AnalysisSchedule {
     infer_thread_cv_.notify_one();
 
     {
-      std::lock_guard<std::mutex> activeLock(activate_thread_lock_);
+      std::lock_guard<std::mutex> active_lock(activate_thread_lock_);
       activate_threads_.clear();
       MS_LOG(DEBUG) << " The active thread count: " << activate_threads_.size()
                     << " The infer_thread_count: " << infer_thread_count_
-                    << " schedule list size: " << scheduleList_.size() << " thread: " << GetThreadID() + " "
+                    << " schedule list size: " << schedule_list_.size() << " thread: " << thread_id() + " "
                     << (activate_threads_.size() > 0 ? activate_threads_.begin()->c_str() : "");
     }
     activate_thread_cv_.notify_one();
@@ -101,21 +93,22 @@ class AnalysisSchedule {
 
  private:
   void Schedule();
-  bool SetNextReady();
+  void SetNextReady();
   void Start() {
     auto thread = std::thread([this] { Schedule(); });
     thread.detach();
   }
   AnalysisSchedule() { Start(); }
-  static AnalysisSchedule instance_;
   std::atomic<int> infer_thread_count_{0};
-  bool notExit_{true};
+  bool run_{true};
   std::mutex infer_thread_lock_;
   std::condition_variable infer_thread_cv_;
   std::mutex activate_thread_lock_;
   std::condition_variable activate_thread_cv_;
-  std::list<AsyncInferTaskPtr> scheduleList_;
+  std::list<AsyncInferTaskPtr> schedule_list_;
   std::set<std::string> activate_threads_;
+  const std::string kStateStop = "Stop";
+  static thread_local std::string thread_id_;
 };
 
 template <typename KeyType, typename ValueType, typename CacheType>
@@ -212,10 +205,11 @@ class NormalCache {
   CacheType cache_;
 };
 
-class AsyncAbstract {
+class AsyncAbstract : public std::enable_shared_from_this<AsyncAbstract> {
  public:
   AsyncAbstract() = default;
   ~AsyncAbstract() = default;
+  AbstractBasePtr GetResult();
   AbstractBasePtr TryGetResult() {
     std::lock_guard<std::mutex> lock(lock_);
     return result_;
@@ -224,12 +218,11 @@ class AsyncAbstract {
     std::lock_guard<std::mutex> lock(lock_);
     return result_ != nullptr;
   }
-  void SetResult(const AbstractBasePtr &result) {
+  void set_result(const AbstractBasePtr &result) {
     MS_EXCEPTION_IF_NULL(result);
     std::lock_guard<std::mutex> lock(lock_);
     result_ = result;
   }
-
   std::string ToString() {
     std::ostringstream buffer;
     std::lock_guard<std::mutex> lock(lock_);
@@ -242,16 +235,59 @@ class AsyncAbstract {
   AbstractBasePtr result_{nullptr};
 };
 
+// Wrap AsyncAbstract, so it can work with Join method of AbstractFunction.
+class AsyncAbstractFuncAtom : public AbstractFuncAtom {
+ public:
+  AsyncAbstractFuncAtom(const AsyncAbstractPtr &async_abstract, std::size_t index)
+      : async_abstract_(async_abstract), index_(index) {}
+  ~AsyncAbstractFuncAtom() = default;
+  MS_DECLARE_PARENT(AsyncAbstractFuncAtom, AbstractFuncAtom);
+
+  static std::shared_ptr<AsyncAbstractFuncAtom> MakeShared(const AsyncAbstractPtr &async_abstract, std::size_t index) {
+    MS_EXCEPTION_IF_NULL(async_abstract);
+    auto ret = std::make_shared<AsyncAbstractFuncAtom>(async_abstract, index);
+    MS_EXCEPTION_IF_NULL(ret);
+    return ret;
+  }
+
+  AbstractFunctionPtr Copy() const override { return MakeShared(async_abstract_, index_); }
+
+  bool operator==(const AbstractFunction &other) const override {
+    if (!other.isa<AsyncAbstractFuncAtom>()) {
+      return false;
+    }
+    auto other_async = static_cast<const AsyncAbstractFuncAtom *>(&other);
+    MS_EXCEPTION_IF_NULL(other_async);
+    return (async_abstract_ == other_async->async_abstract_ && index_ == other_async->index_);
+  }
+
+  std::size_t hash() const override {
+    return hash_combine(std::hash<AsyncAbstract *>{}(async_abstract_.get()), std::hash<std::size_t>{}(index_));
+  }
+
+  AbstractFunctionPtr GetUnique() override;
+
+  std::string ToString() const override;
+
+ private:
+  // Resolved AbstractFunction after fully analyzed.
+  AbstractFunctionPtr resolved_{nullptr};
+  // Before resolved, use the following two items to track.
+  const AsyncAbstractPtr async_abstract_;
+  const std::size_t index_;
+};
+using AsyncAbstractFuncAtomPtr = std::shared_ptr<AsyncAbstractFuncAtom>;
+
 class AsyncInferTask {
  public:
-  explicit AsyncInferTask(const std::string &threadId, const AsyncAbstractPtr &abstract)
-      : threadId_(threadId), abstract_ptr_(abstract) {}
+  explicit AsyncInferTask(const std::string &thread_id, const AsyncAbstractPtr &abstract)
+      : thread_id_(thread_id), abstract_ptr_(abstract) {}
   ~AsyncInferTask() = default;
 
-  static AsyncInferTaskPtr MakeShared(const AsyncAbstractPtr &abstract, const std::string &threadId = "") {
-    std::string thread_id = threadId;
+  static AsyncInferTaskPtr MakeShared(const AsyncAbstractPtr &abstract, const std::string &thread = "") {
+    std::string thread_id = thread;
     if (thread_id == "") {
-      thread_id = AnalysisSchedule::GetInstance().GetThreadID();
+      thread_id = AnalysisSchedule::GetInstance().thread_id();
     }
     MS_EXCEPTION_IF_NULL(abstract);
     auto ret = std::make_shared<AsyncInferTask>(thread_id, abstract);
@@ -260,25 +296,23 @@ class AsyncInferTask {
   }
 
   bool HasResult() { return abstract_ptr_->HasResult(); }
-  int Ready() const { return ready_; }
-  std::string ThreadID() const { return threadId_; }
+  int ready() const { return ready_; }
+  std::string thread_id() const { return thread_id_; }
 
   AbstractBasePtr GetResult() {
+    StaticAnalysisException::Instance().CheckException();
     std::unique_lock<std::mutex> lock(lock_);
     if (ready_) {
       ProcessResult();
       return abstract_ptr_->TryGetResult();
     }
-    // Avoid to dead lock between AsyncAbstract::lock and AnalysisSchedule::activate_thread_lock_
+    // Avoid to dead lock between AsyncInferTask::lock and AnalysisSchedule::activate_thread_lock_
     lock.unlock();
     AnalysisSchedule::GetInstance().Yield(this);
 
     lock.lock();
-    MS_LOG(DEBUG) << this << " after enter waiting ready: " << ready_ << " thread id:" << threadId_
-                  << " GetThreadId: " << AnalysisSchedule::GetInstance().GetThreadID();
     condition_var_.wait(lock, [this] { return ready_; });
-    MS_LOG(DEBUG) << this << " received notify and wake up: " << ready_ << " thread id:" << threadId_
-                  << " GetThreadId: " << AnalysisSchedule::GetInstance().GetThreadID();
+    MS_LOG(DEBUG) << this << " received notify and wake up: " << ready_ << " thread id:" << thread_id_;
     ProcessResult();
     auto ans = abstract_ptr_->TryGetResult();
     MS_EXCEPTION_IF_NULL(ans);
@@ -286,63 +320,54 @@ class AsyncInferTask {
   }
 
   void SetReady() {
-    MS_LOG(DEBUG) << this << " want to set ready.";
     {
       std::lock_guard<std::mutex> lock(lock_);
-      ready_ = ready_ | 1;  // Set the first bit = 1
+      ready_ = ready_ | 0b001;  // Set the first bit = 1
       MS_LOG(DEBUG) << this << " notify ready: " << ready_ << " result: " << abstract_ptr_->TryGetResult().get()
-                    << " threadId: " << threadId_;
+                    << " thread_id: " << thread_id_;
     }
     condition_var_.notify_one();
   }
 
   void SetException() {
-    MS_LOG(DEBUG) << this << " want to set ready.";
     {
       std::lock_guard<std::mutex> lock(lock_);
-      ready_ = ready_ | 2;  // Set the second bit = 1
+      ready_ = ready_ | 0b010;  // Set the second bit = 1
       MS_LOG(DEBUG) << this << " notify ready: " << ready_;
     }
     condition_var_.notify_one();
   }
 
   void SetEndLessLoopException() {
-    MS_LOG(DEBUG) << this << " want to set ready.";
     {
       std::lock_guard<std::mutex> lock(lock_);
-      ready_ = ready_ | 4;  // Set the third bit = 1
+      ready_ = ready_ | 0b100;  // Set the third bit = 1
       MS_LOG(DEBUG) << this << " notify ready: " << ready_;
     }
     condition_var_.notify_one();
   }
 
  private:
-  void ClearReady() {
-    ready_ = ready_ & 6;  // Set first bit = 0
-    MS_LOG(DEBUG) << this << " ready: " << ready_ << " result: " << abstract_ptr_->TryGetResult().get();
-  }
   void HandleEndLessLoopException() {
     // Get third bit
-    if (ready_ & 4) {
-      ready_ = ready_ & 3;  // Set the third bit = 0 , Only trigger once.
-      MS_LOG(EXCEPTION) << "There isn't any branch that can been evaluated. \n"
-                        << "Please check the code if it's has the infinite recursion or loop.\n"
+    if (ready_ & 0b100) {
+      ready_ = ready_ & 0b011;  // Set the third bit = 0 , Only trigger once.
+      MS_LOG(EXCEPTION) << "There isn't any branch that can be evaluated. \n"
+                        << "Please check the code if it has the infinite recursion or loop.\n"
                         << "For more details, please refer to the FAQ at https://www.mindspore.cn.";
     }
   }
   void ProcessResult() {
-    ClearReady();  // Clear nomal ready flag
     HandleEndLessLoopException();
     StaticAnalysisException::Instance().CheckException();
-    MS_LOG(DEBUG) << this << " Success to GetResult. ready: " << ready_ << " threadId: " << threadId_
-                  << " GetThreadId:" << AnalysisSchedule::GetInstance().GetThreadID()
+    MS_LOG(DEBUG) << this << " Success to GetResult. ready: " << ready_ << " thread_id: " << thread_id_
                   << " result: " << abstract_ptr_->TryGetResult().get();
   }
-  std::string threadId_;
+  std::string thread_id_;
   AsyncAbstractPtr abstract_ptr_;
   std::mutex lock_;
   std::condition_variable condition_var_;
-  int ready_{0};  // 0: not ready, bit 1 = 1: ready, bit 2 = 1: exception, bit 3 = 1: endless loop
+  size_t ready_{0};  // 0: not ready, bit 1 = 1: ready, bit 2 = 1: exception, bit 3 = 1: endless loop
 };
 
 using EvaluatorCacheMap =
@@ -375,18 +400,19 @@ class AnalysisResultCacheMgr {
   ~AnalysisResultCacheMgr() = default;
   AnalysisResultCacheMgr(const AnalysisResultCacheMgr &) = delete;
   AnalysisResultCacheMgr &operator=(const AnalysisResultCacheMgr &) = delete;
-  static AnalysisResultCacheMgr &GetInstance() { return instance_; }
+  static AnalysisResultCacheMgr &GetInstance() {
+    static AnalysisResultCacheMgr instance;
+    return instance;
+  }
   void Clear();
   inline void SetValue(const AnfNodeConfigPtr &conf, const EvalResultPtr &arg) { cache_.set(conf, arg); }
   inline EvalResultPtr GetValue(const AnfNodeConfigPtr &conf) { return cache_.get(conf); }
-  void PushTodo(const AnfNodeConfigPtr &conf);
-  void Todo();
   void InitSwitchValue(const AnfNodeConfigPtr &conf);
   AbstractBasePtr GetSwitchValue(const AnfNodeConfigPtr &conf);
-  AbstractBasePtr TryGetSwitchValue(const AnfNodeConfigPtr &conf);
   void SetSwitchValue(const AnfNodeConfigPtr &conf, const AbstractBasePtr &vale);
   const_iterator begin() { return cache_.begin(); }
   const_iterator end() { return cache_.end(); }
+  void CheckSwitchValueJoinable(const AnfNodeConfigPtr &conf, const AbstractBasePtr &vale);
 
  private:
   using AnalysisConfigAsyncResultMap =
@@ -394,18 +420,17 @@ class AnalysisResultCacheMgr {
   using AnalysisConfigAsyncResultCache =
     MultiThreadCache<AnfNodeConfigPtr, AsyncAbstractPtr, AnalysisConfigAsyncResultMap>;
   AnalysisResultCacheMgr() = default;
-  static AnalysisResultCacheMgr instance_;
+  void SetCacheValue(const AnfNodeConfigPtr &conf, const AbstractBasePtr &vale, AnalysisConfigAsyncResultCache *cache);
+
   std::mutex lock_;
-  std::mutex todo_lock_;
-  std::list<AnfNodeConfigPtr> todo_;
   AnalysisConfigResultCache cache_;
   AnalysisConfigAsyncResultCache switch_cache_;
+  AnalysisConfigAsyncResultCache switch_cache_for_check_;
 };
 
 std::string ArgsToString(const AbstractBasePtrList &args_spec_list);
 
-inline std::string GetInferThread() { return std::string(" INFER:") + AnalysisSchedule::GetThreadID() + ":"; }
-
+inline std::string GetInferThread() { return std::string(" INFER:") + AnalysisSchedule::thread_id() + ":"; }
 }  // namespace abstract
 }  // namespace mindspore
 #endif  // MINDSPORE_CCSRC_PIPELINE_JIT_STATIC_ANALYSIS_ASYNC_EVAL_RESULT_H_

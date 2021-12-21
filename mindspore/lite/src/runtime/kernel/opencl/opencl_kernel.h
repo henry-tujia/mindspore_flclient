@@ -21,6 +21,7 @@
 #include <set>
 #include <map>
 #include <string>
+#include <cfloat>
 #include "src/inner_kernel.h"
 #include "include/errorcode.h"
 #include "src/runtime/gpu/opencl/opencl_runtime.h"
@@ -48,6 +49,13 @@ struct OpenCLToFormatParameter {
   lite::opencl::MemType out_mem_type{lite::opencl::MemType::IMG};
 };
 
+#ifdef ENABLE_OPENGL_TEXTURE
+struct OpenGLTexture2DToOpenCLParameter {
+  OpParameter op_parameter{};
+  lite::opencl::MemType out_mem_type{lite::opencl::MemType::IMG};
+};
+#endif
+
 template <typename SrcT, typename DstT>
 void Broadcast2GpuShape(DstT *dst, const SrcT *src, int src_num) {
   MS_ASSERT(dst);
@@ -58,16 +66,16 @@ void Broadcast2GpuShape(DstT *dst, const SrcT *src, int src_num) {
   auto *H = dst + 1;
   auto *W = dst + 2;
   auto *C = dst + 3;
-  if (src_num == 1) {  // 1 1 1 C
+  if (src_num == DIMENSION_1D) {  // 1 1 1 C
     *C = src[0];
-  } else if (src_num == 2) {  // N 1 1 C
+  } else if (src_num == DIMENSION_2D) {  // N 1 1 C
     *N = src[0];
     *C = src[1];
-  } else if (src_num == 3) {  // N 1 W C
+  } else if (src_num == DIMENSION_3D) {  // N 1 W C
     *N = src[0];
     *W = src[1];
     *C = src[2];
-  } else if (src_num == 4) {  // N H W C
+  } else if (src_num == DIMENSION_4D) {  // N H W C
     *N = src[0];
     *H = src[1];
     *W = src[2];
@@ -193,6 +201,7 @@ class OpenCLKernel : public InnerKernel {
   int Run() override { return RET_ERROR; }
 
   virtual int CheckSpecs();
+  virtual int CheckSpecsWithoutShape() { return RET_OK; }
   virtual int InitWeights() { return RET_OK; }
   virtual int SetConstArgs() { return RET_OK; }
   virtual void SetGlobalLocal() {}
@@ -214,6 +223,7 @@ class OpenCLKernel : public InnerKernel {
   virtual int InferShape();
 
  protected:
+  void PrintShape(lite::Tensor *output_tensor);
   static std::set<size_t> GenerateLocalByGlobal(size_t global_i);
 
   virtual std::string Key() {
@@ -252,6 +262,14 @@ kernel::InnerKernel *OpenCLKernelCreator(const std::vector<lite::Tensor *> &inpu
     free(opParameter);
     return nullptr;
   }
+
+  auto ret = kernel->CheckSpecsWithoutShape();
+  if (ret != mindspore::lite::RET_OK) {
+    MS_LOG(ERROR) << "Check " << opParameter->name_ << " specification Without shape failed!";
+    delete kernel;
+    return nullptr;
+  }
+
   auto shape = outputs.front()->shape();
   if (std::find(shape.begin(), shape.end(), -1) != shape.end()) {
     MS_LOG(WARNING) << "kernel " << opParameter->name_ << "don't infer shape yet!";
@@ -261,7 +279,7 @@ kernel::InnerKernel *OpenCLKernelCreator(const std::vector<lite::Tensor *> &inpu
     MS_LOG(WARNING) << "kernel " << opParameter->name_ << "don't support output shape has zero.";
     return nullptr;
   }
-  auto ret = kernel->CheckSpecs();
+  ret = kernel->CheckSpecs();
   if (ret != mindspore::lite::RET_OK) {
     MS_LOG(ERROR) << "Check " << opParameter->name_ << " specification failed!";
     delete kernel;

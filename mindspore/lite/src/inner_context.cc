@@ -124,30 +124,21 @@ int InnerContext::Init() {
     int actor_parallel_thread = this->enable_parallel_ ? kDefaultParallelNum : 1;
     if (this->affinity_core_list_.empty()) {
       thread_pool_ = ActorThreadPool::CreateThreadPool(actor_parallel_thread, this->thread_num_, bind_mode);
-      if (thread_pool_ == nullptr) {
-        MS_LOG(ERROR) << "Create ThreadPool failed";
-        return RET_NULL_PTR;
-      }
+      MS_CHECK_TRUE_MSG(thread_pool_ != nullptr, RET_NULL_PTR, "Create Allocator failed");
     } else {
       thread_pool_ =
         ActorThreadPool::CreateThreadPool(actor_parallel_thread, this->thread_num_, this->affinity_core_list_);
-      if (thread_pool_ == nullptr) {
-        MS_LOG(ERROR) << "Create ThreadPool failed";
-        return RET_NULL_PTR;
-      }
+      MS_CHECK_TRUE_MSG(thread_pool_ != nullptr, RET_NULL_PTR, "Create Allocator failed");
     }
 #else
-    thread_pool_ = ThreadPool::CreateThreadPool(thread_num_);
+    thread_pool_ = ThreadPool::CreateThreadPool(thread_num_ - 1);
     thread_pool_->SetCpuAffinity(static_cast<mindspore::BindMode>(bind_mode));
 #endif
   }
 
   if (this->allocator == nullptr) {
     this->allocator = mindspore::Allocator::Create();
-    if (this->allocator == nullptr) {
-      MS_LOG(ERROR) << "Create Allocator failed";
-      return RET_NULL_PTR;
-    }
+    CHECK_NULL_RETURN(this->allocator);
   }
   if (IsNpuEnabled()) {
     MS_LOG(DEBUG) << "NPU enabled.";
@@ -158,8 +149,8 @@ int InnerContext::Init() {
           device_ctx.device_info_.npu_device_info_.frequency_ != hiai::AiModelDescription_Frequency_MEDIUM &&
           device_ctx.device_info_.npu_device_info_.frequency_ != hiai::AiModelDescription_Frequency_HIGH &&
           device_ctx.device_info_.npu_device_info_.frequency_ != hiai::AiModelDescription_Frequency_EXTREME) {
-        MS_LOG(INFO) << "NPU frequency set to 3, original value "
-                     << device_ctx.device_info_.npu_device_info_.frequency_;
+        MS_LOG(WARNING) << "NPU frequency set to 3, original value "
+                        << device_ctx.device_info_.npu_device_info_.frequency_;
         device_ctx.device_info_.npu_device_info_.frequency_ = hiai::AiModelDescription_Frequency_HIGH;
       }
     }
@@ -184,7 +175,7 @@ int InnerContext::IsValid() const {
     return RET_NOT_SUPPORT;
   }
   if (this->device_list_.size() > kMaxInnerContextDeviceNums) {
-    MS_LOG(ERROR) << "Not support device list more than 2.";
+    MS_LOG(ERROR) << "Not support device list more than " << kMaxInnerContextDeviceNums;
     return RET_NOT_SUPPORT;
   }
   if (thread_num_ < 1) {
@@ -241,6 +232,10 @@ bool InnerContext::IsGpuFloat16Enabled() const {
 #endif
 }
 
+#ifdef ENABLE_OPENGL_TEXTURE
+bool InnerContext::IsGLTextureEnabled() const { return GetGpuInfo().enable_gl_texture_; }
+#endif
+
 bool InnerContext::IsCpuEnabled() const { return IsUserSetCpu(); }
 
 const CpuDeviceInfo *InnerContext::GetCpuDeviceInfo() const {
@@ -284,7 +279,7 @@ bool InnerContext::IsProviderEnabled() const {
 
 bool InnerContext::IsAllDeviceTypeValid() const {
   return std::all_of(this->device_list_.begin(), this->device_list_.end(), [](const DeviceContext &device) {
-    return device.device_type_ >= DT_CPU && device.device_type_ <= DT_ASCEND310;
+    return device.device_type_ >= DT_CPU && device.device_type_ <= DT_ASCEND;
   });
 }
 
@@ -357,6 +352,22 @@ NpuDeviceInfo InnerContext::GetNpuInfo() const {
 ThreadPool *InnerContext::thread_pool() const { return thread_pool_; }
 
 bool InnerContext::device_and_pkg_support_fp16() const { return this->device_and_pkg_support_fp16_; }
+
+std::set<void *> InnerContext::GetLinkInfo(void *pre) const {
+  if (link_info_.find(pre) == link_info_.end()) {
+    MS_LOG(WARNING) << "Not found precursor in link information.";
+    return {};
+  }
+  return link_info_.at(pre);
+}
+
+void InnerContext::SetLinkInfo(void *pre, void *suc) {
+  if (link_info_.find(pre) != link_info_.end()) {
+    link_info_.at(pre).insert(suc);
+  }
+  std::set<void *> suc_set{suc};
+  link_info_[pre] = suc_set;
+}
 
 int ParallelLaunch(const Context *context, const Func &func, Content content, int task_num) {
   ThreadPool *pool = static_cast<const lite::InnerContext *>(context)->thread_pool();

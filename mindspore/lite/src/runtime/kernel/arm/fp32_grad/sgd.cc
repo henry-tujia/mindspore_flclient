@@ -168,7 +168,7 @@ int SgdCPUKernel::Run() {
   return RET_OK;
 }
 
-int SgdCPUKernel::Init() {
+int SgdCPUKernel::Prepare() {
   CHECK_NULL_RETURN(sgd_param_);
   CHECK_LESS_RETURN(in_tensors_.size(), 6);
   CHECK_NULL_RETURN(in_tensors_.at(0));
@@ -183,10 +183,10 @@ int SgdCPUKernel::Init() {
   }
 
   if (sgd_param_->use_nesterov_ && sgd_param_->dampening_ > 0.0f) {
-    MS_LOG(ERROR) << "If use nesterov, dampening must equal to 0.0";
+    MS_LOG(ERROR) << "If use nesterov, dampening must be equal to 0.0";
     return RET_ERROR;
   }
-  auto ret = OptimizerKernel::Init();
+  auto ret = OptimizerKernel::Prepare();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Failed to initialize Sgd Kernel";
     return RET_ERROR;

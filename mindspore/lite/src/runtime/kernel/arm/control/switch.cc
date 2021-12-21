@@ -16,7 +16,6 @@
 #include "src/runtime/kernel/arm/control/switch.h"
 #include "src/kernel_registry.h"
 #include "include/errorcode.h"
-#include "src/tensorlist.h"
 
 using mindspore::lite::KernelRegistrar;
 using mindspore::lite::RET_ERROR;
@@ -24,7 +23,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Switch;
 
 namespace mindspore::kernel {
-int SwitchCPUKernel::Init() { return RET_OK; }
+int SwitchCPUKernel::Prepare() { return RET_OK; }
 int SwitchCPUKernel::ReSize() { return RET_OK; }
 int SwitchCPUKernel::Run() { return RET_OK; }
 

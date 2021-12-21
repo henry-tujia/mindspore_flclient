@@ -99,7 +99,7 @@
 #include "ops/mat_mul.h"
 #include "ops/max_pool.h"
 #include "ops/maximum.h"
-#include "ops/merge.h"
+#include "ops/switch_layer.h"
 #include "ops/mfcc.h"
 #include "ops/minimum.h"
 #include "ops/mod.h"
@@ -248,6 +248,8 @@
 #include "ops/tensor_array_read.h"
 #include "ops/tensor_array_write.h"
 #include "ops/affine.h"
+#include "ops/all_gather.h"
+#include "ops/reduce_scatter.h"
 
 namespace mindspore::lite::ops {
 #define FUNC_MSOP2SCHEMAOP_DECLARE(OP) std::unique_ptr<schema::PrimitiveT> MSOp2SchemaOp(const mindspore::ops::OP *op);
@@ -353,7 +355,7 @@ FUNC_MSOP2SCHEMAOP_DECLARE(Maximum)
 FUNC_MSOP2SCHEMAOP_DECLARE(MaximumGrad)
 FUNC_MSOP2SCHEMAOP_DECLARE(MaxPoolFusion)
 FUNC_MSOP2SCHEMAOP_DECLARE(MaxPoolGrad)
-FUNC_MSOP2SCHEMAOP_DECLARE(Merge)
+FUNC_MSOP2SCHEMAOP_DECLARE(SwitchLayer)
 FUNC_MSOP2SCHEMAOP_DECLARE(Mfcc)
 FUNC_MSOP2SCHEMAOP_DECLARE(Minimum)
 FUNC_MSOP2SCHEMAOP_DECLARE(MinimumGrad)
@@ -463,6 +465,8 @@ FUNC_MSOP2SCHEMAOP_DECLARE(TensorArrayRead)
 FUNC_MSOP2SCHEMAOP_DECLARE(TensorArrayWrite)
 FUNC_MSOP2SCHEMAOP_DECLARE(Affine)
 FUNC_MSOP2SCHEMAOP_DECLARE(ScatterNdUpdate)
+FUNC_MSOP2SCHEMAOP_DECLARE(AllGather)
+FUNC_MSOP2SCHEMAOP_DECLARE(ReduceScatter)
 #endif
 }  // namespace mindspore::lite::ops
 #else

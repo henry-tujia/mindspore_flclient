@@ -42,11 +42,12 @@ const AnfNodePtr ConvertUnSupportNodeToAICPU::Process(const mindspore::FuncGraph
     return nullptr;
   } else if (supported_checker_->CheckAICPUSupported(node, kernel_builder_info)) {
     auto builder = std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>(kernel_builder_info);
+    MS_EXCEPTION_IF_NULL(builder);
     builder->SetKernelType(AICPU_KERNEL);
     AnfAlgo::SetSelectKernelBuildInfo(builder->Build(), node.get());
     AnfAlgo::SetNodeAttr(kAttrIsAICPUKernel, MakeValue(true), node);
   } else {
-    MS_LOG(EXCEPTION) << " kernel " << kernel_builder_info->ToString() << "is not supported in AiCPU & AiCore : node ["
+    MS_LOG(EXCEPTION) << "Kernel " << kernel_builder_info->ToString() << "is not supported in AiCPU & AiCore : node ["
                       << node->DebugString() << "]" << trace::DumpSourceLines(node);
   }
   return nullptr;

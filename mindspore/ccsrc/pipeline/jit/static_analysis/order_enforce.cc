@@ -19,9 +19,9 @@
 #include <map>
 #include <queue>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "base/core_ops.h"
 
 namespace mindspore::pipeline {
@@ -40,7 +40,7 @@ class OrderEnforcer {
       if (IsPrimitiveCNode(node, prim::kPrimUpdateState)) {
         HandleUpdateState(node);
       } else if (IsPrimitiveCNode(node, prim::kPrimMakeTuple)) {
-        // op(MakTuple(Load, ...)) sometimes do not attach update_state,
+        // op(MakeTuple(Load, ...)) sometimes do not attach update_state,
         // So need special treatment in order to ensure the exec_order of MakeTuple users.
         HandleMakeTupleUsers(node);
       }
@@ -51,7 +51,7 @@ class OrderEnforcer {
   AnfNodePtrList MakeTopoSortMap() {
     auto nodes = TopoSort(func_graph_->get_return());
     for (size_t i = 0; i < nodes.size(); ++i) {
-      topo_sort_map_.emplace(nodes[i], i);
+      (void)topo_sort_map_.emplace(nodes[i], i);
     }
     return nodes;
   }
@@ -106,12 +106,12 @@ class OrderEnforcer {
     for (auto &user : users) {
       auto &user_node = user.first;
       if (IsPrimitiveCNode(user_node, prim::kPrimUpdateState)) {
-        update_states.emplace_back(user_node);
+        (void)update_states.emplace_back(user_node);
         continue;
       }
       if (IsPrimitiveCNode(user_node, prim::kPrimMakeTuple)) {
         auto make_tuple_users = FindUpdateStateUsers(user_node);
-        update_states.insert(update_states.end(), make_tuple_users.begin(), make_tuple_users.end());
+        (void)update_states.insert(update_states.end(), make_tuple_users.begin(), make_tuple_users.end());
       }
     }
     return update_states;
@@ -125,7 +125,7 @@ class OrderEnforcer {
       auto &input = inputs[index];
       if (IsPrimitiveCNode(input, prim::kPrimLoad)) {
         std::vector<AnfNodePtr> update_states = FindUpdateStateUsers(input);
-        all_update_states.insert(all_update_states.end(), update_states.begin(), update_states.end());
+        (void)all_update_states.insert(all_update_states.end(), update_states.begin(), update_states.end());
       }
     }
     // Find the last update_state by topo sort order.
@@ -203,14 +203,14 @@ class OrderEnforcer {
       for (auto &load : loads) {
         // Find user nodes of the Load.
         auto load_users = FindLoadUsers(load);
-        std::unordered_set<AnfNodePtr> real_users;
+        mindspore::HashSet<AnfNodePtr> real_users;
         for (auto &load_user : load_users) {
           // Check the special operator, only one level of user is considered for now.
           if (IsSpecialPrimitive(load_user)) {
             auto special_real_users = FindNodeUsers(load_user);
             real_users.insert(special_real_users.begin(), special_real_users.end());
           } else {
-            real_users.insert(load_user);
+            (void)real_users.insert(load_user);
           }
         }
         AddInputEdges(update_state, real_users);
@@ -223,7 +223,7 @@ class OrderEnforcer {
     const size_t attach_index = 2;
     const size_t input_size = update_state->inputs().size();
     for (size_t index = attach_index; index < input_size; index++) {
-      auto &attach = update_state->input(attach_index);
+      auto &attach = update_state->input(index);
       if (attach == load_user) {
         return true;
       }
@@ -240,14 +240,14 @@ class OrderEnforcer {
   }
 
   // Add load users as input edges of the update_state node.
-  void AddInputEdges(const CNodePtr &update_state, const std::unordered_set<AnfNodePtr> &load_users) {
+  void AddInputEdges(const CNodePtr &update_state, const mindspore::HashSet<AnfNodePtr> &load_users) {
     auto sorted_load_users = SortLoadUsers(load_users);
     for (auto &load_user : sorted_load_users) {
       if (IsPrimitiveCNode(load_user, prim::kPrimMakeTuple) || IsPrimitiveCNode(load_user, prim::kPrimUpdateState)) {
         continue;
       }
       if (!IsDependOn(load_user, update_state)) {
-        processed_nodes_.insert(load_user);
+        (void)processed_nodes_.insert(load_user);
         if (!IsInUpdateState(load_user, update_state)) {
           manager_->AddEdge(update_state, load_user);
         }
@@ -256,7 +256,7 @@ class OrderEnforcer {
   }
 
   // Sort load users by their topo sort order.
-  std::vector<AnfNodePtr> SortLoadUsers(const std::unordered_set<AnfNodePtr> &load_users) {
+  std::vector<AnfNodePtr> SortLoadUsers(const mindspore::HashSet<AnfNodePtr> &load_users) {
     std::vector<AnfNodePtr> vec{load_users.begin(), load_users.end()};
     std::sort(vec.begin(), vec.end(), [this](const AnfNodePtr &a, const AnfNodePtr &b) { return IsBefore(a, b); });
     return vec;
@@ -309,24 +309,24 @@ class OrderEnforcer {
   using PredFunc = std::function<bool(const AnfNodePtr &)>;
 
   // Find user nodes for the given node.
-  std::unordered_set<AnfNodePtr> FindNodeUsers(const AnfNodePtr &node, PredFunc pred = nullptr) {
+  mindspore::HashSet<AnfNodePtr> FindNodeUsers(const AnfNodePtr &node, PredFunc pred = nullptr) {
     auto &node_users = manager_->node_users();
     auto iter = node_users.find(node);
     if (iter == node_users.end()) {
       return {};
     }
-    std::unordered_set<AnfNodePtr> users;
+    mindspore::HashSet<AnfNodePtr> users;
     for (auto &user : iter->second) {
       auto &user_node = user.first;
       if (pred == nullptr || pred(user_node)) {
-        users.emplace(user_node);
+        (void)users.emplace(user_node);
       }
     }
     return users;
   }
 
   // Find Load or parameter users as the candidate nodes to enforce order of execution.
-  std::unordered_set<AnfNodePtr> FindLoadUsers(const AnfNodePtr &load_or_param) {
+  mindspore::HashSet<AnfNodePtr> FindLoadUsers(const AnfNodePtr &load_or_param) {
     return FindNodeUsers(load_or_param, [this](const AnfNodePtr &user_node) {
       // Skip processed nodes.
       return processed_nodes_.find(user_node) == processed_nodes_.end();
@@ -334,7 +334,7 @@ class OrderEnforcer {
   }
 
   // Find Load nodes for a parameter.
-  std::unordered_set<AnfNodePtr> FindLoadNodes(const AnfNodePtr &param) {
+  mindspore::HashSet<AnfNodePtr> FindLoadNodes(const AnfNodePtr &param) {
     return FindNodeUsers(param, [this](const AnfNodePtr &user_node) {
       // Search for Load nodes only.
       return IsPrimitiveCNode(user_node, prim::kPrimLoad);
@@ -343,8 +343,8 @@ class OrderEnforcer {
 
   const FuncGraphPtr &func_graph_;
   FuncGraphManagerPtr manager_;
-  std::unordered_map<AnfNodePtr, size_t> topo_sort_map_;
-  std::unordered_set<AnfNodePtr> processed_nodes_;
+  mindspore::HashMap<AnfNodePtr, size_t> topo_sort_map_;
+  mindspore::HashSet<AnfNodePtr> processed_nodes_;
 };
 }  // namespace
 

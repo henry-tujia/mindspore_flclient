@@ -25,9 +25,6 @@ namespace lite {
 ops::PrimitiveC *TfliteDeConvParser::Parse(const std::unique_ptr<tflite::OperatorT> &tflite_op,
                                            const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                            const std::unique_ptr<tflite::ModelT> &tflite_model) {
-  MS_CHECK_TRUE_RET(tflite_op != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_subgraph != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_model != nullptr, nullptr);
   auto prim = std::make_unique<ops::Conv2dTransposeFusion>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
 
@@ -48,7 +45,7 @@ ops::PrimitiveC *TfliteDeConvParser::Parse(const std::unique_ptr<tflite::Operato
   prim->set_pad_mode(padMode);
 
   // get weight tensor
-  if (tflite_op->inputs.size() < FOURTH_INPUT) {
+  if (tflite_op->inputs.size() < kInputSize2) {
     MS_LOG(ERROR) << "the tflite_op shape is illegal";
     return nullptr;
   }
@@ -58,19 +55,19 @@ ops::PrimitiveC *TfliteDeConvParser::Parse(const std::unique_ptr<tflite::Operato
     return nullptr;
   }
   auto weight_shape = weight_tensor->shape;
-  if (weight_shape.empty() || weight_shape.size() < FIFTH_INPUT) {
+  if (weight_shape.empty() || weight_shape.size() < DIMENSION_4D) {
     MS_LOG(ERROR) << "the weight shape is illegal";
     return nullptr;
   }
-  prim->set_in_channel(weight_shape[3]);
-  prim->set_out_channel(weight_shape[0]);
-  prim->set_kernel_size({weight_shape[1], weight_shape[2]});
+  prim->set_in_channel(weight_shape[kWeightChannelIn]);
+  prim->set_out_channel(weight_shape[kWeightChannelOut]);
+  prim->set_kernel_size({weight_shape[kWeightKernelH], weight_shape[kWeightKernelW]});
 
   // calculate pad params
   const auto &data_tensor = tflite_subgraph->tensors.at(tflite_op->inputs.at(2));
   std::vector<int64_t> params;
-  int status = getPaddingParam(data_tensor, padMode, tflite_attr->stride_h, tflite_attr->stride_w, weight_shape[1],
-                               weight_shape[2], &params);
+  int status = getPaddingParam(data_tensor, padMode, tflite_attr->stride_h, tflite_attr->stride_w,
+                               weight_shape[kWeightKernelH], weight_shape[kWeightKernelW], &params);
   if (status != RET_OK && status != RET_NO_CHANGE) {
     MS_LOG(ERROR) << "get padding params failed";
     return nullptr;

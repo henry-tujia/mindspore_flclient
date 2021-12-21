@@ -84,7 +84,8 @@ bool HttpServer::InitServer() {
   }
 
   struct sockaddr_in addr;
-  if (memset_s(&addr, sizeof(addr), 0, sizeof(addr)) != EOK) {
+  errno_t ret = memset_s(&addr, sizeof(addr), 0, sizeof(addr));
+  if (ret != EOK) {
     MS_LOG(EXCEPTION) << "Memset failed.";
   }
 
@@ -132,6 +133,7 @@ bool HttpServer::RegisterRoute(const std::string &url, OnRequestReceive *functio
   if (!function) {
     return false;
   }
+  MS_LOG(INFO) << "request handler url is: " << url;
   request_handlers_[url] = function;
   return true;
 }

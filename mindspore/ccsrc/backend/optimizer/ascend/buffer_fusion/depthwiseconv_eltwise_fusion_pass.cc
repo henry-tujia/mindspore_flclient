@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,7 @@
  */
 #include "backend/optimizer/ascend/buffer_fusion/depthwiseconv_eltwise_fusion_pass.h"
 
-#include <vector>
-#include <unordered_set>
-#include <memory>
-#include <string>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -29,7 +24,7 @@
 namespace mindspore {
 namespace opt {
 void DepthwiseConvEltwiseFusionPass::MatchDepthwiseConvRelu(const CNodePtr &cnode,
-                                                            const session::KernelGraph & /*kernel_graph*/,
+                                                            const session::KernelGraph & /* kernel_graph */,
                                                             FusedNodeRecord *candidate_fusion, bool is_order) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
@@ -38,7 +33,7 @@ void DepthwiseConvEltwiseFusionPass::MatchDepthwiseConvRelu(const CNodePtr &cnod
     auto depthwise_conv = cnode->input(kIndex1);
     MS_EXCEPTION_IF_NULL(depthwise_conv);
     if (cnode->isa<CNode>() && IsPrimitiveCNode(depthwise_conv, prim::kPrimDepthwiseConv2dNative)) {
-      std::unordered_set<AnfNodePtr> record{cnode, depthwise_conv};
+      mindspore::HashSet<AnfNodePtr> record{cnode, depthwise_conv};
       candidate_fusion->push_back(record);
       SetRecordFusionId(record);
     }
@@ -47,7 +42,7 @@ void DepthwiseConvEltwiseFusionPass::MatchDepthwiseConvRelu(const CNodePtr &cnod
     auto relu = cnode->input(kIndex1);
     MS_EXCEPTION_IF_NULL(relu);
     if (cnode->isa<CNode>() && (IsPrimitiveCNode(relu, prim::kPrimRelu) || IsPrimitiveCNode(relu, prim::kPrimReluV2))) {
-      std::unordered_set<AnfNodePtr> record{cnode, relu};
+      mindspore::HashSet<AnfNodePtr> record{cnode, relu};
       candidate_fusion->push_back(record);
       SetRecordFusionId(record);
     }
@@ -59,7 +54,7 @@ void DepthwiseConvEltwiseFusionPass::MatchSingleFusionPattern(const session::Ker
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

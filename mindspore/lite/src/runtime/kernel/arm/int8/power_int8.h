@@ -32,13 +32,16 @@ class PowerInt8CPUKernel : public InnerKernel {
   }
   ~PowerInt8CPUKernel() {}
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int DoPower(int task_id);
 
  private:
   PowerParameter *param_;
+  int8_t *input_data_ = nullptr;
+  int8_t *output_data_ = nullptr;
+  int8_t *exp_ptr_ = nullptr;
 };
 }  // namespace mindspore::kernel
 

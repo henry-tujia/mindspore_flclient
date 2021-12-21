@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <string>
-#include <vector>
 #include "minddata/dataset/core/tensor_helpers.h"
 #include "minddata/dataset/util/log_adapter.h"
 #include "minddata/dataset/util/status.h"
@@ -34,6 +32,10 @@ void IndexGeneratorHelper(int8_t depth, std::vector<dsize_t> *numbers,
     int8_t new_depth = depth - 1;
     // depth is always less than or equal to numbers->size() (based on the caller functions)
     size_t curr_ind = static_cast<size_t>(numbers->size() - static_cast<size_t>(depth));
+    if (curr_ind >= slice_list.size()) {
+      MS_LOG(ERROR) << "The index is out of range in slice_list.";
+      return;
+    }
 
     if (slice_list[curr_ind].slice_.valid()) {
       dsize_t increment = slice_list[curr_ind].slice_.step_;

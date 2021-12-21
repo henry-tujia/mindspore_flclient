@@ -35,11 +35,14 @@ AccuracyMetrics::AccuracyMetrics(int accuracy_metrics, const std::vector<int> &i
 AccuracyMetrics::~AccuracyMetrics() {
   if (metrics_impl_ == nullptr) {
     MS_LOG(ERROR) << "Metrics implement is null.";
+    return;
   }
   auto internal_metrics = metrics_impl_->GetInternalMetrics();
   if (internal_metrics != nullptr) {
     delete internal_metrics;
   }
+  delete metrics_impl_;
+  metrics_impl_ = nullptr;
 }
 
 void AccuracyMetrics::Clear() {

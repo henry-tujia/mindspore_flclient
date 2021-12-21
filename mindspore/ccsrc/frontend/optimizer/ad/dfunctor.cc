@@ -36,10 +36,9 @@
 
 namespace mindspore {
 namespace ad {
-std::unordered_map<FuncGraphPtr, DFunctorPtr> DFunctor::func_graph_to_functor_;
-std::unordered_map<AnfNodePtr, AdjointPtr> DFunctor::anfnode_to_adjoin_definition_;
+mindspore::HashMap<FuncGraphPtr, DFunctorPtr> DFunctor::func_graph_to_functor_;
+mindspore::HashMap<AnfNodePtr, AdjointPtr> DFunctor::anfnode_to_adjoin_definition_;
 
-std::shared_ptr<PynativeDFunctor> py_dfunctor = std::make_shared<PynativeDFunctor>();
 bool lift_fv_before_grad = true;
 
 DFunctor::DFunctor(const FuncGraphPtr &primal_graph, const pipeline::ResourceBasePtr &resources)
@@ -143,7 +142,7 @@ void DFunctor::BackPropagateSwitchLayer(const CNodePtr &cnode_morph, const CNode
   if (!IsPrimitiveCNode(input, prim::kPrimMakeTuple)) {
     MS_LOG(EXCEPTION) << "The 2th input of switch_layer expect a tuple of graphs, but got " << input->ToString() << ".";
   }
-  std::unordered_map<AnfNodePtr, FuncGraphPtr> node_to_fg;
+  mindspore::HashMap<AnfNodePtr, FuncGraphPtr> node_to_fg;
   auto tuple_graphs = input->cast<CNodePtr>();
   for (size_t i = 1; i < tuple_graphs->size(); ++i) {
     auto graph = tuple_graphs->input(i);
@@ -187,6 +186,42 @@ static bool HasSideEffectBackProp(const CNodePtr &cnode) {
   return false;
 }
 
+AnfNodePtr HandleRealToComplex(const AnfNodePtr &input, const CNodePtr &din, FuncGraphPtr fg) {
+  MS_EXCEPTION_IF_NULL(input);
+  TypePtr input_type = input->Type();
+  if (input_type == nullptr || !input_type->isa<TensorType>()) {
+    return din;
+  }
+  input_type = input_type->cast<TensorTypePtr>()->element();
+  MS_EXCEPTION_IF_NULL(input_type);
+  if (input_type->type_id() == kNumberTypeComplex64 || input_type->type_id() == kNumberTypeComplex128) {
+    return din;
+  }
+
+  MS_EXCEPTION_IF_NULL(din);
+  // If we can not get the dtype of din, we insert real op ignoring din's dtype,
+  // and eliminate it in "real_op_elimiate" pass.
+  MS_EXCEPTION_IF_NULL(fg);
+  if (din->abstract() == nullptr) {
+    return fg->NewCNode({NewValueNode(prim::kPrimRealInner), din});
+  }
+
+  TypePtr din_type = din->Type();
+  if (din_type == nullptr || !din_type->isa<TensorType>()) {
+    return din;
+  }
+  din_type = din_type->cast<TensorTypePtr>()->element();
+  MS_EXCEPTION_IF_NULL(din_type);
+  if (din_type->type_id() != kNumberTypeComplex64 && din_type->type_id() != kNumberTypeComplex128) {
+    return din;
+  }
+  AnfNodePtr new_din = fg->NewCNode({NewValueNode(prim::kPrimReal), din});
+  AbstractBasePtr abs = std::make_shared<abstract::AbstractTensor>(
+    abstract::AbstractTensor(input_type, input->abstract()->GetShapeTrack()));
+  new_din->set_abstract(abs);
+  return new_din;
+}
+
 void DFunctor::BackPropagate(const CNodePtr &cnode_morph, const CNodePtr &k_app, const AdjointPtr &node_adjoint) {
   auto bprop =
     k_graph_->NewCNode({NewValueNode(prim::kPrimTupleGetItem), k_app, NewValueNode(static_cast<int64_t>(1))});
@@ -215,6 +250,9 @@ void DFunctor::BackPropagate(const CNodePtr &cnode_morph, const CNodePtr &k_app,
       auto inp_i = input->cast<CNodePtr>();
       input = inp_i->input(1);
     }
+    auto din_with_real = HandleRealToComplex(input, din, tape_);
+    MS_EXCEPTION_IF_NULL(din_with_real);
+    din = din_with_real->cast<CNodePtr>();
     // Backprop sens wrt fvs.
     if (IsValueNode<FuncGraph>(input)) {
       auto func_graph = GetValueNode<FuncGraphPtr>(input);
@@ -295,7 +333,7 @@ AdjointPtr DFunctor::MapMorphism(const AnfNodePtr &morph) {
     auto pynative_exec = pynative::PynativeExecutor::GetInstance();
     auto grad_exec = pynative_exec->grad_executor();
     if (grad_exec->eliminate_forward()) {
-      py_dfunctor->ReplaceEquivdout(k_app, cnode_morph);
+      PynativeDFunctor::ReplaceEquivdout(k_app, cnode_morph);
       cnode_morph->clear_inputs_value();
     }
   }
@@ -304,10 +342,10 @@ AdjointPtr DFunctor::MapMorphism(const AnfNodePtr &morph) {
     param_adjoints[i]->RegisterKUser(k_app, i);
   }
   // Do forward computation
-  auto foward_app =
+  auto forward_app =
     k_graph_->NewCNode({NewValueNode(prim::kPrimTupleGetItem), k_app, NewValueNode(static_cast<int64_t>(0))});
   // K:: cnode -> forward_app
-  auto node_adjoint = std::make_shared<Adjoint>(morph, foward_app, tape_);
+  auto node_adjoint = std::make_shared<Adjoint>(morph, forward_app, tape_);
   UpdateAdjoint(node_adjoint);
   anfnode_to_adjoin_[morph] = node_adjoint;
   if (cnode_morph->stop_gradient()) {
@@ -472,8 +510,8 @@ void DFunctor::MapMorphism() {
   auto output = k_graph_->NewCNode({NewValueNode(prim::kPrimMakeTuple), forward_app, NewValueNode(tape_)});
   output_adjoint->second->RegisterKUser(output, 1);
   k_graph_->set_output(output);
-  (void)primal_graph_->transforms().insert(std::make_pair("grad", FuncGraphTransform(k_graph_)));
-  (void)k_graph_->transforms().insert(std::make_pair("primal", FuncGraphTransform(primal_graph_)));
+  (void)primal_graph_->transforms().emplace("grad", FuncGraphTransform(k_graph_));
+  (void)k_graph_->transforms().emplace("primal", FuncGraphTransform(primal_graph_));
 }
 
 FuncGraphPtr DFunctor::KUserDefined(const FuncGraphPtr &primal) {
@@ -498,8 +536,8 @@ FuncGraphPtr DFunctor::KUserDefined(const FuncGraphPtr &primal) {
     }
 
     // Cache the grad func
-    (void)primal->transforms().insert(std::make_pair("grad", FuncGraphTransform(fg)));
-    (void)fg->transforms().insert(std::make_pair("primal", FuncGraphTransform(primal)));
+    (void)primal->transforms().emplace("grad", FuncGraphTransform(fg));
+    (void)fg->transforms().emplace("primal", FuncGraphTransform(primal));
     // Reset defer_inline to enable successive inlining
     primal->set_flag(FUNC_GRAPH_FLAG_DEFER_INLINE, false);
 
@@ -815,7 +853,7 @@ CNodePtr GetPrimalUser(const CNodePtr &j_user, const std::map<FuncGraphPtr, std:
                  << ", J operation: " << j_user->DebugString() << ", Primal call: ";
     size_t count = 0;
     for (const auto &user : primal_users) {
-      MS_LOG(INFO) << "[ " << ++count << " ] : " << user->DebugString(2) << ", trace: " << trace::DumpSourceLines(user);
+      MS_LOG(INFO) << "[ " << ++count << " ] : " << user->DebugString(2) << trace::DumpSourceLines(user);
     }
     return nullptr;
   }
@@ -830,7 +868,7 @@ CNodePtr GetPrimalUser(const CNodePtr &j_user, const std::map<FuncGraphPtr, std:
   return primal_user;
 }
 
-static std::unordered_map<CNodePtr, std::vector<CNodePtr>> FindPrimalJPair(const FuncGraphManagerPtr &manager,
+static mindspore::HashMap<CNodePtr, std::vector<CNodePtr>> FindPrimalJPair(const FuncGraphManagerPtr &manager,
                                                                            const FuncGraphPtr &primal_graph) {
   std::vector<CNodePtr> j_users;
   std::map<FuncGraphPtr, std::vector<CNodePtr>> primal_map;
@@ -855,7 +893,7 @@ static std::unordered_map<CNodePtr, std::vector<CNodePtr>> FindPrimalJPair(const
     }
   }
 
-  std::unordered_map<CNodePtr, std::vector<CNodePtr>> primal_user_to_j_users;
+  mindspore::HashMap<CNodePtr, std::vector<CNodePtr>> primal_user_to_j_users;
   for (const auto &j_user : j_users) {
     MS_EXCEPTION_IF_NULL(j_user);
     auto primal = GetPrimalUser(j_user, primal_map);

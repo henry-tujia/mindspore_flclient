@@ -23,27 +23,40 @@
 
 namespace mindspore {
 namespace lite {
+STATUS OnnxDeConvParser::ParseOnnxAttr(const onnx::NodeProto &onnx_node, int64_t *group, mindspore::PadMode *pad_mode,
+                                       std::vector<int64_t> *output_paddings) {
+  MS_ASSERT(group != nullptr);
+  MS_ASSERT(pad_mode != nullptr);
+  MS_ASSERT(output_paddings != nullptr);
+  for (const auto &onnx_node_attr : onnx_node.attribute()) {
+    if (onnx_node_attr.name() == "group") {
+      *group = onnx_node_attr.i();
+    } else if (onnx_node_attr.name() == "auto_pad") {
+      *pad_mode = GetOnnxPadMode(onnx_node_attr);
+    } else if (onnx_node_attr.name() == "output_padding") {
+      MS_CHECK_GE(onnx_node_attr.ints_size(), kInputSize1, RET_ERROR);
+      output_paddings->push_back(static_cast<int32_t>(onnx_node_attr.ints(0)));
+      output_paddings->push_back(static_cast<int32_t>(onnx_node_attr.ints(1)));
+    } else if (onnx_node_attr.name() == "order" && onnx_node_attr.s() != "NHWC") {
+      MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s().c_str();
+      return RET_ERROR;
+    }
+  }
+  return RET_OK;
+}
+
 ops::PrimitiveC *OnnxDeConvParser::Parse(const onnx::GraphProto &onnx_graph, const onnx::NodeProto &onnx_node) {
+  MS_CHECK_GE(onnx_node.input_size(), kInputSize1, nullptr);
   auto prim = std::make_unique<ops::Conv2dTransposeFusion>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
   prim->set_pad({0, 0, 0, 0});
   mindspore::PadMode pad_mode = mindspore::PadMode::PAD;
   std::vector<int64_t> kernel, dilate, stride, pads, output_paddings;
   int64_t group = 1;
-  for (const auto &onnx_node_attr : onnx_node.attribute()) {
-    if (onnx_node_attr.name() == "group") {
-      group = onnx_node_attr.i();
-    } else if (onnx_node_attr.name() == "auto_pad") {
-      pad_mode = GetOnnxPadMode(onnx_node_attr);
-    } else if (onnx_node_attr.name() == "order" && onnx_node_attr.s() != "NHWC") {
-      MS_LOG(ERROR) << "Unsupported format: " << onnx_node_attr.s().c_str();
-      return nullptr;
-    }
-    if (onnx_node_attr.name() == "output_padding") {
-      output_paddings.push_back(static_cast<int32_t>(onnx_node_attr.ints(0)));
-      output_paddings.push_back(static_cast<int32_t>(onnx_node_attr.ints(1)));
-      prim->set_output_paddings(output_paddings);
-    }
+  auto status = ParseOnnxAttr(onnx_node, &group, &pad_mode, &output_paddings);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "Parse onnx attribute failed.";
+    return nullptr;
   }
   prim->AddAttr(mindspore::ops::kOriginalFormat, MakeValue<int64_t>(mindspore::Format::NCHW));
   prim->set_group(group);
@@ -68,7 +81,9 @@ ops::PrimitiveC *OnnxDeConvParser::Parse(const onnx::GraphProto &onnx_graph, con
   if (!stride.empty()) {
     prim->set_stride(stride);
   }
-  if (output_paddings.empty()) {
+  if (!output_paddings.empty()) {
+    prim->set_output_paddings(output_paddings);
+  } else {
     prim->set_output_paddings({0, 0});
   }
 

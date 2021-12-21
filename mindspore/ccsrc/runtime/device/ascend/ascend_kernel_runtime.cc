@@ -19,6 +19,7 @@
 #include <memory>
 #include <utility>
 #include <algorithm>
+#include <set>
 #include "utils/signal_util.h"
 #include "runtime/device/ascend/ascend_device_address.h"
 #include "runtime/device/ascend/distribute/ascend_collective.h"
@@ -27,11 +28,14 @@
 #include "utils/mpi/mpi_config.h"
 #include "common/trans.h"
 #include "runtime/rt.h"
+#include "acl/acl_rt.h"
+#include "runtime/device/ascend/ascend_stream_manager.h"
 #include "runtime/device/ascend/ascend_stream_assign.h"
 #include "runtime/device/ascend/ge_runtime/model_runner.h"
 #include "runtime/device/ascend/tasksink/task_generator.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/session/kernel_build_client.h"
+#include "backend/kernel_compiler/aicpu/aicpu_kernel_load.h"
 #ifndef ENABLE_SECURITY
 #include "runtime/device/ascend/profiling/profiling_manager.h"
 #include "runtime/device/ascend/profiling/profiling_utils.h"
@@ -56,9 +60,7 @@
 #endif
 #include "runtime/device/ascend/executor/hccl_dynamic_kernel.h"
 #include "utils/config_manager.h"
-#include "runtime/device/ascend/profiling/reporter/op_name_task_stream_reporter.h"
 #include "runtime/hccl_adapter/hccl_adapter.h"
-#include "runtime/device/ascend/profiling/profiling_callback_register.h"
 #ifdef ENABLE_TDTQUE
 #include "minddata/dataset/engine/tdt/tdt_handle.h"
 using mindspore::dataset::TdtHandle;
@@ -76,7 +78,6 @@ using mindspore::device::ascend::ProfilingUtils;
 #endif
 using mindspore::device::ascend::tasksink::TaskGenerator;
 using mindspore::ge::model_runner::ModelRunner;
-using HcclCollectiveGroup = mindspore::device::ascend::collective::HcclCollectiveGroup;
 using mindspore::kernel::tbe::TbeUtils;
 using std::vector;
 
@@ -99,8 +100,7 @@ std::string GetRankIdStr() {
     auto rank = HcclCollectiveGroup::instance().GetRankId();
     return std::to_string(rank);
   }
-  std::string rank_id_str;
-  rank_id_str = std::getenv("RANK_ID");
+  auto rank_id_str = common::GetEnv("RANK_ID");
   if (rank_id_str.empty()) {
     MS_LOG(EXCEPTION) << "Invalid environment variable 'RANK_ID', it should not be empty.";
   }
@@ -240,17 +240,6 @@ void AsyncDataDumpUninit() {
     }
   }
 }
-
-void AscendKernelRuntime::ReportProfilingData() {
-  auto context = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context);
-  if (ProfilingManager::GetInstance().IsProfiling() &&
-      context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
-    // Save Profiling Framework data
-    OpNameTaskStreamReporter reporter(device_id_, "nonsink", stream_id_task_id_op_name_map_);
-    reporter.ReportData();
-  }
-}
 #endif
 
 void AscendKernelRuntime::ReleaseDeviceRes() {
@@ -268,9 +257,7 @@ void AscendKernelRuntime::ReleaseDeviceRes() {
     return;
   }
   SetCurrentContext();
-#ifndef ENABLE_SECURITY
-  ReportProfilingData();
-#endif
+
   // release ge runtime
   ClearGraphModelMap();
 
@@ -287,6 +274,7 @@ void AscendKernelRuntime::ReleaseDeviceRes() {
   if (mem_manager_ != nullptr) {
     mem_manager_->FreeDeviceMemory();
   }
+  mindspore::kernel::AicpuOpKernelLoad::GetInstance().FreeDeviceMemory();
 
   auto rt_ret = rtRegTaskFailCallbackByModule(kModuleName, nullptr);
   if (rt_ret != RT_ERROR_NONE) {
@@ -294,14 +282,12 @@ void AscendKernelRuntime::ReleaseDeviceRes() {
   }
 
   (void)ResetDevice(device_id);
-#ifndef ENABLE_SECURITY
-  (void)ProfilingManager::GetInstance().StopProfiling();
-#endif
   current_graph_ = nullptr;
   if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode &&
       !context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK)) {
     HcclCollectiveGroup::instance().FinalizeCollective();
   }
+  initialized_ = false;
   MS_LOG(INFO) << "Ascend finalize end";
 }
 
@@ -310,14 +296,6 @@ void AscendKernelRuntime::PreInit() {
   const auto error_manager_ret = ErrorManager::GetInstance().Init();
   if (error_manager_ret != 0) {
     MS_LOG(WARNING) << "Init ErrorManager failed.";
-  }
-  auto ret = ProfilingManager::GetInstance().StartupProfiling(device_id_);
-  if (!ret) {
-    const string &error_message = ErrorManager::GetInstance().GetErrorMessage();
-    if (!error_message.empty() && error_message.find(kUnknowErrorString) == string::npos) {
-      MS_LOG(ERROR) << "Ascend error occurred, error message:\n" << error_message;
-    }
-    MS_EXCEPTION(DeviceProcessError) << "StartupProfiling failed.";
   }
 }
 #endif
@@ -363,7 +341,8 @@ bool AscendKernelRuntime::Init() {
   } catch (const std::exception &e) {
     const string &error_message = ErrorManager::GetInstance().GetErrorMessage();
     if (!error_message.empty() && error_message.find(kUnknowErrorString) == string::npos) {
-      MS_LOG(ERROR) << "Ascend error occurred, error message:\n" << error_message;
+      MS_LOG(EXCEPTION) << "Ascend error occurred, error message: " << error_message
+                        << "\nFirst error scene API: " << e.what();
     }
     throw;
   }
@@ -372,10 +351,10 @@ bool AscendKernelRuntime::Init() {
   return true;
 }
 
-bool AscendKernelRuntime::LoadData(mindspore::session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+bool AscendKernelRuntime::LoadData(const session::KernelGraph & /* graph */) {
 #ifdef ENABLE_DEBUGGER
   MS_LOG(INFO) << "Start load step";
+  MS_EXCEPTION_IF_NULL(debugger_);
   for (const auto &graph_ptr : debugger_->GetGraphPtrList()) {
     debugger_->SetGraphPtr(graph_ptr);
     // load output
@@ -404,15 +383,27 @@ bool AscendKernelRuntime::KernelMemNotReuse(const AnfNodePtr &node) {
 
 DeviceAddressPtr AscendKernelRuntime::CreateDeviceAddress(void *device_ptr, size_t device_size, const string &format,
                                                           TypeId type_id) const {
-  return std::make_shared<AscendDeviceAddress>(device_ptr, device_size, format, type_id);
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  auto device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
+  auto ascend_device_address_ptr =
+    std::make_shared<AscendDeviceAddress>(device_ptr, device_size, format, type_id, kAscendDevice, device_id);
+  ascend_device_address_ptr->set_is_ptr_persisted(true);
+  return ascend_device_address_ptr;
 }
 
 DeviceAddressPtr AscendKernelRuntime::CreateDeviceAddress(void *device_ptr, size_t device_size, const string &format,
                                                           TypeId type_id, const KernelWithIndex &node_index) const {
-  return std::make_shared<AscendDeviceAddress>(device_ptr, device_size, format, type_id, node_index);
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  auto device_id = ms_context->get_param<uint32_t>(MS_CTX_DEVICE_ID);
+  auto ascend_device_address_ptr = std::make_shared<AscendDeviceAddress>(device_ptr, device_size, format, type_id,
+                                                                         node_index, kAscendDevice, device_id);
+  ascend_device_address_ptr->set_is_ptr_persisted(true);
+  return ascend_device_address_ptr;
 }
 
-bool AscendKernelRuntime::Load(session::KernelGraph *graph, bool is_task_sink) {
+bool AscendKernelRuntime::Load(const session::KernelGraph &graph, bool is_task_sink) {
   if (!is_task_sink) {
     MS_LOG(INFO) << "Graph mode with not task sink";
     GenKernelEvents(graph);
@@ -425,13 +416,15 @@ bool AscendKernelRuntime::Load(session::KernelGraph *graph, bool is_task_sink) {
   if (!LoadTask(graph)) {
     return false;
   }
+  if (!mindspore::kernel::AicpuOpKernelLoad::GetInstance().LaunchAicpuKernelSo()) {
+    return false;
+  }
   return true;
 }
 
-bool AscendKernelRuntime::GenDynamicKernel(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+bool AscendKernelRuntime::GenDynamicKernel(const session::KernelGraph &graph) {
   MS_LOG(INFO) << "GenDynamicKernel start";
-  auto cnode_list = graph->execution_order();
+  auto cnode_list = graph.execution_order();
   std::vector<DynamicKernelPtr> dynamic_kernels;
   for (const auto &cnode : cnode_list) {
     MS_EXCEPTION_IF_NULL(cnode);
@@ -445,15 +438,14 @@ bool AscendKernelRuntime::GenDynamicKernel(const session::KernelGraph *graph) {
     dynamic_kernel->Initialize();
     dynamic_kernels.emplace_back(dynamic_kernel);
   }
-  graph_dynamic_kernel_map_[graph->graph_id()] = std::move(dynamic_kernels);
+  graph_dynamic_kernel_map_[graph.graph_id()] = std::move(dynamic_kernels);
   MS_LOG(INFO) << "GenDynamicKernel end";
   return true;
 }
 
-bool AscendKernelRuntime::GenTask(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+bool AscendKernelRuntime::GenTask(const session::KernelGraph &graph) {
   SetCurrentContext();
-  if (graph->is_dynamic_shape()) {
+  if (graph.is_dynamic_shape()) {
     if (ConfigManager::GetInstance().dataset_mode() == DS_SINK_MODE && (ConfigManager::GetInstance().iter_num() > 1)) {
       MS_LOG(EXCEPTION) << "Dynamic shape is not supported with dataset_sink_mode.";
     }
@@ -465,48 +457,47 @@ bool AscendKernelRuntime::GenTask(const session::KernelGraph *graph) {
     MS_LOG(INFO) << "Dynamic Shape Graph Generate Dynamic kernel";
     return GenDynamicKernel(graph);
   }
-  MS_LOG(INFO) << "GenTask start. GraphId:" << graph->graph_id();
+  MS_LOG(INFO) << "GenTask start. GraphId:" << graph.graph_id();
 #ifndef ENABLE_SECURITY
-  DumpJsonParser::GetInstance().UpdateNeedDumpKernels(NOT_NULL(graph));
+  DumpJsonParser::GetInstance().UpdateNeedDumpKernels(graph);
 #endif
 #ifdef MEM_REUSE_DEBUG
   if (!EnvConfigParser::GetInstance().GetSysMemreuse()) {
     // Get normal graph ir for memreuse
-    mindspore::memreuse::MemReuseChecker::GetInstance().CheckNormalIR(graph);
+    mindspore::memreuse::MemReuseChecker::GetInstance().CheckNormalIR(&graph);
   }
 #endif
   vector<std::shared_ptr<TaskInfo>> task_info_list;
-  auto anf_node_list = graph->execution_order();
+  auto anf_node_list = graph.execution_order();
   auto task_generator = TaskGenerator();
-  if (!task_generator.GenTasks(anf_node_list, &task_info_list, graph->graph_id())) {
+  if (!task_generator.GenTasks(anf_node_list, &task_info_list, graph.graph_id())) {
     return false;
   }
   // Store the task_info_list
-  auto insert_ret = task_map_.insert(std::make_pair(graph->graph_id(), task_info_list));
+  auto insert_ret = task_map_.insert(std::make_pair(graph.graph_id(), task_info_list));
   if (!insert_ret.second) {
     MS_LOG(EXCEPTION) << "Duplicate GraphId! Please check in ascend_session.";
   }
   // Graph may have no compute node, such TensorAddGrad.
   if (task_info_list.empty()) {
-    MS_LOG(WARNING) << "Graph " << graph->graph_id() << " have no compute node";
+    MS_LOG(WARNING) << "Graph " << graph.graph_id() << " have no compute node";
     return true;
   }
   AscendStreamAssign &assign_instance = AscendStreamAssign::GetInstance();
-  AscendResourceMng &resource_manager = AscendResourceMng::GetInstance();
+  AscendStreamMng &resource_manager = AscendStreamMng::GetInstance();
   // the streams' flag not HEAD_STREAM
   std::vector<uint32_t> wait_active_stream_list;
   assign_instance.GetWaitStreams(&wait_active_stream_list);
   std::vector<uint32_t> force_copy_stream_list;
   assign_instance.GetHcomStreams(&force_copy_stream_list);
-  MS_LOG(INFO) << "Call DavinciModel total stream num:" << resource_manager.get_cur_stream_num()
-               << ", total event num:" << resource_manager.get_cur_event_num()
-               << ", total label num:" << graph->label_num()
+  MS_LOG(INFO) << "Call DavinciModel total stream num:" << resource_manager.cur_stream_num()
+               << ", total event num:" << resource_manager.cur_event_num() << ", total label num:" << graph.label_num()
                << ", wait_active_stream_list size:" << wait_active_stream_list.size()
                << ", force_copy_stream_list size:" << force_copy_stream_list.size();
   auto model = std::make_shared<ge::model_runner::DavinciModel>(
     task_info_list, wait_active_stream_list, force_copy_stream_list, 0, 0, 0, 0, 0, 0,
-    resource_manager.get_cur_stream_num(), graph->label_num(), resource_manager.get_cur_event_num(), 0);
-  auto ret = graph_model_map_.insert(std::make_pair(graph->graph_id(), model));
+    resource_manager.cur_stream_num(), graph.label_num(), resource_manager.cur_event_num(), 0);
+  auto ret = graph_model_map_.insert(std::make_pair(graph.graph_id(), model));
   if (!ret.second) {
     MS_LOG(EXCEPTION) << "Duplicate GraphId! Please check in ascend_session.";
   }
@@ -514,23 +505,22 @@ bool AscendKernelRuntime::GenTask(const session::KernelGraph *graph) {
   return true;
 }
 
-bool AscendKernelRuntime::LoadTask(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+bool AscendKernelRuntime::LoadTask(const session::KernelGraph &graph) {
   SetCurrentContext();
-  if (graph->is_dynamic_shape()) {
+  if (graph.is_dynamic_shape()) {
     MS_LOG(INFO) << "Dynamic Shape Graph Skip Load Task Step";
     return true;
   }
 
-  MS_LOG(INFO) << "LoadTask start. GraphId:" << graph->graph_id();
+  MS_LOG(INFO) << "LoadTask start. GraphId:" << graph.graph_id();
   if (GraphWithEmptyTaskList(graph)) {
     MS_LOG(WARNING) << "LoadTask end, task list is empty";
     return true;
   }
 
-  auto model_iter = graph_model_map_.find(graph->graph_id());
+  auto model_iter = graph_model_map_.find(graph.graph_id());
   if (model_iter == graph_model_map_.end()) {
-    MS_LOG(ERROR) << "GraphId:" << graph->graph_id() << " Invalid! Graph LoadTask without GenTask.";
+    MS_LOG(ERROR) << "GraphId:" << graph.graph_id() << " Invalid! Graph LoadTask without GenTask.";
     return false;
   }
 
@@ -540,7 +530,7 @@ bool AscendKernelRuntime::LoadTask(const session::KernelGraph *graph) {
 #ifndef ENABLE_SECURITY
   std::function<void *()> model_handle =
     std::bind(&ModelRunner::GetModelHandle, &ModelRunner::Instance(), model_iter->first);
-  DistributeDebugTask(NOT_NULL(graph), NOT_NULL(model_handle));
+  DistributeDebugTask(graph, NOT_NULL(model_handle));
 #endif
 
   try {
@@ -553,12 +543,20 @@ bool AscendKernelRuntime::LoadTask(const session::KernelGraph *graph) {
   }
 
 #ifndef ENABLE_SECURITY
-  if (ProfilingManager::GetInstance().IsProfiling()) {
+  if (ProfilingManager::GetInstance().IsProfilingInitialized()) {
     auto task_ids = ModelRunner::Instance().GetTaskIdList(model_iter->first);
     auto stream_ids = ModelRunner::Instance().GetStreamIdList(model_iter->first);
-    ProfilingUtils::ReportProfilingData(task_ids, stream_ids, *graph);
+    // Report data directly if profiling is start
+    if (ProfilingUtils::ValidComputeGraph(graph)) {
+      if (ProfilingManager::GetInstance().IsProfilingStart()) {
+        ProfilingUtils::ReportProfilingData(task_ids, stream_ids, graph.graph_id());
+      } else {
+        // Cache data and save when profiling is start
+        ProfilingUtils::SetReportProfilingData(task_ids, stream_ids, graph.graph_id());
+      }
+    }
   }
-  LaunchDataDump(graph->graph_id());
+  LaunchDataDump(graph.graph_id());
 #endif
 
   ModelRunner::Instance().LoadModelComplete(model_iter->first);
@@ -566,18 +564,18 @@ bool AscendKernelRuntime::LoadTask(const session::KernelGraph *graph) {
 }
 
 #ifndef ENABLE_SECURITY
-void AscendKernelRuntime::DistributeDebugTask(NotNull<const session::KernelGraph *> graph,
+void AscendKernelRuntime::DistributeDebugTask(const session::KernelGraph &graph,
                                               const NotNull<std::function<void *()>> &model_handle) {
   if (!DumpJsonParser::GetInstance().async_dump_enabled()) {
     return;
   }
   MS_LOG(INFO) << "Start Distribute Debug Task";
-  auto data_dumper = std::make_shared<DataDumper>(graph.get(), model_handle);
+  auto data_dumper = std::make_shared<DataDumper>(&graph, model_handle);
   MS_EXCEPTION_IF_NULL(data_dumper);
-  auto ret = graph_data_dumper_.try_emplace(graph->graph_id(), data_dumper);
+  auto ret = graph_data_dumper_.try_emplace(graph.graph_id(), data_dumper);
   data_dumper->OpDebugRegister();
   if (!ret.second) {
-    MS_LOG(WARNING) << "[DataDump] Insert graphId:" << graph->graph_id() << " data dumper failed";
+    MS_LOG(WARNING) << "[DataDump] Insert graphId:" << graph.graph_id() << " data dumper failed";
   }
 }
 
@@ -599,7 +597,11 @@ void AscendKernelRuntime::LaunchDataDump(GraphId graph_id) {
 #endif
 
 void AscendKernelRuntime::TaskFailCallback(rtExceptionInfo *task_fail_info) {
-  MS_EXCEPTION_IF_NULL(task_fail_info);
+  if (task_fail_info == nullptr || current_graph_ == nullptr) {
+    MS_LOG(ERROR) << "Execute TaskFailCallback failed. task_fail_info or current_graph_ is nullptr";
+    return;
+  }
+
   static std::mutex exception_mutex;
   constexpr uint32_t kOverflowThreshold = 5;
   std::lock_guard<std::mutex> lock(exception_mutex);
@@ -616,8 +618,7 @@ void AscendKernelRuntime::TaskFailCallback(rtExceptionInfo *task_fail_info) {
                         << "Task overflow infos task_id: " << task_fail_info->taskid
                         << ", stream_id: " << task_fail_info->streamid << ", tid: " << task_fail_info->tid
                         << ", device_id: " << task_fail_info->deviceid << ", retcode: " << task_fail_info->retcode
-                        << " (" << GetErrorMsg(task_fail_info->retcode) << ")"
-                        << ", trace: " << trace::DumpSourceLines(node);
+                        << " (" << GetErrorMsg(task_fail_info->retcode) << ")" << trace::DumpSourceLines(node);
         overflow_tasks_[key] = 1;
       } else {
         overflow_tasks_[key]++;
@@ -634,12 +635,15 @@ CNodePtr AscendKernelRuntime::GetErrorNodeName(uint32_t streamid, uint32_t taski
   }
   auto runtime_info_map = ModelRunner::Instance().GetRuntimeInfoMap(current_graph_->graph_id());
   for (const auto &iter : runtime_info_map) {
+    MS_EXCEPTION_IF_NULL(iter.second);
     auto task_id = std::get<kTupleTaskId>(*iter.second);
     auto stream_id = std::get<kTupleStreamId>(*iter.second);
     if (task_id == taskid && stream_id == streamid) {
       auto &execute_node = current_graph_->execution_order();
-      auto node = std::find_if(execute_node.begin(), execute_node.end(),
-                               [&iter](const auto &node) { return node->UniqueName() == iter.first; });
+      auto node = std::find_if(execute_node.begin(), execute_node.end(), [&iter](const auto &node) {
+        MS_EXCEPTION_IF_NULL(node);
+        return node->UniqueName() == iter.first;
+      });
       if (node != execute_node.end()) {
         return *node;
       }
@@ -654,7 +658,7 @@ std::string AscendKernelRuntime::GetDumpPath() {
   MS_EXCEPTION_IF_NULL(inst);
   if (inst->parallel_mode() != parallel::STAND_ALONE) {
     if (!CommManager::GetInstance().GetRankID(kHcclWorldGroup, &rank_id)) {
-      MS_LOG(WARNING) << "Get rank id failed.";
+      MS_LOG(WARNING) << "Get rank id failed, now using the default value 0.";
     }
   }
 
@@ -662,7 +666,8 @@ std::string AscendKernelRuntime::GetDumpPath() {
   std::string path;
   const auto kSuffix = "/node_dump";
   if (ms_om_path.empty()) {
-    MS_LOG(WARNING) << "MS_OM_PATH is null, so dump to process local path, as ./rank_id/node_dump/...";
+    MS_LOG(WARNING) << "The environment variable 'MS_OM_PATH' is not set, the files of node dump will save to the "
+                    << "process local path, as ./rank_id/node_dump/...";
     path = "./rank_" + std::to_string(rank_id) + kSuffix;
   } else {
     path = ms_om_path + "/rank_" + std::to_string(rank_id) + kSuffix;
@@ -671,8 +676,7 @@ std::string AscendKernelRuntime::GetDumpPath() {
 }
 
 #ifndef ENABLE_SECURITY
-void AscendKernelRuntime::DumpTaskExceptionInfo(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
+void AscendKernelRuntime::DumpTaskExceptionInfo(const session::KernelGraph & /* graph */) {
   const std::string path = GetDumpPath();
   if (access(path.c_str(), F_OK) == 0) {
     if (!DeleteDumpDir(path)) {
@@ -690,17 +694,16 @@ void AscendKernelRuntime::DumpTaskExceptionInfo(const session::KernelGraph *grap
     }
     auto full_scope_name = node->fullname_with_scope();
     MS_LOG(ERROR) << "Dump node (" << full_scope_name << ") task error input/output data to: " << path
-                  << " trace: " << trace::DumpSourceLines(node);
+                  << trace::DumpSourceLines(node);
     E2eDump::DumpInputImpl(node, false, path, &full_scope_name, nullptr);
     E2eDump::DumpOutputImpl(node, false, path, &full_scope_name, nullptr);
   }
 }
 #endif
 
-bool AscendKernelRuntime::Run(session::KernelGraph *const graph, bool is_task_sink) {
+bool AscendKernelRuntime::Run(const session::KernelGraph &graph, bool is_task_sink) {
   const uint64_t kUSecondInSecond = 1000000;
   SignalGuard sg(IntHandler);
-  MS_EXCEPTION_IF_NULL(graph);
   bool ret = false;
 
   if (is_task_sink) {
@@ -731,73 +734,89 @@ bool AscendKernelRuntime::Run(session::KernelGraph *const graph, bool is_task_si
 
 void AscendKernelRuntime::SetKernelModStream(const std::vector<CNodePtr> &kernels,
                                              std::vector<size_t> *last_stream_nodes) {
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-  auto mode = context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE);
   std::map<void *, size_t> last_kernel;
   for (size_t i = 0; i < kernels.size(); ++i) {
     auto &node = kernels[i];
     auto kernel_mod = AnfAlgo::GetKernelMod(node);
     auto ascend_kernel_mod = dynamic_cast<kernel::AscendKernelMod *>(kernel_mod);
     MS_EXCEPTION_IF_NULL(ascend_kernel_mod);
-    if (AnfAlgo::IsCommunicationOp(node)) {
-      auto group = AnfAlgo::GetNodeAttr<std::string>(node, kAttrGroup);
-      auto iter = group_stream_id_map_.find(group);
-      if (iter == group_stream_id_map_.end()) {
-        void *stream = nullptr;
-        auto ret = rtStreamCreate(&stream, 0);
-        if (ret != RT_ERROR_NONE) {
-          MS_LOG(EXCEPTION) << "create communication stream failed, ret:" << ret;
-        }
-        auto id = stream_id_map_.size();
-        group_stream_id_map_[group] = id;
-        stream_id_map_[id] = stream;
-        AnfAlgo::SetStreamId(id, node.get());
-        ascend_kernel_mod->SetStream(stream);
-        last_kernel[stream] = i;
-      } else {
-        auto id = iter->second;
-        AnfAlgo::SetStreamId(id, node.get());
-        ascend_kernel_mod->SetStream(stream_id_map_[id]);
-        last_kernel[stream_id_map_[id]] = i;
+    auto stream_id = AnfAlgo::GetStreamId(kernels[i]);
+    auto iter = stream_id_map_.find(stream_id);
+    if (iter == stream_id_map_.end()) {
+      void *stream = nullptr;
+      auto ret = rtStreamCreate(&stream, 0);
+      if (ret != RT_ERROR_NONE) {
+        MS_LOG(EXCEPTION) << "create communication stream failed, ret:" << ret;
       }
-    } else if (AnfAlgo::IsIndependentNode(node) && mode != kPynativeMode) {
-      AnfAlgo::SetStreamId(1, node.get());
-      ascend_kernel_mod->SetStream(independent_stream_);
-      last_kernel[independent_stream_] = i;
+      stream_id_map_[stream_id] = stream;
+      ascend_kernel_mod->SetStream(stream);
     } else {
-      AnfAlgo::SetStreamId(0, node.get());
-      ascend_kernel_mod->SetStream(stream_);
+      ascend_kernel_mod->SetStream(iter->second);
     }
-  }
-  for (size_t i = 1; i < kernels.size(); ++i) {
-    if (AnfAlgo::GetCNodeName(kernels[i - 1]) == kAtomicAddrCleanOpName) {
-      auto stream_id = AnfAlgo::GetStreamId(kernels[i]);
-      AnfAlgo::SetStreamId(stream_id, kernels[i - 1].get());
-      auto kernel_mod = AnfAlgo::GetKernelMod(kernels[i - 1]);
-      auto ascend_kernel_mod = dynamic_cast<kernel::AscendKernelMod *>(kernel_mod);
-      MS_EXCEPTION_IF_NULL(ascend_kernel_mod);
-      ascend_kernel_mod->SetStream(stream_id_map_[stream_id]);
+    if (stream_id > 0) {
+      last_kernel[stream_id_map_[stream_id]] = i;
     }
   }
   (void)std::transform(last_kernel.begin(), last_kernel.end(), std::back_inserter(*last_stream_nodes),
                        [](const std::pair<void *, size_t> &item) { return item.second; });
 }
 
-void AscendKernelRuntime::GenKernelEvents(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
-  auto &kernels = graph->execution_order();
-  if (kernels.empty() || graph_kernel_events_map_.find(graph->graph_id()) != graph_kernel_events_map_.end()) {
+void AscendKernelRuntime::GetShadowBackendNodeMap(const session::KernelGraph &graph,
+                                                  std::map<AnfNodePtr, AnfNodePtr> *shadow_backend_node_map) {
+  auto input_nodes = graph.input_nodes();
+  for (auto &node : input_nodes) {
+    auto front_node = AnfAlgo::FetchFrontNodeByBackendNode(node, graph);
+    for (auto &knode : input_nodes) {
+      if (knode == node) break;
+      if (!AnfAlgo::IsTupleOutput(front_node) && front_node != nullptr &&
+          front_node == AnfAlgo::FetchFrontNodeByBackendNode(knode, graph)) {
+        shadow_backend_node_map->emplace(node, knode);
+        break;
+      }
+    }
+  }
+}
+
+DeviceAddressPtr AscendKernelRuntime::GetInternalDeviceAddress(const session::KernelGraph &graph,
+                                                               const AnfNodePtr &node) {
+  auto front_node = graph.GetFrontNodeByInternalParameter(node);
+  if (front_node.first == nullptr) {
+    return nullptr;
+  }
+  auto pre_graphs = graph.get_pre_graphs();
+  for (auto pre_graph_item : pre_graphs) {
+    auto pre_graph = pre_graph_item.second.lock();
+    MS_EXCEPTION_IF_NULL(pre_graph);
+    auto graph_output = pre_graph->GetGraphOutputByFrontNode(front_node);
+    if (graph_output.first == nullptr) {
+      continue;
+    }
+    if (!AnfAlgo::OutputAddrExist(graph_output.first, 0)) {
+      return nullptr;
+    }
+    auto output_device_address = AnfAlgo::GetMutableOutputAddr(graph_output.first, 0);
+    MS_EXCEPTION_IF_NULL(output_device_address);
+    if (output_device_address->GetPtr() != nullptr &&
+        output_device_address->DeviceType() == DeviceAddressType::kAscend) {
+      return output_device_address;
+    }
+  }
+  return nullptr;
+}
+
+void AscendKernelRuntime::GenKernelEvents(const session::KernelGraph &graph) {
+  auto &kernels = graph.execution_order();
+  if (kernels.empty() || graph_kernel_events_map_.find(graph.graph_id()) != graph_kernel_events_map_.end()) {
     return;
   }
   std::vector<size_t> last_stream_nodes;
   SetKernelModStream(kernels, &last_stream_nodes);
-  auto kernel_events =
-    std::pair<std::vector<std::vector<std::function<void()>>>, std::vector<std::vector<std::function<void()>>>>();
+  auto kernel_events = std::pair<std::map<AnfNodePtr, std::vector<std::function<void()>>>,
+                                 std::map<AnfNodePtr, std::vector<std::function<void()>>>>();
   auto &kernel_pre_run_events = kernel_events.first;
   auto &kernel_post_run_events = kernel_events.second;
-  kernel_pre_run_events.resize(kernels.size());
-  kernel_post_run_events.resize(kernels.size());
+  auto stream_num = stream_id_map_.size();
+  std::vector<std::vector<bool>> kernel_hit(kernels.size(), std::vector<bool>(stream_num, false));
   for (size_t i = 0; i < kernels.size(); ++i) {
     auto &kernel = kernels[i];
     auto curr_stream_id = AnfAlgo::GetStreamId(kernel);
@@ -805,29 +824,29 @@ void AscendKernelRuntime::GenKernelEvents(const session::KernelGraph *graph) {
       MS_LOG(EXCEPTION) << "Stream " << curr_stream_id << "has not been created";
     }
     auto wait_stream = stream_id_map_[curr_stream_id];
-    auto stream_num = stream_id_map_.size();
     std::vector<bool> stream_hit(stream_num, false);
     std::vector<AnfNodePtr> used_kernels;
     std::set<AnfNodePtr> visited_kernels;
     AnfAlgo::GetAllVisitedCNode(kernel, &used_kernels, &visited_kernels);
     bool found_depend = false;
     for (int k = SizeToInt(i) - 1; k >= 0; --k) {
-      auto pre_cnode = kernels[k];
+      auto pre_cnode = kernels[IntToSize(k)];
       auto pre_cnode_stream_id = AnfAlgo::GetStreamId(pre_cnode);
       if (pre_cnode_stream_id == curr_stream_id) {
         found_depend = true;
         continue;
       }
       for (auto &visited : used_kernels) {
-        if (visited == pre_cnode && !stream_hit[pre_cnode_stream_id]) {
+        if (visited == pre_cnode && !stream_hit[pre_cnode_stream_id] && !kernel_hit[IntToSize(k)][curr_stream_id]) {
           stream_hit[pre_cnode_stream_id] = true;
+          kernel_hit[IntToSize(k)][curr_stream_id] = true;
           found_depend = true;
           auto record_stream = stream_id_map_[pre_cnode_stream_id];
           auto event = CreateDeviceEvent();
           event->set_wait_stream(wait_stream);
           event->set_record_stream(record_stream);
-          kernel_post_run_events[k].emplace_back([event]() { event->RecordEvent(); });
-          kernel_pre_run_events[i].emplace_back([event]() { event->WaitEvent(); });
+          kernel_post_run_events[pre_cnode].emplace_back([event]() { event->RecordEvent(); });
+          kernel_pre_run_events[kernel].emplace_back([event]() { event->WaitEvent(); });
         }
       }
     }
@@ -835,17 +854,17 @@ void AscendKernelRuntime::GenKernelEvents(const session::KernelGraph *graph) {
       auto pre_event = CreateDeviceEvent();
       pre_event->set_wait_stream(wait_stream);
       pre_event->set_record_stream(stream_);
-      kernel_pre_run_events[i].emplace_back([pre_event]() { pre_event->RecordEvent(); });
-      kernel_pre_run_events[i].emplace_back([pre_event]() { pre_event->WaitEvent(); });
+      kernel_pre_run_events[kernel].emplace_back([pre_event]() { pre_event->RecordEvent(); });
+      kernel_pre_run_events[kernel].emplace_back([pre_event]() { pre_event->WaitEvent(); });
     }
   }
   ProcessBoundaryEvent(kernels, &kernel_post_run_events, last_stream_nodes);
-  graph_kernel_events_map_[graph->graph_id()] = std::move(kernel_events);
+  graph_kernel_events_map_[graph.graph_id()] = std::move(kernel_events);
 }
 
-void AscendKernelRuntime::ProcessBoundaryEvent(const std::vector<CNodePtr> &kernels,
-                                               std::vector<std::vector<std::function<void()>>> *kernel_run_events,
-                                               const std::vector<size_t> &last_stream_nodes) {
+void AscendKernelRuntime::ProcessBoundaryEvent(
+  const std::vector<CNodePtr> &kernels, std::map<AnfNodePtr, std::vector<std::function<void()>>> *kernel_run_events,
+  const std::vector<size_t> &last_stream_nodes) {
   for (auto &i : last_stream_nodes) {
     if (i >= kernels.size()) {
       MS_LOG(ERROR) << "Node index exceed kernel size.";
@@ -876,18 +895,17 @@ void AscendKernelRuntime::ProcessBoundaryEvent(const std::vector<CNodePtr> &kern
       auto record_stream = stream_id_map_[id];
       post_event->set_wait_stream(stream_);
       post_event->set_record_stream(record_stream);
-      (*kernel_run_events)[i].emplace_back([post_event]() { post_event->RecordEvent(); });
-      (*kernel_run_events)[i].emplace_back([post_event]() { post_event->WaitEvent(); });
+      (*kernel_run_events)[kernel].emplace_back([post_event]() { post_event->RecordEvent(); });
+      (*kernel_run_events)[kernel].emplace_back([post_event]() { post_event->WaitEvent(); });
     }
   }
 }
 
-bool AscendKernelRuntime::RunDynamicKernelAsync(const session::KernelGraph *graph) {
-  MS_EXCEPTION_IF_NULL(graph);
-  MS_LOG(INFO) << "RunExecutorAsync start. GraphId:" << graph->graph_id();
-  auto iter = graph_dynamic_kernel_map_.find(graph->graph_id());
+bool AscendKernelRuntime::RunDynamicKernelAsync(const session::KernelGraph &graph) {
+  MS_LOG(INFO) << "RunExecutorAsync start. GraphId:" << graph.graph_id();
+  auto iter = graph_dynamic_kernel_map_.find(graph.graph_id());
   if (iter == graph_dynamic_kernel_map_.end()) {
-    MS_LOG(ERROR) << "GraphId:" << graph->graph_id() << " Not Found! Please generator executor first";
+    MS_LOG(ERROR) << "GraphId:" << graph.graph_id() << " Not Found! Please generator executor first";
     return false;
   }
 
@@ -919,16 +937,15 @@ bool AscendKernelRuntime::RunDynamicKernelAsync(const session::KernelGraph *grap
   return true;
 }
 
-bool AscendKernelRuntime::RunTask(const session::KernelGraph *graph) {
-  current_graph_ = graph;
+bool AscendKernelRuntime::RunTask(const session::KernelGraph &graph) {
+  current_graph_ = &graph;
   SetCurrentContext();
-  MS_EXCEPTION_IF_NULL(graph);
-  if (graph->is_dynamic_shape()) {
+  if (graph.is_dynamic_shape()) {
     MS_LOG(INFO) << "Dynamic Shape Graph Run Task Async";
     return RunDynamicKernelAsync(graph);
   }
 
-  MS_LOG(INFO) << "RunTask start. GraphId:" << graph->graph_id();
+  MS_LOG(INFO) << "RunTask start. GraphId:" << graph.graph_id();
 
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
@@ -937,13 +954,13 @@ bool AscendKernelRuntime::RunTask(const session::KernelGraph *graph) {
     return true;
   }
 
-  if (!CheckGraphIdValid(graph->graph_id())) {
-    MS_LOG(ERROR) << "GraphId:" << graph->graph_id() << " Invalid! Graph RunTask without GenTask.";
+  if (!CheckGraphIdValid(graph.graph_id())) {
+    MS_LOG(ERROR) << "GraphId:" << graph.graph_id() << " Invalid! Graph RunTask without GenTask.";
     return false;
   }
 
   try {
-    ModelRunner::Instance().RunModel(graph->graph_id());
+    ModelRunner::Instance().RunModel(graph.graph_id());
   } catch (const std::exception &) {
 #ifndef ENABLE_SECURITY
     DumpTaskExceptionInfo(graph);
@@ -1047,10 +1064,10 @@ bool AscendKernelRuntime::InitDevice() {
   if (ret != RT_ERROR_NONE) {
     MS_LOG(EXCEPTION) << "create communication stream failed, ret:" << ret;
   }
-  stream_id_map_[0] = stream_;
-  stream_id_map_[1] = independent_stream_;
-  stream_id_map_[2] = communication_stream_;
-  group_stream_id_map_[kHcclWorldGroup] = 2;
+
+  stream_id_map_[kDefaultStreamIndex] = stream_;
+  stream_id_map_[kIndependentStreamIndex] = independent_stream_;
+  stream_id_map_[kWorldGroupStreamIndex] = communication_stream_;
   return true;
 }
 
@@ -1084,11 +1101,9 @@ bool AscendKernelRuntime::HcclInit() {
   auto mode = context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE);
   if (!is_task_sink && mode == kGraphMode) {
     (void)hccl::HcclAdapter::GetInstance().InitHccl();
-    std::vector<unsigned int> ranks;
     auto rank_size = HcclCollectiveGroup::instance().GetRankSize();
-    for (size_t i = 0; i < IntToSize(rank_size); ++i) {
-      ranks.push_back(i);
-    }
+    std::vector<unsigned int> ranks(rank_size);
+    std::iota(std::begin(ranks), std::end(ranks), 0);
     HcclCollectiveGroup::instance().CreateCommGroup(kHcclWorldGroup, ranks);
     return true;
   }
@@ -1097,18 +1112,22 @@ bool AscendKernelRuntime::HcclInit() {
   if (config_path_str == nullptr) {
     config_path_str = std::getenv("RANK_TABLE_FILE");
     if (config_path_str == nullptr) {
-      MS_LOG(ERROR) << "Get hccl json config failed, please set env MINDSPORE_HCCL_CONFIG_PATH or RANK_TABLE_FILE";
+      MS_LOG(ERROR) << "The environment variable 'MINDSPORE_HCCL_CONFIG_PATH' or 'RANK_TABLE_FILE' is not set, so get"
+                    << " hccl json config failed, please set env 'MINDSPORE_HCCL_CONFIG_PATH' or 'RANK_TABLE_FILE'";
       return false;
     }
   }
   if (strlen(config_path_str) >= kPathMax) {
-    MS_LOG(ERROR) << "File path oversize";
+    MS_LOG(ERROR) << "Invalid environment variable 'MINDSPORE_HCCL_CONFIG_PATH' or 'RANK_TABLE_FILE', the path length"
+                  << " should be smaller than " << kPathMax << ", but got " << config_path_str;
     return false;
   }
   std::string rank_id_str = GetRankIdStr();
   auto full_path = realpath(config_path_str, nullptr);
   if (full_path == nullptr) {
-    MS_LOG(ERROR) << "File path " << config_path_str << " does not exist";
+    MS_LOG(ERROR) << "Invalid environment variable 'MINDSPORE_HCCL_CONFIG_PATH' or 'RANK_TABLE_FILE', the path is: "
+                  << config_path_str << ". Please check (1) whether the path exists, "
+                  << "(2) whether the path has the access permission, (3) whether the path is too long. ";
     return false;
   }
   MS_LOG(INFO) << "MINDSPORE_HCCL_CONFIG_PATH : " << full_path << ", RANK_ID: " << rank_id_str;
@@ -1139,9 +1158,8 @@ bool AscendKernelRuntime::DestroyHccl() {
   return true;
 }
 
-bool AscendKernelRuntime::GraphWithEmptyTaskList(const session::KernelGraph *graph) const {
-  MS_EXCEPTION_IF_NULL(graph);
-  auto iter = task_map_.find(graph->graph_id());
+bool AscendKernelRuntime::GraphWithEmptyTaskList(const session::KernelGraph &graph) const {
+  auto iter = task_map_.find(graph.graph_id());
   if (iter == task_map_.end()) {
     MS_LOG(EXCEPTION) << "Unknown graph ptr";
   }
@@ -1192,7 +1210,13 @@ std::shared_ptr<DeviceEvent> AscendKernelRuntime::CreateDeviceTimeEvent() {
 uint64_t AscendKernelRuntime::GetAvailableMemMaxSize() const {
   auto ascend_mem_manager = std::dynamic_pointer_cast<AscendMemoryManager>(mem_manager_);
   MS_EXCEPTION_IF_NULL(ascend_mem_manager);
-  return ascend_mem_manager->GetDeviceMemSize();
+  return ascend_mem_manager->GetMsMaxMemSize();
+}
+
+uint64_t AscendKernelRuntime::GetMsUsedHbmSize() const {
+  auto ascend_mem_manager = std::dynamic_pointer_cast<AscendMemoryManager>(mem_manager_);
+  MS_EXCEPTION_IF_NULL(ascend_mem_manager);
+  return ascend_mem_manager->GetMsUsedHbmSize();
 }
 
 bool AscendKernelRuntime::DeleteDumpDir(const std::string &path) {
@@ -1225,11 +1249,14 @@ int AscendKernelRuntime::DeleteDumpFile(std::string path) {
       if (path[path.size() - 1] != '/') {
         path = path + "/";
       }
+      MS_EXCEPTION_IF_NULL(dirinfo);
       filepath = path + dirinfo->d_name;
       if (strcmp(dirinfo->d_name, ".") == 0 || strcmp(dirinfo->d_name, "..") == 0) continue;
       result = DeleteDumpFile(filepath);
       if (!result) {
-        rmdir(filepath.c_str());
+        if (rmdir(filepath.c_str()) == -1) {
+          MS_LOG(WARNING) << "Delete dir " << filepath << " failed!";
+        }
       }
     }
     if (closedir(dir) == -1) {

@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
-
 #include "minddata/dataset/kernels/ir/vision/rgb_to_gray_ir.h"
 
 #include "minddata/dataset/kernels/image/rgb_to_gray_op.h"
@@ -39,7 +37,6 @@ Status RgbToGrayOperation::from_json(nlohmann::json op_params, std::shared_ptr<T
   *operation = std::make_shared<vision::RgbToGrayOperation>();
   return Status::OK();
 }
-
 }  // namespace vision
 }  // namespace dataset
 }  // namespace mindspore

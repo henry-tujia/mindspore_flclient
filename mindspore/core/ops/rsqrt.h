@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,16 +27,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameRsqrt = "Rsqrt";
+/// \brief Computes reciprocal of square root of input tensor element-wise.
+/// Refer to Python API @ref mindspore.ops.Rsqrt for more details.
 class MS_CORE_API Rsqrt : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Rsqrt() : PrimitiveC(kNameRsqrt) { InitIOName({"x"}, {"output"}); }
+  /// \brief Destructor.
   ~Rsqrt() = default;
   MS_DECLARE_PARENT(Rsqrt, PrimitiveC);
+  /// \brief Init.
   void Init() {}
 };
 AbstractBasePtr RsqrtInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimRsqrtPtr = std::shared_ptr<Rsqrt>;
+using kPrimRsqrtPtr = std::shared_ptr<Rsqrt>;
 }  // namespace ops
 }  // namespace mindspore
 

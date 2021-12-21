@@ -77,6 +77,7 @@ int PadTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     }
     transpose_layer_in->setName((op_name_ + "_transpose2NCHW").c_str());
     pad_input = transpose_layer_in->getOutput(0);
+    MS_LOG(DEBUG) << "after transpose " << GetTensorFormat(pad_input, Format::NCHW);
   }
 
   // trt 6 only support 2D padding
@@ -84,15 +85,34 @@ int PadTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
   MS_ASSERT(padding_data);
   nvinfer1::IPaddingLayer *padding_layer = nullptr;
   if (element_cnt == index_NHWC_ * INPUT_SIZE2) {
-    // NHWC only support pad at HW index
-    // 0: N_pre, 1: N_post, 2: H_pre, 3: H_post, 4: W_pre, 5: W_post, 6: C_pre, 7: C_post
-    if (*padding_data != 0 || *(padding_data + 1) != 0 || *(padding_data + 6) != 0 || *(padding_data + 7) != 0) {
-      MS_LOG(WARNING) << "tensorrt padding only support pad at HW index, unsupported padding value of: " << op_name_;
+    // only support pad at HW index
+    int h_pre;
+    int h_post;
+    int w_pre;
+    int w_post;
+    if (SameDims(pad_input->getDimensions(), in_tensors_[0].Shape())) {
+      // NCHW: 0: N_pre, 1: N_post, 2: C_pre, 3: C_post, 4: H_pre, 5: H_post, 6: W_pre, 7: W_post
+      if (*padding_data != 0 || *(padding_data + 1) != 0 || *(padding_data + 2) != 0 || *(padding_data + 3) != 0) {
+        MS_LOG(WARNING) << "tensorrt padding only support pad at HW index, unsupported padding value of: " << op_name_;
+      }
+      h_pre = 4;
+      h_post = 5;
+      w_pre = 6;
+      w_post = 7;
+    } else {
+      // NHWC: 0: N_pre, 1: N_post, 2: H_pre, 3: H_post, 4: W_pre, 5: W_post, 6: C_pre, 7: C_post
+      if (*padding_data != 0 || *(padding_data + 1) != 0 || *(padding_data + 6) != 0 || *(padding_data + 7) != 0) {
+        MS_LOG(WARNING) << "tensorrt padding only support pad at HW index, unsupported padding value of: " << op_name_;
+      }
+      h_pre = 2;
+      h_post = 3;
+      w_pre = 4;
+      w_post = 5;
     }
-    nvinfer1::DimsHW prePadding{*(padding_data + 2), *(padding_data + 4)};
-    nvinfer1::DimsHW postPadding{*(padding_data + 3), *(padding_data + 5)};
-    MS_LOG(INFO) << "prePadding: " << *(padding_data + 2) << ", " << *(padding_data + 4);
-    MS_LOG(INFO) << "postPadding: " << *(padding_data + 3) << ", " << *(padding_data + 5);
+    nvinfer1::DimsHW prePadding{*(padding_data + h_pre), *(padding_data + w_pre)};
+    nvinfer1::DimsHW postPadding{*(padding_data + h_post), *(padding_data + w_post)};
+    MS_LOG(DEBUG) << op_name_ << " prePadding: " << prePadding.d[0] << ", " << prePadding.d[1]
+                  << "; postPadding: " << postPadding.d[0] << ", " << postPadding.d[1];
 
     padding_layer = network->addPadding(*pad_input, prePadding, postPadding);
   } else {
@@ -105,8 +125,10 @@ int PadTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     return RET_ERROR;
   }
   padding_layer->setName(op_name_.c_str());
-  padding_layer->getOutput(0)->setName(out_tensors_[0].Name().c_str());
-  this->AddInnerOutTensors(ITensorHelper{padding_layer->getOutput(0), Format::NCHW});
+  padding_layer->getOutput(0)->setName((op_name_ + "_output").c_str());
+  bool same_format = SameDims(padding_layer->getOutput(0)->getDimensions(), out_tensors_[0].Shape()) &&
+                     SameDims(tensorrt_in_tensors_[0].trt_tensor_->getDimensions(), in_tensors_[0].Shape());
+  this->AddInnerOutTensors(ITensorHelper{padding_layer->getOutput(0), Format::NCHW, same_format});
   return RET_OK;
 }
 }  // namespace mindspore::lite

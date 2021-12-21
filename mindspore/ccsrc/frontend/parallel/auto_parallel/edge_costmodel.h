@@ -34,6 +34,10 @@ using CostPtrKey = std::pair<StrategyPtr, StrategyPtr>;
 using OperatorInfoPtr = std::shared_ptr<mindspore::parallel::OperatorInfo>;
 using EdgePtr = std::shared_ptr<mindspore::parallel::Edge>;
 
+struct OpsPtrCompare {
+  bool operator()(const OperatorInfoPtr &a, const OperatorInfoPtr &b) const { return a->name().compare(b->name()) < 0; }
+};
+
 class Edge {
   // An 'Edge' connects two Operators in the CostGraph.
  public:
@@ -82,8 +86,15 @@ class Edge {
   Status InitEdgeCost();
   std::map<CostPtrKey, CostPtrList> GetCostMap() { return cost_map_; }
   CostPtr GetCostByStrategyPair(const CostPtrKey &);
-  StrategyPtr GetNextOpStrategyByPrevOpStrategyWithZeroComm(const StrategyPtr &);
-  StrategyPtr GetPrevOpStrategyByNextOpStrategyWithZeroComm(const StrategyPtr &);
+
+  StrategyPtr GetNextOpStrategyByPrevOpStrategyWithMiniComm(const StrategyPtr &);
+  StrategyPtr GetPrevOpStrategyByNextOpStrategyWithMiniComm(const StrategyPtr &);
+  int64_t GetReshapeSWCIndexByNextOpStrategy(const StrategyPtr &next_op_stra);
+  int64_t GetReshapeSWCIndexByPrevOpStrategy(const StrategyPtr &prev_op_stra);
+  StrategyPtr GetPrevOpStrategyByReshapeSWCIndex(int64_t swc_index);
+  StrategyPtr GetNextOpStrategyByReshapeSWCIndex(int64_t swc_index);
+  bool CheckStrategyConsistency(StrategyPtr, StrategyPtr);
+
   void SetCostMapAndInputOutput(std::map<CostPtrKey, CostPtrList> &);
   // For two operators u--->v, given the output tensor layout of u,
   // and the input tensor layout of v, return the redistribution cost,
@@ -166,7 +177,7 @@ class Edge {
   // operators. The resulting edges are different from those normal edges, thus this Bool variable distinguishes them.
   // If it is true, then we should guarantee that the strategy for output tensor consistent with the input tensor.
   bool is_identity_edge;
-  CostPtr selected_cost_;
+  CostPtr selected_cost_ = nullptr;
   // In the training phase, 'is_output_parameter_involve_' is used to mark whether the output of the previous operator
   // is parameter-involved
   int64_t is_output_parameter_involve_ = -1;  // -1: unset; 0: not parameter_involved; 1: parameter_involved

@@ -86,6 +86,7 @@ static const std::unordered_map<std::string, std::vector<size_t>> NHWCOpMap = {
   {ops::kNameConv2dTransposeFusion, {1}},
   {ops::kNameDepthToSpace, {1}},
   {ops::kNameFusedBatchNorm, {1}},
+  {ops::kNameInstanceNorm, {1}},
   {ops::kNameLRN, {1}},
   {ops::kNameMaxPoolFusion, {1}},
   {ops::kNameMaxPoolGrad, {}},
@@ -99,7 +100,36 @@ static const std::unordered_map<std::string, std::vector<size_t>> NHWCOpMap = {
   {ops::kNameSpaceToDepth, {1}},
   {ops::kNameTopKFusion, {1}}};
 
-static const std::unordered_map<std::string, std::vector<size_t>> NCHWOpMap = {{ops::kNameInstanceNorm, {1}}};
+static const std::unordered_map<std::string, std::vector<size_t>> NCHWOpMap = {};
+
+static const std::unordered_map<std::string, std::vector<size_t>> ToNCHWOpMap = {
+  {ops::kNameAdam, {10}},
+  {ops::kNameApplyMomentum, {4}},
+  {ops::kNameAvgPoolFusion, {1}},
+  {ops::kNameAvgPoolGrad, {}},
+  {ops::kNameBatchNorm, {1}},
+  {ops::kNameBatchNormGrad, {1, 2}},
+  {ops::kNameBatchToSpace, {1}},
+  {ops::kNameBiasAdd, {1}},
+  {ops::kNameBiasAddGrad, {1}},
+  {ops::kNameConv2DBackpropInputFusion, {1}},
+  {ops::kNameConv2DBackpropFilterFusion, {1, 2}},
+  {ops::kNameConv2DFusion, {1}},
+  {ops::kNameConv2dTransposeFusion, {1}},
+  {ops::kNameDepthToSpace, {1}},
+  {ops::kNameFusedBatchNorm, {1}},
+  {ops::kNameInstanceNorm, {1}},
+  {ops::kNameLRN, {1}},
+  {ops::kNameMaxPoolFusion, {1}},
+  {ops::kNameMaxPoolGrad, {}},
+  {ops::kNamePReLUFusion, {1}},
+  {ops::kNameResize, {1}},
+  {ops::kNameResizeGrad, {}},
+  {ops::kNameROIPooling, {1}},
+  {ops::kNameSGD, {2}},
+  {ops::kNameSpaceToBatch, {1}},
+  {ops::kNameSpaceToBatchND, {1}},
+  {ops::kNameSpaceToDepth, {1}}};
 
 // a certain op whose input's format is not fixed, bool value determines whether the op has axis attribute or not.
 static const std::unordered_map<std::string, bool> DynamicFormatOpList = {
@@ -112,6 +142,7 @@ static const std::unordered_map<std::string, bool> DynamicFormatOpList = {
 
 const std::unordered_map<std::string, std::vector<size_t>> &GetNHWCOpMap() { return NHWCOpMap; }
 const std::unordered_map<std::string, std::vector<size_t>> &GetNCHWOpMap() { return NCHWOpMap; }
+const std::unordered_map<std::string, std::vector<size_t>> &GetToNCHWOpMap() { return ToNCHWOpMap; }
 bool IsDynamicFormatOp(const std::string &op_type) {
   return DynamicFormatOpList.find(op_type) != DynamicFormatOpList.end();
 }
@@ -133,9 +164,9 @@ STATUS GetTransposePerm(const CNodePtr &cnode, std::vector<int> *perm) {
   lite::DataInfo data_info;
   int status;
   if (utils::isa<ParameterPtr>(cnode->input(kInputIndexTwo))) {
-    status = lite::FetchDataFromParameterNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info);
+    status = lite::FetchDataFromParameterNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info, true);
   } else {
-    status = lite::FetchDataFromValueNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info);
+    status = lite::FetchDataFromValueNode(cnode, kInputIndexTwo, converter::kFmkTypeMs, false, &data_info, true);
   }
   if (status != lite::RET_OK) {
     MS_LOG(ERROR) << "fetch transpose perm data failed.";
@@ -148,7 +179,7 @@ STATUS GetTransposePerm(const CNodePtr &cnode, std::vector<int> *perm) {
   }
   perm->resize(data_info.shape_[0]);
   if (!data_info.data_.empty() &&
-      memcpy_s(perm->data(), data_info.data_.size(), data_info.data_.data(), data_info.data_.size()) != EOK) {
+      memcpy_s(perm->data(), perm->size() * sizeof(int), data_info.data_.data(), data_info.data_.size()) != EOK) {
     MS_LOG(ERROR) << "memcpy data failed.";
     return lite::RET_ERROR;
   }
@@ -191,6 +222,53 @@ bool IsSpecialType(const CNodePtr &cnode) {
   return CheckPrimitiveType(cnode, prim::kPrimTupleGetItem) || CheckPrimitiveType(cnode, prim::kPrimDepend) ||
          CheckPrimitiveType(cnode, prim::kPrimMakeTuple) || CheckPrimitiveType(cnode, kPrimMakeTupleV2) ||
          CheckPrimitiveType(cnode, prim::kPrimReturn);
+}
+
+int DetermineCertainVarInputFormat(const CNodePtr &cnode, size_t index, Format *format) {
+  MS_CHECK_TRUE_MSG(cnode != nullptr && format != nullptr, RET_ERROR, "function's parameter is nullptr.");
+  auto var_input_info = GetRealCertainVarInput(cnode, index);
+  if (var_input_info.first == nullptr) {
+    MS_LOG(ERROR) << "cannot get the real var input.";
+    return RET_ERROR;
+  }
+  *format = mindspore::NHWC;
+  auto real_input_cnode = var_input_info.first;
+  auto item_index = var_input_info.second;
+  auto input_node_prim = GetValueNode<PrimitivePtr>((real_input_cnode->input(0)));
+  MS_CHECK_TRUE_MSG(input_node_prim != nullptr, RET_ERROR, "get primitive failed");
+  auto value_ptr = input_node_prim->GetAttr(ops::kFormat);
+  if (value_ptr != nullptr) {
+    MS_CHECK_TRUE_MSG(value_ptr->isa<mindspore::Int64Imm>(), RET_ERROR, "format attr must be an int64_t val.");
+    auto value = GetValue<int64_t>(value_ptr);
+    MS_CHECK_TRUE_MSG(value >= NCHW && value <= NCW, RET_ERROR, "format val is out of enum's range.");
+    *format = static_cast<Format>(value);
+  }
+  value_ptr = input_node_prim->GetAttr(kOutputsFormat);
+  if (value_ptr != nullptr) {
+    MS_CHECK_TRUE_MSG(value_ptr->isa<ValueSequeue>(), RET_ERROR, "outputs_format attr should be sequence.");
+    auto formats = CastToInt(value_ptr);
+    if (item_index >= 0 && static_cast<size_t>(item_index) < formats.size()) {
+      MS_CHECK_TRUE_MSG(formats[item_index] >= NCHW && formats[item_index] <= NCW, RET_ERROR,
+                        "format val is out of enum's range.");
+      *format = static_cast<Format>(formats[item_index]);
+    }
+  }
+  if (CheckPrimitiveType(real_input_cnode, prim::kPrimTranspose)) {
+    std::vector<int> perm;
+    if (GetTransposePerm(real_input_cnode, &perm) != RET_OK) {
+      MS_LOG(ERROR) << "fetch transpose's perm failed.";
+      return RET_ERROR;
+    }
+    if (perm.size() != kNC2NH.size()) {
+      return RET_OK;
+    }
+    if (perm == kNH2NC && (*format == NHWC || *format == KHWC)) {
+      *format = NCHW;
+    } else if (perm == opt::kNC2NH && *format == NCHW) {
+      *format = NHWC;
+    }
+  }
+  return RET_OK;
 }
 }  // namespace opt
 }  // namespace mindspore

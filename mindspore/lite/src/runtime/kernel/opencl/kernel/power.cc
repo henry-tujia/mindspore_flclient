@@ -33,17 +33,17 @@ namespace mindspore::kernel {
 int PowerOpenCLKernel::CheckSpecs() {
   if ((in_tensors_.size() != INPUT_TENSOR_SIZE_1 && in_tensors_.size() != INPUT_TENSOR_SIZE_2) ||
       out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << "out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << "out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   if (in_tensors_.size() == INPUT_TENSOR_SIZE_2 &&
       in_tensors_.at(0)->shape().size() != in_tensors_.at(1)->shape().size()) {
-    MS_LOG(ERROR) << "Unsupported input->shape.size " << in_tensors_.at(0)->shape().size()
-                  << "!=" << in_tensors_.at(1)->shape().size();
+    MS_LOG(WARNING) << "Unsupported input->shape.size " << in_tensors_.at(0)->shape().size()
+                    << "!=" << in_tensors_.at(1)->shape().size();
     return RET_ERROR;
   }
   if (in_tensors_.at(0)->shape().size() > DIMENSION_4D) {
-    MS_LOG(ERROR) << "in_tensors_->shape.size must be less than 4";
+    MS_LOG(WARNING) << "in_tensors_->shape.size must be less than 4";
     return RET_ERROR;
   }
   return RET_OK;
@@ -79,6 +79,7 @@ int PowerOpenCLKernel::SetConstArgs() {
       return RET_ERROR;
     }
   }
+#ifdef ENABLE_FP16
   if (use_fp16_enable_) {
     auto x = static_cast<float16_t>(power_);
     auto y = static_cast<float16_t>(shift_);
@@ -97,12 +98,19 @@ int PowerOpenCLKernel::SetConstArgs() {
       return RET_ERROR;
     }
   }
+#else
+  cl_float4 parameter = {power_, shift_, scale_, unalign_w};
+  if (ocl_runtime_->SetKernelArg(kernel_, arg_cn++, parameter) != CL_SUCCESS) {
+    MS_LOG(ERROR) << "SetKernelArg failed.";
+    return RET_ERROR;
+  }
+#endif
   return RET_OK;
 }
 
 void PowerOpenCLKernel::SetGlobalLocal() {
   cl_int4 output_shape = {};
-  for (int i = 0; i < out_tensors_.at(0)->shape().size(); ++i) {
+  for (size_t i = 0; i < out_tensors_.at(0)->shape().size(); ++i) {
     output_shape.s[i] = out_tensors_.at(0)->shape()[i];
   }
   Broadcast2GpuShape(out_shape_.s, output_shape.s, out_tensors_.at(0)->shape().size(), 1);

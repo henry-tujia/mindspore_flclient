@@ -19,10 +19,12 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include "ir/primitive.h"
 #include "ir/func_graph.h"
 #include "src/common/utils.h"
 #include "tools/converter/converter_flags.h"
+#include "nnacl/op_base.h"
 
 namespace mindspore {
 namespace lite {
@@ -33,20 +35,30 @@ struct DataInfo {
   int node_type_;
   std::vector<int> shape_;
   std::vector<uint8_t> data_;
-  DataInfo() : enable_huffman_code_(false), format_(0), data_type_(0), node_type_{0} {}
+  void *data_ptr_;
+  DataInfo() : enable_huffman_code_(false), format_(0), data_type_(0), node_type_{0}, data_ptr_(nullptr) {}
 };
 
-int FetchFromDefaultParam(const ParameterPtr &param_node, const converter::FmkType &fmk_type, DataInfo *data_info);
+int FetchFromDefaultParam(const ParameterPtr &param_node, const converter::FmkType &fmk_type, DataInfo *data_info,
+                          bool copy_data);
 
 int FetchDataFromParameterNode(const CNodePtr &cnode, size_t index, converter::FmkType fmk_type, bool train_flag,
-                               DataInfo *data_info);
+                               DataInfo *data_info, bool copy_data);
+
 int FetchDataFromValueNode(const CNodePtr &cnode, size_t index, converter::FmkType fmk_type, bool train_flag,
-                           DataInfo *data_info);
+                           DataInfo *data_info, bool copy_data);
+
 int FetchDataFromCNode(const CNodePtr &cnode, size_t index, converter::FmkType fmk_type, bool train_flag,
                        DataInfo *data_info);
-void RemoveIfDepend(const CNodePtr &cnode);
 
-void RemoveIfMakeTuple(const CNodePtr &cnode);
+int RemoveIfDepend(const CNodePtr &cnode);
+
+int RemoveIfMakeTuple(const CNodePtr &cnode);
+
+// Notes:The op_parameter allocates memory through malloc, and may need to manually free op_parameter.
+int FetchOpParameterFromNode(const AnfNodePtr &node, OpParameter **op_parameter);
+
+int FetchOpParameterFromFuncGraph(const FuncGraphPtr &func_graph, std::map<std::string, OpParameter *> *op_parameters);
 }  // namespace lite
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_TOOLS_ANF_EXPORTER_FETCH_CONTENT_H_

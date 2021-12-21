@@ -135,6 +135,7 @@ BuiltInTypeMap &GetMethodMap() {
                                          {"append", std::string("list_append")},     // C.list_next
                                          {"__bool__", std::string("list_bool")},     // C.list_bool
                                          {"__ms_hasnext__", std::string("list_hasnext")},
+                                         {"insert", std::string("list_insert")},
                                        }},
                                       {kObjectTypeDictionary,
                                        {
@@ -143,6 +144,7 @@ BuiltInTypeMap &GetMethodMap() {
                                          {"__setitem__", prim::kPrimDictSetItem},  // P.dict_setitem,
                                          {"keys", prim::kPrimDictGetKeys},         // P.dict_getkeys,
                                          {"values", prim::kPrimDictGetValues},     // P.dict_getvalues,
+                                         {"items", prim::kPrimDictItems},          // P.dict_items
                                          {"__bool__", std::string("dict_bool")}    // C.dict_bool
                                        }},
                                       {kObjectTypeTensorType,
@@ -240,6 +242,13 @@ BuiltInTypeMap &GetAttrMap() {
        {"indices", prim::kPrimSparseTensorGetIndices},         // F.sparse_tensor_get_indices
        {"dense_shape", prim::kPrimSparseTensorGetDenseShape},  // F.sparse_tensor_get_dense_shape
      }},
+    {kObjectTypeCSRTensorType,
+     {
+       {"indptr", prim::kPrimCSRTensorGetIndptr},     // F.csr_tensor_get_indptr
+       {"values", prim::kPrimCSRTensorGetValues},     // F.csr_tensor_get_values
+       {"indices", prim::kPrimCSRTensorGetIndices},   // F.csr_tensor_get_indices
+       {"shape", prim::kPrimCSRTensorGetDenseShape},  // F.csr_tensor_get_shape
+     }},
   };
   return attr_map;
 }
@@ -252,7 +261,7 @@ Resource::Resource(const py::object &obj)
 Resource::~Resource() {
   MS_LOG(DEBUG) << "Resource clear";
 
-  std::unordered_map<std::string, Any>().swap(results_);
+  mindspore::HashMap<std::string, Any>().swap(results_);
   // If exit normally, these global variables will be cleaned
   // in Resource::Clean call by MsPipeline::Compile, but if exit with MS_LOGEXCEPTION,
   // these global variables may not being cleaned, it may

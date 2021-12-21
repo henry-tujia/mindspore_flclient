@@ -21,13 +21,14 @@
 namespace mindspore {
 namespace dataset {
 Status RandomAccessOp::GetNumRowsInDataset(int64_t *num) const {
+  RETURN_UNEXPECTED_IF_NULL(num);
   // The sampler base class itself does not compute it's own num_rows_ value.
   // Instead, this value is computed by the derived leaf op during it's own initialization
   // after it has interacted with it's storage layers.
   // Here, it is just a getter method to return the value.  However, it is invalid if there is
   // not a value set for this count, so generate a failure if that is the case.
   if (num == nullptr || num_rows_ == -1) {
-    RETURN_STATUS_UNEXPECTED("Get num rows in Dataset failed, num_rows has not been set yet.");
+    RETURN_STATUS_UNEXPECTED("[Internal ERROR] Get num rows in Dataset failed, num_rows has not been set yet.");
   }
   (*num) = num_rows_;
   return Status::OK();
@@ -41,6 +42,7 @@ SamplerRT::SamplerRT(int64_t num_samples, int64_t samples_per_tensor)
       is_initialized(false) {}
 
 Status SamplerRT::HandshakeRandomAccessOp(const RandomAccessOp *op) {
+  RETURN_UNEXPECTED_IF_NULL(op);
   std::shared_ptr<SamplerRT> child_sampler;
   if (HasChildSampler()) {
     child_sampler = std::dynamic_pointer_cast<SamplerRT>(child_[0]);
@@ -53,7 +55,7 @@ Status SamplerRT::HandshakeRandomAccessOp(const RandomAccessOp *op) {
     RETURN_IF_NOT_OK(child_sampler->HandshakeRandomAccessOp(op));
   }
 
-  CHECK_FAIL_RETURN_UNEXPECTED(op != nullptr, "RandomAccessOp init failed, as it is nullptr.");
+  CHECK_FAIL_RETURN_UNEXPECTED(op != nullptr, "[Internal ERROR] RandomAccessOp init failed, as it is nullptr.");
 
   // If there's a child sampler, set the row count to be it's sample count
   if (HasChildSampler()) {
@@ -70,6 +72,7 @@ Status SamplerRT::HandshakeRandomAccessOp(const RandomAccessOp *op) {
 }
 
 Status SamplerRT::CreateSamplerTensor(std::shared_ptr<Tensor> *sample_ids, int64_t num_elements) {
+  RETURN_UNEXPECTED_IF_NULL(sample_ids);
   if (col_desc_ == nullptr) {
     // a ColDescriptor for Tensor that holds SampleIds
     col_desc_ = std::make_unique<ColDescriptor>("sampleIds", DataType(DataType::DE_INT64), TensorImpl::kFlexible, 1);
@@ -91,6 +94,7 @@ void SamplerRT::SamplerPrint(std::ostream &out, bool show_all) const {
 
 #ifdef ENABLE_PYTHON
 Status SamplerRT::GetAllIdsThenReset(py::array *data) {
+  RETURN_UNEXPECTED_IF_NULL(data);
   std::shared_ptr<Tensor> sample_ids;
   TensorRow sample_row;
 
@@ -110,7 +114,7 @@ Status SamplerRT::GetAllIdsThenReset(py::array *data) {
   {
     py::gil_scoped_acquire gil_acquire;
     if (Py_IsInitialized() == 0) {
-      return Status(StatusCode::kMDPythonInterpreterFailure, "Python Interpreter is finalized");
+      return Status(StatusCode::kMDPythonInterpreterFailure, "[Internal ERROR] Python Interpreter is finalized");
     }
     try {
       RETURN_IF_NOT_OK(sample_ids->GetDataAsNumpy(data));
@@ -123,7 +127,9 @@ Status SamplerRT::GetAllIdsThenReset(py::array *data) {
 #endif
 
 Status SamplerRT::SetNumSamples(int64_t num_samples) {
-  CHECK_FAIL_RETURN_UNEXPECTED(num_samples >= 0, "Invalid parameter, num_samples must be greater than or equal to 0.");
+  CHECK_FAIL_RETURN_UNEXPECTED(
+    num_samples >= 0,
+    "Invalid parameter, 'num_samples' must be greater than or equal to 0, but got " + std::to_string(num_samples));
   num_samples_ = num_samples;
   return Status::OK();
 }
@@ -157,13 +163,13 @@ Status SamplerRT::AddChild(std::shared_ptr<SamplerRT> child) {
   // Only samplers can be added, not any other DatasetOp.
   std::shared_ptr<SamplerRT> sampler = std::dynamic_pointer_cast<SamplerRT>(child);
   if (!sampler) {
-    std::string err_msg("Cannot add child, child is not a sampler object.");
+    std::string err_msg("[Internal ERROR] Cannot add child, child is not a sampler object.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
 
   // Samplers can have at most 1 child.
   if (!child_.empty()) {
-    std::string err_msg("Cannot add child sampler, this sampler already has a child.");
+    std::string err_msg("[Internal ERROR] Cannot add child sampler, this sampler already has a child.");
     RETURN_STATUS_UNEXPECTED(err_msg);
   }
 
@@ -175,6 +181,7 @@ Status SamplerRT::AddChild(std::shared_ptr<SamplerRT> child) {
 bool SamplerRT::HasChildSampler() const { return !child_.empty(); }
 
 Status SamplerRT::GetAssociatedChildId(int64_t *out_associated_id, int64_t id) {
+  RETURN_UNEXPECTED_IF_NULL(out_associated_id);
   if (child_ids_.empty()) {
     RETURN_STATUS_UNEXPECTED("[Internal ERROR] Trying to get associated child id, but there are no child ids!");
   }
@@ -184,6 +191,7 @@ Status SamplerRT::GetAssociatedChildId(int64_t *out_associated_id, int64_t id) {
   return Status::OK();
 }
 Status SamplerRT::to_json(nlohmann::json *out_json) {
+  RETURN_UNEXPECTED_IF_NULL(out_json);
   nlohmann::json args;
   args["num_samples"] = num_samples_;
   if (this->HasChildSampler()) {

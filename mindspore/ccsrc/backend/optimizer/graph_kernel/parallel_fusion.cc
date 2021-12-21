@@ -16,15 +16,24 @@
 
 #include "backend/optimizer/graph_kernel/parallel_fusion.h"
 
+#include <algorithm>
+#include <list>
+#include <queue>
+#include <unordered_map>
+#include <utility>
+#include "utils/context/graph_kernel_flags.h"
+#include "backend/kernel_compiler/kernel.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
+#include "backend/kernel_compiler/common_utils.h"
 #include "frontend/operator/ops.h"
 #include "ir/func_graph_cloner.h"
-#include "vm/segment_runner.h"
 #include "backend/optimizer/graph_kernel/update_state_formatter.h"
+#include "backend/optimizer/graph_kernel/core/graph_builder.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 namespace {
+// Cuda's parameter table can accept maximum 4KB, so the number of parameters should be less than 512.
+constexpr size_t CUDA_PARA_LIMIT = 512;
 bool IsOneOf(const AnfNodePtr &node, const std::vector<PrimitivePtr> &ops_prim) {
   return std::any_of(ops_prim.cbegin(), ops_prim.cend(),
                      [&node](const PrimitivePtr &prim) { return IsPrimitiveCNode(node, prim); });
@@ -264,6 +273,32 @@ bool WhiteOpsFilter(const AnfNodePtr &node) {
   return session::AnfRuntimeAlgorithm::IsGraphKernel(node) || IsOneOf(node, whiteable_ops);
 }
 
+bool Unfavorable(const AnfNodePtr &node) {
+  // Parallel cannot work with stitching for now.
+  auto cnode = node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(cnode);
+  auto input = cnode->input(kAnfPrimitiveIndex);
+  if (!IsValueNode<FuncGraph>(input)) {
+    return AnfAlgo::HasNodeAttr(kAttrStitch, cnode);
+  }
+
+  auto func_graph = GetValueNode<FuncGraphPtr>(input);
+  MS_EXCEPTION_IF_NULL(func_graph);
+  AnfNodePtrList sub_nodes;
+  kernel::GetValidKernelNodes(func_graph, &sub_nodes);
+  for (auto sub_node : sub_nodes) {
+    auto sub_cnode = sub_node->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(sub_cnode);
+    if (AnfAlgo::HasNodeAttr(kAttrStitch, sub_cnode)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool Parallelizable(const AnfNodePtr &node) { return WhiteOpsFilter(node) && !Unfavorable(node); }
+
 std::vector<AnfNodePtrList> SearchFromNodes(const AnfNodePtrList &nodes,
                                             const std::function<bool(const AnfNodePtr &)> &filter_func,
                                             const OrderedMap<AnfNodePtr, NodeRelation> &node_rels, bool is_backward,
@@ -315,7 +350,7 @@ void SearchStreamFromMultiRelationNode(const AnfNodePtrList &multi_nodes,
     if (auto iter = node_rels.find(node); iter != node_rels.end()) {
       const auto &pre_nodes = get_related_nodes(iter->second);
       AnfNodePtrList related_nodes(pre_nodes.begin(), pre_nodes.end());
-      groups->push_back(SearchFromNodes(related_nodes, WhiteOpsFilter, node_rels, is_backward, seen));
+      groups->push_back(SearchFromNodes(related_nodes, Parallelizable, node_rels, is_backward, seen));
     }
   }
 
@@ -332,7 +367,7 @@ void SearchStreamFromMultiRelationNode(const AnfNodePtrList &multi_nodes,
 void SearchStreamFromUnidirectionalNode(const AnfNodePtrList &ud_nodes,
                                         const OrderedMap<AnfNodePtr, NodeRelation> &node_rels, bool is_backward,
                                         std::vector<std::vector<AnfNodePtrList>> *groups, std::set<AnfNodePtr> *seen) {
-  groups->push_back(SearchFromNodes(ud_nodes, WhiteOpsFilter, node_rels, is_backward, seen));
+  groups->push_back(SearchFromNodes(ud_nodes, Parallelizable, node_rels, is_backward, seen));
 
   // Erase empty groups.
   for (auto iter = groups->begin(); iter != groups->end();) {
@@ -353,8 +388,9 @@ std::string DumpNode(const AnfNodePtr &node) {
   return buf.str();
 }
 
-void DumpParallelGroups(const std::vector<std::vector<AnfNodePtrList>> &groups) {
-  MS_LOG(INFO) << "There are " << groups.size() << " parallel groups, their detail is: ";
+void DumpParallelGroups(const std::vector<std::vector<AnfNodePtrList>> &groups, const std::string &title = "") {
+  MS_LOG(INFO) << "[" << title << "]"
+               << "There are " << groups.size() << " parallel groups, their detail is: ";
   int i = 0;
   for (const auto group : groups) {
     std::stringstream buf;
@@ -381,6 +417,31 @@ void DumpParallelFusionDetail(const AnfNodePtrList &source, const AnfNodePtr &ta
       << "(" << DumpNode(target) << ")";
   MS_LOG(INFO) << buf.str();
 }
+
+inline bool ParameterLimit(const AnfNodePtrList &nodes) {
+  if (nodes.empty()) {
+    MS_LOG(EXCEPTION) << "Nodes is empty, can not check condition.";
+  }
+
+  bool res = true;
+  switch (AnfAlgo::GetProcessor(nodes[0])) {
+    case kernel::Processor::CUDA: {
+      // The number of inputs and outputs for a valid kernel should be less than cuda's limit.
+      size_t para_count = 0;
+      for (const auto &node : nodes) {
+        para_count += AnfAlgo::GetInputTensorNum(node);
+        para_count += AnfAlgo::GetOutputTensorNum(node);
+      }
+      res = para_count <= CUDA_PARA_LIMIT;
+    } break;
+    default:
+      break;
+  }
+
+  return res;
+}
+
+bool ExtraFusionCondition(const AnfNodePtrList &nodes) { return ParameterLimit(nodes); }
 }  // namespace
 
 OrderedMap<AnfNodePtr, NodeRelation> ParallelOpFusion::GenAnalysisGraph(const AnfNodePtrList &nodes) {
@@ -388,7 +449,7 @@ OrderedMap<AnfNodePtr, NodeRelation> ParallelOpFusion::GenAnalysisGraph(const An
   OrderedMap<AnfNodePtr, NodeRelation> node_rels;
   auto get_info = [&node_rels](const AnfNodePtr &node) {
     if (node_rels.count(node) == 0) {
-      node_rels.insert({node, NodeRelation()});
+      (void)node_rels.emplace(node, NodeRelation());
     }
     return &(node_rels[node]);
   };
@@ -435,7 +496,7 @@ std::vector<std::vector<AnfNodePtrList>> ParallelOpFusion::SearchParallelGroups(
   SearchStreamFromMultiRelationNode(mul_outs_nodes, node_rels, false, &groups, &seen);
   SearchStreamFromUnidirectionalNode(no_in_nodes, node_rels, false, &groups, &seen);
 
-  DumpParallelGroups(groups);
+  DumpParallelGroups(groups, "Dependency Analyze");
   return groups;
 }
 
@@ -510,13 +571,15 @@ std::tuple<std::vector<bool>, std::vector<ParallelInfo>> ParallelOpFusion::DoSea
       AnfNodePtrList other_candidates;
       std::tie(other_candidates, std::ignore) =
         GetAvaliableNodesByOffset(SizeToInt(i), tc, sorted_candidates_used, candidates, std::set<int>());
-      int benefit;
-      std::tie(std::ignore, benefit, std::ignore) = cost_model_ptr_->CalFuseInfo(other_candidates);
-      if (benefit > 0) {
-        begin = mid + 1;
-      } else {
-        end = mid - 1;
+      if (ExtraFusionCondition(other_candidates)) {
+        int benefit;
+        std::tie(std::ignore, benefit, std::ignore) = cost_model_ptr_->CalFuseInfo(other_candidates);
+        if (benefit > 0) {
+          begin = mid + 1;
+          continue;
+        }
       }
+      end = mid - 1;
     }
 
     if (begin > 1) {
@@ -684,8 +747,7 @@ bool ParallelOpFusion::CreateParallelOpSubGraphs(const std::vector<ParallelInfo>
     }
     changed = true;
     SetFusedParallelOpAttrToReturnNode(parallel_infos[i]);
-    AnfNodePtr sg_node;
-    std::tie(sg_node, std::ignore) = FuseNodesToSubGraph(fuse_nodes, kernel_graph, "parallel");
+    auto sg_node = ReplaceNodesWithGraphKernelNode(fuse_nodes, kernel_graph, "parallel");
     AnfAlgo::SetNodeAttr(kAttrCompositeType, MakeValue("parallel_fusion"), sg_node);
     DumpParallelFusionDetail(fuse_nodes, sg_node);
   }
@@ -693,8 +755,63 @@ bool ParallelOpFusion::CreateParallelOpSubGraphs(const std::vector<ParallelInfo>
   return changed;
 }
 
+std::set<AnfNodePtr> CollectCapturedNodes(const std::vector<ParallelInfo> &infos) {
+  std::set<AnfNodePtr> captured;
+  std::for_each(infos.cbegin(), infos.cend(),
+                [&captured](const ParallelInfo &info) { captured.insert(info.nodes().begin(), info.nodes().end()); });
+  return captured;
+}
+
+std::vector<std::vector<AnfNodePtrList>> GetParallelGroupsByBfs(const OrderedMap<AnfNodePtr, NodeRelation> &node_rels,
+                                                                const std::set<AnfNodePtr> &exclude) {
+  std::vector<std::vector<AnfNodePtrList>> groups;
+  // BFS
+  std::queue<AnfNodePtr> node_que;
+  std::unordered_map<AnfNodePtr, int> outdegrees;
+  for (const auto &[node, ref] : node_rels) {
+    outdegrees[node] = ref.nexts.size();
+    if (outdegrees[node] == 0) {
+      node_que.push(node);
+    }
+  }
+
+  int total_node_num = node_rels.size();
+  while (!node_que.empty()) {
+    std::vector<AnfNodePtrList> group;
+    int node_size = node_que.size();
+    while (node_size--) {
+      auto node = node_que.front();
+      node_que.pop();
+      if (exclude.count(node) == 0 && Parallelizable(node)) {
+        group.push_back({node});
+      }
+      --total_node_num;
+      auto iter = node_rels.find(node);
+      if (iter == node_rels.end()) {
+        MS_LOG(EXCEPTION) << "Internal error in node relationship!";
+      }
+      for (const auto &pre : iter->second.pres) {
+        if (--outdegrees[pre] == 0) {
+          node_que.push(pre);
+        }
+      }
+    }
+    if (!group.empty()) {
+      groups.push_back(group);
+    }
+  }
+
+  if (total_node_num > 0) {
+    MS_LOG(EXCEPTION) << "There is circle in analyze graph!";
+  }
+  DumpParallelGroups(groups, "BFS");
+  return groups;
+}
+
 bool ParallelOpFusion::Run(const FuncGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(graph);
+  parallel_level_ = GraphKernelFlags::GetInstance().parallel_ops_level;
+
   (void)std::make_shared<ShrinkUpdateState>()->Run(graph);
   auto kernel_graph = graph->cast<std::shared_ptr<session::KernelGraph>>();
   MS_EXCEPTION_IF_NULL(kernel_graph);
@@ -709,10 +826,18 @@ bool ParallelOpFusion::Run(const FuncGraphPtr &graph) {
   auto groups = SearchParallelGroups(node_rels);
   auto parallel_infos = SearchFusableParallelCNodes(groups);
 
+  // Search in BFS for left nodes.
+  if (parallel_level_ > 0) {
+    auto exclued_nodes = CollectCapturedNodes(parallel_infos);
+    auto groups_bfs = GetParallelGroupsByBfs(node_rels, exclued_nodes);
+    auto bfs_parallel_infos = SearchFusableParallelCNodes(groups_bfs);
+
+    parallel_infos.insert(parallel_infos.end(), bfs_parallel_infos.begin(), bfs_parallel_infos.end());
+  }
+
   // Create core-fuse subgraph and change origin graph.
   bool changed = CreateParallelOpSubGraphs(parallel_infos, kernel_graph);
   (void)std::make_shared<SpreadUpdateState>()->Run(graph);
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

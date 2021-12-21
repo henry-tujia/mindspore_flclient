@@ -25,7 +25,7 @@ from tests.st.model_zoo_tests import utils
 @pytest.mark.env_single
 def test_resnet50_cifar10_ascend():
     cur_path = os.path.dirname(os.path.abspath(__file__))
-    model_path = "{}/../../../../model_zoo/official/cv".format(cur_path)
+    model_path = "{}/../../../../tests/models/official/cv".format(cur_path)
     model_name = "resnet"
     utils.copy_files(model_path, cur_path, model_name)
     cur_model_path = os.path.join(cur_path, "resnet")
@@ -51,12 +51,12 @@ def test_resnet50_cifar10_ascend():
     assert sum(loss_list) / len(loss_list) < 0.70
 
 
-@pytest.mark.level0
+@pytest.mark.level1
 @pytest.mark.platform_x86_gpu_training
 @pytest.mark.env_single
 def test_resnet50_cifar10_gpu():
     cur_path = os.getcwd()
-    model_path = "{}/../../../../model_zoo/official/cv".format(cur_path)
+    model_path = "{}/../../../../tests/models/official/cv".format(cur_path)
     model_name = "resnet"
     utils.copy_files(model_path, cur_path, model_name)
     cur_model_path = os.path.join(cur_path, "resnet")
@@ -66,6 +66,7 @@ def test_resnet50_cifar10_gpu():
     dataset_path = os.path.join(utils.data_root, "cifar-10-batches-bin")
     config_path = os.path.join(cur_model_path, "config", "resnet50_cifar10_config.yaml")
     os.system("nvidia-smi")
+    os.system("fuser -v /dev/nvidia*")
     exec_network_shell = "cd resnet/scripts; sh run_distribute_train_gpu.sh {} {}" \
         .format(dataset_path, config_path)
     logger.warning("cmd [{}] is running...".format(exec_network_shell))

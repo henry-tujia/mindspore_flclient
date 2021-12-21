@@ -40,8 +40,8 @@ void SkipNode::Print(std::ostream &out) const { out << (Name() + "(skip_count:" 
 // Function to build the SkipOp
 Status SkipNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<SkipOp>(skip_count_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -50,9 +50,8 @@ Status SkipNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) 
 Status SkipNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (skip_count_ <= -1) {
-    std::string err_msg = "SkipNode: skip_count should not be negative, skip_count: " + std::to_string(skip_count_);
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Skip: 'skip_count' should not be negative, but got: " + std::to_string(skip_count_);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
   return Status::OK();
@@ -96,7 +95,7 @@ Status SkipNode::to_json(nlohmann::json *out_json) {
 
 Status SkipNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> ds,
                            std::shared_ptr<DatasetNode> *result) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("count") != json_obj.end(), "Failed to find count");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "count", kSkipNode));
   int32_t count = json_obj["count"];
   *result = std::make_shared<SkipNode>(ds, count);
   return Status::OK();

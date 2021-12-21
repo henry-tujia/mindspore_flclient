@@ -23,7 +23,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Concat;
 
 namespace mindspore::kernel {
-int ConcatFp16CPUKernel::Init() {
+int ConcatFp16CPUKernel::Prepare() {
   MS_CHECK_TRUE_RET(in_tensors_.size() >= 1, RET_ERROR);
   MS_CHECK_TRUE_RET(out_tensors_.size() == 1, RET_ERROR);
   CHECK_NULL_RETURN(in_tensors_.front());
@@ -101,13 +101,13 @@ int ConcatFp16CPUKernel::Run() {
   for (size_t i = 0; i < input_num; ++i) {
     const auto in_tensor = in_tensors_.at(i);
     CHECK_NULL_RETURN(in_tensor);
+    auto in_tensor_data = in_tensor->data();
+    MS_CHECK_TRUE_RET(in_tensor->ElementsNum() == 0 || in_tensor_data != nullptr, RET_ERROR);
     if (in_tensor->data_type() == kNumberTypeFloat || in_tensor->data_type() == kNumberTypeFloat32) {
-      auto in_tensor_data = reinterpret_cast<float *>(in_tensor->data());
-      CHECK_NULL_RETURN(in_tensor_data);
-      Float32ToFloat16(in_tensor_data, fp16_inputs_[i], in_tensor->ElementsNum());
+      auto fp32_tensor_data = reinterpret_cast<float *>(in_tensor_data);
+      Float32ToFloat16(fp32_tensor_data, fp16_inputs_[i], in_tensor->ElementsNum());
     } else {
-      fp16_inputs_[i] = reinterpret_cast<float16_t *>(in_tensor->data());
-      CHECK_NULL_RETURN(fp16_inputs_[i]);
+      fp16_inputs_[i] = reinterpret_cast<float16_t *>(in_tensor_data);
     }
 
     shapes.push_back(in_tensors_[i]->shape());

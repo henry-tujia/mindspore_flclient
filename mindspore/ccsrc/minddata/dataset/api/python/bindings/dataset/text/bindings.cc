@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,16 @@
 #include "pybind11/stl_bind.h"
 
 #include "minddata/dataset/api/python/pybind_register.h"
-#include "minddata/dataset/text/vocab.h"
-#include "minddata/dataset/text/sentence_piece_vocab.h"
 #include "minddata/dataset/include/dataset/constants.h"
+#include "minddata/dataset/text/char_n_gram.h"
+#include "minddata/dataset/text/fast_text.h"
+#include "minddata/dataset/text/glove.h"
+#include "minddata/dataset/text/sentence_piece_vocab.h"
+#include "minddata/dataset/text/vectors.h"
+#include "minddata/dataset/text/vocab.h"
 
 namespace mindspore {
 namespace dataset {
-
 PYBIND_REGISTER(Vocab, 0, ([](const py::module *m) {
                   (void)py::class_<Vocab, std::shared_ptr<Vocab>>(*m, "Vocab")
                     .def(py::init<>())
@@ -88,5 +91,44 @@ PYBIND_REGISTER(SentencePieceModel, 0, ([](const py::module *m) {
                     .export_values();
                 }));
 
+PYBIND_REGISTER(CharNGram, 1, ([](const py::module *m) {
+                  (void)py::class_<CharNGram, Vectors, std::shared_ptr<CharNGram>>(*m, "CharNGram")
+                    .def(py::init<>())
+                    .def_static("from_file", [](const std::string &path, int32_t max_vectors) {
+                      std::shared_ptr<CharNGram> char_n_gram;
+                      THROW_IF_ERROR(CharNGram::BuildFromFile(&char_n_gram, path, max_vectors));
+                      return char_n_gram;
+                    });
+                }));
+
+PYBIND_REGISTER(FastText, 1, ([](const py::module *m) {
+                  (void)py::class_<FastText, Vectors, std::shared_ptr<FastText>>(*m, "FastText")
+                    .def(py::init<>())
+                    .def_static("from_file", [](const std::string &path, int32_t max_vectors) {
+                      std::shared_ptr<FastText> fast_text;
+                      THROW_IF_ERROR(FastText::BuildFromFile(&fast_text, path, max_vectors));
+                      return fast_text;
+                    });
+                }));
+
+PYBIND_REGISTER(GloVe, 1, ([](const py::module *m) {
+                  (void)py::class_<GloVe, Vectors, std::shared_ptr<GloVe>>(*m, "GloVe")
+                    .def(py::init<>())
+                    .def_static("from_file", [](const std::string &path, int32_t max_vectors) {
+                      std::shared_ptr<GloVe> glove;
+                      THROW_IF_ERROR(GloVe::BuildFromFile(&glove, path, max_vectors));
+                      return glove;
+                    });
+                }));
+
+PYBIND_REGISTER(Vectors, 0, ([](const py::module *m) {
+                  (void)py::class_<Vectors, std::shared_ptr<Vectors>>(*m, "Vectors")
+                    .def(py::init<>())
+                    .def_static("from_file", [](const std::string &path, int32_t max_vectors) {
+                      std::shared_ptr<Vectors> vectors;
+                      THROW_IF_ERROR(Vectors::BuildFromFile(&vectors, path, max_vectors));
+                      return vectors;
+                    });
+                }));
 }  // namespace dataset
 }  // namespace mindspore

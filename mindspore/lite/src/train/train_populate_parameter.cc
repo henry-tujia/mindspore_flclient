@@ -45,6 +45,7 @@ OpParameter *PopulateSmoothL1LossParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc SmoothL1LossParameter failed.";
     return nullptr;
   }
+  memset(p, 0, sizeof(SmoothL1LossParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_SmoothL1Loss();
   MS_ASSERT(value != nullptr);
@@ -59,6 +60,7 @@ OpParameter *PopulateSmoothL1LossGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc SmoothL1LossParameter failed.";
     return nullptr;
   }
+  memset(p, 0, sizeof(SmoothL1LossParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_SmoothL1LossGrad();
   MS_ASSERT(value != nullptr);
@@ -73,8 +75,10 @@ OpParameter *PopulateApplyMomentumParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc ApplyMomentumParameter failed.";
     return nullptr;
   }
+  memset(p, 0, sizeof(ApplyMomentumParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_ApplyMomentum();
+  MS_ASSERT(value != nullptr);
   p->op_parameter_.type_ = primitive->value_type();
   p->grad_scale_ = value->gradient_scale();
   p->use_nesterov_ = value->use_nesterov();
@@ -113,6 +117,7 @@ OpParameter *PopulateAdamParameter(const void *prim) {
     MS_LOG(ERROR) << "new AdamParameter failed.";
     return nullptr;
   }
+  memset(p, 0, sizeof(AdamParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_Adam();
   MS_ASSERT(value != nullptr);
@@ -127,6 +132,7 @@ OpParameter *PopulateSgdParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc SgdParameter failed.";
     return nullptr;
   }
+  memset(p, 0, sizeof(SgdParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_SGD();
   MS_ASSERT(value != nullptr);
@@ -145,6 +151,7 @@ OpParameter *PopulateSparseSoftmaxCrossEntropyWithLogitsParameter(const void *pr
     MS_LOG(ERROR) << "malloc SoftmaxCrossEntropyParameter failed.";
     return nullptr;
   }
+  memset(sce_param, 0, sizeof(SoftmaxCrossEntropyParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_SparseSoftmaxCrossEntropyWithLogits();
   MS_ASSERT(value != nullptr);
@@ -160,6 +167,7 @@ OpParameter *PopulateSoftmaxCrossEntropyParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc SoftmaxCrossEntropyParameter failed.";
     return nullptr;
   }
+  memset(sce_param, 0, sizeof(SoftmaxCrossEntropyParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   sce_param->op_parameter_.type_ = primitive->value_type();
   sce_param->is_grad_ = 0;
@@ -172,6 +180,7 @@ OpParameter *PopulateMaxPoolGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc PoolingParameter failed.";
     return nullptr;
   }
+  memset(pooling_param, 0, sizeof(PoolingParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_MaxPoolGrad();
   MS_ASSERT(value != nullptr);
@@ -210,6 +219,7 @@ OpParameter *PopulateAvgPoolGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc PoolingParameter failed.";
     return nullptr;
   }
+  memset(pooling_param, 0, sizeof(PoolingParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_AvgPoolGrad();
   MS_ASSERT(value != nullptr);
@@ -239,17 +249,6 @@ OpParameter *PopulateAvgPoolGradParameter(const void *prim) {
   }
   pooling_param->round_mode_ = RoundMode_No;
   pooling_param->pool_mode_ = PoolMode_AvgPool;
-  switch (value->pad_mode()) {
-    case schema::PadMode_SAME:
-      pooling_param->pad_mode_ = Pad_same;
-      break;
-    case schema::PadMode_VALID:
-      pooling_param->pad_mode_ = Pad_valid;
-      break;
-    default:
-      pooling_param->pad_mode_ = Pad_pad;
-      break;
-  }
   return reinterpret_cast<OpParameter *>(pooling_param);
 }
 
@@ -259,6 +258,7 @@ OpParameter *PopulateActivationGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc ActivationParameter failed.";
     return nullptr;
   }
+  memset(act_param, 0, sizeof(ActivationParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_ActivationGrad();
   MS_ASSERT(value != nullptr);
@@ -282,8 +282,8 @@ OpParameter *PopulateConvolutionGradFilterParameter(const void *prim) {
 
   param->kernel_h_ = value->kernel_size()->Get(0);
   param->kernel_w_ = value->kernel_size()->Get(1);
-  param->stride_h_ = value->stride()->Get(0);
-  param->stride_w_ = value->stride()->Get(1);
+  param->stride_h_ = value->stride()->Get((value->stride()->size()) - 2);
+  param->stride_w_ = value->stride()->Get((value->stride()->size()) - 1);
   param->dilation_h_ = value->dilation()->Get(0);
   param->dilation_w_ = value->dilation()->Get(1);
   param->pad_u_ = value->pad_list()->Get(0);
@@ -300,6 +300,17 @@ OpParameter *PopulateConvolutionGradFilterParameter(const void *prim) {
       param->act_type_ = ActType_Relu6;
       break;
     default:
+      break;
+  }
+  switch (value->pad_mode()) {
+    case schema::PadMode_SAME:
+      param->pad_mode_ = Pad_same;
+      break;
+    case schema::PadMode_VALID:
+      param->pad_mode_ = Pad_valid;
+      break;
+    default:
+      param->pad_mode_ = Pad_pad;
       break;
   }
 
@@ -312,6 +323,7 @@ OpParameter *PopulateConvolutionGradInputParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc Param for conv grad filter failed.";
     return nullptr;
   }
+  memset(param, 0, sizeof(ConvParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_Conv2DBackpropInputFusion();
   MS_ASSERT(value != nullptr);
@@ -319,8 +331,8 @@ OpParameter *PopulateConvolutionGradInputParameter(const void *prim) {
 
   param->kernel_h_ = value->kernel_size()->Get(0);
   param->kernel_w_ = value->kernel_size()->Get(1);
-  param->stride_h_ = value->stride()->Get(0);
-  param->stride_w_ = value->stride()->Get(1);
+  param->stride_h_ = value->stride()->Get((value->stride()->size()) - 2);
+  param->stride_w_ = value->stride()->Get((value->stride()->size()) - 1);
   param->dilation_h_ = value->dilation()->Get(0);
   param->dilation_w_ = value->dilation()->Get(1);
   param->pad_u_ = value->pad_list()->Get(0);
@@ -339,6 +351,17 @@ OpParameter *PopulateConvolutionGradInputParameter(const void *prim) {
     default:
       break;
   }
+  switch (value->pad_mode()) {
+    case schema::PadMode_SAME:
+      param->pad_mode_ = Pad_same;
+      break;
+    case schema::PadMode_VALID:
+      param->pad_mode_ = Pad_valid;
+      break;
+    default:
+      param->pad_mode_ = Pad_pad;
+      break;
+  }
 
   return reinterpret_cast<OpParameter *>(param);
 }
@@ -349,6 +372,7 @@ OpParameter *PopulatePowerGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc PowerParameter failed.";
     return nullptr;
   }
+  memset(power_param, 0, sizeof(PowerParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_PowerGrad();
   MS_ASSERT(value != nullptr);
@@ -365,6 +389,7 @@ OpParameter *PopulateBiasGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc ArithmeticParameter failed.";
     return nullptr;
   }
+  memset(arithmetic_param, 0, sizeof(ArithmeticParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   arithmetic_param->op_parameter_.type_ = primitive->value_type();
   return reinterpret_cast<OpParameter *>(arithmetic_param);
@@ -376,6 +401,7 @@ OpParameter *PopulateBNGradParameter(const void *prim) {
     MS_LOG(ERROR) << "malloc BNGradParameter failed.";
     return nullptr;
   }
+  memset(bnGrad_param, 0, sizeof(BNGradParameter));
   auto primitive = static_cast<const schema::Primitive *>(prim);
   auto value = primitive->value_as_BatchNormGrad();
   MS_ASSERT(value != nullptr);
@@ -499,68 +525,57 @@ OpParameter *PopulateLstmGradParameter(const void *prim) {
 }
 
 void PopulateTrainParameters() {
-  lite::Registry ApplyMomentumParameterRegistry(schema::PrimitiveType_ApplyMomentum, PopulateApplyMomentumParameter,
-                                                lite::SCHEMA_CUR);
-  lite::Registry BiasGradParameterRegistry(schema::PrimitiveType_BiasAddGrad, PopulateBiasGradParameter,
-                                           lite::SCHEMA_CUR);
-  lite::Registry SoftmaxCrossEntropyParameterRegistry(schema::PrimitiveType_SoftmaxCrossEntropyWithLogits,
-                                                      PopulateSoftmaxCrossEntropyParameter, lite::SCHEMA_CUR);
-  lite::Registry SparseSoftmaxCrossEntropyParameterRegistry(schema::PrimitiveType_SparseSoftmaxCrossEntropyWithLogits,
-                                                            PopulateSparseSoftmaxCrossEntropyWithLogitsParameter,
-                                                            lite::SCHEMA_CUR);
-  lite::Registry ActivationParameterRegistry(schema::PrimitiveType_ActivationGrad, PopulateActivationGradParameter,
-                                             lite::SCHEMA_CUR);
-  lite::Registry DependParameterRegistry(schema::PrimitiveType_Depend, lite::DefaultPopulateParameter,
-                                         lite::SCHEMA_CUR);
-  lite::Registry Conv2DGradFilterParameterRegistry(schema::PrimitiveType_Conv2DBackpropFilterFusion,
-                                                   PopulateConvolutionGradFilterParameter, lite::SCHEMA_CUR);
-  lite::Registry Conv2DGradInputParameterRegistry(schema::PrimitiveType_Conv2DBackpropInputFusion,
-                                                  PopulateConvolutionGradInputParameter, lite::SCHEMA_CUR);
-  lite::Registry avgPoolParameterRegistry(schema::PrimitiveType_AvgPoolGrad, PopulateAvgPoolGradParameter,
+  Registry ApplyMomentumParameterRegistry(schema::PrimitiveType_ApplyMomentum, PopulateApplyMomentumParameter,
                                           lite::SCHEMA_CUR);
-  lite::Registry maxPoolParameterRegistry(schema::PrimitiveType_MaxPoolGrad, PopulateMaxPoolGradParameter,
-                                          lite::SCHEMA_CUR);
-  lite::Registry PowerGradParameterRegistry(schema::PrimitiveType_PowerGrad, PopulatePowerGradParameter,
-                                            lite::SCHEMA_CUR);
-  lite::Registry SgdParameterRegistry(schema::PrimitiveType_SGD, PopulateSgdParameter, lite::SCHEMA_CUR);
-  lite::Registry BNGradParameterRegistry(schema::PrimitiveType_BatchNormGrad, PopulateBNGradParameter,
-                                         lite::SCHEMA_CUR);
-  lite::Registry AdamParameterRegistry(schema::PrimitiveType_Adam, PopulateAdamParameter, lite::SCHEMA_CUR);
-  lite::Registry AssignParameterRegistry(schema::PrimitiveType_Assign, lite::DefaultPopulateParameter,
-                                         lite::SCHEMA_CUR);
-  lite::Registry AssignAddParameterRegistry(schema::PrimitiveType_AssignAdd, lite::DefaultPopulateParameter,
-                                            lite::SCHEMA_CUR);
-  lite::Registry BinaryCrossEntropyParameterRegistry(schema::PrimitiveType_BinaryCrossEntropy, PopulateBCEParameter,
-                                                     lite::SCHEMA_CUR);
-  lite::Registry BinaryCrossEntropyGradParameterRegistry(schema::PrimitiveType_BinaryCrossEntropyGrad,
-                                                         PopulateBCEGradParameter, lite::SCHEMA_CUR);
-  lite::Registry OnesLikeParameterRegistry(schema::PrimitiveType_OnesLike, lite::DefaultPopulateParameter,
-                                           lite::SCHEMA_CUR);
-  lite::Registry UnsortedSegmentSumParameterRegistry(schema::PrimitiveType_UnsortedSegmentSum,
-                                                     lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
-  lite::Registry DropoutParameterRegistry(schema::PrimitiveType_Dropout, PopulateDropoutParameter, lite::SCHEMA_CUR);
-  lite::Registry DropGradParameterRegistry(schema::PrimitiveType_DropoutGrad, PopulateDropoutGradParameter,
-                                           lite::SCHEMA_CUR);
-  lite::Registry MaximumGradParameterRegistry(schema::PrimitiveType_MaximumGrad, PopulateArithmeticGradParameter,
-                                              lite::SCHEMA_CUR);
-  lite::Registry MinimumGradParameterRegistry(schema::PrimitiveType_MinimumGrad, PopulateArithmeticGradParameter,
-                                              lite::SCHEMA_CUR);
-  lite::Registry SmoothL1LossRegistry(schema::PrimitiveType_SmoothL1Loss, PopulateSmoothL1LossParameter,
+  Registry BiasGradParameterRegistry(schema::PrimitiveType_BiasAddGrad, PopulateBiasGradParameter, lite::SCHEMA_CUR);
+  Registry SoftmaxCrossEntropyParameterRegistry(schema::PrimitiveType_SoftmaxCrossEntropyWithLogits,
+                                                PopulateSoftmaxCrossEntropyParameter, lite::SCHEMA_CUR);
+  Registry SparseSoftmaxCrossEntropyParameterRegistry(schema::PrimitiveType_SparseSoftmaxCrossEntropyWithLogits,
+                                                      PopulateSparseSoftmaxCrossEntropyWithLogitsParameter,
+                                                      lite::SCHEMA_CUR);
+  Registry ActivationParameterRegistry(schema::PrimitiveType_ActivationGrad, PopulateActivationGradParameter,
+                                       lite::SCHEMA_CUR);
+  Registry DependParameterRegistry(schema::PrimitiveType_Depend, lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry Conv2DGradFilterParameterRegistry(schema::PrimitiveType_Conv2DBackpropFilterFusion,
+                                             PopulateConvolutionGradFilterParameter, lite::SCHEMA_CUR);
+  Registry Conv2DGradInputParameterRegistry(schema::PrimitiveType_Conv2DBackpropInputFusion,
+                                            PopulateConvolutionGradInputParameter, lite::SCHEMA_CUR);
+  Registry avgPoolParameterRegistry(schema::PrimitiveType_AvgPoolGrad, PopulateAvgPoolGradParameter, lite::SCHEMA_CUR);
+  Registry maxPoolParameterRegistry(schema::PrimitiveType_MaxPoolGrad, PopulateMaxPoolGradParameter, lite::SCHEMA_CUR);
+  Registry PowerGradParameterRegistry(schema::PrimitiveType_PowerGrad, PopulatePowerGradParameter, lite::SCHEMA_CUR);
+  Registry SgdParameterRegistry(schema::PrimitiveType_SGD, PopulateSgdParameter, lite::SCHEMA_CUR);
+  Registry BNGradParameterRegistry(schema::PrimitiveType_BatchNormGrad, PopulateBNGradParameter, lite::SCHEMA_CUR);
+  Registry AdamParameterRegistry(schema::PrimitiveType_Adam, PopulateAdamParameter, lite::SCHEMA_CUR);
+  Registry AssignParameterRegistry(schema::PrimitiveType_Assign, lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry AssignAddParameterRegistry(schema::PrimitiveType_AssignAdd, lite::DefaultPopulateParameter,
                                       lite::SCHEMA_CUR);
-  lite::Registry SmoothL1LossGradRegistry(schema::PrimitiveType_SmoothL1LossGrad, PopulateSmoothL1LossGradParameter,
-                                          lite::SCHEMA_CUR);
-  lite::Registry SigmoidCrossEntropyWithLogitsRegistry(schema::PrimitiveType_SigmoidCrossEntropyWithLogits,
-                                                       lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
-  lite::Registry SigmoidCrossEntropyWithLogitsGradRegistry(schema::PrimitiveType_SigmoidCrossEntropyWithLogitsGrad,
-                                                           lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
-  lite::Registry FlattenGradParameterRegistry(schema::PrimitiveType_FlattenGrad, lite::DefaultPopulateParameter,
-                                              lite::SCHEMA_CUR);
-  lite::Registry StridedSliceGradParameterRegistry(schema::PrimitiveType_StridedSliceGrad,
-                                                   PopulateStridedSliceGradParameter, lite::SCHEMA_CUR);
-  lite::Registry SqrtGradParameterRegistry(schema::PrimitiveType_SqrtGrad, lite::DefaultPopulateParameter,
-                                           lite::SCHEMA_CUR);
-  lite::Registry RsqrtGradParameterRegistry(schema::PrimitiveType_RsqrtGrad, lite::DefaultPopulateParameter,
-                                            lite::SCHEMA_CUR);
+  Registry BinaryCrossEntropyParameterRegistry(schema::PrimitiveType_BinaryCrossEntropy, PopulateBCEParameter,
+                                               lite::SCHEMA_CUR);
+  Registry BinaryCrossEntropyGradParameterRegistry(schema::PrimitiveType_BinaryCrossEntropyGrad,
+                                                   PopulateBCEGradParameter, lite::SCHEMA_CUR);
+  Registry OnesLikeParameterRegistry(schema::PrimitiveType_OnesLike, lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry UnsortedSegmentSumParameterRegistry(schema::PrimitiveType_UnsortedSegmentSum, lite::DefaultPopulateParameter,
+                                               lite::SCHEMA_CUR);
+  Registry DropoutParameterRegistry(schema::PrimitiveType_Dropout, PopulateDropoutParameter, lite::SCHEMA_CUR);
+  Registry DropGradParameterRegistry(schema::PrimitiveType_DropoutGrad, PopulateDropoutGradParameter, lite::SCHEMA_CUR);
+  Registry MaximumGradParameterRegistry(schema::PrimitiveType_MaximumGrad, PopulateArithmeticGradParameter,
+                                        lite::SCHEMA_CUR);
+  Registry MinimumGradParameterRegistry(schema::PrimitiveType_MinimumGrad, PopulateArithmeticGradParameter,
+                                        lite::SCHEMA_CUR);
+  Registry SmoothL1LossRegistry(schema::PrimitiveType_SmoothL1Loss, PopulateSmoothL1LossParameter, lite::SCHEMA_CUR);
+  Registry SmoothL1LossGradRegistry(schema::PrimitiveType_SmoothL1LossGrad, PopulateSmoothL1LossGradParameter,
+                                    lite::SCHEMA_CUR);
+  Registry SigmoidCrossEntropyWithLogitsRegistry(schema::PrimitiveType_SigmoidCrossEntropyWithLogits,
+                                                 lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry SigmoidCrossEntropyWithLogitsGradRegistry(schema::PrimitiveType_SigmoidCrossEntropyWithLogitsGrad,
+                                                     lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry FlattenGradParameterRegistry(schema::PrimitiveType_FlattenGrad, lite::DefaultPopulateParameter,
+                                        lite::SCHEMA_CUR);
+  Registry StridedSliceGradParameterRegistry(schema::PrimitiveType_StridedSliceGrad, PopulateStridedSliceGradParameter,
+                                             lite::SCHEMA_CUR);
+  Registry SqrtGradParameterRegistry(schema::PrimitiveType_SqrtGrad, lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
+  Registry RsqrtGradParameterRegistry(schema::PrimitiveType_RsqrtGrad, lite::DefaultPopulateParameter,
+                                      lite::SCHEMA_CUR);
   Registry ResizeGradParameterRegistry(schema::PrimitiveType_ResizeGrad, PopulateResizeGradParameter, lite::SCHEMA_CUR);
   Registry AbsGradParameterRegistry(schema::PrimitiveType_AbsGrad, lite::DefaultPopulateParameter, lite::SCHEMA_CUR);
   Registry LSTMGradParameterRegistry(schema::PrimitiveType_LSTMGrad, PopulateLstmGradParameter, lite::SCHEMA_CUR);

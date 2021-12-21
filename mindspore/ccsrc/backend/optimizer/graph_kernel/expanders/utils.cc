@@ -22,11 +22,9 @@
 #include "backend/optimizer/graph_kernel/model/lite_graph.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
 
-namespace mindspore {
-namespace opt {
-namespace expanders {
-graphkernel::LiteGraphPtr OpExpander::Run(const BaseInfoList &inputs, const BaseInfoList &outputs,
-                                          const graphkernel::DAttrs &attrs, const std::string &processor) {
+namespace mindspore::graphkernel::expanders {
+inner::LiteGraphPtr OpDesc::Run(const BaseInfoList &inputs, const BaseInfoList &outputs, const inner::DAttrs &attrs,
+                                const std::string &processor) {
   this->inputs_info_ = inputs;
   this->outputs_info_ = outputs;
   this->attrs_ = attrs;
@@ -49,7 +47,7 @@ graphkernel::LiteGraphPtr OpExpander::Run(const BaseInfoList &inputs, const Base
   return gb.Get();
 }
 
-bool OpExpander::CheckOutputs() {
+bool OpDesc::CheckOutputs() {
   // check the output shape/type/format are same as the original basic node's output.
   const NodePtrList &outputs = gb.Get()->GetOutputs();
   if (outputs.size() != this->outputs_info_.size()) {
@@ -91,14 +89,12 @@ std::vector<int64_t> GetAxisList(const ValuePtr &value) {
   auto get_int_value = [](const ValuePtr &value) -> int64_t {
     return value->isa<Int64Imm>() ? GetValue<int64_t>(value) : static_cast<int64_t>(GetValue<int>(value));
   };
-  if (value->isa<ValueSequeue>()) {
-    const auto &vals = value->cast<ValueSequeuePtr>()->value();
+  if (value->isa<ValueSequence>()) {
+    const auto &vals = value->cast<ValueSequencePtr>()->value();
     (void)std::transform(vals.begin(), vals.end(), std::back_inserter(result), get_int_value);
   } else {
     result.push_back(get_int_value(value));
   }
   return result;
 }
-}  // namespace expanders
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::expanders

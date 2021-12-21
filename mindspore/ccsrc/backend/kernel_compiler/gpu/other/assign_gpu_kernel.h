@@ -26,7 +26,7 @@ namespace kernel {
 template <typename T>
 class AssignGpuKernel : public GpuKernel {
  public:
-  AssignGpuKernel() : input_size_(0) {}
+  AssignGpuKernel() : input_size_(0), is_null_input_(false) {}
   ~AssignGpuKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -34,6 +34,9 @@ class AssignGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *var = GetDeviceAddress<T>(inputs, 0);
     T *value = GetDeviceAddress<T>(inputs, 1);
     T *output = GetDeviceAddress<T>(outputs, 0);
@@ -55,6 +58,12 @@ class AssignGpuKernel : public GpuKernel {
       return false;
     }
     auto shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'AssignGpuKernel', input is null";
+      InitSizeLists();
+      return true;
+    }
     input_size_ = sizeof(T);
     for (size_t x : shape) {
       input_size_ = input_size_ * x;
@@ -91,6 +100,7 @@ class AssignGpuKernel : public GpuKernel {
   std::vector<size_t> workspace_size_list_;
 
   size_t input_size_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

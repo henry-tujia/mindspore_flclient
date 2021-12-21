@@ -30,17 +30,17 @@ using mindspore::schema::PrimitiveType_Transpose;
 namespace mindspore::kernel {
 int TransposeOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_2 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "Transpose input output size unsupported.";
+    MS_LOG(WARNING) << "Transpose input output size unsupported.";
     return RET_ERROR;
   }
   int in_ndim = in_tensors_.at(0)->shape().size();
   int out_ndim = out_tensors_.at(0)->shape().size();
   if (in_ndim != out_ndim) {
-    MS_LOG(ERROR) << "Transpose only support in_ndim equal to out_ndim.";
+    MS_LOG(WARNING) << "Transpose only support in_ndim equal to out_ndim.";
     return RET_ERROR;
   }
   if (in_ndim > DIMENSION_4D) {
-    MS_LOG(ERROR) << "Transpose don't support 5d tensor or higher.";
+    MS_LOG(WARNING) << "Transpose don't support 5d tensor or higher.";
     return RET_ERROR;
   }
   if (CheckParamLikeTensor("Transpose", "perm", in_tensors_.at(1), kNumberTypeInt32, {in_ndim}) != RET_OK) {
@@ -58,7 +58,7 @@ int TransposeOpenCLKernel::Prepare() {
     perm_4d_[1] = 1;
     perm_4d_[2] = 2;
     perm_4d_[3] = tensor_size_.AlignAxis(perm[1]);
-    if (num_axes != tensor_size_.NDim) {
+    if (num_axes != static_cast<int>(tensor_size_.NDim)) {
       perm_4d_[0] = 0;
       perm_4d_[1] = 1;
       perm_4d_[2] = 2;
@@ -93,8 +93,9 @@ int TransposeOpenCLKernel::Prepare() {
     kernel_name += "_general";
   }
 
-  if (in_tensors_[0]->shape().size() == DIMENSION_4D &&
-      in_tensors_[0]->shape()[2] * UP_DIV(in_tensors_[0]->shape()[3], C4NUM) > ocl_runtime_->GetMaxImage2DWidth()) {
+  if (in_tensors_[0]->shape().size() == static_cast<int>(DIMENSION_4D) &&
+      in_tensors_[0]->shape()[2] * UP_DIV(in_tensors_[0]->shape()[3], C4NUM) >
+        static_cast<int>(ocl_runtime_->GetMaxImage2DWidth())) {
     // just for input
     kernel_name += "_oversize";
   }

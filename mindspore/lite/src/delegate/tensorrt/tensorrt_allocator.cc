@@ -30,7 +30,7 @@ void *TensorRTAllocator::MallocDeviceMem(const mindspore::MSTensor &host_tensor,
 
 void *TensorRTAllocator::MallocDeviceMem(const std::string &name, size_t size, nvinfer1::DataType data_type) {
   if (cuda_tensor_map_.find(name) != cuda_tensor_map_.end() && size <= cuda_tensor_map_[name].size) {
-    MS_LOG(INFO) << "tensor :" << name << " has already in cuda Allocator pool.";
+    MS_LOG(DEBUG) << "tensor :" << name << " has already in cuda Allocator pool.";
     return cuda_tensor_map_[name].data;
   }
   void *device_ptr = nullptr;
@@ -63,6 +63,14 @@ void TensorRTAllocator::MarkMemValid(const std::string &name, bool isValid) {
   return;
 }
 
+bool TensorRTAllocator::GetMemIsValid(const std::string &name) {
+  if (cuda_tensor_map_.find(name) == cuda_tensor_map_.end()) {
+    MS_LOG(WARNING) << "tensor :" << name << " not in cuda Allocator pool.";
+    return false;
+  }
+  return cuda_tensor_map_[name].is_valid_mem;
+}
+
 void *TensorRTAllocator::GetDevicePtr(const std::string &tensor_name) {
   if (tensor_name.empty()) {
     return nullptr;
@@ -93,7 +101,7 @@ int TensorRTAllocator::SyncMemInHostAndDevice(void *host_data, const std::string
   // is memcpy from device to host, the host mem is valid, change tag for mem pool.
   current_cuda_tensor.is_valid_mem = is_host2device ? current_cuda_tensor.is_valid_mem : true;
   if (is_host2device && current_cuda_tensor.is_valid_mem) {
-    MS_LOG(INFO) << "no need memcpy for: " << device_tensor_name;
+    MS_LOG(DEBUG) << "no need memcpy for: " << device_tensor_name;
     return RET_OK;
   }
   auto device_ptr = current_cuda_tensor.data;
@@ -107,7 +115,7 @@ int TensorRTAllocator::SyncMemInHostAndDevice(void *host_data, const std::string
   cudaMemcpyKind kind = is_host2device ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost;
   auto cuda_ret = cudaMemcpy(dst_ptr, src_ptr, data_size, kind);
   if (cuda_ret != cudaSuccess) {
-    MS_LOG(ERROR) << "copy mem failed.";
+    MS_LOG(ERROR) << "copy mem failed,ret " << cudaGetErrorName(cuda_ret);
     return RET_ERROR;
   }
   MS_LOG(INFO) << "cuda memcpy success for " << device_tensor_name;
@@ -125,4 +133,5 @@ int TensorRTAllocator::ClearDeviceMem() {
   }
   return RET_OK;
 }
+std::map<std::string, CudaTensorParam> TensorRTAllocator::GetAllDevicePtr() { return this->cuda_tensor_map_; }
 }  // namespace mindspore::lite

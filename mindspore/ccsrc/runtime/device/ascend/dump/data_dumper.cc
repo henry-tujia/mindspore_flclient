@@ -22,7 +22,9 @@
 #include <limits>
 #include "utility"
 #include "backend/session/anf_runtime_algorithm.h"
+#include "utils/convert_utils_base.h"
 #include "runtime/mem.h"
+#include "acl/acl_rt.h"
 #include "runtime/kernel.h"
 #include "runtime/rt_model.h"
 #include "runtime/device/ascend/ge_types_convert.h"
@@ -41,9 +43,6 @@ static constexpr uint32_t kAicpuUnloadFlag = 0;
 static constexpr uint32_t kTupleTaskId = 0;
 static constexpr uint32_t kTupleStreamId = 1;
 static constexpr uint32_t kTupleArgs = 2;
-static constexpr uint32_t kCurrentStepTensorIndex = 0;
-static constexpr uint32_t kCurrentEpochTensorIndex = 2;
-static constexpr uint32_t kStepsPerEpochTensorIndex = 3;
 static constexpr uint64_t kOpDebugShape = 2048;
 static constexpr uint64_t kOpDebugHostMemSize = 2048;
 static constexpr uint64_t kOpDebugDevMemSize = sizeof(void *);
@@ -58,6 +57,10 @@ static const std::map<uint32_t, std::string> kOverflowModeStr = {{kNoOverflow, "
 constexpr const char *kNodeNameOpDebug = "Node_OpDebug";
 constexpr const char *kOpTypeOpDebug = "Opdebug";
 
+static constexpr auto kCurLoopCountName = "current_loop_count";
+static constexpr auto kCurEpochCountName = "current_epoch_count";
+static constexpr auto kConstLoopNumInEpochName = "const_loop_num_in_epoch";
+
 namespace mindspore {
 namespace device {
 namespace ascend {
@@ -71,22 +74,31 @@ DataDumper::~DataDumper() {
 
 #ifndef ENABLE_SECURITY
 void DataDumper::GetNeedDumpKernelList(NotNull<std::map<std::string, CNodePtr> *> kernel_map) const {
+  MS_EXCEPTION_IF_NULL(kernel_graph_);
   for (const auto &kernel : kernel_graph_->execution_order()) {
+    MS_EXCEPTION_IF_NULL(kernel);
     if (AnfAlgo::GetKernelType(kernel) == HCCL_KERNEL &&
         DumpJsonParser::GetInstance().NeedDump(kernel->fullname_with_scope())) {
       auto input_size = AnfAlgo::GetInputTensorNum(kernel);
       for (size_t i = 0; i < input_size; ++i) {
         auto input_with_index = AnfAlgo::GetPrevNodeOutput(kernel, i);
         auto input = input_with_index.first;
+        MS_EXCEPTION_IF_NULL(input);
         if (input->isa<CNode>()) {
           MS_LOG(INFO) << "[AsyncDump] Match Hccl Node:" << kernel->fullname_with_scope()
                        << " Input:" << input->fullname_with_scope();
-          kernel_map->try_emplace(input->fullname_with_scope(), input->cast<CNodePtr>());
+          auto it = kernel_map->try_emplace(input->fullname_with_scope(), input->cast<CNodePtr>());
+          if (!it.second) {
+            MS_LOG(INFO) << "Node name already exist: " << input->fullname_with_scope();
+          }
         }
       }
     } else if (KernelNeedDump(kernel)) {
       MS_LOG(INFO) << "[AsyncDump] Match Node:" << kernel->fullname_with_scope();
-      kernel_map->try_emplace(kernel->fullname_with_scope(), kernel);
+      auto it = kernel_map->try_emplace(kernel->fullname_with_scope(), kernel);
+      if (!it.second) {
+        MS_LOG(INFO) << "Node name already exist: " << kernel->fullname_with_scope();
+      }
     }
   }
 }
@@ -126,9 +138,9 @@ void DataDumper::SetOpMappingInfo(NotNull<aicpu::dump::OpMappingInfo *> dump_inf
   MS_EXCEPTION_IF_NULL(context_ptr);
   MS_EXCEPTION_IF_NULL(kernel_graph_);
   auto dump_path = DumpJsonParser::GetInstance().path();
-  const auto &input_ctrl_tensors = kernel_graph_->input_ctrl_tensors();
-  constexpr size_t kLoopSinkCtrlTensorNum = 3;  // cur step, cur epoch, steps per epoch
-  bool valid_ctrl_tensors = input_ctrl_tensors != nullptr && input_ctrl_tensors->size() >= kLoopSinkCtrlTensorNum;
+  auto input_ctrl_tensors = kernel_graph_->device_loop_control_tensors();
+  constexpr size_t kLoopSinkCtrlTensorNum = 5;  // cur step, next step, cur epoch, one, steps per epoch
+  bool valid_ctrl_tensors = input_ctrl_tensors.size() >= kLoopSinkCtrlTensorNum;
   std::string net_name = DumpJsonParser::GetInstance().net_name();
   std::string iteration = DumpJsonParser::GetInstance().iteration_string();
 
@@ -167,19 +179,19 @@ void DataDumper::SetOpMappingInfo(NotNull<aicpu::dump::OpMappingInfo *> dump_inf
     MS_LOG(INFO) << "[DataDump] input_ctrl_tensors not valid.";
     return;
   }
-  const auto &current_step_tensor = input_ctrl_tensors->at(kCurrentStepTensorIndex);
-  const auto &currnet_epoch_tensor = input_ctrl_tensors->at(kCurrentEpochTensorIndex);
-  const auto &steps_per_epoch_tensor = input_ctrl_tensors->at(kStepsPerEpochTensorIndex);
+  const auto &current_step_tensor = input_ctrl_tensors[kCurLoopCountName];
+  const auto &current_epoch_tensor = input_ctrl_tensors[kCurEpochCountName];
+  const auto &steps_per_epoch_tensor = input_ctrl_tensors[kConstLoopNumInEpochName];
 
   MS_EXCEPTION_IF_NULL(current_step_tensor);
-  MS_EXCEPTION_IF_NULL(currnet_epoch_tensor);
+  MS_EXCEPTION_IF_NULL(current_epoch_tensor);
   MS_EXCEPTION_IF_NULL(steps_per_epoch_tensor);
   MS_EXCEPTION_IF_NULL(current_step_tensor->device_address());
-  MS_EXCEPTION_IF_NULL(currnet_epoch_tensor->device_address());
+  MS_EXCEPTION_IF_NULL(current_epoch_tensor->device_address());
   MS_EXCEPTION_IF_NULL(steps_per_epoch_tensor->device_address());
 
   void *current_step = current_step_tensor->device_address()->GetMutablePtr();
-  void *current_epoch = currnet_epoch_tensor->device_address()->GetMutablePtr();
+  void *current_epoch = current_epoch_tensor->device_address()->GetMutablePtr();
   void *steps_per_epoch = steps_per_epoch_tensor->device_address()->GetMutablePtr();
 
   if (current_epoch != nullptr && current_step != nullptr && steps_per_epoch != nullptr) {
@@ -276,6 +288,7 @@ void DataDumper::SetOpDebugMappingInfo(const NotNull<aicpu::dump::OpMappingInfo 
   task.set_end_graph(false);
   task.set_task_id(debug_task_id_);
   task.set_stream_id(debug_stream_id_);
+  MS_EXCEPTION_IF_NULL(task.mutable_op());
   task.mutable_op()->set_op_name(kNodeNameOpDebug);
   task.mutable_op()->set_op_type(kOpTypeOpDebug);
 
@@ -283,6 +296,7 @@ void DataDumper::SetOpDebugMappingInfo(const NotNull<aicpu::dump::OpMappingInfo 
   output.set_data_type(ge::proto::DataType::DT_UINT8);
   output.set_format(ge::Format::FORMAT_ND);
 
+  MS_EXCEPTION_IF_NULL(output.mutable_shape());
   output.mutable_shape()->add_dim(kOpDebugShape);
 
   output.set_original_name(kNodeNameOpDebug);
@@ -293,7 +307,9 @@ void DataDumper::SetOpDebugMappingInfo(const NotNull<aicpu::dump::OpMappingInfo 
   output.set_address(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(op_debug_dump_args_)));
   output.set_size(kOpDebugHostMemSize);
 
+  MS_EXCEPTION_IF_NULL(task.mutable_output());
   task.mutable_output()->Add(std::move(output));
+  MS_EXCEPTION_IF_NULL(dump_info->mutable_task());
   dump_info->mutable_task()->Add(std::move(task));
 }
 
@@ -309,7 +325,7 @@ void DataDumper::OpDebugRegister() {
     return;
   }
 
-  rtError_t rt_ret = rtMalloc(&op_debug_buffer_addr_, kOpDebugHostMemSize, RT_MEMORY_DDR);
+  rtError_t rt_ret = rtMalloc(&op_debug_buffer_addr_, kOpDebugHostMemSize, RT_MEMORY_TS);
   if (rt_ret != RT_ERROR_NONE) {
     MS_LOG(EXCEPTION) << "[DataDump] Call rtMalloc failed, ret = " << rt_ret;
   }
@@ -320,9 +336,9 @@ void DataDumper::OpDebugRegister() {
   }
 
   rt_ret =
-    rtMemcpy(op_debug_dump_args_, sizeof(void *), &op_debug_buffer_addr_, sizeof(void *), RT_MEMCPY_HOST_TO_DEVICE);
+    aclrtMemcpy(op_debug_dump_args_, sizeof(void *), &op_debug_buffer_addr_, sizeof(void *), ACL_MEMCPY_HOST_TO_DEVICE);
   if (rt_ret != RT_ERROR_NONE) {
-    MS_LOG(EXCEPTION) << "[DataDump] Call rtMemcpy failed, ret = " << rt_ret;
+    MS_LOG(EXCEPTION) << "[DataDump] Call aclrtMemcpy failed, ret = " << rt_ret;
   }
 
   rt_ret = rtDebugRegister(model_handle_(), op_debug_mode, op_debug_buffer_addr_, &debug_stream_id_, &debug_task_id_);
@@ -366,9 +382,9 @@ void DataDumper::RtLoadDumpData(const aicpu::dump::OpMappingInfo &dump_info, voi
   if (rt_ret != RT_ERROR_NONE) {
     MS_LOG(EXCEPTION) << "[DataDump] Call rtMalloc failed";
   }
-  rt_ret = rtMemcpy(*ptr, proto_size, proto_str.c_str(), proto_size, RT_MEMCPY_HOST_TO_DEVICE);
+  rt_ret = aclrtMemcpy(*ptr, proto_size, proto_str.c_str(), proto_size, ACL_MEMCPY_HOST_TO_DEVICE);
   if (rt_ret != RT_ERROR_NONE) {
-    MS_LOG(EXCEPTION) << "[DataDump] Call rtMemcpy failed";
+    MS_LOG(EXCEPTION) << "[DataDump] Call aclrtMemcpy failed";
   }
 
   MS_LOG(INFO) << "[DataDump] rtDatadumpInfoLoad start";
@@ -419,7 +435,7 @@ void DataDumper::DumpKernelOutput(const CNodePtr &kernel, void *args, NotNull<ai
     MS_LOG(INFO) << "[DataDump] output " << i << " address size:" << output.size();
     MS_EXCEPTION_IF_NULL(task->mutable_output());
     task->mutable_output()->Add(std::move(output));
-    offset += sizeof(void *);
+    offset = SizetAddWithOverflowCheck(offset, sizeof(void *));
   }
 }
 
@@ -428,6 +444,7 @@ void DataDumper::DumpKernelInput(const CNodePtr &kernel, void *args, NotNull<aic
     MS_LOG(INFO) << "Skip dump input";
     return;
   }
+  MS_EXCEPTION_IF_NULL(kernel);
   if (AnfAlgo::IsNodeInputContainMonad(kernel)) {
     MS_LOG(WARNING) << "Skip Monad node:" << kernel->fullname_with_scope();
     return;
@@ -462,7 +479,7 @@ void DataDumper::DumpKernelInput(const CNodePtr &kernel, void *args, NotNull<aic
     MS_LOG(INFO) << "[DataDump] input " << i << " address size:" << input.size();
     MS_EXCEPTION_IF_NULL(task->mutable_input());
     task->mutable_input()->Add(std::move(input));
-    offset += sizeof(void *);
+    offset = SizetAddWithOverflowCheck(offset, sizeof(void *));
   }
 }
 #endif

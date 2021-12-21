@@ -67,7 +67,7 @@ class RepeatOp : public PipelineOp {
   // @param worker_id - The worker id
   // @param retry_if_eoe Set this flag to true to allow calling pop() again after the first pop() returns EOE.
   // @return Status The status code returned
-  Status GetNextRow(TensorRow *row, int32_t worker_id, bool retry_if_eoe) override;
+  Status GetNextRow(TensorRow *row) override;
 
   // Base-class override for handling cases when an eoe is received.
   // @param worker_id - The worker id
@@ -76,14 +76,6 @@ class RepeatOp : public PipelineOp {
   // Base-class override for handling cases when an eof is received.
   // @param worker_id - The worker id
   Status EofReceived(int32_t worker_id) override;
-
-  // Base-class override. Return the number of workers in the first parent.
-  // @param workerId - The worker id
-  int32_t num_consumers() const override;
-
-  // Base-class override. Return the number of producers in the first child.
-  // @param workerId - The worker id
-  int32_t num_producers() const override;
 
   // Op name getter
   // @return Name of the current Op

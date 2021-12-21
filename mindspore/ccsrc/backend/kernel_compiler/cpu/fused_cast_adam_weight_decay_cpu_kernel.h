@@ -26,7 +26,7 @@ namespace kernel {
 constexpr size_t kSizeFloat32 = sizeof(float);
 constexpr size_t kSizeFloat16 = sizeof(float16);
 constexpr size_t kScalarIndex = 0;
-constexpr size_t kFusedCastAdamWeightDecayInputNum = 9;
+constexpr size_t kFusedCastAdamWeightDecayInputNum = 10;
 constexpr size_t kFusedCastAdamWeightDecayOutputNum = 3;
 
 class FusedCastAdamWeightDecayCPUKernel : public CPUKernel {
@@ -38,14 +38,14 @@ class FusedCastAdamWeightDecayCPUKernel : public CPUKernel {
               const std::vector<AddressPtr> &outputs) override;
 
  private:
-  void CheckParam(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs);
+  void CheckParam(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) const;
   void LaunchFusedCastAdamFp32(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs);
   void LaunchFusedCastAdamFp16(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs);
 
   size_t elem_num_{0};
   TypeId var_dtype_{kTypeUnknown};
   TypeId gradient_dtype_{kTypeUnknown};
-  enum input_list_ { VAR, M, V, LR, BETA1, BETA2, EPSILON, DECAY, GRAD };
+  enum input_list_ { VAR, M, V, LR, BETA1, BETA2, EPSILON, DECAY, GRAD, GLOBAL_NORM };
 };
 
 MS_REG_CPU_KERNEL(FusedCastAdamWeightDecay,
@@ -59,6 +59,7 @@ MS_REG_CPU_KERNEL(FusedCastAdamWeightDecay,
                     .AddInputAttr(kNumberTypeFloat32)
                     .AddInputAttr(kNumberTypeFloat32)
                     .AddInputAttr(kNumberTypeFloat16)
+                    .AddInputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat32),
@@ -75,6 +76,7 @@ MS_REG_CPU_KERNEL(FusedCastAdamWeightDecay,
                     .AddInputAttr(kNumberTypeFloat32)
                     .AddInputAttr(kNumberTypeFloat32)
                     .AddInputAttr(kNumberTypeFloat16)
+                    .AddInputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat16)
                     .AddOutputAttr(kNumberTypeFloat32)
                     .AddOutputAttr(kNumberTypeFloat32),

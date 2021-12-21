@@ -80,11 +80,16 @@ class DeviceManager {
   int64_t rank_index_in_stage() const { return rank_index_in_stage_; }
   int64_t global_rank() const { return global_rank_; }
   std::string backend() const { return backend_; }
+  GroupManager group_manager() const { return gm_; }
+  void set_group_manager(const GroupManager &gm) { gm_ = gm; }
+
+  std::vector<std::vector<int64_t>> stage_devices() const { return stage_devices_; }
 
   void Clear();
   std::string world_group() const { return gm_.world_group(); }
   std::vector<std::pair<std::string, std::vector<uint32_t>>> group_info() const { return gm_.group_info(); }
   std::string FindRankListNameByHashName(const std::string &hash_name);
+  RankList FindRankListByHashName(const std::string &hash_name);
 
  private:
   std::vector<std::shared_ptr<Device>> devices_;

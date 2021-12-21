@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import mindspore.dataset as ds
+import mindspore.dataset.engine.iterators as it
 from mindspore import log as logger
 
 DATA_DIR = ["../data/dataset/testPyfuncMap/data.data"]
@@ -188,6 +189,10 @@ def test_case_7():
     """
     logger.info("Test 1-1 PyFunc Multiprocess: lambda x : x + x")
 
+    # Reduce memory required by disabling the shared memory optimization
+    mem_original = ds.config.get_enable_shared_mem()
+    ds.config.set_enable_shared_mem(False)
+
     # apply dataset operations
     data1 = ds.TFRecordDataset(DATA_DIR, SCHEMA_DIR, shuffle=False)
 
@@ -201,12 +206,17 @@ def test_case_7():
         np.testing.assert_array_equal(item["out"], golden)
         i = i + 4
 
+    ds.config.set_enable_shared_mem(mem_original)
 
 def test_case_8():
     """
     Test PyFunc
     """
     logger.info("Test Multiprocess n-m PyFunc : lambda x, y : (x , x + 1, x + y)")
+
+    # Reduce memory required by disabling the shared memory optimization
+    mem_original = ds.config.get_enable_shared_mem()
+    ds.config.set_enable_shared_mem(False)
 
     col = ["col0", "col1"]
 
@@ -229,12 +239,17 @@ def test_case_8():
         np.testing.assert_array_equal(item["out2"], golden)
         i = i + 4
 
+    ds.config.set_enable_shared_mem(mem_original)
 
 def test_case_9():
     """
     Test PyFunc
     """
     logger.info("Test multiple 1-1 PyFunc Multiprocess: lambda x : x + x")
+
+    # Reduce memory required by disabling the shared memory optimization
+    mem_original = ds.config.get_enable_shared_mem()
+    ds.config.set_enable_shared_mem(False)
 
     # apply dataset operations
     data1 = ds.TFRecordDataset(DATA_DIR, SCHEMA_DIR, shuffle=False)
@@ -249,12 +264,17 @@ def test_case_9():
         np.testing.assert_array_equal(item["out"], golden)
         i = i + 4
 
+    ds.config.set_enable_shared_mem(mem_original)
 
 def test_case_10():
     """
     Test PyFunc
     """
     logger.info("Test multiple map with multiprocess: lambda x : x + x")
+
+    # Reduce memory required by disabling the shared memory optimization
+    mem_original = ds.config.get_enable_shared_mem()
+    ds.config.set_enable_shared_mem(False)
 
     # apply dataset operations
     data1 = ds.TFRecordDataset(DATA_DIR, SCHEMA_DIR, shuffle=False)
@@ -271,6 +291,7 @@ def test_case_10():
         np.testing.assert_array_equal(item["out"], golden)
         i = i + 4
 
+    ds.config.set_enable_shared_mem(mem_original)
 
 def test_pyfunc_implicit_compose():
     """
@@ -300,6 +321,10 @@ def test_pyfunc_implicit_compose():
 
 def test_pyfunc_exception():
     logger.info("Test PyFunc Exception Throw: lambda x : raise Exception()")
+
+    # Sometimes there are some ITERATORS left in ITERATORS_LIST when run all UTs together,
+    # and cause core dump and blocking in this UT. Add cleanup() here to fix it.
+    it._cleanup()  # pylint: disable=W0212
 
     def pyfunc(x):
         raise Exception("Pyfunc Throw")
@@ -335,12 +360,17 @@ def test_func_with_yield_manifest_dataset_01():
         for i in range(10):
             yield (np.array([i]),)
 
+    # Sometimes there are some ITERATORS left in ITERATORS_LIST when run all UTs together,
+    # and cause core dump and blocking in this UT. Add cleanup() here to fix it.
+    it._cleanup()  # pylint: disable=W0212
+
     DATA_FILE = "../data/dataset/testManifestData/test.manifest"
     data = ds.ManifestDataset(DATA_FILE)
-    data = data.map(operations=pass_func, input_columns=["image"], num_parallel_workers=1, python_multiprocessing=True)
+    data = data.map(operations=pass_func, input_columns=["image"], num_parallel_workers=1, python_multiprocessing=True,
+                    max_rowsize=1)
     num_iter = 0
     try:
-        for _ in data.create_dict_iterator(output_numpy=True):
+        for _ in data.create_dict_iterator(num_epochs=1, output_numpy=True):
             num_iter += 1
     except RuntimeError as e:
         assert "Can not pickle <class 'generator'> object, " in str(e)

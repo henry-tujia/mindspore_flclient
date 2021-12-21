@@ -35,6 +35,7 @@ MsContext::MsContext(const std::string &policy, const std::string &target) {
 #ifndef ENABLE_SECURITY
   set_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG, false);
   set_param<std::string>(MS_CTX_SAVE_GRAPHS_PATH, ".");
+  set_param<std::string>(MS_CTX_COMPILE_CACHE_PATH, "");
 #else
   // Need set a default value for arrays even if running in the security mode.
   bool_params_[MS_CTX_SAVE_GRAPHS_FLAG - MS_CTX_TYPE_BOOL_BEGIN] = false;
@@ -81,18 +82,16 @@ MsContext::MsContext(const std::string &policy, const std::string &target) {
   set_param<std::string>(MS_CTX_VARIABLE_MEMORY_MAX_SIZE, "0");
   set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, target == kAscendDevice || target == kDavinciDevice);
   set_param<bool>(MS_CTX_ENABLE_PROFILING, false);
-  set_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER, false);
   set_param<std::string>(MS_CTX_PROFILING_OPTIONS, "training_trace");
   set_param<bool>(MS_CTX_CHECK_BPROP_FLAG, false);
   set_param<float>(MS_CTX_MAX_DEVICE_MEMORY, kDefaultMaxDeviceMemory);
+  set_param<float>(MS_CTX_MEMPOOL_BLOCK_SIZE, kDefaultMempoolBlockSize);
   set_param<std::string>(MS_CTX_PRINT_FILE_PATH, "");
   set_param<bool>(MS_CTX_ENABLE_GRAPH_KERNEL, false);
   set_param<bool>(MS_CTX_ENABLE_SPARSE, false);
   set_param<bool>(MS_CTX_ENABLE_PARALLEL_SPLIT, false);
   set_param<bool>(MS_CTX_ENABLE_INFER_OPT, false);
   set_param<bool>(MS_CTX_GRAD_FOR_SCALAR, false);
-  set_param<bool>(MS_CTX_SAVE_COMPILE_CACHE, false);
-  set_param<bool>(MS_CTX_LOAD_COMPILE_CACHE, false);
   set_param<bool>(MS_CTX_ENABLE_MINDRT, false);
   set_param<bool>(MS_CTX_ALREADY_SET_ENABLE_MINDRT, false);
   set_param<bool>(MS_CTX_ENABLE_PYNATIVE_SYNCHRONIZE, false);
@@ -190,5 +189,4 @@ bool MsContext::enable_dump_ir() const {
   return false;
 #endif
 }
-
 }  // namespace mindspore

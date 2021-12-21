@@ -37,11 +37,7 @@ template <typename T, typename S>
 class ScatterNdFunctorKernel : public GpuKernel {
  public:
   ScatterNdFunctorKernel() { ResetResource(); }
-  ~ScatterNdFunctorKernel() {
-    if (indices_stride_ != nullptr) {
-      device::gpu::GPUMemoryAllocator::GetInstance().FreeTensorMem(static_cast<void *>(indices_stride_));
-    }
-  }
+  ~ScatterNdFunctorKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -53,23 +49,19 @@ class ScatterNdFunctorKernel : public GpuKernel {
     S *indices = GetDeviceAddress<S>(inputs, 1);
     T *updates = GetDeviceAddress<T>(inputs, 2);
     T *output = GetDeviceAddress<T>(outputs, 0);
-
     const size_t indices_len = sizeof(S) * out_strides_.size();
-    void *indices_stride_work = device::gpu::GPUMemoryAllocator::GetInstance().AllocTensorMem(indices_len);
-    if (indices_stride_work == nullptr) {
-      MS_LOG(EXCEPTION) << "Failed to alloc indices_stride_work, size: " << indices_len;
-    }
-    indices_stride_ = static_cast<S *>(indices_stride_work);
+    S *indices_stride = GetDeviceAddress<S>(workspace, 0);
+
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
-                               cudaMemcpyAsync(indices_stride_, &out_strides_[0], indices_len, cudaMemcpyHostToDevice,
+                               cudaMemcpyAsync(indices_stride, &out_strides_[0], indices_len, cudaMemcpyHostToDevice,
                                                reinterpret_cast<cudaStream_t>(stream_ptr)),
                                "cudaMemcpyAsync failed in ScatterNdFunctorGpuFwdKernel::Launch.");
-    CalScatterNdFunctor(scatter_nd_functor_type_, unit_size_, num_units_, index_depth_, indices_stride_, indices,
-                        updates, input, reinterpret_cast<cudaStream_t>(stream_ptr));
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
                                cudaMemcpyAsync(&output[0], &input[0], input_size_ * sizeof(T), cudaMemcpyDeviceToDevice,
                                                reinterpret_cast<cudaStream_t>(stream_ptr)),
                                "cudaMemcpyAsync output failed");
+    CalScatterNdFunctor(scatter_nd_functor_type_, unit_size_, num_units_, index_depth_, indices_stride, indices,
+                        updates, output, reinterpret_cast<cudaStream_t>(stream_ptr));
     return true;
   }
 
@@ -77,20 +69,20 @@ class ScatterNdFunctorKernel : public GpuKernel {
     std::string kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     auto iter = kScatterNdFunctorTypeMap.find(kernel_name);
     if (iter == kScatterNdFunctorTypeMap.end()) {
-      MS_LOG(EXCEPTION) << "ScatterNd functor " << kernel_name << " is not supported.";
+      MS_LOG(EXCEPTION)
+        << "Only support these scatter functors: ScatterNdUpdate, ScatterNdAdd or ScatterNdSub currently, but got "
+        << kernel_name;
     } else {
       scatter_nd_functor_type_ = iter->second;
     }
     kernel_node_ = kernel_node;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 3) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but " << kernel_name << " needs 3 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 3, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but " << kernel_name << " has 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
 
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
@@ -98,17 +90,21 @@ class ScatterNdFunctorKernel : public GpuKernel {
     auto updates_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     auto index_depth = indices_shape.back();
     if (index_depth > input_shape.size()) {
-      MS_LOG(EXCEPTION) << "Value of last dimension of indices is greater than shape rank";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the last dimension value of indices should be greater than "
+                        << input_shape.size() << ", but got " << index_depth;
     }
     if (indices_shape.size() < 2) {
-      MS_LOG(EXCEPTION) << "Indices dimension less than 2";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of indices cannot be greater than 2, but got "
+                        << indices_shape.size();
     }
     if (updates_shape.size() != indices_shape.size() - 1 + input_shape.size() - index_depth) {
-      MS_LOG(EXCEPTION) << "Update, shape rank and indices rank inconsistent";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name
+                        << "', the dimension of updates, indices, shape should be consistent.";
     }
     for (size_t i = 0; i < indices_shape.size() - 1; ++i) {
       if (updates_shape[i] != indices_shape[i]) {
-        MS_LOG(EXCEPTION) << "Value of " << i << "th dimension of indices is not equal to that update";
+        MS_LOG(EXCEPTION) << "For '" << kernel_name << ", value of " << i
+                          << "th dimension of indices is not equal to that update";
       }
     }
 
@@ -164,6 +160,7 @@ class ScatterNdFunctorKernel : public GpuKernel {
     input_size_list_.push_back(indices_size_ * sizeof(S));
     input_size_list_.push_back(updates_size_ * sizeof(T));
     output_size_list_.push_back(input_size_ * sizeof(T));
+    workspace_size_list_.push_back(sizeof(S) * out_strides_.size());
   }
 
  private:
@@ -179,8 +176,6 @@ class ScatterNdFunctorKernel : public GpuKernel {
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
-
-  S *indices_stride_;
 };
 }  // namespace kernel
 }  // namespace mindspore

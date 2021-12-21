@@ -24,7 +24,6 @@
 #include "minddata/dataset/core/global_context.h"
 #include "minddata/dataset/engine/datasetops/source/sampler/mind_record_sampler.h"
 #include "minddata/mindrecord/include/shard_column.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #include "minddata/dataset/include/dataset/constants.h"
 #include "minddata/dataset/util/log_adapter.h"
@@ -57,7 +56,6 @@ MindRecordOp::MindRecordOp(int32_t num_mind_record_workers, std::vector<std::str
       sample_bytes_(sample_bytes),
       shuffle_mode_(shuffle_mode),
       shard_reader_(std::move(shard_reader)) {
-  io_block_queues_.Init(num_workers_, op_connector_queue_size);
   epoch_sync_flag_ = true;  // MindRecordOp needs to turn this flag on, otherwise, calling ShuffleTask() before all
                             // tasks are consumed by the worker threads would cause problem.
 }
@@ -70,7 +68,8 @@ Status MindRecordOp::Init() {
   data_schema_ = std::make_unique<DataSchema>();
 
   std::vector<std::string> col_names = shard_reader_->GetShardColumn()->GetColumnName();
-  CHECK_FAIL_RETURN_UNEXPECTED(!col_names.empty(), "Invalid data, no column names are specified.");
+  CHECK_FAIL_RETURN_UNEXPECTED(!col_names.empty(),
+                               "Invalid column, no column names are specified, check mindrecord file.");
   std::vector<mindrecord::ColumnDataType> col_data_types = shard_reader_->GetShardColumn()->GeColumnDataType();
   std::vector<std::vector<int64_t>> col_shapes = shard_reader_->GetShardColumn()->GetColumnShape();
 
@@ -109,9 +108,8 @@ Status MindRecordOp::Init() {
   if (!load_all_cols) {
     std::unique_ptr<DataSchema> tmp_schema = std::make_unique<DataSchema>();
     for (std::string colname : columns_to_load_) {
-      CHECK_FAIL_RETURN_UNEXPECTED(
-        colname_to_ind.find(colname) != colname_to_ind.end(),
-        "Invalid data, specified loading column name: " + colname + " does not exist in data file.");
+      CHECK_FAIL_RETURN_UNEXPECTED(colname_to_ind.find(colname) != colname_to_ind.end(),
+                                   "Invalid column, " + colname + " does not exist in data file.");
       RETURN_IF_NOT_OK(tmp_schema->AddColumn(data_schema_->Column(colname_to_ind[colname])));
     }
     data_schema_ = std::move(tmp_schema);
@@ -146,52 +144,40 @@ void MindRecordOp::Print(std::ostream &out, bool show_all) const {
 Status MindRecordOp::WorkerEntry(int32_t worker_id) {
   TaskManager::FindMe()->Post();
   std::unique_ptr<IOBlock> io_block;
-  RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&io_block));
+  RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&io_block));
   while (io_block != nullptr) {
     if (io_block->wait()) {
-      // Sync io_block is a signal that master thread wants us to pause and sync with other workers.
-      // The last guy who comes to this sync point should reset the counter and wake up the master thread.
-      if (++num_workers_paused_ == num_workers_) {
-        wait_for_workers_post_.Set();
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagWait)));
+    } else if (io_block->eoe()) {
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOE)));
+    } else if (io_block->eof()) {
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(TensorRow(TensorRow::TensorRowFlags::kFlagEOF)));
+    } else {
+      // load TensorRow
+      std::vector<int64_t> keys;
+      RETURN_IF_NOT_OK(io_block->GetKeys(&keys));
+      if (keys.empty() == true) {
+        {
+          std::unique_lock<std::mutex> lock(ended_worker_mutex_);
+          ended_worker_++;
+          if (ended_worker_ == num_workers_) shard_reader_->Close();
+        }
+        return Status::OK();  // empty key is a quit signal for workers
       }
-      RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&io_block));
-      continue;
-    }
-    if (io_block->eoe()) {
-      RETURN_IF_NOT_OK(out_connector_->SendEOE(worker_id));
-      RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&io_block));
-      continue;
-    }
-    if (io_block->eof()) {
-      RETURN_IF_NOT_OK(out_connector_->SendEOF(worker_id));
-      RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&io_block));
-      continue;
-    }
 
-    // load TensorRow
-    std::vector<int64_t> keys;
-    RETURN_IF_NOT_OK(io_block->GetKeys(&keys));
-    if (keys.empty() == true) {
-      {
-        std::unique_lock<std::mutex> lock(ended_worker_mutex_);
-        ended_worker_++;
-        if (ended_worker_ == num_workers_) shard_reader_->Close();
+      const uint64_t row_id = keys[0];
+      TensorRow fetched_row;
+
+      // Get the next row. Push it up to the output connector.
+      if (row_id % LOG_INTERVAL == 0) {
+        MS_LOG(DEBUG) << "MindRecord operator consumed row " << row_id << " by worker " << worker_id << ".";
       }
-      return Status::OK();  // empty key is a quit signal for workers
+      RETURN_IF_NOT_OK(GetRowFromReader(&fetched_row, row_id, worker_id));
+      RETURN_IF_NOT_OK(worker_out_queues_[worker_id]->EmplaceBack(std::move(fetched_row)));
     }
-
-    const uint64_t row_id = keys[0];
-    TensorRow fetched_row;
-
-    // Get the next row. Push it up to the output connector.
-    if (row_id % LOG_INTERVAL == 0) {
-      MS_LOG(DEBUG) << "MindRecord operator consumed row " << row_id << " by worker " << worker_id << ".";
-    }
-    RETURN_IF_NOT_OK(GetRowFromReader(&fetched_row, row_id, worker_id));
-    RETURN_IF_NOT_OK(out_connector_->Add(std::move(fetched_row), worker_id));
-    RETURN_IF_NOT_OK(io_block_queues_[worker_id]->PopFront(&io_block));
+    RETURN_IF_NOT_OK(worker_in_queues_[worker_id]->PopFront(&io_block));
   }
-  RETURN_STATUS_UNEXPECTED("Unexpected nullptr received in worker.");
+  RETURN_STATUS_UNEXPECTED("[Internal ERROR] Unexpected nullptr received in worker.");
 }
 
 Status MindRecordOp::GetRowFromReader(TensorRow *fetched_row, uint64_t row_id, int32_t worker_id) {
@@ -245,14 +231,15 @@ Status MindRecordOp::LoadTensorRow(TensorRow *tensor_row, const std::vector<uint
         RETURN_IF_NOT_OK(shard_column->GetColumnFromJson(column_name, sample_json_, &data_ptr, &n_bytes));
       } else if (category == mindrecord::ColumnInBlob) {
         CHECK_FAIL_RETURN_UNEXPECTED(sample_bytes_.find(column_name) != sample_bytes_.end(),
-                                     "Invalid data, failed to retrieve blob data from padding sample.");
+                                     "Invalid padded_sample, failed to retrieve blob data from padding sample, "
+                                     "check 'padded_sample'.");
 
         std::string ss(sample_bytes_[column_name]);
         n_bytes = ss.size();
         data_ptr = std::make_unique<unsigned char[]>(n_bytes);
         std::copy(ss.begin(), ss.end(), data_ptr.get());
       } else {
-        RETURN_STATUS_UNEXPECTED("Invalid data, retrieved data type is unknown.");
+        RETURN_STATUS_UNEXPECTED("Invalid datatype, retrieved data type is unknown.");
       }
       if (data == nullptr) {
         data = reinterpret_cast<const unsigned char *>(data_ptr.get());
@@ -268,7 +255,8 @@ Status MindRecordOp::LoadTensorRow(TensorRow *tensor_row, const std::vector<uint
     DataType type = column.Type();
 
     // Set shape
-    CHECK_FAIL_RETURN_UNEXPECTED(column_data_type_size != 0, "Found memory size of column data type is 0.");
+    CHECK_FAIL_RETURN_UNEXPECTED(column_data_type_size != 0,
+                                 "[Internal ERROR] Found memory size of column data type is 0.");
     auto num_elements = n_bytes / column_data_type_size;
     if (type == DataType::DE_STRING) {
       std::string s{data, data + n_bytes};
@@ -297,26 +285,26 @@ Status MindRecordOp::LoadTensorRow(TensorRow *tensor_row, const std::vector<uint
 // again.
 Status MindRecordOp::Reset() {
   MS_LOG(DEBUG) << Name() << " performing a self-reset.";
+  RETURN_IF_NOT_OK(WaitForWorkers());
   RETURN_IF_NOT_OK(MappableLeafOp::Reset());  // Call our super class reset first.
   return Status::OK();
 }
 
-Status MindRecordOp::LaunchThreadsAndInitOp() {
-  RETURN_UNEXPECTED_IF_NULL(tree_);
-  RETURN_IF_NOT_OK(io_block_queues_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(wait_for_workers_post_.Register(tree_->AllTasks()));
-  RETURN_IF_NOT_OK(shard_reader_->Launch(true));
-  // Launch main workers that load TensorRows by reading all images
-  RETURN_IF_NOT_OK(
-    tree_->LaunchWorkers(num_workers_, std::bind(&MindRecordOp::WorkerEntry, this, std::placeholders::_1), "", id()));
+Status MindRecordOp::PrepareData() {
   num_rows_ = shard_reader_->GetNumRows();
-  RETURN_IF_NOT_OK(this->InitSampler());  // pass numRows to Sampler
-  TaskManager::FindMe()->Post();
+  return Status::OK();
+}
+
+Status MindRecordOp::RegisterAndLaunchThreads() {
+  RETURN_IF_NOT_OK(ParallelOp::RegisterAndLaunchThreads());
+  RETURN_IF_NOT_OK(shard_reader_->Launch(true));
   return Status::OK();
 }
 
 Status MindRecordOp::CountTotalRows(const std::vector<std::string> dataset_path, bool load_dataset,
                                     const std::shared_ptr<ShardOperator> &op, int64_t *count, int64_t num_padded) {
+  RETURN_UNEXPECTED_IF_NULL(op);
+  RETURN_UNEXPECTED_IF_NULL(count);
   std::unique_ptr<ShardReader> shard_reader = std::make_unique<ShardReader>();
   RETURN_IF_NOT_OK(shard_reader->CountTotalRows(dataset_path, load_dataset, op, count, num_padded));
   return Status::OK();

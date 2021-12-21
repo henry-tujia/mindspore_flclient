@@ -18,13 +18,16 @@
 #define MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_PAD_OPS_DECLARE_H_
 
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
 #include "transform/graph_ir/op_declare/op_declare_macro.h"
 #include "ops/pad_ops.h"
 
 namespace mindspore::transform {
 DECLARE_OP_ADAPTER(PadD)
 DECLARE_OP_USE_OUTPUT(PadD)
+
+DECLARE_OP_ADAPTER(Pad)
+DECLARE_OP_USE_OUTPUT(Pad)
 
 DECLARE_OP_ADAPTER(BroadcastToD)
 DECLARE_OP_USE_OUTPUT(BroadcastToD)
@@ -35,7 +38,13 @@ DECLARE_OP_USE_OUTPUT(Diag)
 DECLARE_OP_ADAPTER(FillD)
 DECLARE_OP_USE_OUTPUT(FillD)
 
+DECLARE_OP_ADAPTER(Fill)
+DECLARE_OP_USE_OUTPUT(Fill)
+
 DECLARE_OP_ADAPTER(PadV3)
 DECLARE_OP_USE_OUTPUT(PadV3)
+
+DECLARE_OP_ADAPTER(PadV2)
+DECLARE_OP_USE_OUTPUT(PadV2)
 }  // namespace mindspore::transform
 #endif  // MINDSPORE_CCSRC_TRANSFORM_GRAPH_IR_OP_DECLARE_PAD_OPS_DECLARE_H_

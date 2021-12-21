@@ -90,7 +90,7 @@ int ReduceBaseCPUKernel::CheckParameters() {
   return RET_OK;
 }
 
-int ReduceBaseCPUKernel::Init() {
+int ReduceBaseCPUKernel::Prepare() {
   auto ret = CheckInputsOutputs();
   if (ret != RET_OK) {
     return ret;
@@ -100,15 +100,30 @@ int ReduceBaseCPUKernel::Init() {
   if (reduce_param == nullptr) {
     return RET_NULL_PTR;
   }
+  MS_CHECK_FALSE_MSG(op_parameter_->thread_num_ == 0, RET_ERROR, "thread_num_ should not be 0");
   if (in_tensors_.size() > 1) {
     auto axes_tensor = in_tensors_.at(1);
+    MS_CHECK_FALSE_MSG((axes_tensor->data_type() != kNumberTypeInt && axes_tensor->data_type() != kNumberTypeInt32),
+                       RET_ERROR, "The data type of axes tensor should be int32");
     num_axes_ = axes_tensor->ElementsNum();
-    if (axes_tensor->ElementsNum() > MAX_SHAPE_SIZE) {
+    if (num_axes_ <= 0 && num_axes_ > MAX_SHAPE_SIZE) {
       MS_LOG(ERROR) << "input axes invalid.";
       return RET_ERROR;
     }
-    CHECK_NULL_RETURN(axes_tensor->data());
-    memcpy(axes_, axes_tensor->data(), axes_tensor->Size());
+    if (axes_tensor->data() == nullptr) {
+      if (reduce_param->keep_dims_) {
+        num_axes_ = in_tensors_.at(0)->shape().size();
+        for (auto i = 0; i < num_axes_; i++) {
+          axes_[i] = i;
+        }
+      } else {
+        MS_LOG(ERROR) << "while axes data is nullptr,keep_dims need true.";
+        return RET_ERROR;
+      }
+    } else {
+      MS_CHECK_FALSE(axes_tensor->Size() == 0, RET_ERROR);
+      memcpy(axes_, axes_tensor->data(), axes_tensor->Size());
+    }
   } else {
     num_axes_ = reduce_param->num_axes_;
     memcpy(axes_, reduce_param->axes_, sizeof(reduce_param->axes_));

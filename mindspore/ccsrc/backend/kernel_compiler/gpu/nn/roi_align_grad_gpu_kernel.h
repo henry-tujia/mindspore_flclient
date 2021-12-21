@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,20 @@ namespace kernel {
 template <typename T>
 class ROIAlignGradGpuFwdKernel : public GpuKernel {
  public:
-  ROIAlignGradGpuFwdKernel() : dy_size_(0), rois_size_(0), output_size_(0) {}
+  ROIAlignGradGpuFwdKernel()
+      : pooled_height_(0),
+        pooled_width_(0),
+        sample_num_(0),
+        roi_end_mode_(0),
+        roi_rows_(0),
+        roi_cols_(0),
+        batch_size_(0),
+        channels_(0),
+        width_(0),
+        is_null_input_(false),
+        dy_size_(0),
+        rois_size_(0),
+        output_size_(0) {}
   ~ROIAlignGradGpuFwdKernel() = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -36,6 +49,9 @@ class ROIAlignGradGpuFwdKernel : public GpuKernel {
   const std::vector<size_t> &GetWorkspaceSizeList() const override { return workspace_size_list_; }
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     const T *dy = GetDeviceAddress<T>(inputs, 0);
     const T *rois = GetDeviceAddress<T>(inputs, 1);
 
@@ -48,28 +64,32 @@ class ROIAlignGradGpuFwdKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     // Get the number of input args
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but ROIAlignGrad needs 2 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
 
     // Get the number of output args
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but ROIAlignGrad needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
 
     // Get the input shapes
     auto dy_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     auto rois_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
+    is_null_input_ = CHECK_SHAPE_NULL(dy_shape, kernel_name, "dy") || CHECK_SHAPE_NULL(rois_shape, kernel_name, "rois");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
 
     auto dy_shape_size = dy_shape.size();
     if (dy_shape_size != 4) {
-      MS_LOG(ERROR) << "dy shape size is " << dy_shape_size << ", but shoud be 4.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of dy should be equal to 4, but got "
+                        << dy_shape_size;
     }
 
     // Parse y diff
@@ -77,6 +97,10 @@ class ROIAlignGradGpuFwdKernel : public GpuKernel {
                  static_cast<int>(dy_shape[3])};
     dy_size_ = dy_shape_[0] * dy_shape_[1] * dy_shape_[2] * dy_shape_[3] * sizeof(T);
 
+    if (rois_shape.size() < 2) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of rois cannot be less than 2, but got "
+                        << rois_shape.size();
+    }
     // Get rois rows and cols
     roi_rows_ = rois_shape[0];
     roi_cols_ = rois_shape[1];
@@ -93,6 +117,10 @@ class ROIAlignGradGpuFwdKernel : public GpuKernel {
     sample_num_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "sample_num"));
     roi_end_mode_ = 1;
 
+    if (xdiff_shape_.size() < 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the length of xdiff_shape cannot be less than 4, but got "
+                        << xdiff_shape_.size();
+    }
     // Get channels, height & width
     batch_size_ = xdiff_shape_[0];
     channels_ = xdiff_shape_[1];
@@ -128,6 +156,7 @@ class ROIAlignGradGpuFwdKernel : public GpuKernel {
   int channels_;
   int height_;
   int width_;
+  bool is_null_input_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

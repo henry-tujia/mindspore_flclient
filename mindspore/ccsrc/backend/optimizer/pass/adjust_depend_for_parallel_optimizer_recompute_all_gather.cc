@@ -15,9 +15,6 @@
  */
 
 #include "backend/optimizer/pass/adjust_depend_for_parallel_optimizer_recompute_all_gather.h"
-#include <memory>
-#include <unordered_map>
-#include <algorithm>
 #include "utils/utils.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
@@ -25,7 +22,7 @@ namespace mindspore {
 namespace opt {
 bool AdjustDependForParallelOptimizerRecomputeAllGather::Run(const FuncGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(graph);
-  std::unordered_map<int64_t, bool> forward_allgather_recompute_value_in_fusion_group;
+  mindspore::HashMap<int64_t, bool> forward_allgather_recompute_value_in_fusion_group;
   std::vector<AnfNodePtr> node_list = TopoSort(graph->get_return());
   std::vector<int64_t> parallel_optimizer_recompute_allgather_fusion_ids;
   std::vector<AnfNodePtr> parallel_optimizer_recompute_allgathers;
@@ -34,17 +31,14 @@ bool AdjustDependForParallelOptimizerRecomputeAllGather::Run(const FuncGraphPtr 
   int64_t recompute_min_fusion_id = 0;
   for (auto &node : node_list) {
     MS_EXCEPTION_IF_NULL(node);
-    if (!node->cast<CNodePtr>() || !AnfAlgo::IsRealKernel(node)) {
+    if (!node->cast<CNodePtr>() || !AnfUtils::IsRealKernel(node)) {
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
-    auto primitive = AnfAlgo::GetCNodePrimitive(cnode);
-    auto instance_name = primitive->instance_name();
-    bool is_allgather = AnfAlgo::GetCNodeName(cnode) == kAllGatherOpName;
-    bool is_fusion = AnfAlgo::HasNodeAttr(kAttrFusion, cnode) && AnfAlgo::GetNodeAttr<int64_t>(cnode, kAttrFusion) > 0;
-    bool is_recompute = cnode->GetAttr(kAttrDuplicated) != nullptr && GetValue<bool>(cnode->GetAttr(kAttrDuplicated));
-    bool is_from_parallel_optimizer = instance_name.find("parallel_optimizer") != std::string::npos;
-    if (is_allgather && is_fusion && is_recompute && is_from_parallel_optimizer) {
+    if (!AnfAlgo::IsAllgather(cnode) || !AnfAlgo::IsFusion(cnode) || !AnfAlgo::IsFromParallelOptimizer(cnode)) {
+      continue;
+    }
+    if (AnfAlgo::IsRecompute(cnode)) {
       int64_t fusion_id = AnfAlgo::GetNodeAttr<int64_t>(cnode, kAttrFusion);
       if (std::find(parallel_optimizer_recompute_allgather_fusion_ids.begin(),
                     parallel_optimizer_recompute_allgather_fusion_ids.end(),
@@ -57,16 +51,14 @@ bool AdjustDependForParallelOptimizerRecomputeAllGather::Run(const FuncGraphPtr 
       } else {
         parallel_optimizer_recompute_allgathers.push_back(node);
       }
-    }
-    if (!is_recompute && is_fusion && is_allgather && is_from_parallel_optimizer) {
+    } else {
       int64_t unrecompute_fusion_id = AnfAlgo::GetNodeAttr<int64_t>(cnode, kAttrFusion);
       unrecompute_max_fusion_id = std::max(unrecompute_fusion_id, unrecompute_max_fusion_id);
       bool would_be_recomputed =
         AnfAlgo::HasNodeAttr(kAttrRecompute, cnode) && AnfAlgo::GetNodeAttr<bool>(cnode, kAttrRecompute);
-      if (forward_allgather_recompute_value_in_fusion_group.find(unrecompute_fusion_id) ==
-          forward_allgather_recompute_value_in_fusion_group.end()) {
-        forward_allgather_recompute_value_in_fusion_group[unrecompute_fusion_id] = would_be_recomputed;
-      } else if (forward_allgather_recompute_value_in_fusion_group[unrecompute_fusion_id] != would_be_recomputed) {
+      auto [iter, inserted] =
+        forward_allgather_recompute_value_in_fusion_group.emplace(unrecompute_fusion_id, would_be_recomputed);
+      if (!inserted && iter->second != would_be_recomputed) {
         MS_LOG(EXCEPTION) << "In same fusion group, the allgather recompute attribute should be equal. "
                              "The normal node is:"
                           << cnode->fullname_with_scope();
@@ -120,7 +112,7 @@ bool AdjustDependForParallelOptimizerRecomputeAllGather::AdjustAllgatherDepend(
         auto new_depend = graph->NewCNode(inputs);
         new_depend->set_abstract(depend_node->abstract());
         manager->SetEdge(node, 1, AnfAlgo::GetInputNode(depend_cnode, 0));
-        manager->Replace(allgather_next_node, new_depend);
+        (void)manager->Replace(allgather_next_node, new_depend);
         changed = true;
       }
     } else if (IsPrimitiveCNode(depend_node, prim::kPrimCast) &&
@@ -140,7 +132,7 @@ bool AdjustDependForParallelOptimizerRecomputeAllGather::AdjustAllgatherDepend(
         auto new_depend = graph->NewCNode(inputs);
         new_depend->set_abstract(cast_depend_node->abstract());
         manager->SetEdge(depend_node, 1, AnfAlgo::GetInputNode(cast_depend_cnode, 0));
-        manager->Replace(allgather_next_node, new_depend);
+        (void)manager->Replace(allgather_next_node, new_depend);
         changed = true;
       }
     } else {
@@ -149,6 +141,5 @@ bool AdjustDependForParallelOptimizerRecomputeAllGather::AdjustAllgatherDepend(
   }
   return changed;
 }
-
 }  // namespace opt
 }  // namespace mindspore

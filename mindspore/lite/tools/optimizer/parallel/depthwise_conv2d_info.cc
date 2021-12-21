@@ -19,6 +19,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <utility>
 #include "nnacl/op_base.h"
 #include "ops/fusion/conv2d_fusion.h"
 #include "tools/optimizer/common/gllo_utils.h"
@@ -67,6 +68,11 @@ void CreateSplitConstantTensors(const tensor::TensorPtr &constant_tensor, const 
   for (int64_t i = 0; i < split_num; i++) {
     // init shape for [split_dim]
     visited_block += splits[i];
+    if (total_block_count == 0) {
+      MS_LOG(ERROR) << "divisor is zero";
+      split_constant_tensors->clear();
+      return;
+    }
     auto cur_shape = UP_DIV(split_dim_size * visited_block, total_block_count);
     split_constant_shapes.at(i).at(split_dim) = cur_shape;
     auto tensor = std::make_shared<tensor::Tensor>(weight_type_id, split_constant_shapes.at(i));
@@ -105,11 +111,11 @@ void CreateSplitConstantTensors(const tensor::TensorPtr &constant_tensor, const 
     [&](const tensor::TensorPtr &constant_tensor) { return (reinterpret_cast<char *>(constant_tensor->data_c())); });
   int64_t outer_total_dim = 1;
   for (int64_t i = 0; i < split_dim; i++) {
-    outer_total_dim *= constant_shape[i];
+    outer_total_dim *= static_cast<size_t>(constant_shape[i]);
   }
   int64_t inner_stride = 1;
   for (int64_t i = static_cast<int64_t>(constant_shape.size()) - 1; i > split_dim; i--) {
-    inner_stride *= constant_shape[i];
+    inner_stride *= static_cast<size_t>(constant_shape[i]);
   }
   auto constant_tensor_ptr = reinterpret_cast<char *>(constant_tensor->data_c());
   // init split_constant_tensor_data
@@ -358,9 +364,7 @@ AnfNodePtr DepthwiseConv2DInfo::CreateOutputsOfSplit(const CNodePtr &ori_node, s
     auto bottom_vector = std::vector<int64_t>(split_num, extend_bottom);
     bottom_vector[split_num - 1] = 0;
     split_prim->set_extend_bottom(bottom_vector);
-    if (!UpdateRatioWithPadStride(new_splits.data(), new_splits.size(), split_num, input_shape[split_dim_],
-                                  depth_wise_conv_prim->get_pad_list().at(kPadUp),
-                                  depth_wise_conv_prim->get_stride().at(kIndexH))) {
+    if (!UpdateRatioWithPadStride(new_splits.data(), new_splits.size(), split_num, input_shape[split_dim_])) {
       MS_LOG(ERROR) << "UpdateRatioWithPadStride failed";
       return nullptr;
     }
@@ -491,7 +495,7 @@ int DepthwiseConv2DInfo::InferParallelCNodes() {
 
 int DepthwiseConv2DInfo::InferReplaceOp() {
   size_t dev_num = strategy_.dev_num;
-  replace_op_ = CreateConcateNode(cnode_, parallel_output_nodes_, split_dim_, dev_num, true);
+  replace_op_ = CreateConcateNode(cnode_, parallel_output_nodes_, split_dim_, dev_num);
   if (replace_op_ == nullptr) {
     return RET_ERROR;
   }

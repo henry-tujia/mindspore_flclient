@@ -34,8 +34,8 @@ int LayerNormOpenCLKernel::CheckSpecs() {
   auto param = reinterpret_cast<LayerNormParameter *>(this->op_parameter_);
   CHECK_NULL_RETURN(param);
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_3 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "UnSupported in_tensors_.size: " << in_tensors_.size()
-                  << " out_tensors_.size(): " << out_tensors_.size();
+    MS_LOG(WARNING) << "UnSupported in_tensors_.size: " << in_tensors_.size()
+                    << " out_tensors_.size(): " << out_tensors_.size();
     return RET_ERROR;
   }
   auto *input = in_tensors_.at(0);
@@ -43,7 +43,7 @@ int LayerNormOpenCLKernel::CheckSpecs() {
   auto *output = out_tensors_.at(0);
   CHECK_NULL_RETURN(output);
   if (input->shape().size() != DIMENSION_4D) {
-    MS_LOG(ERROR) << "UnSupported in_tensors_.shape.size: " << input->shape().size();
+    MS_LOG(WARNING) << "UnSupported in_tensors_.shape.size: " << input->shape().size();
     return RET_ERROR;
   }
   normalized_axis_ = param->begin_params_axis_;
@@ -52,7 +52,7 @@ int LayerNormOpenCLKernel::CheckSpecs() {
     normalized_axis_ += input->shape().size();
   }
   if (normalized_axis_ != 3) {
-    MS_LOG(ERROR) << "UnSupported normalized_axis_ : " << param->normalized_dims_;
+    MS_LOG(WARNING) << "UnSupported normalized_axis_ : " << param->normalized_dims_;
     return RET_ERROR;
   }
   return RET_OK;
@@ -122,6 +122,7 @@ void LayerNormOpenCLKernel::SetGlobalLocal() {
                           &local_mean_var_);
 }
 
+#ifdef ENABLE_FP16
 int LayerNormOpenCLKernel::Initweight() {
   auto allocator = ocl_runtime_->GetAllocator();
   CHECK_NULL_RETURN(allocator);
@@ -164,7 +165,7 @@ int LayerNormOpenCLKernel::Initweight() {
       auto origin_gamma_fp16 = reinterpret_cast<float16_t *>(in_tensors_.at(1)->data());
       auto origin_beta_fp16 = reinterpret_cast<float16_t *>(in_tensors_.at(2)->data());
 
-      for (int i = 0; i < img_info.ElementsNum; ++i) {
+      for (size_t i = 0; i < img_info.ElementsNum; ++i) {
         gamma_fp32[i] = static_cast<float>(origin_gamma_fp16[i]);
         beta_fp32[i] = static_cast<float>(origin_beta_fp16[i]);
       }
@@ -176,7 +177,7 @@ int LayerNormOpenCLKernel::Initweight() {
       auto origin_gamma_fp32 = reinterpret_cast<float *>(in_tensors_.at(1)->data());
       auto origin_beta_fp32 = reinterpret_cast<float *>(in_tensors_.at(2)->data());
 
-      for (int i = 0; i < img_info.ElementsNum; ++i) {
+      for (size_t i = 0; i < img_info.ElementsNum; ++i) {
         gamma_fp16[i] = static_cast<float16_t>(origin_gamma_fp32[i]);
         beta_fp16[i] = static_cast<float16_t>(origin_beta_fp32[i]);
       }
@@ -195,8 +196,55 @@ int LayerNormOpenCLKernel::Initweight() {
   }
   return RET_OK;
 }
+#else
+int LayerNormOpenCLKernel::Initweight() {
+  auto allocator = ocl_runtime_->GetAllocator();
+  CHECK_NULL_RETURN(allocator);
+  GpuTensorInfo img_info(in_tensors_.at(1));
+  auto weight_tensor = in_tensors_.at(1);
+  CHECK_NULL_RETURN(weight_tensor);
+  size_t weight_size = img_info.Image2DSize;
+  // allocated memory for weight and init value
+  gamma_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (gamma_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  beta_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (beta_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  if (allocator->MapBuffer(gamma_, CL_MAP_WRITE, nullptr, true) == nullptr) {
+    MS_LOG(ERROR) << "Map Buffer failed.";
+    return RET_ERROR;
+  }
+  if (allocator->MapBuffer(beta_, CL_MAP_WRITE, nullptr, true) == nullptr) {
+    MS_LOG(ERROR) << "Map Buffer failed.";
+    return RET_ERROR;
+  }
+  memset(gamma_, 0x01, weight_size);
+  memset(beta_, 0x00, weight_size);
+  CHECK_NULL_RETURN(in_tensors_.at(1)->data());
+  CHECK_NULL_RETURN(in_tensors_.at(2));
+  CHECK_NULL_RETURN(in_tensors_.at(2)->data());
+  memcpy(gamma_, in_tensors_.at(1)->data(), weight_size);
+  memcpy(beta_, in_tensors_.at(2)->data(), weight_size);
+
+  if (allocator->UnmapBuffer(gamma_) != RET_OK) {
+    MS_LOG(ERROR) << "UnmapBuffer failed.";
+    return RET_ERROR;
+  }
+  if (allocator->UnmapBuffer(beta_) != RET_OK) {
+    MS_LOG(ERROR) << "UnmapBuffer failed.";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+#endif
 
 int LayerNormOpenCLKernel::Prepare() {
+#ifdef ENABLE_FP16
   use_fp16_enable_ = ocl_runtime_->GetFp16Enable();
   int ret = Initweight();
   if (ret != RET_OK) {
@@ -210,6 +258,20 @@ int LayerNormOpenCLKernel::Prepare() {
     mean_size *= in_tensors_.at(0)->shape()[i];
   }
   size_t size_dtype = use_fp16_enable_ ? sizeof(float16_t) : sizeof(float);
+#else
+  int ret = Initweight();
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Initweight failed ";
+    return ret;
+  }
+  normalized_shape_size_ = in_tensors_.at(0)->shape().at(normalized_axis_);
+  auto allocator = ocl_runtime_->GetAllocator();
+  size_t mean_size = 1;
+  for (int i = 0; i < normalized_axis_; ++i) {
+    mean_size *= in_tensors_.at(0)->shape()[i];
+  }
+  size_t size_dtype = sizeof(float);
+#endif
   mean_size *= size_dtype;
   mean_ = allocator->Malloc(mean_size, lite::opencl::MemType::BUF);
   if (mean_ == nullptr) {

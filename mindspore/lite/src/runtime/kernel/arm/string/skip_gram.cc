@@ -27,7 +27,7 @@ using mindspore::lite::StringPack;
 using mindspore::schema::PrimitiveType_SkipGram;
 
 namespace mindspore::kernel {
-int SkipGramCPUKernel::Init() {
+int SkipGramCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_[0]);
@@ -80,7 +80,7 @@ int SkipGramCPUKernel::Run() {
   std::vector<int> stack(skip_gram_parameter_->ngram_size, 0);
 
   int index = 1;
-  int size = words.size();
+  int size = static_cast<int>(words.size());
   while (index >= 0) {
     if (index < skip_gram_parameter_->ngram_size && stack.at(index) + 1 < size &&
         (index == 0 || stack.at(index) - stack.at(index - 1) <= skip_gram_parameter_->max_skip_size)) {

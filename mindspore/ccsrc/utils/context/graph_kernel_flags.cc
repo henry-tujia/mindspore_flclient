@@ -24,8 +24,7 @@
 #include "nlohmann/json.hpp"
 #include "utils/ms_context.h"
 
-namespace mindspore {
-namespace context {
+namespace mindspore::graphkernel {
 namespace {
 // Split string to tokens
 std::vector<std::string> GetTokens(const std::string &str, const std::string &delim) {
@@ -86,7 +85,7 @@ class FlagRegister {
   ~FlagRegister() = default;
 
   template <typename T>
-  void AddFlag(std::string flag_name, T *flag_var, T default_value = T()) {
+  void AddFlag(const std::string &flag_name, T *const flag_var, T default_value = T()) const {
     auto iter = flag_map_.find(flag_name);
     if (iter != flag_map_.end()) {
       T var;
@@ -150,12 +149,36 @@ class FlagRegister {
 };
 }  // namespace
 
+std::pair<std::string, bool> GraphKernelFlags::GetGraphKernelContext() {
+  // This environment variable is deprecated.
+  auto flags = common::GetEnv("MS_GRAPH_KERNEL_FLAGS");
+  bool use_env = (!flags.empty());
+  bool enable_context{false};
+#ifndef MSLITE_ENABLE_GRAPH_KERNEL
+  static bool print_warning = true;
+  if (use_env && print_warning) {
+    print_warning = false;
+    MS_LOG(WARNING) << "The environment variable \"MS_GRAPH_KERNEL_FLAGS\" is deprecated from version 1.6 "
+                    << "and will be removed in a future version, "
+                    << "use context \"graph_kernel_flags\" instead.";
+  }
+  auto context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context);
+  if (flags.empty()) {
+    flags = context->get_param<std::string>(MS_CTX_GRAPH_KERNEL_FLAGS);
+  }
+  enable_context = context->get_param<bool>(MS_CTX_ENABLE_GRAPH_KERNEL);
+#endif
+  return std::make_pair(flags, enable_context);
+}
+
 void GraphKernelFlags::Refresh() {
   auto flag_map = ParseFlags(flags_cache_);
   RegisterFlags(&flag_map);
   for (auto &item : flag_map) {
     MS_LOG(WARNING) << "Unknown GraphKernel flag: " << item.first;
   }
+#ifndef MSLITE_ENABLE_GRAPH_KERNEL
   if (IsEnableGraphKernel()) {
     auto context = MsContext::GetInstance();
     MS_EXCEPTION_IF_NULL(context);
@@ -163,16 +186,29 @@ void GraphKernelFlags::Refresh() {
       MS_LOG(WARNING) << "GraphKernel only support GRAPH_MODE";
       opt_level = OptLevel_0;
     }
+#ifndef USE_LLVM
+    auto is_cpu = (context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kCPUDevice);
+    if (is_cpu) {
+      MS_LOG(WARNING) << "GraphKernel is not usable without LLVM on cpu platform";
+      opt_level = OptLevel_0;
+    }
+#endif
   }
-  // Dump flags so that people can check the setting.
-  MS_LOG(INFO) << "graph_kernel_flags = \"" << flags_cache_ << "\", all flags: " << DumpAllFlags();
+#endif
+  // If enable graphkernel, Dump flags so that people can check the setting.
+  if (IsEnableGraphKernel()) {
+    MS_LOG(INFO) << "graph_kernel_flags = \"" << flags_cache_ << "\", all flags: " << DumpAllFlags();
+  }
 }
 
 void GraphKernelFlags::RegisterFlags(std::map<std::string, std::string> *flag_map) {
   FlagRegister reg(flag_map);
+  bool is_ascend{false};
+#ifndef MSLITE_ENABLE_GRAPH_KERNEL
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
-  bool is_gpu = (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kGPUDevice);
+  is_ascend = (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice);
+#endif
 
   // Set opt_level first, some flags' default value depends on it.
   // Default optimization level is level 2 when enable graphkernel
@@ -192,7 +228,10 @@ void GraphKernelFlags::RegisterFlags(std::map<std::string, std::string> *flag_ma
 
   // Integer flags
   reg.AddFlag("online_tuning", &online_tuning);
-  reg.AddFlag("fusion_ops_level", &fusion_ops_level, is_gpu ? OpLevel_MAX : OpLevel_0);
+  reg.AddFlag("fusion_ops_level", &fusion_ops_level, is_ascend ? OpLevel_0 : OpLevel_MAX);
+  reg.AddFlag("parallel_ops_level", &parallel_ops_level);
+  reg.AddFlag("recompute_increment_threshold", &recompute_increment_threshold);
+  reg.AddFlag("recompute_peak_threshold", &recompute_peak_threshold);
 
   // String flags
   reg.AddFlag("repository_path", &repository_path);
@@ -222,7 +261,10 @@ std::string GraphKernelFlags::DumpAllFlags() const {
 
   json["opt_level"] = opt_level;
   json["fusion_ops_level"] = fusion_ops_level;
+  json["parallel_ops_level"] = parallel_ops_level;
   json["online_tuning"] = online_tuning;
+  json["recompute_increment_threshold"] = recompute_increment_threshold;
+  json["recompute_peak_threshold"] = recompute_peak_threshold;
 
   json["repository_path"] = repository_path;
 
@@ -239,5 +281,4 @@ std::string GraphKernelFlags::DumpAllFlags() const {
 
   return json.dump();
 }
-}  // namespace context
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

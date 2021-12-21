@@ -15,17 +15,8 @@
  */
 #include "minddata/dataset/engine/datasetops/source/nonmappable_leaf_op.h"
 
-#include <algorithm>
-
-#include <memory>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <vector>
-
 #include "minddata/dataset/core/config_manager.h"
 #include "minddata/dataset/engine/datasetops/source/io_block.h"
-#include "minddata/dataset/engine/db_connector.h"
 #include "minddata/dataset/engine/execution_tree.h"
 #include "minddata/dataset/engine/jagged_connector.h"
 #include "minddata/dataset/util/random.h"
@@ -66,8 +57,7 @@ Status NonMappableLeafOp::operator()() {
 
   // launch num_workers_ worker threads, responsible for pulling from the IOBlockQueue and reading
   // data from disk into TensorRows
-  RETURN_IF_NOT_OK(tree_->LaunchWorkers(
-    num_workers_, std::bind(&NonMappableLeafOp::WorkerEntry, this, std::placeholders::_1), "", id()));
+  RETURN_IF_NOT_OK(RegisterAndLaunchThreads());
 
   // must be called after launching workers. workers can't be spawned after this post,
   // so workers have to be kept alive until the end of the program
@@ -89,7 +79,7 @@ Status NonMappableLeafOp::operator()() {
         workers_done++;
       } else if (total_rows_ == 0 || rows_read < total_rows_) {
         // we need to push a row
-        RETURN_IF_NOT_OK(out_connector_->Add(std::move(fetched_row), 0));
+        RETURN_IF_NOT_OK(out_connector_->Add(std::move(fetched_row)));
         rows_read++;
       } else {
         // IOBlockQueue thread needs to:
@@ -213,7 +203,6 @@ Status NonMappableLeafOp::Reset() {
     load_io_block_queue_ = true;
   }
 
-  RETURN_IF_NOT_OK(ParallelOp::Reset());
   NotifyToFillIOBlockQueue();
 
   return Status::OK();
@@ -226,7 +215,8 @@ bool NonMappableLeafOp::NeedPushFileToBlockQueue(const std::string &file_name, i
   bool push = false;
   int64_t start_index = device_id_ * num_rows_per_shard_;
   if (device_id_ + 1 < 0) {
-    MS_LOG(ERROR) << "Device id is invalid, got " + std::to_string(device_id_);
+    MS_LOG(ERROR) << "Invalid device id, device id should be greater than or equal 0, but got "
+                  << std::to_string(device_id_);
     return false;
   }
 

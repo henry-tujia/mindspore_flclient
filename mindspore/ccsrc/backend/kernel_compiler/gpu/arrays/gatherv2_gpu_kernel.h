@@ -38,6 +38,9 @@ class GatherV2GpuFwdKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     VARIABLE_NOT_USED(workspace);
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     S *indices_addr = GetDeviceAddress<S>(inputs, 1);
@@ -61,6 +64,7 @@ class GatherV2GpuFwdKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     InitResource();
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
@@ -70,17 +74,24 @@ class GatherV2GpuFwdKernel : public GpuKernel {
     } else if (input_num == 2) {
       MS_LOG(INFO) << " GatherGpuV2FwdKernel running in Normal Mode.";
     } else {
-      MS_LOG(EXCEPTION) << "Argument number is " << input_num << ", but GatherGpuV2FwdKernel needs 2 or 3.";
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2 or 3, but got " << input_num;
     }
     input_shapes_ = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
     indices_shapes_ = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
     output_shapes_ = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shapes_, kernel_name, "input") ||
+                     CHECK_SHAPE_NULL(indices_shapes_, kernel_name, "indices") ||
+                     CHECK_SHAPE_NULL(output_shapes_, kernel_name, "output");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     if (!is_dynamic_shape_) {
       int dims = SizeToInt(input_shapes_.size());
       axis_ = static_cast<int>(GetAttr<int64_t>(kernel_node, "axis"));
       if (axis_ < -dims || axis_ >= dims) {
-        MS_LOG(ERROR) << "axis must be in the range [-rank, rank)";
-        return false;
+        MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be in the range [-" << dims << "," << dims
+                          << "), but got " << axis_;
       }
       Reshape();
     }
@@ -94,6 +105,7 @@ class GatherV2GpuFwdKernel : public GpuKernel {
     output_shapes_.clear();
     std::fill(dims_, dims_ + 3, 0);
     axis_ = 0;
+    is_null_input_ = false;
     input_size_list_.clear();
     output_size_list_.clear();
     workspace_size_list_.clear();
@@ -141,6 +153,7 @@ class GatherV2GpuFwdKernel : public GpuKernel {
   size_t dims_[3] = {};
   int64_t axis_;
   bool is_dynamic_shape_;
+  bool is_null_input_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;

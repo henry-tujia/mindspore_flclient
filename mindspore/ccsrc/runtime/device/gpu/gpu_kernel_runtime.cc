@@ -35,8 +35,10 @@
 #include "runtime/device/gpu/gpu_memory_copy_manager.h"
 #include "common/trans.h"
 #include "ir/dtype.h"
+#ifndef ENABLE_SECURITY
 #include "profiler/device/gpu/gpu_profiling.h"
 #include "profiler/device/gpu/gpu_profiling_utils.h"
+#endif
 #include "utils/shape_utils.h"
 #ifndef ENABLE_SECURITY
 #include "debug/data_dump/dump_json_parser.h"
@@ -72,7 +74,7 @@ bool GPUKernelRuntime::SyncStream() {
 }
 
 bool GPUKernelRuntime::Init() {
-  enable_relation_cache_ = context::GraphKernelFlags::GetInstance().IsEnableGraphKernel();
+  enable_relation_cache_ = graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel();
 
   if (device_init_) {
     if (!cur_thread_device_inited) {
@@ -93,13 +95,16 @@ bool GPUKernelRuntime::Init() {
   mem_manager_ = std::make_shared<GPUMemoryManager>();
   MS_EXCEPTION_IF_NULL(mem_manager_);
   mem_manager_->MallocDeviceMemory();
-  const void *collective_handle_ = CollectiveInitializer::instance().collective_handle();
-  bool collective_inited = CollectiveInitializer::instance().collective_inited();
-  if (collective_inited && collective_handle_ != nullptr) {
-    auto init_nccl_comm_funcptr =
-      reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle_), "InitNCCLComm"));
-    MS_EXCEPTION_IF_NULL(init_nccl_comm_funcptr);
-    (*init_nccl_comm_funcptr)();
+  if (CollectiveInitializer::instance().collective_inited()) {
+    auto collective_handle = CollectiveInitializer::instance().collective_handle();
+    if (collective_handle != nullptr) {
+      MS_LOG(INFO) << "Start initializing NCCL communicator for device " << device_id_;
+      auto init_nccl_comm_funcptr =
+        reinterpret_cast<InitNCCLComm>(dlsym(const_cast<void *>(collective_handle), "InitNCCLComm"));
+      MS_EXCEPTION_IF_NULL(init_nccl_comm_funcptr);
+      (*init_nccl_comm_funcptr)();
+      MS_LOG(INFO) << "End initializing NCCL communicator.";
+    }
   }
   device_init_ = true;
 
@@ -271,10 +276,10 @@ void GPUKernelRuntime::ReleaseDeviceRes() {
   if (GpuBufferMgr::GetInstance().IsInit()) {
     if (!GpuBufferMgr::GetInstance().IsClosed()) {
       if (!GpuBufferMgr::GetInstance().CloseNotify()) {
-        MS_LOG(EXCEPTION) << "Could not close gpu data queue.";
+        MS_LOG(ERROR) << "Could not close gpu data queue.";
       }
     }
-    CHECK_OP_RET_WITH_EXCEPT(GpuBufferMgr::GetInstance().Destroy(), "Could not destroy gpu data queue.");
+    CHECK_OP_RET_WITH_ERROR(GpuBufferMgr::GetInstance().Destroy(), "Could not destroy gpu data queue.");
   }
 
   // Destroy remaining memory swap events and free host memory.
@@ -417,7 +422,7 @@ void GPUKernelRuntime::FetchMemUnitSize(const session::KernelGraph *graph) {
       current_sum_size = 0;
     }
   }
-  if (max_sum_size > GPUMemoryAllocator::GetInstance().mem_alloc_unit_size()) {
+  if (max_sum_size > GPUMemoryAllocator::GetInstance().MemAllocUnitSize()) {
     size_t unit_size = (max_sum_size / DYNAMIC_MEM_ALLOC_UNIT_SIZE + 1) * DYNAMIC_MEM_ALLOC_UNIT_SIZE;
     if (unit_size < DYNAMIC_MEM_ALLOC_UNIT_SIZE) {
       MS_LOG(WARNING) << "Current memory unit size [" << unit_size << "] is too small.";
@@ -427,11 +432,11 @@ void GPUKernelRuntime::FetchMemUnitSize(const session::KernelGraph *graph) {
     constexpr float kValidMemoryRatio = 0.9;
     free_mem_size = kValidMemoryRatio * free_mem_size;
     unit_size = std::min(unit_size, free_mem_size);
-    GPUMemoryAllocator::GetInstance().set_mem_alloc_unit_size(unit_size);
+    GPUMemoryAllocator::GetInstance().SetMemAllocUintSize(unit_size);
   }
 }
 
-void GPUKernelRuntime::AssignMemory(session::KernelGraph *graph) {
+void GPUKernelRuntime::AssignMemory(const session::KernelGraph &graph) {
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
   MS_EXCEPTION_IF_NULL(mem_manager_);
@@ -441,18 +446,17 @@ void GPUKernelRuntime::AssignMemory(session::KernelGraph *graph) {
   bool is_enable_dynamic_mem = context_ptr->get_param<bool>(MS_CTX_ENABLE_DYNAMIC_MEM_POOL);
   if (is_enable_dynamic_mem) {
     // Use the dynamic memory pool.
-    InitKernelRefCount(graph);
-    InitMemorySwapInfo(graph);
-    InitKernelOutputAddress(graph);
-    InitKernelWorkspaceAddress(graph);
-    SaveGraphOutputNode(graph);
+    InitKernelRefCount(&graph);
+    InitMemorySwapInfo(&graph);
+    InitKernelOutputAddress(&graph);
+    InitKernelWorkspaceAddress(&graph);
+    SaveGraphOutputNode(&graph);
   } else {
     AssignDynamicMemory(graph);
   }
 }
 
-bool GPUKernelRuntime::Run(session::KernelGraph *graph, bool is_task_sink) {
-  MS_EXCEPTION_IF_NULL(graph);
+bool GPUKernelRuntime::Run(const session::KernelGraph &graph, bool is_task_sink) {
   struct timeval start_time, end_time;
   (void)gettimeofday(&start_time, nullptr);
   bool ret = true;
@@ -462,7 +466,7 @@ bool GPUKernelRuntime::Run(session::KernelGraph *graph, bool is_task_sink) {
   bool is_enable_pynative_infer = context_ptr->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER);
   bool is_pynative_mode = (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode);
   if (is_enable_dynamic_mem && !is_pynative_mode && !is_enable_pynative_infer) {
-    auto graph_id = graph->graph_id();
+    auto graph_id = graph.graph_id();
     auto iter = mem_swap_map_.find(graph_id);
     if (iter == mem_swap_map_.end()) {
       MS_LOG(EXCEPTION) << "Find memory swap map failed.";
@@ -476,11 +480,11 @@ bool GPUKernelRuntime::Run(session::KernelGraph *graph, bool is_task_sink) {
     mem_reuse_util_ = mem_reuse_iter->second;
     MS_EXCEPTION_IF_NULL(mem_reuse_util_);
 
-    ret = RunOneStep(graph);
+    ret = RunOneStep(&graph);
   } else {
-    if (graph->is_dynamic_shape()) {
+    if (graph.is_dynamic_shape()) {
       // run dynamic shape graph in pynative
-      ret = RunOpLaunchKernelDynamic(graph);
+      ret = RunOpLaunchKernelDynamic(&graph);
     } else {
       ret = LaunchKernels(graph);
     }
@@ -592,8 +596,10 @@ void GPUKernelRuntime::InitKernelRefCount(const session::KernelGraph *graph) {
   mem_reuse_util_ptr->SetReuseRefCount();
   // Can't free the device address of graph output, so set the reference count of graph output specially.
   mem_reuse_util_ptr->SetGraphOutputRefCount();
+#ifndef ENABLE_SECURITY
   // Can't free the device address of summary nodes, so set the reference count of summary nodes specially.
   mem_reuse_util_ptr->SetSummaryNodesRefCount();
+#endif
   auto graph_id = graph->graph_id();
   mem_reuse_util_map_[graph_id] = mem_reuse_util_ptr;
 }
@@ -793,6 +799,7 @@ bool GPUKernelRuntime::LaunchKernelDynamic(const session::KernelGraph *graph, bo
         gpu_kernel->PostExecute();
       }
 #ifdef ENABLE_DEBUGGER
+      MS_EXCEPTION_IF_NULL(debugger_);
       // called once per kernel to collect the outputs to the kernel (does a SyncDeviceToHost)
       LoadKernelData(debugger_.get(), kernel, kernel_inputs, kernel_workspaces, kernel_outputs, exec_order, stream_,
                      dump_enabled, kernel == last_kernel);
@@ -803,6 +810,7 @@ bool GPUKernelRuntime::LaunchKernelDynamic(const session::KernelGraph *graph, bo
     if (!UpdateMemorySwapTask(kernel, mock, profiling)) {
 #ifdef ENABLE_DEBUGGER
       if (!mock) {
+        MS_EXCEPTION_IF_NULL(debugger_);
         // invalidate current data collected by the debugger
         debugger_->ClearCurrentData();
       }
@@ -844,6 +852,7 @@ void GPUKernelRuntime::LaunchKernelWithoutMock(const session::KernelGraph *graph
 #endif
     auto kernel_mod = AnfAlgo::GetKernelMod(kernel);
     MS_EXCEPTION_IF_NULL(kernel_mod);
+    MS_EXCEPTION_IF_NULL(stream_);
     if (!kernel_mod->Launch(inputs, workspaces, outputs, stream_)) {
 #ifdef ENABLE_DUMP_IR
       mindspore::RDR::TriggerAll();
@@ -887,8 +896,10 @@ bool GPUKernelRuntime::RunOpLaunchKernelDynamic(const session::KernelGraph *grap
     AddressPtrList kernel_inputs;
     AddressPtrList kernel_workspaces;
     AddressPtrList kernel_outputs;
-    GenLaunchArgs(*kernel_mod, kernel, &kernel_inputs, &kernel_workspaces, &kernel_outputs);
-    auto ret = kernel_mod->Launch(kernel_inputs, kernel_workspaces, kernel_outputs, stream_);
+    KernelLaunchInfo kernel_launch_info;
+    GenLaunchArgs(*kernel_mod, kernel, &kernel_launch_info);
+    MS_EXCEPTION_IF_NULL(stream_);
+    auto ret = kernel_mod->Launch(kernel_launch_info, stream_);
     if (!ret) {
       MS_LOG(ERROR) << "Launch kernel failed.";
       return false;
@@ -911,6 +922,7 @@ void GPUKernelRuntime::LaunchKernelWithTimeProfiling(const AnfNodePtr &kernel, c
   CHECK_OP_RET_WITH_EXCEPT(CudaDriver::CreateEvent(&start), "Failed to create event.");
   CHECK_OP_RET_WITH_EXCEPT(CudaDriver::CreateEvent(&end), "Failed to create event.");
 
+  MS_EXCEPTION_IF_NULL(stream_);
   CHECK_OP_RET_WITH_EXCEPT(CudaDriver::RecordEvent(start, stream_), "Failed to record event to stream.");
   CHECK_OP_RET_WITH_EXCEPT(kernel_mod->Launch(inputs, workspace, outputs, stream_), "Launch kernel failed.");
   CHECK_OP_RET_WITH_EXCEPT(CudaDriver::RecordEvent(end, stream_), "Failed to record event to stream.");
@@ -1328,12 +1340,12 @@ void GPUKernelRuntime::FreeKernelDynamicRes(const mindspore::AnfNodePtr &kernel)
   }
 }
 
-DeviceAddressPtr GPUKernelRuntime::GetPrevNodeMutableOutputAddr(const AnfNodePtr &node, size_t i, bool visit_nop_node) {
+DeviceAddressPtr GPUKernelRuntime::GetPrevNodeMutableOutputAddr(const AnfNodePtr &node, size_t i, bool skip_nop_node) {
   if (!enable_relation_cache_) {
-    return AnfAlgo::GetPrevNodeMutableOutputAddr(node, i, visit_nop_node);
+    return AnfAlgo::GetPrevNodeMutableOutputAddr(node, i, skip_nop_node);
   }
 
-  auto &addr_cache = visit_nop_node ? prev_node_mut_output_addr_cache_ : prev_node_mut_output_addr_skip_nop_node_cache_;
+  auto &addr_cache = skip_nop_node ? prev_node_mut_output_addr_cache_ : prev_node_mut_output_addr_skip_nop_node_cache_;
   std::unordered_map<AnfNodePtr, std::vector<session::KernelWithIndex>>::iterator addr_iter;
   if (auto iter = addr_cache.find(node); iter == addr_cache.end()) {
     addr_iter = addr_cache.insert({node, {AnfAlgo::GetInputTensorNum(node), {nullptr, 0}}}).first;
@@ -1342,7 +1354,7 @@ DeviceAddressPtr GPUKernelRuntime::GetPrevNodeMutableOutputAddr(const AnfNodePtr
   }
 
   if (addr_iter->second[i].first == nullptr) {
-    addr_iter->second[i] = AnfAlgo::GetPrevNodeOutput(node, i, visit_nop_node);
+    addr_iter->second[i] = AnfAlgo::GetPrevNodeOutput(node, i, skip_nop_node);
   }
 
   session::KernelWithIndex prev_node_with_index = addr_iter->second[i];
@@ -1353,12 +1365,12 @@ DeviceAddressPtr GPUKernelRuntime::GetPrevNodeMutableOutputAddr(const AnfNodePtr
   return addr;
 }
 
-DeviceAddressPtr GPUKernelRuntime::GetMutableOutputAddr(const AnfNodePtr &node, size_t i, bool visit_nop_node) {
+DeviceAddressPtr GPUKernelRuntime::GetMutableOutputAddr(const AnfNodePtr &node, size_t i, bool skip_nop_node) {
   if (!enable_relation_cache_) {
-    return AnfAlgo::GetMutableOutputAddr(node, i, visit_nop_node);
+    return AnfAlgo::GetMutableOutputAddr(node, i, skip_nop_node);
   }
 
-  auto &addr_cache = visit_nop_node ? mut_output_addr_cache_ : mut_output_addr_skip_nop_node_cache_;
+  auto &addr_cache = skip_nop_node ? mut_output_addr_cache_ : mut_output_addr_skip_nop_node_cache_;
   std::unordered_map<AnfNodePtr, std::vector<DeviceAddressPtr>>::iterator addr_iter;
   if (auto iter = addr_cache.find(node); iter == addr_cache.end()) {
     auto kernel_mod = AnfAlgo::GetKernelMod(node);
@@ -1371,12 +1383,12 @@ DeviceAddressPtr GPUKernelRuntime::GetMutableOutputAddr(const AnfNodePtr &node, 
 
   auto &now_addr = addr_iter->second[i];
   if (now_addr == nullptr) {
-    auto device_address = AnfAlgo::GetMutableOutputAddr(node, i, visit_nop_node);
+    auto device_address = AnfAlgo::GetMutableOutputAddr(node, i, skip_nop_node);
     now_addr = device_address;
   } else {
     if (addr_state_.count(now_addr) > 0) {
       addr_state_.erase(now_addr);
-      auto device_address = AnfAlgo::GetMutableOutputAddr(node, i, visit_nop_node);
+      auto device_address = AnfAlgo::GetMutableOutputAddr(node, i, skip_nop_node);
       now_addr = device_address;
     }
   }

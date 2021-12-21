@@ -24,6 +24,8 @@
 #include "debug/data_dump/dump_json_parser.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "runtime/device/kernel_runtime_manager.h"
+#include "utils/utils.h"
+#include "debug/common.h"
 
 namespace mindspore {
 uint32_t ConvertPhysicalDeviceId(uint32_t device_id) {
@@ -35,7 +37,7 @@ uint32_t ConvertPhysicalDeviceId(uint32_t device_id) {
   return kernel_runtime->device_id();
 }
 
-std::string GenerateDumpPath(uint32_t graph_id, uint32_t rank_id) {
+std::string GenerateDumpPath(uint32_t graph_id, uint32_t rank_id, bool is_cst) {
   auto &dump_json_parser = DumpJsonParser::GetInstance();
   std::string net_name = dump_json_parser.net_name();
   std::string iterator = std::to_string(dump_json_parser.cur_dump_iter());
@@ -43,7 +45,12 @@ std::string GenerateDumpPath(uint32_t graph_id, uint32_t rank_id) {
   if (dump_path.back() != '/') {
     dump_path += "/";
   }
-  dump_path += ("rank_" + std::to_string(rank_id) + "/" + net_name + "/" + std::to_string(graph_id) + "/" + iterator);
+  if (is_cst) {
+    dump_path += ("rank_" + std::to_string(rank_id) + "/" + net_name + "/" + std::to_string(graph_id) + "/constants/");
+  } else {
+    dump_path +=
+      ("rank_" + std::to_string(rank_id) + "/" + net_name + "/" + std::to_string(graph_id) + "/" + iterator + "/");
+  }
   return dump_path;
 }
 
@@ -60,10 +67,12 @@ void GetFileKernelName(NotNull<std::string *> kernel_name) {
 }
 
 void SetConstNodeId(const AnfNodePtr &node, std::map<std::string, size_t> *const_map) {
+  MS_EXCEPTION_IF_NULL(node);
   if (!node->isa<ValueNode>()) {
     return;
   }
   std::string node_name = GetKernelNodeName(node);
+  MS_EXCEPTION_IF_NULL(const_map);
   auto iter = const_map->find(node_name);
   if (iter == const_map->end()) {
     auto const_idx = const_map->size() + 1;
@@ -72,6 +81,7 @@ void SetConstNodeId(const AnfNodePtr &node, std::map<std::string, size_t> *const
 }
 
 void GetCNodeConstantId(const CNodePtr &node, std::map<std::string, size_t> *const_map) {
+  MS_EXCEPTION_IF_NULL(node);
   auto &inputs = node->inputs();
   if (inputs.empty()) {
     MS_LOG(EXCEPTION) << "Inputs of apply node is empty";
@@ -79,6 +89,7 @@ void GetCNodeConstantId(const CNodePtr &node, std::map<std::string, size_t> *con
   AnfNodePtr op = inputs[0];
 
   // CNode/ConstGraph/Const/Parameter
+  MS_EXCEPTION_IF_NULL(op);
   if (op->isa<CNode>() || IsValueNode<FuncGraph>(op) || op->isa<Parameter>()) {
     MS_LOG(WARNING) << "Operator must be a primitive.";
   } else {
@@ -90,6 +101,7 @@ void GetCNodeConstantId(const CNodePtr &node, std::map<std::string, size_t> *con
 }
 
 void GetConstantId(const session::KernelGraph *graph, std::map<std::string, size_t> *const_map) {
+  MS_EXCEPTION_IF_NULL(graph);
   std::vector<AnfNodePtr> nodes = TopoSort(graph->get_return(), SuccIncoming, AlwaysInclude);
   for (const AnfNodePtr &node : nodes) {
     MS_EXCEPTION_IF_NULL(node);
@@ -97,6 +109,7 @@ void GetConstantId(const session::KernelGraph *graph, std::map<std::string, size
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(cnode);
     if (cnode != graph->get_return()) {
       GetCNodeConstantId(cnode, const_map);
     } else {
@@ -131,13 +144,38 @@ uint64_t GetTimeStamp() {
   return timestamp;
 }
 
-std::string GetOpNameWithoutScope(const std::string &fullname_with_scope) {
-  const std::string separator("--");
+std::string GetOpNameWithoutScope(const std::string &fullname_with_scope, const std::string &separator) {
   std::size_t found = fullname_with_scope.rfind(separator);
   std::string op_name;
   if (found != std::string::npos) {
     op_name = fullname_with_scope.substr(found + separator.length());
   }
   return op_name;
+}
+
+void DumpToFile(const std::string &file_name, const std::string &dump_str) {
+  if (dump_str.empty()) {
+    MS_LOG(ERROR) << "Failed to dump empty tensor data.";
+    return;
+  }
+
+  auto real_path = Common::CreatePrefixPath(file_name);
+  if (!real_path.has_value()) {
+    MS_LOG(ERROR) << "CreatePrefixPath failed.";
+    return;
+  }
+  std::string real_path_str = real_path.value();
+  ChangeFileMode(real_path_str, S_IWUSR);
+  std::ofstream file(real_path_str, std::ofstream::out | std::ofstream::trunc);
+  if (!file.is_open()) {
+    MS_LOG(EXCEPTION) << "Open file " << real_path_str << "failed: " << ErrnoToString(errno);
+  }
+  file << dump_str;
+  if (file.bad()) {
+    file.close();
+    MS_LOG(EXCEPTION) << "Dump string to file " << real_path_str << " failed: " << ErrnoToString(errno);
+  }
+  file.close();
+  ChangeFileMode(real_path_str, S_IRUSR);
 }
 }  // namespace mindspore

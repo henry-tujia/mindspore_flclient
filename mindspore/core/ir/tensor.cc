@@ -73,6 +73,10 @@ std::unique_ptr<T[]> NewData(const U *input, size_t size) {
   if (input == nullptr || size == 0) {
     return nullptr;
   }
+  if (size > INT32_MAX) {
+    MS_LOG(WARNING) << "Try to alloca a large memory, size is:" << size * sizeof(T);
+  }
+
   auto data = std::make_unique<T[]>(size);
   if constexpr (!std::is_same<T, U>::value &&
                 (std::is_same<T, float16>::value || std::is_same<U, float16>::value ||
@@ -209,6 +213,9 @@ class TensorDataImpl : public TensorData {
 
   void *data() override {
     if (data_ == nullptr) {
+      if (data_size_ > INT32_MAX) {
+        MS_LOG(WARNING) << "Try to alloca a large memory, size is:" << data_size_ * sizeof(T);
+      }
       // Lazy allocation.
       data_ = std::make_unique<T[]>(data_size_);
     }
@@ -563,6 +570,12 @@ bool Tensor::operator==(const Tensor &tensor) const {
 }
 
 bool Tensor::ValueEqual(const Tensor &tensor) const {
+  if (is_parameter_ != tensor.is_parameter_) {
+    return false;
+  }
+  if (is_parameter_ && param_info_->name() != tensor.param_info_->name()) {
+    return false;
+  }
   return (&tensor == this || (MetaTensor::operator==(tensor) && data_->equals(*tensor.data_)));
 }
 
@@ -609,16 +622,16 @@ std::string Tensor::GetShapeAndDataTypeInfo() const {
   return buf.str();
 }
 
-std::string Tensor::ToStringInternal(int limit_size) const {
+std::string Tensor::ToStringInternal(size_t limit_size) const {
   std::ostringstream buf;
   auto dtype = Dtype();
   MS_EXCEPTION_IF_NULL(dtype);
   buf << "Tensor(shape=" << ShapeToString(shape_) << ", dtype=" << dtype->ToString() << ", value=";
-  if (limit_size <= 0 || DataSize() < limit_size) {
+  if (limit_size == 0 || DataSize() < limit_size) {
     // Only print data for small tensor.
-    buf << ((data().ndim() > 1) ? '\n' : ' ') << data().ToString(data_type_, shape_, false);
+    buf << ((data().ndim() > 1) ? "\n" : "") << data().ToString(data_type_, shape_, false);
   } else {
-    buf << " [...]";
+    buf << "[...]";
   }
   if (is_parameter_) {
     buf << ", name=" << param_info_->name();
@@ -628,7 +641,7 @@ std::string Tensor::ToStringInternal(int limit_size) const {
 }
 
 std::string Tensor::ToString() const {
-  constexpr int small_tensor_size = 30;
+  constexpr size_t small_tensor_size = 30;
   return ToStringInternal(small_tensor_size);
 }
 
@@ -666,6 +679,43 @@ TypeId Tensor::set_data_type(const TypeId data_type) {
     return MetaTensor::set_data_type(data_type);
   }
   return data_type;
+}
+
+CSRTensor::CSRTensor(const TensorPtr indptr, const TensorPtr indices, const TensorPtr values, const ShapeVector &shape)
+    : MetaSparseTensor(values->data_type(), shape), indptr_(indptr), indices_(indices), values_(values) {}
+
+bool CSRTensor::operator==(const CSRTensor &csr_tensor) const { return (&csr_tensor == this); }
+
+std::string CSRTensor::ToString() const {
+  std::ostringstream buf;
+  MS_EXCEPTION_IF_NULL(values_);
+  MS_EXCEPTION_IF_NULL(indices_);
+  MS_EXCEPTION_IF_NULL(indptr_);
+  auto dtype = values_->Dtype();
+  buf << "CSRTensor(shape=" << ShapeToString(shape_) << ", dtype=" << dtype->ToString() << ", indptr=";
+  buf << indptr_->ToString() << ", indices=" << indices_->ToString() << ", values=";
+  buf << values_->ToString() << ")";
+  return buf.str();
+}
+
+abstract::AbstractBasePtr CSRTensor::ToAbstract() {
+  auto dtype = values_->Dtype();
+  if (!IsSubType(dtype, kNumber) && !IsSubType(dtype, kString) && !IsSubType(dtype, kTensorType)) {
+    MS_LOG(EXCEPTION) << "Expect tensor type kNumber or kString or kTensor but got: " << dtype->ToString() << ".";
+  }
+  auto abs_csr_tensor = std::make_shared<abstract::AbstractCSRTensor>(dtype, shape_);
+
+  abs_csr_tensor->set_indptr(indptr_->ToAbstract()->cast<abstract::AbstractTensorPtr>());
+  abs_csr_tensor->set_indices(indices_->ToAbstract()->cast<abstract::AbstractTensorPtr>());
+  abs_csr_tensor->set_values(values_->ToAbstract()->cast<abstract::AbstractTensorPtr>());
+
+  std::vector<abstract::AbstractBasePtr> abstract_shape;
+  std::transform(
+    shape_.begin(), shape_.end(), std::back_inserter(abstract_shape),
+    [](auto shp) -> abstract::AbstractScalarPtr { return std::make_shared<abstract::AbstractScalar>(shp); });
+  abs_csr_tensor->set_dense_shape(std::make_shared<abstract::AbstractTuple>(abstract_shape));
+
+  return abs_csr_tensor;
 }
 }  // namespace tensor
 }  // namespace mindspore

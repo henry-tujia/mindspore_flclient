@@ -31,6 +31,7 @@
 #include "proto/node_def.pb.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/aicpu/aicpu_util.h"
+#include "backend/kernel_compiler/aicpu/aicpu_kernel_load.h"
 #include "backend/session/kernel_graph.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "backend/kernel_compiler/oplib/oplib.h"
@@ -196,6 +197,7 @@ void SetNodeInputs(const std::shared_ptr<AnfNode> &anf_node, mindspore::NodeDef 
       MS_EXCEPTION_IF_NULL(cnode);
       auto input_node = cnode->inputs()[input_index + 1];
       auto value_ptr = GetValueNode(input_node);
+      MS_EXCEPTION_IF_NULL(value_ptr);
       auto value = GetValue<std::string>(value_ptr);
       input_shape.push_back(1);
       input_shape.push_back(value.size());
@@ -359,15 +361,15 @@ uint64_t SetExtInfoOutputShapeType(char *ext_info_buf, uint64_t ext_info_offset,
   return ext_info_offset;
 }
 
-bool CreateExtInfo(const std::shared_ptr<AnfNode> &anf_node, const std::shared_ptr<AicpuOpKernelMod> &kernel_mod_ptr) {
+void CreateExtInfo(const std::shared_ptr<AnfNode> &anf_node, const std::shared_ptr<AicpuOpKernelMod> &kernel_mod_ptr) {
   MS_EXCEPTION_IF_NULL(anf_node);
   MS_EXCEPTION_IF_NULL(kernel_mod_ptr);
   if (!anf_node->isa<CNode>()) {
-    return true;
+    return;
   }
 
   if (!AnfAlgo::IsDynamicShape(anf_node)) {
-    return true;
+    return;
   }
 
   uint64_t ext_info_head_len = kExtInfoHeadSize;
@@ -401,7 +403,6 @@ bool CreateExtInfo(const std::shared_ptr<AnfNode> &anf_node, const std::shared_p
   MS_LOG(INFO) << "Check ext_info_len:" << ext_info_len << " ext_info_offset:" << ext_info_offset;
   // set ext info
   kernel_mod_ptr->SetExtInfo(ext_info);
-  return true;
 }
 
 KernelModPtr AicpuOpBuild(const std::shared_ptr<AnfNode> &anf_node) {
@@ -423,6 +424,11 @@ KernelModPtr AicpuOpBuild(const std::shared_ptr<AnfNode> &anf_node) {
   if (!SetIOSize(anf_node, kernel_mod_ptr)) {
     MS_LOG(EXCEPTION) << "Set input output size list failed.";
   }
+
+  if (!AicpuOpKernelLoad::GetInstance().LoadAicpuKernelSo(anf_node, kernel_mod_ptr)) {
+    MS_LOG(EXCEPTION) << "Aicpu kernel so load failed. task is " << anf_node->fullname_with_scope();
+  }
+
   return kernel_mod_ptr;
 }
 }  // namespace kernel

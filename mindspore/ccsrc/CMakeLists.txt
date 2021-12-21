@@ -13,9 +13,16 @@ set(FBS_FILES
         )
 ms_build_flatbuffers(FBS_FILES ${CMAKE_CURRENT_SOURCE_DIR}../../schema generated_fbs_files ${SERVER_FLATBUFFER_OUTPUT})
 
+if(ENABLE_D)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/backend/kernel_compiler/aicpu/aicpu_ops)
+    add_subdirectory(backend/kernel_compiler/aicpu/aicpu_ops)
+endif()
+
 if(ENABLE_CPU)
     if(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "aarch64")
         set(PLATFORM_ARM64 "on")
+        set(X86_64_SIMD "off")
+    elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
         set(X86_64_SIMD "off")
     elseif("${X86_64_SIMD}" STREQUAL "off" AND NOT ${ENABLE_ASAN})
         set(X86_64_SIMD "avx")
@@ -24,10 +31,13 @@ if(ENABLE_CPU)
     add_subdirectory(backend/kernel_compiler/cpu/nnacl)
 endif()
 
-if(NOT(CMAKE_SYSTEM_NAME MATCHES "Darwin"))
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
     link_directories(${CMAKE_SOURCE_DIR}/build/mindspore/graphengine)
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-delete-non-abstract-non-virtual-dtor")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 \
+        -Wno-delete-non-abstract-non-virtual-dtor -Wno-unused-private-field -Wno-overloaded-virtual \
+        -Wno-unused-const-variable -Wno-pessimizing-move -Wno-range-loop-analysis -Wno-mismatched-tags \
+        -Wno-c++11-narrowing")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Windows")
@@ -102,11 +112,6 @@ if(ENABLE_GPU)
             "runtime/device/gpu/*.cc"
             "runtime/device/gpu/*.cu"
             "backend/kernel_compiler/gpu/*.cu"
-            "backend/kernel_compiler/akg/gpu/*.cc"
-            "backend/kernel_compiler/akg/akg_kernel_json_generator.cc"
-            "backend/kernel_compiler/akg/akg_kernel_json_decoder.cc"
-            "backend/kernel_compiler/akg/akg_kernel_attrs_process.cc"
-            "backend/kernel_compiler/akg/akg_kernel_build.cc"
             )
 
     list(APPEND CUDA_NVCC_FLAGS -arch=sm_53 --expt-relaxed-constexpr)
@@ -115,8 +120,7 @@ if(ENABLE_GPU)
                                   "runtime/device/gpu/distribution/collective_wrapper.cc"
                                   "runtime/device/gpu/distribution/mpi_wrapper.cc"
                                   "runtime/device/gpu/distribution/nccl_wrapper.cc"
-                                  "runtime/device/gpu/trt_loader.cc"
-                                  )
+                                  "runtime/device/gpu/trt_loader.cc")
 
     if(NOT ${TENSORRT_HOME} STREQUAL "")
         find_path(TENSORRT_HOME_INCLUDE NvInfer.h HINTS ${TENSORRT_HOME}/include)
@@ -169,8 +173,11 @@ if(ENABLE_DEBUGGER)
     ms_protobuf_generate(DEBUGGER_PROTO_SRCS DEBUGGER_PROTO_HDRS ${DEBUGGER_PROTO_LIST})
     file(GLOB_RECURSE DEBUGGER_GRPC_LIST RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "debug/debugger/debug_grpc.proto")
     ms_grpc_generate(DEBUGGER_GRPC_SRCS DEBUGGER_GRPC_HDRS ${DEBUGGER_GRPC_LIST})
+    file(GLOB_RECURSE DUMP_DATA_PROTO_LIST RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "debug/debugger/dump_data.proto")
+    ms_protobuf_generate(DUMP_DATA_PROTO_SRCS DUMP_DATA_PROTO_HDRS ${DUMP_DATA_PROTO_LIST})
     list(APPEND MINDSPORE_PROTO_LIST ${DEBUGGER_PROTO_SRCS})
     list(APPEND MINDSPORE_PROTO_LIST ${DEBUGGER_GRPC_SRCS})
+    list(APPEND MINDSPORE_PROTO_LIST ${DUMP_DATA_PROTO_SRCS})
 endif()
 
 if(ENABLE_DUMP_PROTO)
@@ -183,6 +190,7 @@ if(ENABLE_DUMP_PROTO)
         "utils/checkpoint.proto"
         "utils/print.proto"
         "utils/node_strategy.proto"
+        "utils/profiling_parallel.proto"
     )
     ms_protobuf_generate_py(PY_SRCS PY_HDRS PY_PYS ${PROTO_PY})
 
@@ -220,13 +228,14 @@ set(SUB_COMP
         runtime/device
         runtime/framework
         runtime/hardware
+        runtime/op_builder
         runtime/hccl_adapter
         frontend/optimizer
         frontend/parallel
         frontend/operator
         pipeline/jit
         pipeline/pynative
-        common debug pybind_api utils vm profiler ps fl
+        common debug pybind_api utils vm profiler ps fl distributed
 )
 
 foreach(_comp ${SUB_COMP})
@@ -241,30 +250,21 @@ endforeach()
 set_property(SOURCE ${SUB_OBJECTS_SRC} PROPERTY COMPILE_DEFINITIONS SUBMODULE_ID=mindspore::SubModuleId::SM_ME)
 add_library(mindspore STATIC ${SUB_OBJECTS_SRC})
 
-if(ENABLE_GE)
-    target_link_libraries(mindspore mindspore_core graph)
-else()
-    target_link_libraries(mindspore mindspore_core)
-endif()
+target_link_libraries(mindspore mindspore_core)
 
 if(ENABLE_DEBUGGER)
     # debugger: link grpc
-    target_link_libraries(mindspore -Wl,--no-as-needed mindspore::grpc++)
+    if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+        target_link_libraries(mindspore mindspore::grpc++)
+    else()
+        target_link_libraries(mindspore -Wl,--no-as-needed mindspore::grpc++)
+    endif()
 endif()
 
 target_link_libraries(mindspore securec mindspore::flatbuffers)
 
 if(NOT WIN32)
   target_link_libraries(mindspore dl)
-endif()
-
-if(ENABLE_GE)
-    if(ENABLE_TRAIN)
-        target_link_libraries(mindspore ge_runner hccl)
-    else()
-        target_link_libraries(mindspore ge_runner)
-    endif()
-    target_link_libraries(mindspore tsdclient datatransfer ascendcl runtime)
 endif()
 
 if(MODE_ASCEND_ALL OR MODE_ASCEND_ACL)
@@ -289,26 +289,42 @@ if(MODE_ASCEND_ALL OR MODE_ASCEND_ACL)
         set(ASCEND_DRIVER_PATH ${ASCEND_PATH}/driver/lib64/common)
         set(ASCEND_DRIVER_BACK_PATH ${ASCEND_PATH}/driver/lib64/driver)
         set(ASCEND_RUNTIME_PATH ${ASCEND_PATH}/fwkacllib/lib64)
+        set(ASCEND_RUNTIME_NEW_PATH ${ASCEND_PATH}/lib64)
         set(ASCEND_OPP_PATH ${ASCEND_PATH}/opp/op_impl/built-in/ai_core/tbe/op_tiling)
         set(ASCEND_TOOLKIT_RUNTIME_PATH ${ASCEND_PATH}/ascend-toolkit/latest/fwkacllib/lib64)
+        set(ASCEND_TOOLKIT_RUNTIME_NEW_PATH ${ASCEND_PATH}/ascend-toolkit/latest/lib64)
         set(ASCEND_TOOLKIT_OPP_PATH ${ASCEND_PATH}/ascend-toolkit/latest/opp/op_impl/built-in/ai_core/tbe/op_tiling)
     endif()
 endif()
 
+if(ENABLE_GE)
+    find_library(GE_RUNNER ge_runner ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    find_library(GRAPH graph ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    find_library(HCCL hccl ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    target_link_libraries(mindspore ${GE_RUNNER} ${GRAPH} ${HCCL})
+endif()
+
 if(MODE_ASCEND_ALL)
     MESSAGE("USE DAV LIB PATH: ${ASCEND_PATH}")
-    find_library(ERROR_MANAGER error_manager ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
-    find_library(RUNTIME_LIB runtime ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    find_library(ERROR_MANAGER error_manager ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
+    find_library(RUNTIME_LIB runtime ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
     find_library(TSDCLIENT tsdclient HINTS ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
-                ${ASCEND_DRIVER_BACK_PATH})
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH} ${ASCEND_DRIVER_BACK_PATH})
     find_library(DATATRANSFER datatransfer HINTS ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
-                ${ASCEND_DRIVER_BACK_PATH})
-    find_library(PROFILING msprofiler ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
-    find_library(ACL ascendcl ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
-    find_library(ACL_TDT_CHANNEL acl_tdt_channel ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
-    find_library(PLATFORM platform ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH} ${ASCEND_DRIVER_BACK_PATH})
+    find_library(PROFILING msprofiler ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
+    find_library(ACL ascendcl ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
+    find_library(ACL_TDT_CHANNEL acl_tdt_channel ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
+    find_library(PLATFORM platform ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
     find_library(OPTILING optiling ${ASCEND_OPP_PATH} ${ASCEND_TOOLKIT_OPP_PATH})
-    find_library(OPT_FEATURE opt_feature ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    find_library(OPT_FEATURE opt_feature ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
 
     target_link_libraries(mindspore ${RUNTIME_LIB} ${TSDCLIENT} ${DATATRANSFER} ${ERROR_MANAGER} -Wl,--no-as-needed
       ${OPTILING} ${PLATFORM} ${ACL} ${ACL_TDT_CHANNEL} ${OPT_FEATURE} ${PROFILING})
@@ -343,8 +359,11 @@ endif()
 
 if(MODE_ASCEND_ALL)
     set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/nnae/latest/fwkacllib/lib64)
+    set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/nnae/latest/lib64)
     set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/ascend-toolkit/latest/fwkacllib/lib64)
+    set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/ascend-toolkit/latest/lib64)
     set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/fwkacllib/lib64)
+    set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/lib64)
     set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/opp/op_impl/built-in/ai_core/tbe/op_tiling)
     set(MINDSPORE_RPATH ${MINDSPORE_RPATH}:/usr/local/Ascend/nnae/latest/opp/op_impl/built-in/ai_core/tbe/op_tiling)
     set(MINDSPORE_RPATH
@@ -360,13 +379,16 @@ if(CMAKE_SYSTEM_NAME MATCHES "Windows")
     target_link_libraries(mindspore mindspore_gvar)
     target_link_libraries(_c_expression PRIVATE -Wl,--whole-archive mindspore mindspore_core -Wl,--no-whole-archive)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    target_link_libraries(mindspore mindspore::pybind11_module)
-    target_link_libraries(mindspore mindspore_gvar)
-    target_link_libraries(_c_expression PRIVATE -Wl,-force_load mindspore mindspore_core -Wl,-noall_load)
+    target_link_libraries(mindspore proto_input mindspore::protobuf
+        mindspore::event mindspore::event_pthreads mindspore::event_openssl mindspore::eigen mindspore::json)
+    target_link_libraries(mindspore mindspore::event_core ps_cache)
+    target_link_libraries(_c_expression PRIVATE -Wl,-all_load mindspore mindspore_core proto_input -Wl,-noall_load)
+    target_link_libraries(_c_expression PRIVATE mindspore::pybind11_module)
+    target_link_libraries(_c_expression PRIVATE mindspore_gvar)
 else()
     if(ENABLE_CPU AND NOT WIN32)
         target_link_libraries(mindspore proto_input mindspore::protobuf
-            mindspore::event mindspore::event_pthreads mindspore::event_openssl mindspore::json)
+            mindspore::event mindspore::event_pthreads mindspore::event_openssl mindspore::eigen mindspore::json)
         target_link_libraries(mindspore -Wl,--no-as-needed mindspore::event_core ps_cache)
         if(${ENABLE_IBVERBS} STREQUAL "ON")
             target_link_libraries(mindspore ibverbs rdmacm)
@@ -400,6 +422,7 @@ if(ENABLE_GPU)
     endif()
     if(ENABLE_MPI)
         set_target_properties(_ms_mpi PROPERTIES INSTALL_RPATH ${MINDSPORE_RPATH})
+        target_link_libraries(mindspore nvidia_collective)
     endif()
 endif()
 
@@ -419,7 +442,8 @@ if(ENABLE_MINDDATA)
 endif()
 
 if(MODE_ASCEND_ALL)
-    find_library(adump_server libadump_server.a ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
+    find_library(adump_server libadump_server.a ${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH}
+                ${ASCEND_RUNTIME_NEW_PATH} ${ASCEND_TOOLKIT_RUNTIME_NEW_PATH})
     target_link_libraries(_c_expression PRIVATE ${adump_server})
 endif()
 

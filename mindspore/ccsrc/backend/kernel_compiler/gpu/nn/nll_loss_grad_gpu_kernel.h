@@ -22,6 +22,7 @@
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/loss_with_reduction_impl.cuh"
+#include "backend/kernel_compiler/common_utils.h"
 
 namespace mindspore {
 namespace kernel {
@@ -37,6 +38,9 @@ class NLLLossGradGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input_device = GetDeviceAddress<T>(inputs, 0);
     T *dloss_device = GetDeviceAddress<T>(inputs, 1);
     int32_t *target_device = GetDeviceAddress<int32_t>(inputs, 2);  // nll_loss_grad only supports int32 target
@@ -52,23 +56,26 @@ class NLLLossGradGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     std::vector<size_t> input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "logits");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
+    if (input_shape.size() < 2) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of logits cannot be less than 2, but "
+                        << "got the " << input_shape.size();
+    }
     n_ = static_cast<int>(input_shape[0]);
     c_ = static_cast<int>(input_shape[1]);
     for (size_t i = 0; i < input_shape.size(); i++) {
       input_size_ *= input_shape[i];
     }
     string reduction = GetAttr<string>(kernel_node, "reduction");
-
-    // if reduction is not 'none', tmp_nll is (N,) size
-    if (reduction == "none") {
-      reduction_ = 0;
-      num_dloss_ = n_;  // dloss is a vector
-    } else if (reduction == "sum") {
-      reduction_ = 2;
-    } else {
-      // reduction = 'mean'
-      reduction_ = 1;
+    reduction_ = kReductionModeMap[reduction];
+    if (reduction_ == ReductionMode::kNone) {
+      num_dloss_ = n_;
     }
 
     InitSizeLists();
@@ -79,8 +86,9 @@ class NLLLossGradGpuKernel : public GpuKernel {
     input_size_ = 1;
     n_ = 0;
     c_ = 0;
-    reduction_ = 1;  // default value
-    num_dloss_ = 1;  // default size (scalar)
+    is_null_input_ = false;
+    reduction_ = ReductionMode::kMean;  // default value
+    num_dloss_ = 1;                     // default size (scalar)
     input_size_list_.clear();
     output_size_list_.clear();
     workspace_size_list_.clear();
@@ -99,9 +107,10 @@ class NLLLossGradGpuKernel : public GpuKernel {
 
  private:
   size_t input_size_;
-  int reduction_;
+  ReductionMode reduction_;
   int n_;
   int c_;
+  bool is_null_input_;
   int num_dloss_;
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

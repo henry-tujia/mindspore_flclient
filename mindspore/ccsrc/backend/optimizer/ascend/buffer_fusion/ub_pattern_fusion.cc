@@ -16,23 +16,18 @@
 #include "backend/optimizer/ascend/buffer_fusion/ub_pattern_fusion.h"
 #include <vector>
 #include <utility>
-#include <unordered_map>
-#include <deque>
+#include <map>
 #include <memory>
 #include <string>
-#include <algorithm>
-#include "backend/kernel_compiler/tbe/tbe_convert_utils.h"
-#include "backend/kernel_compiler/tbe/ascend_kernel_compile.h"
-#include "backend/kernel_compiler/kernel_fusion.h"
+#include "utils/hash_map.h"
+#include "backend/kernel_compiler/tbe/tbe_kernel_compile.h"
+#include "backend/kernel_compiler/tbe/tbe_utils.h"
 #include "debug/anf_ir_dump.h"
-#include "backend/session/anf_runtime_algorithm.h"
-#include "base/core_ops.h"
-#include "runtime/device/kernel_info.h"
-#include "utils/ms_context.h"
 #include "backend/optimizer/common/helper.h"
 
 namespace mindspore {
 namespace opt {
+using mindspore::kernel::tbe::TbeUtils;
 namespace {
 const int8_t MAX_PATTERN_SIZE = 7;
 const int8_t MIN_PATTERN_SIZE = 2;
@@ -65,7 +60,7 @@ CNodePtr CreateFusionOp(const std::vector<AnfNodePtr> &inputs_list, const std::v
   MS_LOG(DEBUG) << "Start Create FusionOp Kernel";
   MS_EXCEPTION_IF_NULL(kernel_graph);
   std::string fusion_op_name = "FusionOp";
-  for (auto node : anf_nodes) {
+  for (auto &node : anf_nodes) {
     fusion_op_name += '_' + AnfAlgo::GetCNodeName(node);
   }
   auto fusion_op = std::make_shared<Primitive>(fusion_op_name);
@@ -84,12 +79,16 @@ CNodePtr CreateFusionOp(const std::vector<AnfNodePtr> &inputs_list, const std::v
   ValuePtr output_names_v = MakeValue(output_names);
   fusion_op->set_attr("input_names", input_names_v);
   fusion_op->set_attr("output_names", output_names_v);
-  for (auto node : anf_nodes) {
+  for (auto &node : anf_nodes) {
+    MS_EXCEPTION_IF_NULL(node);
     auto cnode = node->cast<CNodePtr>();
     if (AnfAlgo::HasNodeAttr(kAttrFracZGroup, cnode)) {
       auto fracz_group = AnfAlgo::GetNodeAttr<int64_t>(node, kAttrFracZGroup);
       fusion_op->set_attr(kAttrFracZGroup, MakeValue(fracz_group));
-      break;
+    }
+    if (AnfAlgo::HasNodeAttr(kAttrDump, cnode)) {
+      auto dump_flag = AnfAlgo::GetNodeAttr<string>(node, kAttrDump);
+      fusion_op->set_attr(kAttrDump, MakeValue(dump_flag));
     }
   }
   std::vector<AnfNodePtr> fusion_inputs_list = inputs_list;
@@ -100,6 +99,7 @@ CNodePtr CreateFusionOp(const std::vector<AnfNodePtr> &inputs_list, const std::v
     MS_LOG(EXCEPTION) << "New FusionOp kernel failed!";
   }
   buffer_fusion_kernel->set_scope((anf_nodes.back())->scope());
+  buffer_fusion_kernel->AddFusedDebugInfoList(anf_nodes);
 
   return buffer_fusion_kernel;
 }
@@ -163,7 +163,7 @@ AnfNodePtr CreateTupleGetItem(const AnfNodePtr &buffer_fusion_kernel, session::K
   return tuple_item;
 }
 
-void ReplaceInputNodeInOtherFusionScope(std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos,
+void ReplaceInputNodeInOtherFusionScope(mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos,
                                         int64_t fusion_id, const AnfNodePtr &output_item,
                                         const AnfNodePtr &replace_item) {
   for (int64_t id = fusion_id + 1; id <= SizeToLong(buffer_fusion_infos->size()); ++id) {
@@ -176,7 +176,7 @@ void ReplaceInputNodeInOtherFusionScope(std::unordered_map<int64_t, BufferFusion
   }
 }
 
-void ReplaceOldNode(std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos, int64_t fusion_id,
+void ReplaceOldNode(mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos, int64_t fusion_id,
                     const AnfNodePtr &buffer_fusion_kernel, session::KernelGraph *kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
@@ -204,7 +204,7 @@ void ReplaceOldNode(std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusi
 }
 
 void GetFusionScopeComputeNodeList(session::KernelGraph *kernel_graph,
-                                   std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
+                                   mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto nodes = TopoSort(kernel_graph->get_return());
@@ -214,7 +214,7 @@ void GetFusionScopeComputeNodeList(session::KernelGraph *kernel_graph,
       continue;
     }
     auto cnode = node->cast<CNodePtr>();
-    if (AnfAlgo::IsRealCNodeKernel(cnode) && AnfAlgo::HasNodeAttr(kOpAttrFusionId, cnode)) {
+    if (AnfUtils::IsRealCNodeKernel(cnode) && AnfAlgo::HasNodeAttr(kOpAttrFusionId, cnode)) {
       auto fusion_id = AnfAlgo::GetNodeAttr<int64_t>(cnode, kOpAttrFusionId);
       (*buffer_fusion_infos)[fusion_id].anf_nodes.push_back(cnode);
     }
@@ -222,7 +222,7 @@ void GetFusionScopeComputeNodeList(session::KernelGraph *kernel_graph,
 }
 
 void GetFusionScopeInputNodeList(const session::KernelGraph &kernel_graph,
-                                 std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
+                                 mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   auto manager = kernel_graph.manager();
   MS_EXCEPTION_IF_NULL(manager);
@@ -274,8 +274,8 @@ AnfNodePtr RemoveNodeFromUpdateState(session::KernelGraph *kernel_graph, const A
   auto updatestate_cnode = updatestate->cast<CNodePtr>();
   auto inputs = updatestate_cnode->inputs();
   std::vector<AnfNodePtr> new_inputs;
-  std::copy_if(inputs.begin(), inputs.end(), std::back_inserter(new_inputs),
-               [node](const AnfNodePtr &input) { return node != input; });
+  (void)std::copy_if(inputs.begin(), inputs.end(), std::back_inserter(new_inputs),
+                     [node](const AnfNodePtr &input) { return node != input; });
   auto new_updatestate = kernel_graph->NewCNode(new_inputs);
   new_updatestate->set_scope(updatestate->scope());
   new_updatestate->set_abstract(updatestate->abstract());
@@ -283,7 +283,7 @@ AnfNodePtr RemoveNodeFromUpdateState(session::KernelGraph *kernel_graph, const A
 }
 
 void GetFusionScopeOutputNodeList(session::KernelGraph *kernel_graph,
-                                  std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
+                                  mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   auto manager = kernel_graph->manager();
@@ -300,7 +300,7 @@ void GetFusionScopeOutputNodeList(session::KernelGraph *kernel_graph,
           // Ensuring normal fusion requires eliminating the node of the updatestate
           if (AnfAlgo::CheckPrimitiveType(use_node.first, prim::kPrimUpdateState)) {
             auto new_updatestate = RemoveNodeFromUpdateState(kernel_graph, node, use_node.first);
-            manager->Replace(use_node.first, new_updatestate);
+            (void)manager->Replace(use_node.first, new_updatestate);
             continue;
           }
           if (std::find(fusion_info.anf_nodes.begin(), fusion_info.anf_nodes.end(), use_node.first) ==
@@ -316,7 +316,7 @@ void GetFusionScopeOutputNodeList(session::KernelGraph *kernel_graph,
         for (auto &user : users) {
           if (AnfAlgo::CheckPrimitiveType(user.first, prim::kPrimUpdateState)) {
             auto new_updatestate = RemoveNodeFromUpdateState(kernel_graph, node, user.first);
-            manager->Replace(user.first, new_updatestate);
+            (void)manager->Replace(user.first, new_updatestate);
             continue;
           }
           if (AnfAlgo::CheckPrimitiveType(user.first, prim::kPrimTupleGetItem)) {
@@ -349,7 +349,7 @@ void GetFusionScopeOutputNodeList(session::KernelGraph *kernel_graph,
 }
 
 void SetOutputUsedNumAttr(const session::KernelGraph &kernel_graph,
-                          const std::unordered_map<int64_t, BufferFusionInfo_t> &buffer_fusion_infos) {
+                          const mindspore::HashMap<int64_t, BufferFusionInfo_t> &buffer_fusion_infos) {
   for (auto &fusion_info : buffer_fusion_infos) {
     auto &fusion_nodes = fusion_info.second.anf_nodes;
     for (auto iter = fusion_nodes.begin(); iter != fusion_nodes.end() - 1; ++iter) {
@@ -408,7 +408,7 @@ bool CheckCircle(const session::KernelGraph &kernel_graph, const BufferFusionInf
 }
 
 void RemoveCircle(const session::KernelGraph &kernel_graph,
-                  std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
+                  mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) {
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   std::vector<int64_t> fusion_ids;
   for (auto &[fusion_id, fusion_info] : *buffer_fusion_infos) {
@@ -425,7 +425,7 @@ void RemoveCircle(const session::KernelGraph &kernel_graph,
 }  // namespace
 
 void UbPatternFusion::GetBufferFusionInfo(session::KernelGraph *kernel_graph,
-                                          std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) const {
+                                          mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos) const {
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   MS_EXCEPTION_IF_NULL(kernel_graph);
   GetFusionScopeComputeNodeList(kernel_graph, buffer_fusion_infos);
@@ -449,26 +449,19 @@ void UbPatternFusion::GetBufferFusionInfo(session::KernelGraph *kernel_graph,
 bool UbPatternFusion::FuseBufferFusionPattern(session::KernelGraph *kernel_graph) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   bool change = false;
-  std::unordered_map<int64_t, BufferFusionInfo_t> buffer_fusion_infos;
+  mindspore::HashMap<int64_t, BufferFusionInfo_t> buffer_fusion_infos;
   GetBufferFusionInfo(kernel_graph, &buffer_fusion_infos);
 
   std::vector<mindspore::kernel::FusionScopeInfo> fusion_scope_infos;
-  std::transform(
-    buffer_fusion_infos.begin(), buffer_fusion_infos.end(), std::back_inserter(fusion_scope_infos),
-    [](const std::pair<int64_t, BufferFusionInfo_t> &buffer_fusion_info) -> mindspore::kernel::FusionScopeInfo {
-      return mindspore::kernel::FusionScopeInfo(
-        buffer_fusion_info.first, buffer_fusion_info.second.full_name, buffer_fusion_info.second.inputs_list,
-        buffer_fusion_info.second.anf_nodes, buffer_fusion_info.second.outputs_list);
-    });
-  std::map<int64_t, kernel::KernelModPtr> kernel_mods;
-  std::string old_build = common::GetEnv("MS_OLD_BUILD_PROCESS");
-  if (!old_build.empty()) {
-    kernel_mods = mindspore::kernel::KernelFusion(fusion_scope_infos);
-  } else if (!fusion_scope_infos.empty()) {
-    auto &build_manager = kernel::ascend::AscendKernelCompileManager::GetInstance();
-    kernel_mods = build_manager.AscendFusionOpCompile(fusion_scope_infos);
-    build_manager.ResetOldTask();
-  }
+  std::transform(buffer_fusion_infos.begin(), buffer_fusion_infos.end(), std::back_inserter(fusion_scope_infos),
+                 [](const auto &buffer_fusion_info) -> mindspore::kernel::FusionScopeInfo {
+                   return mindspore::kernel::FusionScopeInfo(
+                     buffer_fusion_info.first, buffer_fusion_info.second.full_name,
+                     buffer_fusion_info.second.inputs_list, buffer_fusion_info.second.anf_nodes,
+                     buffer_fusion_info.second.outputs_list);
+                 });
+  auto &build_manager = kernel::ascend::TbeKernelCompileManager::GetInstance();
+  auto id_names = build_manager.TbeFusionOpCompile(fusion_scope_infos);
   std::set<int64_t> fusion_ids;
   for (auto &buffer_fusion_info : buffer_fusion_infos) {
     MS_LOG(DEBUG) << "anf node size: " << buffer_fusion_info.second.anf_nodes.size()
@@ -479,23 +472,22 @@ bool UbPatternFusion::FuseBufferFusionPattern(session::KernelGraph *kernel_graph
   // Replace fusion op from return to head
   for (auto &fusion_id : fusion_ids) {
     // Get kernel mod when supporting tbe
-    if (kernel_mods.find(fusion_id) == kernel_mods.end() || kernel_mods[fusion_id] == nullptr) {
+    if (id_names.find(fusion_id) == id_names.end()) {
       MS_LOG(DEBUG) << "fusion id: " << fusion_id << ", fusion op compiling failed";
       continue;
     }
     if (CheckCircle(*kernel_graph, buffer_fusion_infos[fusion_id])) {
       MS_LOG(DEBUG) << "fusion id: " << fusion_id << " will cause graph circle, pass this fusion.";
     } else {
-      change = ReplaceFusionOp(&buffer_fusion_infos, fusion_id, kernel_mods[fusion_id], kernel_graph);
+      change = ReplaceFusionOp(&buffer_fusion_infos, fusion_id, kernel_graph);
     }
   }
   MS_LOG(DEBUG) << "End Buffer Fusion";
   return change;
 }
 
-bool UbPatternFusion::ReplaceFusionOp(std::unordered_map<int64_t, BufferFusionInfo_t> *buffer_fusion_infos,
-                                      int64_t fusion_id, const kernel::KernelModPtr &kernel_ptr,
-                                      session::KernelGraph *kernel_graph) const {
+bool UbPatternFusion::ReplaceFusionOp(mindspore::HashMap<int64_t, BufferFusionInfo_t> *buffer_fusion_infos,
+                                      int64_t fusion_id, session::KernelGraph *kernel_graph) const {
   MS_EXCEPTION_IF_NULL(buffer_fusion_infos);
   auto buffer_fusion_info = (*buffer_fusion_infos)[fusion_id];
   if (buffer_fusion_info.anf_nodes.size() < kFusionNodeNumThreshold) {
@@ -521,13 +513,12 @@ bool UbPatternFusion::ReplaceFusionOp(std::unordered_map<int64_t, BufferFusionIn
     return false;
   }
   AnfAlgo::SetOutputInferTypeAndShape(types, shapes, buffer_fusion.get());
-  AnfAlgo::SetKernelMod(kernel_ptr, buffer_fusion.get());
   SetFusionOpRefInfos(kernel_graph, buffer_fusion_info.outputs_list, buffer_fusion);
   ReplaceOldNode(buffer_fusion_infos, fusion_id, buffer_fusion, kernel_graph);
   return true;
 }
 
-bool UbPatternFusion::Run(const FuncGraphPtr &graph) {
+bool UbPatternFusion::RunPass(const FuncGraphPtr &graph) {
   bool changed = false;
   MS_EXCEPTION_IF_NULL(graph);
   auto kernel_graph = graph->cast<std::shared_ptr<session::KernelGraph>>();

@@ -51,7 +51,6 @@
 
 namespace mindspore {
 namespace dataset {
-
 PYBIND_REGISTER(DatasetNode, 1, ([](const py::module *m) {
                   (void)py::class_<DatasetNode, std::shared_ptr<DatasetNode>>(*m, "Dataset")
                     .def("set_num_workers",
@@ -193,11 +192,12 @@ PYBIND_REGISTER(MapNode, 2, ([](const py::module *m) {
                   (void)py::class_<MapNode, DatasetNode, std::shared_ptr<MapNode>>(*m, "MapNode", "to create a MapNode")
                     .def(py::init([](std::shared_ptr<DatasetNode> self, py::list operations, py::list input_columns,
                                      py::list output_columns, py::list project_columns,
-                                     std::vector<std::shared_ptr<PyDSCallback>> py_callbacks) {
+                                     std::vector<std::shared_ptr<PyDSCallback>> py_callbacks, int64_t max_rowsize,
+                                     ManualOffloadMode offload) {
                       auto map = std::make_shared<MapNode>(
                         self, std::move(toTensorOperations(operations)), toStringVector(input_columns),
                         toStringVector(output_columns), toStringVector(project_columns), nullptr,
-                        std::vector<std::shared_ptr<DSCallback>>(py_callbacks.begin(), py_callbacks.end()));
+                        std::vector<std::shared_ptr<DSCallback>>(py_callbacks.begin(), py_callbacks.end()), offload);
                       THROW_IF_ERROR(map->ValidateParams());
                       return map;
                     }));
@@ -298,5 +298,15 @@ PYBIND_REGISTER(ZipNode, 2, ([](const py::module *m) {
                     }));
                 }));
 
+// OTHER PYBIND
+// (alphabetical order)
+
+PYBIND_REGISTER(ManualOffloadMode, 0, ([](const py::module *m) {
+                  (void)py::enum_<ManualOffloadMode>(*m, "ManualOffloadMode", py::arithmetic())
+                    .value("UNSPECIFIED", ManualOffloadMode::kUnspecified)
+                    .value("DISABLED", ManualOffloadMode::kDisabled)
+                    .value("ENABLED", ManualOffloadMode::kEnabled)
+                    .export_values();
+                }));
 }  // namespace dataset
 }  // namespace mindspore

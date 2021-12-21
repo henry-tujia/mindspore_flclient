@@ -25,8 +25,7 @@
 #include "backend/optimizer/graph_kernel/add_atomic_clean.h"
 #include "backend/session/kernel_graph.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 class StitchAtomicCleanInsertter : public AtomicCleanInsertter {
  public:
   StitchAtomicCleanInsertter() : AtomicCleanInsertter("stitch_atomic_clean") {}
@@ -34,17 +33,22 @@ class StitchAtomicCleanInsertter : public AtomicCleanInsertter {
   bool Run(const FuncGraphPtr &func_graph) override;
 
  private:
-  void CorrectKernelBuildInfo(const AnfNodePtr &composite_node, const AnfNodePtr &new_input) override;
-  CNodePtr CreateInplaceAssignNode(const FuncGraphPtr &sub_graph, const AnfNodePtr &new_parameter) const;
+  void CorrectKernelBuildInfo(const AnfNodePtr &composite_node,
+                              const std::vector<std::pair<AtomicAddInfo, AnfNodePtr>> &clean_infos) override;
+  CNodePtr CreateInplaceAssignNode(const FuncGraphPtr &sub_graph, const AnfNodePtr &new_parameter,
+                                   const AtomicAddInfo &info) const;
   std::vector<std::pair<AnfNodePtr, int>> FindInnerCNodeUsers(const AnfNodePtr &inner_node,
                                                               const CNodePtr &target) const;
-  void ProcessOriginCNode(const AnfNodePtr &composite_node, const AnfNodePtr &new_input) override;
-  bool IsStitchWithAtomic(const AnfNodePtr &anf_node);
+  void ProcessOriginCNode(
+    const AnfNodePtr &composite_node,
+    const std::vector<std::pair<AtomicAddInfo, AnfNodePtr>> &info_and_broadcast_to_nodes) override;
+  std::pair<bool, AtomicAddInfo> IsStitchWithAtomic(const AnfNodePtr &anf_node);
+
+  void AddDepend(const FuncGraphPtr &main_graph, const AnfNodePtr &clean_node, const AnfNodePtr &composite_node,
+                 const AnfNodePtr &user_node, int index) const;
 
   AnfNodePtr stitch_node_{nullptr};
 };
 using StitchAtomicCleanInsertterPtr = std::shared_ptr<StitchAtomicCleanInsertter>;
-}  // namespace opt
-}  // namespace mindspore
-
+}  // namespace mindspore::graphkernel
 #endif  // MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_ADD_STITCH_ATOMIC_CLEAN_GPU_H_

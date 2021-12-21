@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,10 @@
 #ifndef MINDSPORE_CCSRC_PIPELINE_JIT_PARSE_RESOLVE_H_
 #define MINDSPORE_CCSRC_PIPELINE_JIT_PARSE_RESOLVE_H_
 
+#include <utility>
 #include <memory>
 #include <string>
+
 #include "ir/anf.h"
 #include "ir/manager.h"
 #include "pipeline/jit/parse/python_adapter.h"
@@ -37,10 +39,13 @@ using ResourceBasePtr = std::shared_ptr<ResourceBase>;
 namespace mindspore {
 namespace parse {
 // NameSpace class for resolving python code.
-class NameSpace : public Named {
+class NameSpace final : public Named {
  public:
   NameSpace(const std::string &module, const py::object &obj, const py::object &module_obj = py::object())
-      : Named(module), module_(module), obj_(obj), module_obj_(module_obj) {}
+      : Named(module + ": \'" + std::string(py::str(obj)) + "\'"),
+        module_(module),
+        obj_(obj),
+        module_obj_(module_obj) {}
   ~NameSpace() override = default;
   MS_DECLARE_PARENT(NameSpace, Named);
 
@@ -62,7 +67,7 @@ class NameSpace : public Named {
 using NameSpacePtr = std::shared_ptr<NameSpace>;
 
 // Symbol in NameSpace or Class which shall be resolved.
-class Symbol : public Named {
+class Symbol final : public Named {
  public:
   explicit Symbol(const std::string &symbol) : Named(symbol), symbol_(symbol) {}
   Symbol(const std::string &symbol, const std::string &name) : Named(name), symbol_(symbol) {}
@@ -80,7 +85,7 @@ class Symbol : public Named {
 };
 using SymbolPtr = std::shared_ptr<Symbol>;
 
-class Script : public Named {
+class Script final : public Named {
  public:
   explicit Script(const std::string &script) : Named(script), script_(script) {}
   Script(const std::string &script, const std::string &name) : Named(name), script_(script) {}
@@ -92,7 +97,7 @@ class Script : public Named {
   abstract::AbstractBasePtr ToAbstract() override {
     return std::make_shared<abstract::AbstractScript>(shared_from_base<Script>());
   }
-  std::string ToString() const override { return "`" + name() + "`"; }
+  std::string ToString() const override { return "\'" + name() + "\'"; }
 
  private:
   std::string script_;
@@ -113,17 +118,21 @@ class PyObjectWrapper : public Named {
 };
 
 // InterpretedObject class wrappers interpreted python object.
-class InterpretedObject : public PyObjectWrapper {
+class InterpretedObject final : public PyObjectWrapper {
  public:
-  explicit InterpretedObject(const py::object &obj, const std::string &name = "Interpreted object")
-      : PyObjectWrapper(obj, name) {}
+  explicit InterpretedObject(const py::object &obj, const std::string &name = "null")
+      : PyObjectWrapper(obj, "InterpretedObject: \'" + name + "\'") {}
   ~InterpretedObject() override = default;
   MS_DECLARE_PARENT(InterpretedObject, PyObjectWrapper);
-  abstract::AbstractBasePtr ToAbstract() override;
+  abstract::AbstractBasePtr ToAbstract() override {
+    return std::make_shared<abstract::AbstractScalar>(shared_from_base<InterpretedObject>(),
+                                                      std::make_shared<External>());
+  }
 };
+using InterpretedObjectPtr = std::shared_ptr<InterpretedObject>;
 
 // ClassObject class wrappers dataclass
-class ClassObject : public PyObjectWrapper {
+class ClassObject final : public PyObjectWrapper {
  public:
   explicit ClassObject(const py::object &obj, const std::string &name = "Python dataclass")
       : PyObjectWrapper(obj, name) {}
@@ -133,7 +142,7 @@ class ClassObject : public PyObjectWrapper {
 };
 
 // ClassType class wrappers class name in python
-class ClassType : public PyObjectWrapper {
+class ClassType final : public PyObjectWrapper {
  public:
   explicit ClassType(const py::object &obj, const std::string &name = "Python class type")
       : PyObjectWrapper(obj, name) {}
@@ -154,13 +163,9 @@ class SymbolResolver {
   // resolve symbol in namespace and save it in result_;
   bool Resolve();
 
-  NameSpacePtr get_namespace() { return namespace_; }
-
   SymbolPtr symbol() { return symbol_; }
 
   const py::object &result() { return result_; }
-
-  AnfNodePtr resolved_node() { return resolved_node_; }
 
  private:
   // namespace where the symbol locates
@@ -173,13 +178,20 @@ class SymbolResolver {
   py::object result_;
 };
 using SymbolResolverPtr = std::shared_ptr<SymbolResolver>;
+
+// Get python object with index from a list or the whole list if the index is not fixed.
+py::object GetObjectFromSequence(const NameSpacePtr &name_space, const SymbolPtr &symbol, const AnfNodePtr &node,
+                                 const AnfNodePtr &index_node);
+std::pair<parse::NameSpacePtr, parse::SymbolPtr> GetNamespaceAndSymbol(const AnfNodePtr &node);
+
+// Get resolved python object by namespace and symbol.
+py::object GetSymbolObject(const NameSpacePtr &name_space, const SymbolPtr &symbol, const AnfNodePtr &node);
 // Resolve symbol in namespace.
 AnfNodePtr ResolveSymbol(const FuncGraphManagerPtr &manager, const NameSpacePtr &name_space, const SymbolPtr &symbol,
                          const AnfNodePtr &node);
-
 // Resolve Cell with attr name.
-AnfNodePtr ResolveCellwithAttr(const FuncGraphManagerPtr &manager, const NameSpacePtr &name_space,
-                               const SymbolPtr &symbol, const AnfNodePtr &node, const AnfNodePtr &attr);
+AnfNodePtr ResolveCellWithAttr(const FuncGraphManagerPtr &manager, const py::object &obj, const AnfNodePtr &node,
+                               const AnfNodePtr &attr);
 
 // Resolve one graph which normally is the root graph. FuncGraph shall be managed by res->manager().
 bool ResolveFuncGraph(const FuncGraphPtr &func_graph, const pipeline::ResourceBasePtr &res, bool use_profile = true);

@@ -26,6 +26,7 @@
 #include <thread>
 #include <mutex>
 #include <unordered_map>
+#include <condition_variable>
 
 #include "ps/core/cluster_config.h"
 #include "ps/ps_context.h"
@@ -51,12 +52,15 @@ class SchedulerNode : public Node {
       : server_(nullptr),
         scheduler_thread_(nullptr),
         update_state_thread_(nullptr),
+        update_persistent_cmd_thread_(nullptr),
         restful_thread_(nullptr),
         http_server_(nullptr),
         client_thread_(nullptr),
         is_client_started_(false),
         leader_scaler_(nullptr),
-        scheduler_recovery_(nullptr) {}
+        scheduler_recovery_(nullptr),
+        persistent_cmd_(PersistentCommand::DEFAULT),
+        is_worker_timeout_(false) {}
   ~SchedulerNode() override;
 
   typedef void (SchedulerNode::*ResponseHandler)(const std::shared_ptr<TcpServer> &server,
@@ -74,6 +78,9 @@ class SchedulerNode : public Node {
   void InitCommandHandler();
   void CreateTcpServer();
   void StartUpdateClusterStateTimer();
+  // Persistent timer, periodically trigger persistent behavior.
+  void StartUpdatePersistentCommandTimer();
+
   const std::shared_ptr<TcpClient> &GetOrCreateClient(const NodeInfo &node_info);
 
   void ProcessHeartbeat(const std::shared_ptr<TcpServer> &server, const std::shared_ptr<TcpConnection> &conn,
@@ -135,6 +142,10 @@ class SchedulerNode : public Node {
   // Handle the disable FLS http request Synchronously.
   void ProcessDisableFLS(const std::shared_ptr<HttpMessageHandler> &resp);
 
+  // Handle the scale out rollback http request, then delegate to the leader scaler to
+  // process scale out rollback asynchronously.
+  void ProcessScaleoutRollback(const std::shared_ptr<HttpMessageHandler> &resp);
+
   // check whether the cluster is in the ready state.
   RequestProcessResult CheckIfClusterReady();
 
@@ -142,12 +153,33 @@ class SchedulerNode : public Node {
   RequestProcessResult CheckIfNodeIdLegal(const std::vector<std::string> &node_ids);
 
   void StartRestfulServer(const std::string &address, std::uint16_t port, size_t thread_num = 10);
+
   void StopRestfulServer();
+
+  void InitNodeMetaData();
+
+  bool RecoverScheduler();
+
+  void PersistMetaData();
+
+  bool CheckIfNodeDisconnected() const;
+
+  void RunRecovery();
+
+  void BroadcastTimeoutEvent();
+
+  void SetRegisterConnectionFd(const std::shared_ptr<TcpConnection> &conn, const std::string &node_id);
+
+  bool SendPrepareBuildingNetwork(const std::unordered_map<std::string, NodeInfo> &node_infos);
 
   std::shared_ptr<TcpServer> server_;
   std::unique_ptr<std::thread> scheduler_thread_;
   std::unique_ptr<std::thread> update_state_thread_;
-  std::unordered_map<NodeCommand, ResponseHandler> handlers_;
+  std::unique_ptr<std::thread> update_persistent_cmd_thread_;
+  std::condition_variable persistent_cmd_cv_;
+  std::mutex persistent_cmd_mutex_;
+
+  mindspore::HashMap<NodeCommand, ResponseHandler> handlers_;
 
   NodeManager node_manager_;
 
@@ -157,6 +189,7 @@ class SchedulerNode : public Node {
 
   std::unordered_map<std::string, std::shared_ptr<TcpClient>> connected_nodes_;
 
+  std::shared_ptr<TcpClient> client_to_scheduler_;
   std::unique_ptr<std::thread> client_thread_;
   std::atomic<bool> is_client_started_;
 
@@ -166,11 +199,17 @@ class SchedulerNode : public Node {
 
   // Used to persist and obtain metadata information for scheduler.
   std::unique_ptr<RecoveryBase> scheduler_recovery_;
+  // persistent command need to be sent.
+  std::atomic<PersistentCommand> persistent_cmd_;
 
   // The node id of scale in nodes.
   std::vector<std::string> scale_in_node_ids_;
 
   std::unique_ptr<InstanceManager> instance_manager_;
+
+  std::atomic<bool> is_worker_timeout_;
+  // This is a map of register connection fd to client node id
+  std::unordered_map<int, std::string> register_connection_fd_;
 };
 }  // namespace core
 }  // namespace ps

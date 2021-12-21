@@ -19,6 +19,7 @@
 #include <vector>
 #include "backend/session/anf_runtime_algorithm.h"
 #include "frontend/parallel/ops_info/ops_utils.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace kernel {
@@ -45,23 +46,26 @@ static bool CheckStridedSlice(const CNodePtr &cnode) {
     auto shrink_axis_mask = static_cast<int>(AnfAlgo::GetNodeAttr<int64_t>(cnode, kAttrShrinkAxisMask));
     AnfNodePtr input = cnode->input(1);
     int input_dims = 0;
+    MS_EXCEPTION_IF_NULL(input);
     if (input->isa<ValueNode>()) {
       ValuePtr input_value = input->cast<ValueNodePtr>()->value();
+      MS_EXCEPTION_IF_NULL(input_value);
       if (!input_value->isa<Tensor>()) {
         MS_LOG(EXCEPTION) << "For 'StrideSlice', the first input value should be a tensor, but got "
-                          << input_value->ToString();
+                          << input_value->ToString() << trace::DumpSourceLines(cnode);
       }
       input_dims = SizeToInt(input_value->cast<TensorPtr>()->shape().size());
     } else if (input->isa<CNode>() || input->isa<Parameter>()) {
       AbstractBasePtr input_abstract = input->abstract();
+      MS_EXCEPTION_IF_NULL(input_abstract);
       if (!input_abstract->isa<AbstractTensor>()) {
         MS_LOG(EXCEPTION) << "For 'StrideSlice', the first input value should be a tensor, but got "
-                          << input_abstract->ToString();
+                          << input_abstract->ToString() << trace::DumpSourceLines(cnode);
       }
       input_dims = SizeToInt(input_abstract->cast<AbstractTensorPtr>()->shape()->shape().size());
     } else {
       MS_LOG(EXCEPTION) << "For 'StrideSlice', the first input node should be a 'ValueNode' or a 'CNode', but got "
-                        << input->ToString();
+                        << input->ToString() << trace::DumpSourceLines(cnode);
     }
     const int base_number = 2;
     if (shrink_axis_mask >= std::pow<int, int>(base_number, input_dims - 1) && input_dims > 1) {
@@ -76,7 +80,7 @@ static bool CheckTopK(const CNodePtr &cnode) {
     auto sorted = AnfAlgo::GetNodeAttr<bool>(cnode, kAttrSorted);
     return sorted;
   }
-  MS_LOG(EXCEPTION) << "For 'TopK', it should be have attribute 'sorted'.";
+  MS_LOG(EXCEPTION) << "For 'TopK', it should be have attribute 'sorted'." << trace::DumpSourceLines(cnode);
 }
 
 bool TbePropertyChecker::CheckTbeProperties(const mindspore::CNodePtr &cnode) {

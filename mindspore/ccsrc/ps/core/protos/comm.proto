@@ -39,12 +39,30 @@ enum NodeCommand {
   SCALE_IN_DONE = 11;
   // This command is used to send user defined event.
   SEND_EVENT = 12;
+  // This command is used to send scheduler recovery event.
+  SCHEDULER_RECOVERY = 13;
+  // This command is used to send prepare building network msg.
+  PREPARE_BUILDING_NETWORK = 14;
 }
 
 enum NodeRole {
   SERVER = 0;
   WORKER = 1;
   SCHEDULER = 2;
+}
+
+enum PersistentCommand {
+  DEFAULT = 0;
+  PREPARE_PERSIST = 1;
+  BEGIN_PERSIST = 2;
+}
+
+enum PersistentState {
+  NOT_ENABLE_PERSIST = 0;
+  PREPARING_PERSIST = 1;
+  READY_PERSIST = 2;
+  PERSISTING = 3;
+  FINISH_PERSIST = 4; 
 }
 
 message MessageMeta {
@@ -73,11 +91,13 @@ message RegisterMessage {
 
 message RegisterRespMessage {
   string node_id = 1;
+  uint32 rank_id = 2;
 }
 
 message HeartbeatMessage {
   // the current Node unique id:0,1,2...
   string node_id = 1;
+  PersistentState persistent_state = 2;
 }
 
 enum NodeState {
@@ -96,12 +116,14 @@ enum ClusterState {
   CLUSTER_NEW_INSTANCE = 6;
   CLUSTER_ENABLE_FLS = 7;
   CLUSTER_DISABLE_FLS = 8;
+  CLUSTER_SCHEDULER_RECOVERY = 9;
 }
 
 message HeartbeatRespMessage {
   ClusterState cluster_state = 1;
   repeated ServersMeta servers_meta = 2;
-  bool is_worker_or_server0 = 3;
+  bool is_worker = 3;
+  PersistentCommand persistent_cmd = 5;
 }
 
 message FetchServersMessage {
@@ -119,6 +141,7 @@ message ServersMeta {
   bool is_alive = 4;
   NodeRole role = 5;
   string node_id = 6;
+  PersistentState persistent_state = 7; 
 }
 
 message SendMetadataMessage {

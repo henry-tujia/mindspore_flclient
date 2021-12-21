@@ -40,9 +40,9 @@ int DeConvolutionFp16CPUKernel::ReSize() {
   CHECK_NULL_RETURN(conv_param_);
   CHECK_NULL_RETURN(matmul_param_);
 
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
-    MS_LOG(ERROR) << "ConvolutionBaseCPUKernel Init error!";
+    MS_LOG(ERROR) << "ConvolutionBaseCPUKernel Prepare error!";
     return ret;
   }
   int error_code = InitParam();
@@ -71,8 +71,10 @@ int DeConvolutionFp16CPUKernel::MallocWeightBiasData() {
   auto output_channel = weight_tensor->Channel();
   auto kernel_h = weight_tensor->Height();
   auto kernel_w = weight_tensor->Width();
+  MS_CHECK_TRUE_RET(input_channel > 0 && output_channel > 0 && kernel_h > 0 && kernel_w > 0, RET_ERROR);
   size_t weight_pack_size = input_channel * kernel_w * kernel_h * UP_ROUND(output_channel, C8NUM) * sizeof(float16_t);
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, weight_pack_size);
     packed_weight_ = malloc(weight_pack_size);
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "deconv malloc packed_weight_ error!";
@@ -81,6 +83,7 @@ int DeConvolutionFp16CPUKernel::MallocWeightBiasData() {
     memset(packed_weight_, 0, weight_pack_size);
   }
   auto bias_size = UP_ROUND(output_channel, C8NUM) * sizeof(float16_t);
+  CHECK_LESS_RETURN(MAX_MALLOC_SIZE, bias_size);
   bias_data_ = malloc(bias_size);
   if (bias_data_ == nullptr) {
     MS_LOG(ERROR) << "deconv malloc bias_data_ error!";
@@ -147,6 +150,31 @@ void DeConvolutionFp16CPUKernel::FreeRunBuf() {
   return;
 }
 
+static int DeConvPreFp16Run(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
+  auto deconv = reinterpret_cast<DeConvolutionFp16CPUKernel *>(cdata);
+  auto error_code = deconv->DoDeconvPre(task_id);
+  if (error_code != RET_OK) {
+    MS_LOG(ERROR) << "DoDeconvPre error task_id[" << task_id << "] error_code[" << error_code << "]";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int DeConvolutionFp16CPUKernel::DoDeconvPre(int task_id) {
+  int plan_stride = UP_DIV(matmul_param_->row_16_ / C16NUM, thread_count_) * C16NUM;
+  int cur_plan_rest = input_plane_ - task_id * plan_stride;
+  int plan = MSMIN(plan_stride, cur_plan_rest);
+  if (plan <= 0) {
+    return RET_OK;
+  }
+
+  float16_t *src_in = batch_input_ + task_id * plan_stride * conv_param_->input_channel_;
+  float16_t *pack_in = pack_input_ + task_id * plan_stride * conv_param_->input_channel_;
+
+  RowMajor2Col16MajorFp16Opt(src_in, pack_in, plan, conv_param_->input_channel_);
+  return RET_OK;
+}
+
 static int DeConvFp16Run(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
   auto deconv = reinterpret_cast<DeConvolutionFp16CPUKernel *>(cdata);
   auto error_code = deconv->DoDeconv(task_id);
@@ -179,7 +207,7 @@ int DeConvolutionFp16CPUKernel::DoDeconv(int task_id) {
   return RET_OK;
 }
 
-int DeConvolutionFp16CPUKernel::Init() {
+int DeConvolutionFp16CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(conv_param_);
@@ -196,10 +224,12 @@ int DeConvolutionFp16CPUKernel::Init() {
     size_t weight_pack_size = input_channel * kernel_w * kernel_h * UP_ROUND(output_channel, C8NUM) * sizeof(float16_t);
     set_workspace_size(weight_pack_size);
   }
-  matmul_param_ = new (std::nothrow) MatMulParameter();
   if (matmul_param_ == nullptr) {
-    MS_LOG(ERROR) << "Memory allocation failed";
-    return RET_ERROR;
+    matmul_param_ = new (std::nothrow) MatMulParameter();
+    if (matmul_param_ == nullptr) {
+      MS_LOG(ERROR) << "Memory allocation failed";
+      return RET_ERROR;
+    }
   }
   int ret = InitConvWeightBias();
   if (ret != RET_OK) {
@@ -236,7 +266,12 @@ int DeConvolutionFp16CPUKernel::Run() {
     batch_input_ = input_ptr + batch_index * conv_param_->input_channel_ * input_plane_;
     batch_output_ = output_ptr + batch_index * conv_param_->output_channel_ * output_plane_;
 
-    RowMajor2Col16MajorFp16Opt(batch_input_, pack_input_, input_plane_, conv_param_->input_channel_);
+    error_code = ParallelLaunch(this->ms_context_, DeConvPreFp16Run, this, thread_count_);
+    if (error_code != RET_OK) {
+      MS_LOG(ERROR) << "deconv fp16 pre run error! error_code[" << error_code << "]";
+      FreeRunBuf();
+      return error_code;
+    }
 
     error_code = ParallelLaunch(this->ms_context_, DeConvFp16Run, this, thread_count_);
     if (error_code != RET_OK) {
@@ -244,6 +279,9 @@ int DeConvolutionFp16CPUKernel::Run() {
       FreeRunBuf();
       return error_code;
     }
+
+    PackNC8HW8ToNHWCFp16(pack_output_, batch_output_, 1, conv_param_->output_w_ * conv_param_->output_h_,
+                         conv_param_->output_channel_);
   }
 
   FreeRunBuf();
@@ -261,6 +299,10 @@ kernel::InnerKernel *CpuDeConvFp16KernelCreator(const std::vector<lite::Tensor *
   auto conv_param = reinterpret_cast<ConvParameter *>(op_parameter);
   if (conv_param->group_ == 1) {
     if ((conv_param->stride_h_ != 1 || conv_param->stride_w_ != 1) &&
+#ifndef ENABLE_ARM32
+        (conv_param->kernel_h_ / conv_param->stride_h_ > C2NUM ||
+         conv_param->kernel_w_ / conv_param->stride_w_ > C2NUM) &&
+#endif
         (conv_param->dilation_h_ == 1 && conv_param->dilation_w_ == 1)) {
       kernel = new (std::nothrow) kernel::DeConvWinogradFp16CPUKernel(op_parameter, inputs, outputs,
                                                                       static_cast<const lite::InnerContext *>(ctx));

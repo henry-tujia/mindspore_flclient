@@ -123,32 +123,52 @@ std::string GetTracedDebugInfo(const DebugInfoPtr &info, SourceLineTip tip) {
 }
 
 std::string GetDebugInfo(const DebugInfoPtr &info, const std::string &prefix, SourceLineTip tip) {
-  std::ostringstream oss;
   if (info == nullptr) {
     return "";
   }
 
   auto debug_info = GetTracedDebugInfo(info, tip);
-  if (tip == kSourceLineTipDiscard) {
-    std::replace(debug_info.begin(), debug_info.end(), '\r', '/');
-    std::replace(debug_info.begin(), debug_info.end(), '\n', '/');
+  if (debug_info.empty()) {
+    return "";
   }
+  if (tip == kSourceLineTipDiscard) {
+    ReplaceLinefeed(&debug_info);
+  }
+  std::ostringstream oss;
   oss << prefix << debug_info;
   return oss.str();
 }
 
-std::string DumpSourceLines(const AnfNodePtr &node) { return DumpSourceLines(node.get()); }
+std::string DumpSourceLines(const AnfNodePtr &node) {
+  auto vec_source = GetSourceLineList(node);
+  if (vec_source.empty()) {
+    return "";
+  }
+  std::ostringstream oss;
+  for (auto &src_info : vec_source) {
+    oss << src_info;
+  }
+  if (oss.str().empty()) {
+    return "";
+  }
+  return "\nThe function call stack:\n" + oss.str();
+}
 
 std::string DumpSourceLines(AnfNode *node) {
   if (node == nullptr) {
     MS_LOG(WARNING) << "Node is null";
     return "";
   }
-  auto info_vec = GetSourceCodeDebugInfoVec(node->debug_info());
-  std::ostringstream oss;
-  if (!info_vec.empty()) {
-    oss << "\n";
-  }
+  AnfNodePtr ptr = std::static_pointer_cast<AnfNode>(node->shared_from_this());
+  return DumpSourceLines(ptr);
+}
+
+void GetSourceLineFromDebugInfo(const DebugInfoPtr &debug_info, std::vector<std::string> *result,
+                                const std::string &prefix = "") {
+  MS_EXCEPTION_IF_NULL(result);
+  auto info_vec = GetSourceCodeDebugInfoVec(debug_info);
+  const std::string spaces(prefix.size(), ' ');
+  bool first_line = true;
   for (const auto &info : info_vec) {
     MS_EXCEPTION_IF_NULL(info);
     auto loc = info->location();
@@ -157,32 +177,48 @@ std::string DumpSourceLines(AnfNode *node) {
     }
     auto loc_str = loc->ToString(kSourceLineTipDiscard);
     ReplaceLinefeed(&loc_str);
-    oss << loc_str << "\n";
-  }
-
-  auto cnode = dynamic_cast<CNode *>(node);
-  if (cnode == nullptr) {
-    return oss.str();
-  }
-  auto primal_debug_infos = cnode->primal_debug_infos();
-  if (primal_debug_infos.empty()) {
-    return oss.str();
-  }
-  oss << "Corresponding forward node candidate:\n";
-  for (auto &primal_debug_info : primal_debug_infos) {
-    info_vec = GetSourceCodeDebugInfoVec(primal_debug_info);
-    for (const auto &info : info_vec) {
-      MS_EXCEPTION_IF_NULL(info);
-      auto loc = info->location();
-      if (loc == nullptr) {
-        continue;
-      }
-      auto loc_str = loc->ToString(kSourceLineTipDiscard);
-      ReplaceLinefeed(&loc_str);
-      oss << loc_str << "\n";
+    if (first_line) {
+      result->push_back(prefix + loc_str + "\n");
+      first_line = false;
+    } else {
+      result->push_back(spaces + loc_str + "\n");
     }
   }
-  return oss.str();
+}
+
+void GetFusedDebugInfos(const NodeDebugInfoSet &fused_debug_infos, std::vector<std::string> *result) {
+  MS_EXCEPTION_IF_NULL(result);
+  result->push_back("Corresponding code candidate:\n");
+  // Flag to mark whether fused_debug_infos has valid print.
+  bool is_empty = true;
+  for (const auto &debug_info : fused_debug_infos) {
+    std::vector<std::string> debug_info_vec_str;
+    GetSourceLineFromDebugInfo(debug_info, &debug_info_vec_str, kSectionPrefix);
+    if (!debug_info_vec_str.empty()) {
+      result->insert(result->end(), debug_info_vec_str.begin(), debug_info_vec_str.end());
+      is_empty = false;
+    }
+  }
+
+  if (is_empty) {
+    result->pop_back();
+  }
+}
+
+void GetPrimalDebugInfos(const CNodePtr &cnode, std::vector<std::string> *result) {
+  MS_EXCEPTION_IF_NULL(cnode);
+  MS_EXCEPTION_IF_NULL(result);
+  auto primal_debug_infos = cnode->primal_debug_infos();
+  if (!primal_debug_infos.empty()) {
+    result->emplace_back("Corresponding forward node candidate:\n");
+    for (const auto &primal_debug_info : primal_debug_infos) {
+      std::vector<std::string> debug_info_vec_str;
+      GetSourceLineFromDebugInfo(primal_debug_info, &debug_info_vec_str, kSectionPrefix);
+      if (!debug_info_vec_str.empty()) {
+        result->insert(result->end(), debug_info_vec_str.begin(), debug_info_vec_str.end());
+      }
+    }
+  }
 }
 
 std::vector<std::string> GetSourceLineList(const AnfNodePtr &node) {
@@ -191,39 +227,18 @@ std::vector<std::string> GetSourceLineList(const AnfNodePtr &node) {
     MS_LOG(WARNING) << "Node is null";
     return result;
   }
-  auto info_vec = GetSourceCodeDebugInfoVec(node->debug_info());
-  for (const auto &info : info_vec) {
-    MS_EXCEPTION_IF_NULL(info);
-    auto loc = info->location();
-    if (loc == nullptr) {
-      continue;
-    }
-    auto loc_str = loc->ToString(kSourceLineTipDiscard);
-    ReplaceLinefeed(&loc_str);
-    result.push_back(loc_str + "\n");
-  }
   if (!node->isa<CNode>()) {
+    GetSourceLineFromDebugInfo(node->debug_info(), &result);
     return result;
   }
   auto cnode = node->cast<CNodePtr>();
-  auto primal_debug_infos = cnode->primal_debug_infos();
-  if (primal_debug_infos.empty()) {
-    return result;
+  auto fused_debug_infos = cnode->fused_debug_infos();
+  if (fused_debug_infos.empty()) {
+    GetSourceLineFromDebugInfo(node->debug_info(), &result);
+  } else {
+    GetFusedDebugInfos(fused_debug_infos, &result);
   }
-  result.emplace_back("Corresponding forward node candidate:\n");
-  for (auto &primal_debug_info : primal_debug_infos) {
-    info_vec = GetSourceCodeDebugInfoVec(primal_debug_info);
-    for (const auto &info : info_vec) {
-      MS_EXCEPTION_IF_NULL(info);
-      auto loc = info->location();
-      if (loc == nullptr) {
-        continue;
-      }
-      auto loc_str = loc->ToString(kSourceLineTipDiscard);
-      ReplaceLinefeed(&loc_str);
-      result.push_back(loc_str + "\n");
-    }
-  }
+  GetPrimalDebugInfos(cnode, &result);
   return result;
 }
 

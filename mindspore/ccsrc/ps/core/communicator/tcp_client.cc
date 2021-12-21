@@ -94,7 +94,6 @@ void TcpClient::Init() {
   if (event_base_ == nullptr) {
     event_base_ = event_base_new();
     MS_EXCEPTION_IF_NULL(event_base_);
-    is_stop_ = false;
   }
 
   sockaddr_in sin{};
@@ -239,6 +238,9 @@ void TcpClient::EventCallback(struct bufferevent *bev, std::int16_t events, void
     }
   } else if (events & BEV_EVENT_EOF) {
     MS_LOG(WARNING) << "Client connected end of file";
+    if (tcp_client->disconnected_callback_) {
+      tcp_client->disconnected_callback_();
+    }
   }
 }
 
@@ -252,6 +254,8 @@ void TcpClient::Start() {
   event_base_mutex_.unlock();
   MS_EXCEPTION_IF_NULL(event_base_);
   int ret = event_base_dispatch(event_base_);
+  // is_started_ should be false when finish dispatch
+  is_started_ = false;
   MSLOG_IF(INFO, ret == 0, NoExceptionType) << "Event base dispatch success!";
   MSLOG_IF(mindspore::ERROR, ret == 1, NoExceptionType)
     << "Event base dispatch failed with no events pending or active!";

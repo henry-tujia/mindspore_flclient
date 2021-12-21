@@ -34,15 +34,10 @@
 namespace mindspore::lite {
 
 typedef enum { GRAPH, OP_BY_OP } MindRTMode;
-const constexpr int kSwitchMaxInputsSize = 3;
-const constexpr int kSwitchMinInputsSize = 2;
-const constexpr int kSwitchCondInputIndex = 0;
-const constexpr int kSwitchTruePartialInputIndex = 1;
-const constexpr int kSwitchFalsePartialInputIndex = 2;
-
 class LiteOpActor : public OpActor<lite::Tensor> {
  public:
-  explicit LiteOpActor(kernel::LiteKernel *kernel) : OpActor<lite::Tensor>(kernel->name()), kernel_(kernel) {
+  explicit LiteOpActor(kernel::LiteKernel *kernel, lite::InnerContext *ctx)
+      : OpActor<lite::Tensor>(kernel->name()), kernel_(kernel), ctx_(ctx) {
     inputs_data_.resize(kernel_->in_tensors().size());
 #if defined(ENABLE_ARM) && defined(ENABLE_FP16)
     CpuInfo cpu_info;
@@ -50,11 +45,6 @@ class LiteOpActor : public OpActor<lite::Tensor> {
 #endif
   }
   ~LiteOpActor() override {
-    for (auto map : isolate_input_map_) {
-      auto isolate_input_tensor = map.first;
-      isolate_input_tensor->set_data(nullptr);
-      delete isolate_input_tensor;
-    }
     delete call_node_;
     delete partial_node_;
   }
@@ -68,7 +58,8 @@ class LiteOpActor : public OpActor<lite::Tensor> {
     }
     return ret;
   }
-  int LiteActorInit(std::vector<std::shared_ptr<LiteOpActor>> *actors);
+  int LiteActorInit(std::vector<std::shared_ptr<LiteOpActor>> *actors,
+                    std::unordered_map<Tensor *, Tensor *> *input_map);
   int ResizeGraphInput(const std::vector<mindspore::tensor::MSTensor *> &inputs,
                        const std::vector<std::vector<int>> &dims);
 
@@ -92,10 +83,10 @@ class LiteOpActor : public OpActor<lite::Tensor> {
   std::unordered_map<kernel::LiteKernel *, AID> subgraph_to_actor_{};
   std::vector<OpDataPtr<Tensor>> outputs_data_{};
   std::vector<Tensor *> inputs_data_{};
-  std::unordered_map<Tensor *, Tensor *> isolate_input_map_{}; /* <calculate-tensor,  src-input-tensor> */
+  std::unordered_map<Tensor *, Tensor *> *isolate_input_map_ = nullptr; /* real obj in session */
+  lite::InnerContext *ctx_ = nullptr;
 
  private:
-  void ReplaceNodeInTensor(kernel::LiteKernel *kernel, Tensor *old_tensor, Tensor *new_tensor);
   int IsolateInputData(std::vector<std::shared_ptr<LiteOpActor>> *actors);
   void MoveTensorInputData(Tensor *dst_tensor, Tensor *src_tensor);
   void MoveInputData(Tensor *dst_tensor, Tensor *src_tensor);
@@ -119,38 +110,38 @@ class LiteOpActor : public OpActor<lite::Tensor> {
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
 class LiteSwitchOpActor : public LiteOpActor {
  public:
-  explicit LiteSwitchOpActor(kernel::LiteKernel *kernel) : LiteOpActor(kernel) {}
+  explicit LiteSwitchOpActor(kernel::LiteKernel *kernel, lite::InnerContext *ctx) : LiteOpActor(kernel, ctx) {}
   ~LiteSwitchOpActor() override {
     delete call_node_;
-    delete switch_node_;
-    delete true_partial_node_;
-    delete false_partial_node_;
+    delete switch_type_node_;
+    for (auto &partial_node : partial_nodes_) {
+      delete partial_node;
+    }
   };
   void RunOpData(OpData<Tensor> *inputs, OpContext<Tensor> *context = nullptr) override;
   int CompileArrow() override;
   int PrepareOutputData() override;
 
  private:
-  void AsyncTrueBranchOutput(OpContext<Tensor> *context);
-  void AsyncFalseBranchOutput(OpContext<Tensor> *context);
+  void AsyncBranchOutput(const size_t &index, OpContext<Tensor> *context);
+  void DecreaseOtherBranchInputTensor(const size_t &index);
   int GetSwitchAndCallNode(kernel::SubGraphKernel *subgraph_kernel);
   void AppendOutputTensors();
-  int CompileTrueBranchArrow();
-  int CompileFalseBranchArrow();
+  int CompileBranchArrow();
   int CompileArrowThroughSwitchCall();
+  int SetSwitchPartialNodes();
+  int SetSwitchLayerPartialNodes();
 
-  std::vector<DataArrowPtr> true_branch_output_data_arrows_;
-  std::vector<DataArrowPtr> false_branch_output_data_arrows_;
+  // each element is a set of data arrow sent to the next target actor.
+  std::vector<std::vector<DataArrowPtr>> all_branch_output_data_arrows_;
 
-  kernel::LiteKernel *bool_node_ = nullptr;
-  kernel::LiteKernel *true_partial_node_ = nullptr;
-  kernel::LiteKernel *false_partial_node_ = nullptr;
-  kernel::LiteKernel *switch_node_ = nullptr;
+  std::vector<kernel::LiteKernel *> partial_nodes_{};
+  kernel::LiteKernel *switch_type_node_ = nullptr;
   kernel::LiteKernel *call_node_ = nullptr;
   std::vector<lite::Tensor *> output_tensors_{};
 
-  std::vector<OpDataPtr<Tensor>> true_branch_outputs_data_;
-  std::vector<OpDataPtr<Tensor>> false_branch_outputs_data_;
+  // each element is a set of output data which is going to be send to the next target actor.
+  std::vector<std::vector<OpDataPtr<Tensor>>> all_branchs_output_data_;
 };
 #endif
 
@@ -159,6 +150,6 @@ void MindrtTerminate(const std::vector<std::shared_ptr<LiteOpActor>> &);
 
 static std::atomic_int64_t actor_count = 0;
 std::vector<std::shared_ptr<LiteOpActor>> CreateOpActor(const std::vector<kernel::LiteKernel *> &kernels,
-                                                        const lite::InnerContext *ctx);
+                                                        lite::InnerContext *ctx);
 }  // namespace mindspore::lite
 #endif  // MINDSPORE_LITE_SRC_LITE_MINDRT_H_

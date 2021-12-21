@@ -54,8 +54,6 @@ class InnerKernel : public Kernel {
 
   int Execute() override;
 
-  // called while compiling graph
-  int Prepare() override { return mindspore::lite::RET_OK; }
   virtual int Run() { return mindspore::lite::RET_ERROR; }
   int ReSize() override { return mindspore::lite::RET_ERROR; }
 
@@ -63,6 +61,8 @@ class InnerKernel : public Kernel {
   virtual int PreProcess();
   // called after Run
   virtual int PostProcess() { return FreeInWorkTensor(); }
+
+  virtual bool CheckInputsValid() const { return true; }
 
   virtual int FreeInWorkTensor() const {
     for (auto &in_tensor : this->in_tensors()) {
@@ -72,7 +72,7 @@ class InnerKernel : public Kernel {
     return lite::RET_OK;
   }
 
-  virtual int Init() { return mindspore::lite::RET_OK; }
+  int Prepare() override { return mindspore::lite::RET_OK; }
 
   OpParameter *op_parameter() const { return op_parameter_; }
 
@@ -173,7 +173,7 @@ class InnerKernel : public Kernel {
   virtual size_t workspace_size() { return workspace_size_; }
   void AllocWorkspace();
   void FreeWorkspace();
-  void *workspace() { return workspace_; }
+  void *workspace() const { return workspace_; }
   void set_workspace(void *ws) {
     if (ws_allocated_ == false) {
       workspace_ = ws;

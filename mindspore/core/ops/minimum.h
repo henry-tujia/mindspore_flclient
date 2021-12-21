@@ -27,17 +27,21 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameMinimum = "Minimum";
+/// \brief Computes the minimum of input tensors element-wise.
+/// Refer to Python API @ref mindspore.ops.Minimum for more details.
 class MS_CORE_API Minimum : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Minimum() : PrimitiveC(kNameMinimum) { InitIOName({"x", "y"}, {"output"}); }
+  /// \brief Destructor.
   ~Minimum() = default;
   MS_DECLARE_PARENT(Minimum, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Minimum for the inputs.
   void Init() {}
 };
 
 AbstractBasePtr MinimumInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                              const std::vector<AbstractBasePtr> &input_args);
-using PrimMinimumPtr = std::shared_ptr<Minimum>;
 }  // namespace ops
 }  // namespace mindspore
 

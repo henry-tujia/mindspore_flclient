@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@
 
 namespace mindspore {
 #define MS_TYPE2LABLE(type_id) #type_id
-static std::unordered_map<TypeId, std::string> g_type_2_lable{
+static mindspore::HashMap<TypeId, std::string> g_type_2_lable{
   {kTypeUnknown, MS_TYPE2LABLE(kTypeUnknown)},
   {kMetaTypeType, MS_TYPE2LABLE(kMetaTypeType)},
   {kMetaTypeAnything, MS_TYPE2LABLE(kMetaTypeAnything)},
@@ -50,6 +50,7 @@ static std::unordered_map<TypeId, std::string> g_type_2_lable{
   {kObjectTypeTensorType, MS_TYPE2LABLE(kObjectTypeTensorType)},
   {kObjectTypeRowTensorType, MS_TYPE2LABLE(kObjectTypeRowTensorType)},
   {kObjectTypeSparseTensorType, MS_TYPE2LABLE(kObjectTypeSparseTensorType)},
+  {kObjectTypeCSRTensorType, MS_TYPE2LABLE(kObjectTypeCSRTensorType)},
   {kObjectTypeUndeterminedType, MS_TYPE2LABLE(kObjectTypeUndeterminedType)},
   {kObjectTypeClass, MS_TYPE2LABLE(kObjectTypeClass)},
   {kObjectTypeDictionary, MS_TYPE2LABLE(kObjectTypeDictionary)},
@@ -82,13 +83,6 @@ static std::unordered_map<TypeId, std::string> g_type_2_lable{
   {kObjectTypeIOMonad, MS_TYPE2LABLE(kObjectTypeIOMonad)},
   {kMonadTypeEnd, MS_TYPE2LABLE(kMonadTypeEnd)}};
 
-enum class BitsNum : int {
-  eBits8 = 8,
-  eBits16 = 16,
-  eBits32 = 32,
-  eBits64 = 64,
-  eBits128 = 128,
-};
 TypeId IntBitsToTypeId(const int nbits) {
   switch (nbits) {
     case static_cast<int>(BitsNum::eBits8):
@@ -100,7 +94,8 @@ TypeId IntBitsToTypeId(const int nbits) {
     case static_cast<int>(BitsNum::eBits64):
       return kNumberTypeInt64;
     default:
-      MS_LOG(EXCEPTION) << "Wrong number of bits:" << nbits;
+      MS_LOG(EXCEPTION) << "For Int type only support number of 8bits, 16bits, 32bits and 64bits, but got " << nbits
+                        << "bits";
   }
 }
 
@@ -115,7 +110,8 @@ TypeId UIntBitsToTypeId(const int nbits) {
     case static_cast<int>(BitsNum::eBits64):
       return kNumberTypeUInt64;
     default:
-      MS_LOG(EXCEPTION) << "Wrong number of bits:" << nbits;
+      MS_LOG(EXCEPTION) << "For UInt type only support number of 8bits, 16bits, 32bits and 64bits, but got " << nbits
+                        << "bits";
   }
 }
 
@@ -128,7 +124,8 @@ TypeId FloatBitsToTypeId(const int nbits) {
     case static_cast<int>(BitsNum::eBits64):
       return kNumberTypeFloat64;
     default:
-      MS_LOG(EXCEPTION) << "Wrong number of bits:" << nbits;
+      MS_LOG(EXCEPTION) << "For Float type only support number of 16bits, 32bits and 64bits, but got " << nbits
+                        << "bits";
   }
 }
 
@@ -139,7 +136,7 @@ TypeId ComplexBitsToTypeId(const int nbits) {
     case static_cast<int>(BitsNum::eBits128):
       return kNumberTypeComplex128;
     default:
-      MS_LOG(EXCEPTION) << "Wrong number of bits:" << nbits;
+      MS_LOG(EXCEPTION) << "For Complex type only support number of 64bits and 128bits, but got " << nbits << "bits";
   }
 }
 

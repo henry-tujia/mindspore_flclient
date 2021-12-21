@@ -66,29 +66,62 @@ cl_float4 ReduceOpenCLKernel::GenC4Mask() {
   return mask;
 }
 
-bool IsHWReduce(const bool *reduce_axes_) {
-  return !reduce_axes_[0] && reduce_axes_[1] && reduce_axes_[2] && !reduce_axes_[3];
+bool ReduceOpenCLKernel::IsHWCReduce() {
+  return !reduce_axes_[kNHWC_N] && reduce_axes_[kNHWC_H] && reduce_axes_[kNHWC_W] && reduce_axes_[kNHWC_C];
 }
 
-bool IsWCReduce(const bool *reduce_axes_) {
-  return !reduce_axes_[0] && !reduce_axes_[1] && reduce_axes_[2] && reduce_axes_[3];
+bool ReduceOpenCLKernel::IsHWReduce() {
+  return !reduce_axes_[kNHWC_N] && reduce_axes_[kNHWC_H] && reduce_axes_[kNHWC_W] && !reduce_axes_[kNHWC_C];
 }
 
-bool IsCReduce(const bool *reduce_axes_) {
-  return !reduce_axes_[0] && !reduce_axes_[1] && !reduce_axes_[2] && reduce_axes_[3];
+bool ReduceOpenCLKernel::IsWCReduce() {
+  return !reduce_axes_[kNHWC_N] && !reduce_axes_[kNHWC_H] && reduce_axes_[kNHWC_W] && reduce_axes_[kNHWC_C];
 }
 
-int ReduceOpenCLKernel::SetAxes() {
+bool ReduceOpenCLKernel::IsHReduce() {
+  return !reduce_axes_[kNHWC_N] && reduce_axes_[kNHWC_H] && !reduce_axes_[kNHWC_W] && !reduce_axes_[kNHWC_C];
+}
+
+bool ReduceOpenCLKernel::IsWReduce() {
+  return !reduce_axes_[kNHWC_N] && !reduce_axes_[kNHWC_H] && reduce_axes_[kNHWC_W] && !reduce_axes_[kNHWC_C];
+}
+
+bool ReduceOpenCLKernel::IsCReduce() {
+  return !reduce_axes_[kNHWC_N] && !reduce_axes_[kNHWC_H] && !reduce_axes_[kNHWC_W] && reduce_axes_[kNHWC_C];
+}
+
+int ReduceOpenCLKernel::SetShapeSizeIs0Axes() {
+  // axes is input tensor
+  auto *axes_tensor = in_tensors_.at(1);
+  auto input_shape_size = in_tensors_.at(0)->shape().size();
+  if (input_shape_size == 0) {
+    return RET_ERROR;
+  }
+
+  CHECK_NULL_RETURN(axes_tensor->data());
+
+  auto reduction_indices = reinterpret_cast<int *>(axes_tensor->data())[0];
+
+  if (reduction_indices == -1) {
+    reduce_axes_[kNHWC_H] = true;
+    reduce_axes_[kNHWC_W] = true;
+    reduce_axes_[kNHWC_C] = true;
+  } else if (reduction_indices == kNHWC_H || reduction_indices == kNHWC_W || reduction_indices == kNHWC_C) {
+    reduction_indices = reduction_indices + (C4NUM % input_shape_size);
+    reduce_axes_[reduction_indices] = true;
+  } else {
+    MS_LOG(ERROR) << "in Reduce: axes tensor's reduction_indices should be -1, 1, 2, 3";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int ReduceOpenCLKernel::SetShapeSizeIs1Axes() {
   // axes is input tensor
   // get num_axes
-  int num_axes = 0;
   auto *axes_tensor = in_tensors_.at(1);
-  if (axes_tensor->shape().size() != 1) {
-    MS_LOG(ERROR) << "in Reduce: axes tensor's ndim should be 1.";
-    return RET_ERROR;
-  } else {
-    num_axes = axes_tensor->shape().front();
-  }
+  int num_axes = axes_tensor->shape().front();
+
   // check axes tensor
   if (CheckParamLikeTensor("Reduce", "axes", axes_tensor, kNumberTypeInt32, {num_axes}) != RET_OK) {
     return RET_ERROR;
@@ -109,52 +142,72 @@ int ReduceOpenCLKernel::SetAxes() {
     reduce_axes_[axis] = true;
   }
   if (num_axes == 1) {
-    if (reduce_axes_[1] && inShape.W == 1) {
-      reduce_axes_[2] = true;
-    } else if (reduce_axes_[2]) {
+    if (reduce_axes_[kNHWC_H] && inShape.W == 1) {
+      reduce_axes_[kNHWC_W] = true;
+    } else if (reduce_axes_[kNHWC_W]) {
       if (inShape.H == 1) {
-        reduce_axes_[1] = true;
+        reduce_axes_[kNHWC_H] = true;
       } else if (inShape.C == 1) {
-        reduce_axes_[3] = true;
+        reduce_axes_[kNHWC_C] = true;
       }
-    } else if (reduce_axes_[3] && inShape.W == 1) {
-      reduce_axes_[3] = true;
+    } else if (reduce_axes_[kNHWC_C] && inShape.W == 1) {
+      reduce_axes_[kNHWC_C] = true;
     }
+  }
+  return RET_OK;
+}
+
+int ReduceOpenCLKernel::SetAxes() {
+  auto *axes_tensor = in_tensors_.at(1);
+
+  if (axes_tensor->shape().size() == 0) {
+    return SetShapeSizeIs0Axes();
+  } else if (axes_tensor->shape().size() == 1) {
+    return SetShapeSizeIs1Axes();
+  } else {
+    MS_LOG(ERROR) << "in Reduce: axes tensor's ndim should be 0 or 1.";
+    return RET_ERROR;
+  }
+
+  return RET_OK;
+}
+
+int ReduceOpenCLKernel::IsReduceAxesSupport() {
+  if (!IsHWReduce() && !IsWCReduce() && !IsHReduce() && !IsWReduce() && !IsCReduce() && !IsHWCReduce()) {
+    MS_LOG(WARNING) << "Unsupported reduce axes";
+    return RET_PARAM_INVALID;
   }
   return RET_OK;
 }
 
 int ReduceOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_2 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   auto input = in_tensors_.at(0);
   CHECK_NULL_RETURN(input);
   if (input->shape()[0] > DIMENSION_1D) {
-    MS_LOG(ERROR) << "reduce op only support n = 1";
+    MS_LOG(WARNING) << "reduce op only support n = 1";
     return RET_PARAM_INVALID;
   }
   inShape = GpuTensorInfo(in_tensors_[0]);
   auto reduce_param = reinterpret_cast<ReduceParameter *>(op_parameter_);
   CHECK_NULL_RETURN(reduce_param);
   if (GetReduceTypeStr(reduce_param->mode_).empty()) {
-    MS_LOG(ERROR) << "not supported reduce type:" << reduce_param->mode_;
+    MS_LOG(WARNING) << "not supported reduce type:" << reduce_param->mode_;
     return RET_PARAM_INVALID;
   }
   auto ret = SetAxes();
   if (ret != RET_OK) {
     return ret;
   }
-  hw_reduce_ = IsHWReduce(reduce_axes_);
-  wc_reduce_ = IsWCReduce(reduce_axes_);
-  c_reduce_ = IsCReduce(reduce_axes_);
-  if (!hw_reduce_ && !wc_reduce_ && !c_reduce_) {
-    MS_LOG(ERROR) << "Unsupported reduce axes";
+
+  if (IsReduceAxesSupport() != RET_OK) {
     return RET_PARAM_INVALID;
   }
-  if ((c_reduce_ || wc_reduce_) && !reduce_param->keep_dims_) {
-    MS_LOG(ERROR) << "reduce axis (2,3) should keep dims";
+  if (IsWCReduce() && !reduce_param->keep_dims_) {
+    MS_LOG(WARNING) << "reduce axis (2,3) should keep dims";
     return RET_PARAM_INVALID;
   }
   return RET_OK;
@@ -169,19 +222,26 @@ int ReduceOpenCLKernel::Prepare() {
   std::string kernel_name;
   use_local_ = false;
   kernel_name = "Global";
-  if (wc_reduce_ && (inShape.W >= LOCAL_CACHE_THREAD || inShape.C >= LOCAL_CACHE_THREAD)) {
+  if (IsWCReduce() && (inShape.W >= LOCAL_CACHE_THREAD || inShape.C >= LOCAL_CACHE_THREAD)) {
     use_local_ = true;
     kernel_name = "Local";
   }
-  if (hw_reduce_ && (inShape.W >= LOCAL_CACHE_THREAD || inShape.H >= LOCAL_CACHE_THREAD)) {
+  if (IsHWReduce() && (inShape.W >= LOCAL_CACHE_THREAD || inShape.H >= LOCAL_CACHE_THREAD)) {
     use_local_ = true;
     kernel_name = "Local";
   }
-  if (wc_reduce_) {
+
+  if (IsHWCReduce()) {
+    kernel_name += "HWC";
+  } else if (IsWCReduce()) {
     kernel_name += "WC";
-  } else if (hw_reduce_) {
+  } else if (IsHWReduce()) {
     kernel_name += "HW";
-  } else if (c_reduce_) {
+  } else if (IsHReduce()) {
+    kernel_name += "H";
+  } else if (IsWReduce()) {
+    kernel_name += "W";
+  } else if (IsCReduce()) {
     kernel_name += "C";
   }
   kernel_name += GetReduceTypeStr(reduce_param->mode_);
@@ -217,7 +277,7 @@ int ReduceOpenCLKernel::SetConstArgs() {
     MS_LOG(ERROR) << "SetKernelArg failed.";
     return RET_ERROR;
   }
-  if (wc_reduce_ || c_reduce_) {
+  if (IsWCReduce() || IsCReduce()) {
     if (ocl_runtime_->SetKernelArg(kernel_, arg_idx++, GenC4Mask()) != CL_SUCCESS) {
       MS_LOG(ERROR) << "SetKernelArg failed.";
       return RET_ERROR;
@@ -234,13 +294,22 @@ void ReduceOpenCLKernel::SetGlobalLocal() {
   if (use_local_) {
     local_size_ = {1, LOCAL_CACHE_THREAD, LOCAL_CACHE_THREAD};
   }
-  if (hw_reduce_) {
+  if (IsHWCReduce()) {
+    global_size_ = {1, 1, 1};
+  } else if (IsHWReduce()) {
     global_size_ = {static_cast<size_t>(c4), 1, 1};
-  } else if (wc_reduce_) {
+  } else if (IsWCReduce()) {
     global_size_ = {static_cast<size_t>(h), 1, 1};
-  } else if (c_reduce_ && !use_local_) {
+  } else if (IsHReduce()) {
+    global_size_ = {static_cast<size_t>(w), static_cast<size_t>(c4)};
+  } else if (IsWReduce()) {
+    global_size_ = {static_cast<size_t>(h), static_cast<size_t>(c4)};
+  } else if (IsCReduce() && !use_local_) {
     global_size_ = {static_cast<size_t>(h), static_cast<size_t>(w)};
+  } else {
+    global_size_ = {1, 1, 1};
   }
+
   AlignGlobalLocal(global_size_, local_size_);
 }
 

@@ -125,7 +125,6 @@ PBMetadata DistributedMetadataStore::GetMetadata(const std::string &name) {
     MS_LOG(ERROR) << "The consistent hash ring is not initialized yet.";
     return {};
   }
-
   uint32_t stored_rank = router_->Find(name);
   MS_LOG(INFO) << "Rank " << local_rank_ << " get metadata for " << name << " which is stored in rank " << stored_rank;
   if (local_rank_ == stored_rank) {
@@ -256,43 +255,23 @@ bool DistributedMetadataStore::DoUpdateMetadata(const std::string &name, const P
     *update_model_threshold = meta.update_model_threshold();
   } else if (meta.has_prime()) {
     metadata_[name] = meta;
-  } else if (meta.has_pair_client_keys()) {
-    auto &client_keys_map = *metadata_[name].mutable_client_keys()->mutable_client_keys();
-    auto &fl_id = meta.pair_client_keys().fl_id();
-    auto &client_keys = meta.pair_client_keys().client_keys();
-    // Check whether the new item already exists.
-    bool add_flag = true;
-    for (auto iter = client_keys_map.begin(); iter != client_keys_map.end(); iter++) {
-      if (fl_id == iter->first) {
-        add_flag = false;
-        MS_LOG(ERROR) << "Leader server updating value for " << name
-                      << " failed: The Protobuffer of this value already exists.";
-        break;
-      }
-    }
-    if (add_flag) {
-      client_keys_map[fl_id] = client_keys;
-    } else {
+  } else {
+    return DoUpdateEncryptMetadata(name, meta);
+  }
+  return true;
+}
+
+bool DistributedMetadataStore::DoUpdateEncryptMetadata(const std::string &name, const PBMetadata &meta) {
+  if (meta.has_pair_client_keys()) {
+    bool keys_update_succeed = UpdatePairClientKeys(name, meta);
+    if (!keys_update_succeed) {
+      MS_LOG(ERROR) << "Update pair_client_keys failed.";
       return false;
     }
   } else if (meta.has_pair_client_shares()) {
-    auto &client_shares_map = *metadata_[name].mutable_client_shares()->mutable_client_secret_shares();
-    auto &fl_id = meta.pair_client_shares().fl_id();
-    auto &client_shares = meta.pair_client_shares().client_shares();
-    // google::protobuf::Map< std::string, mindspore::fl::ps::core::SharesPb >::const_iterator iter;
-    // Check whether the new item already exists.
-    bool add_flag = true;
-    for (auto iter = client_shares_map.begin(); iter != client_shares_map.end(); iter++) {
-      if (fl_id == iter->first) {
-        add_flag = false;
-        MS_LOG(ERROR) << "Leader server updating value for " << name
-                      << " failed: The Protobuffer of this value already exists.";
-        break;
-      }
-    }
-    if (add_flag) {
-      client_shares_map[fl_id] = client_shares;
-    } else {
+    bool shares_update_succeed = UpdatePairClientShares(name, meta);
+    if (!shares_update_succeed) {
+      MS_LOG(ERROR) << "Update pair_client_shares failed.";
       return false;
     }
   } else if (meta.has_one_client_noises()) {
@@ -303,12 +282,79 @@ bool DistributedMetadataStore::DoUpdateMetadata(const std::string &name, const P
       client_noises.Clear();
     }
     client_noises.mutable_one_client_noises()->MergeFrom(meta.one_client_noises());
+  } else if (meta.has_pair_client_list_sign()) {
+    auto &client_list_sign_map = *metadata_[name].mutable_client_list_sign()->mutable_client_list_sign();
+    auto &fl_id = meta.pair_client_list_sign().fl_id();
+    // Check whether the new item already exists.
+    if (client_list_sign_map.count(fl_id) != 0) {
+      MS_LOG(WARNING) << "Leader server updating value for " << name << " failed: The Protobuffer of fl id " << fl_id
+                      << " already exists.";
+      return false;
+    }
+    auto &client_list_sign = meta.pair_client_list_sign().signature();
+    client_list_sign_map[fl_id] = client_list_sign;
+  } else if (meta.has_pair_key_attestation()) {
+    auto &key_attestation_map = *metadata_[name].mutable_key_attestation()->mutable_key_attestations();
+    auto &fl_id = meta.pair_key_attestation().fl_id();
+    // Check whether the new item already exists.
+    if (key_attestation_map.count(fl_id) != 0) {
+      MS_LOG(WARNING) << "Leader server updating value for " << name << " failed: The Protobuffer of fl id " << fl_id
+                      << " already exists.";
+      return false;
+    }
+    auto &certificate = meta.pair_key_attestation().certificate();
+    key_attestation_map[fl_id] = certificate;
   } else {
     MS_LOG(ERROR) << "Leader server updating value for " << name
                   << " failed: The Protobuffer of this value is not defined.";
     return false;
   }
   return true;
+}
+
+bool DistributedMetadataStore::UpdatePairClientKeys(const std::string &name, const PBMetadata &meta) {
+  auto &client_keys_map = *metadata_[name].mutable_client_keys()->mutable_client_keys();
+  auto &fl_id = meta.pair_client_keys().fl_id();
+  auto &client_keys = meta.pair_client_keys().client_keys();
+  // Check whether the new item already exists.
+  bool add_flag = true;
+  for (auto iter = client_keys_map.begin(); iter != client_keys_map.end(); ++iter) {
+    if (fl_id == iter->first) {
+      add_flag = false;
+      MS_LOG(ERROR) << "Leader server updating value for " << name
+                    << " failed: The Protobuffer of this value already exists.";
+      break;
+    }
+  }
+  if (add_flag) {
+    client_keys_map[fl_id] = client_keys;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool DistributedMetadataStore::UpdatePairClientShares(const std::string &name, const PBMetadata &meta) {
+  auto &client_shares_map = *metadata_[name].mutable_client_shares()->mutable_client_secret_shares();
+  auto &fl_id = meta.pair_client_shares().fl_id();
+  auto &client_shares = meta.pair_client_shares().client_shares();
+  // google::protobuf::Map< std::string, mindspore::fl::ps::core::SharesPb >::const_iterator iter;
+  // Check whether the new item already exists.
+  bool add_flag = true;
+  for (auto iter = client_shares_map.begin(); iter != client_shares_map.end(); ++iter) {
+    if (fl_id == iter->first) {
+      add_flag = false;
+      MS_LOG(ERROR) << "Leader server updating value for " << name
+                    << " failed: The Protobuffer of this value already exists.";
+      break;
+    }
+  }
+  if (add_flag) {
+    client_shares_map[fl_id] = client_shares;
+    return true;
+  } else {
+    return false;
+  }
 }
 }  // namespace server
 }  // namespace fl

@@ -19,6 +19,7 @@
 #include <string>
 #include "abstract/utils.h"
 #include "runtime/mem.h"
+#include "acl/acl_rt.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "common/trans.h"
 #include "utils/ms_context.h"
@@ -47,21 +48,24 @@ bool MemCpyAsyncKernel::Launch(const std::vector<AddressPtr> &inputs, const std:
     return false;
   }
 
+  MS_EXCEPTION_IF_NULL(inputs[0]);
+  MS_EXCEPTION_IF_NULL(outputs[0]);
   if (inputs[0]->addr == outputs[0]->addr) {
     MS_LOG(INFO) << "input addr is same with output addr , no need exe memcpy async";
     return true;
   }
   if (outputs[0]->size < inputs[0]->size) {
-    MS_LOG(EXCEPTION) << "rtMemcpyAsync destMax " << outputs[0]->size << " is less than src size " << inputs[0]->size;
+    MS_LOG(EXCEPTION) << "aclrtMemcpyAsync destMax " << outputs[0]->size << " is less than src size "
+                      << inputs[0]->size;
   }
   // input x -> memcpy_async -> AllReduce
   if (outputs[0]->size > inputs[0]->size) {
-    MS_LOG(WARNING) << "rtMemcpyAsync destMax > src size";
+    MS_LOG(WARNING) << "aclrtMemcpyAsync destMax > src size";
   }
-  rtError_t status = rtMemcpyAsync(outputs[0]->addr, outputs[0]->size, inputs[0]->addr, inputs[0]->size,
-                                   RT_MEMCPY_DEVICE_TO_DEVICE, stream_ptr);
+  rtError_t status = aclrtMemcpyAsync(outputs[0]->addr, outputs[0]->size, inputs[0]->addr, inputs[0]->size,
+                                      ACL_MEMCPY_DEVICE_TO_DEVICE, stream_ptr);
   if (status != RT_ERROR_NONE) {
-    MS_LOG(ERROR) << "MemCpyAsync op rtMemcpyAsync failed!";
+    MS_LOG(ERROR) << "MemCpyAsync op aclrtMemcpyAsync failed!";
     return false;
   }
   return true;
@@ -93,9 +97,9 @@ void MemCpyAsyncKernel::GetInputOutputTotalCount(const AnfNodePtr &anf_node) {
   std::vector<size_t> shape_i = AnfAlgo::GetInputDeviceShape(anf_node, 0);
   size_t total_size = 1;
   for (size_t i = 0; i < shape_i.size(); i++) {
-    total_size = total_size * shape_i[i];
+    total_size = SizetMulWithOverflowCheck(total_size, shape_i[i]);
   }
-  total_size *= type_size;
+  total_size = SizetMulWithOverflowCheck(total_size, type_size);
   MS_LOG(INFO) << "MemCpyAsync size[" << total_size << "]";
   input_size_list_.emplace_back(total_size);
   output_size_list_.emplace_back(total_size);
@@ -112,27 +116,30 @@ std::vector<TaskInfoPtr> MemCpyAsyncKernel::GenTask(const std::vector<AddressPtr
     MS_LOG(EXCEPTION) << "MemCpyAsync op output is not one";
   }
 
+  MS_EXCEPTION_IF_NULL(outputs[0]);
+  MS_EXCEPTION_IF_NULL(inputs[0]);
   if (outputs[0]->size < inputs[0]->size) {
-    MS_LOG(EXCEPTION) << "rtMemcpyAsync destMax < src size";
+    MS_LOG(EXCEPTION) << "aclrtMemcpyAsync destMax < src size";
   }
   // input x -> memcpy_async -> AllReduce
   if (outputs[0]->size > inputs[0]->size) {
-    MS_LOG(WARNING) << "rtMemcpyAsync destMax > src size";
+    MS_LOG(WARNING) << "aclrtMemcpyAsync destMax > src size";
   }
 
   stream_id_ = stream_id;
   std::shared_ptr<MemcpyAsyncTaskInfo> task_info_ptr =
     std::make_shared<MemcpyAsyncTaskInfo>(unique_name_, stream_id, outputs[0]->addr, outputs[0]->size, inputs[0]->addr,
-                                          inputs[0]->size, RT_MEMCPY_DEVICE_TO_DEVICE, NeedDump());
+                                          inputs[0]->size, ACL_MEMCPY_DEVICE_TO_DEVICE, NeedDump());
   MS_EXCEPTION_IF_NULL(task_info_ptr);
   return {task_info_ptr};
 }
-device::DynamicKernelPtr MemCpyAsyncKernel::GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) {
-  AddressPtrList kernel_inputs;
-  AddressPtrList kernel_workspaces;
-  AddressPtrList kernel_outputs;
-  device::KernelRuntime::GenLaunchArgs(*this, cnode_ptr, &kernel_inputs, &kernel_workspaces, &kernel_outputs);
 
+device::DynamicKernelPtr MemCpyAsyncKernel::GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) {
+  KernelLaunchInfo kernel_launch_info;
+  device::KernelRuntime::GenLaunchArgs(*this, cnode_ptr, &kernel_launch_info);
+
+  const auto &kernel_inputs = kernel_launch_info.inputs_;
+  const auto &kernel_outputs = kernel_launch_info.outputs_;
   if (kernel_inputs.size() != 1) {
     MS_LOG(EXCEPTION) << "MemCpyAsync op inputs is not one, got " << kernel_inputs.size();
   }
@@ -141,13 +148,15 @@ device::DynamicKernelPtr MemCpyAsyncKernel::GenDynamicKernel(const CNodePtr &cno
     MS_LOG(EXCEPTION) << "MemCpyAsync op output is not one, got " << kernel_outputs.size();
   }
 
+  MS_EXCEPTION_IF_NULL(kernel_outputs[0]);
+  MS_EXCEPTION_IF_NULL(kernel_inputs[0]);
   if (kernel_outputs[0]->size < kernel_inputs[0]->size) {
-    MS_LOG(EXCEPTION) << "rtMemcpyAsync destMax " << kernel_outputs[0]->size << " is less than src size "
+    MS_LOG(EXCEPTION) << "aclrtMemcpyAsync destMax " << kernel_outputs[0]->size << " is less than src size "
                       << kernel_inputs[0]->size;
   }
   // input x -> memcpy_async -> AllReduce
   if (kernel_outputs[0]->size > kernel_inputs[0]->size) {
-    MS_LOG(WARNING) << "Check rtMemcpyAsync destMax > src size";
+    MS_LOG(WARNING) << "Check aclrtMemcpyAsync destMax > src size";
   }
 
   return std::make_shared<MemcpyRtsDynamicKernel>(stream_ptr, cnode_ptr, kernel_outputs[0]->addr,

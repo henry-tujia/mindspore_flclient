@@ -18,19 +18,19 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <unordered_set>
+#include "utils/hash_set.h"
 #include "base/core_ops.h"
 #include "utils/utils.h"
 #include "utils/log_adapter.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "debug/anf_ir_dump.h"
+#include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 namespace {
 bool IsTypeInsensitive(const CNodePtr &node) {
   // Nodes that will change the input data type will not seen as type insensitive nodes.
-  static std::unordered_set<PrimitivePtr> type_insensitive_op_list{
+  static mindspore::HashSet<PrimitivePtr> type_insensitive_op_list{
     prim::kPrimTransData, prim::kPrimTranspose, prim::kPrimExpandDims, prim::kPrimReshape,
     prim::kPrimSqueeze,   prim::kPrimTile,      prim::kPrimNeg,        prim::kPrimRelu,
     prim::kPrimMaximum,   prim::kPrimMinimum,   prim::kPrimSelect};
@@ -150,7 +150,7 @@ void ReorderOps::SetTypeInsensitiveNodeInputs(const CNodePtr &node, const std::v
     new_inputs->resize(0);
   }
   new_inputs->push_back(node->input(0));
-  std::unordered_set<size_t> indexes_set(indexes.begin(), indexes.end());
+  mindspore::HashSet<size_t> indexes_set(indexes.begin(), indexes.end());
   size_t idx = 0;
   for (size_t i = 1; i < node_inputs_num; ++i) {
     size_t data_idx = i - 1;
@@ -180,7 +180,7 @@ void ReorderOps::SetTypeInsensitiveNodeInputsInfo(const CNodePtr &node, const st
   // node's inputs info at indexes change to input_at_indexes's input or output info
   new_inputs_info->inputs_format.resize(0);
   new_inputs_info->inputs_type.resize(0);
-  std::unordered_set<size_t> indexes_set(indexes.begin(), indexes.end());
+  mindspore::HashSet<size_t> indexes_set(indexes.begin(), indexes.end());
   size_t idx = 0;
   for (size_t data_idx = 0; data_idx < node_inputs_num - 1; ++data_idx) {
     if (indexes_set.find(data_idx) == indexes_set.end()) {
@@ -231,8 +231,8 @@ bool ReorderOps::ReorderTypeInsensitiveCastDown(const FuncGraphPtr &func_graph, 
 
   std::vector<AnfNodePtr> new_cast_nodes;
   for (const auto &index : op_input_indexes) {
-    auto new_cast_node =
-      func_graph->NewCNode({NewValueNode(prim::kPrimCast), AnfAlgo::GetInputNode(type_insens_node, index)});
+    auto new_cast_node = func_graph->NewCNode({NewValueNode(std::make_shared<Primitive>(prim::kPrimCast->name())),
+                                               AnfAlgo::GetInputNode(type_insens_node, index)});
     NodeIOInfo cast_io_info;
     cast_io_info.inputs_format.push_back(AnfAlgo::GetInputFormat(type_insens_node, index));
     cast_io_info.outputs_format = cast_io_info.inputs_format;
@@ -307,7 +307,8 @@ bool ReorderOps::ReorderCastUpTypeInsensitive(const FuncGraphPtr &func_graph, co
   SetTypeInsensitiveNodeInputsInfo(node, op_input_indexes, cast_nodes, &type_insens_io_info, true);
   SetNodeInfo(node, new_type_insens_node, type_insens_io_info);
 
-  auto new_cast_node = func_graph->NewCNode({NewValueNode(prim::kPrimCast), new_type_insens_node});
+  auto new_cast_node =
+    func_graph->NewCNode({NewValueNode(std::make_shared<Primitive>(prim::kPrimCast->name())), new_type_insens_node});
   NodeIOInfo cast_io_info;
   cast_io_info.inputs_format.push_back(pattern_output_format);
   cast_io_info.outputs_format = cast_io_info.inputs_format;
@@ -325,12 +326,7 @@ bool ReorderOps::ReorderCastTypeInsensitive(const FuncGraphPtr &func_graph) {
   // Limitation: Assuming the type insensitive node will not change the type of input nodes, otherwise it can be seen
   //   as another cast node in some sense, such as LessEqual operator, which performs on two inputs and output a
   //   a boolean result.
-  MS_EXCEPTION_IF_NULL(func_graph);
-  auto mng = func_graph->manager();
-  if (mng == nullptr) {
-    mng = Manage(func_graph, true);
-    func_graph->set_manager(mng);
-  }
+  auto mng = GetFuncGraphManager(func_graph);
   bool changed = false;
   auto todos = TopoSort(func_graph->get_return());
   for (const auto &anf_node : todos) {
@@ -352,13 +348,6 @@ bool ReorderOps::ReorderCastTypeInsensitive(const FuncGraphPtr &func_graph) {
 }
 
 bool ReorderOps::Run(const FuncGraphPtr &func_graph) {
-  MS_EXCEPTION_IF_NULL(func_graph);
-  auto mng = func_graph->manager();
-  if (mng == nullptr) {
-    mng = Manage(func_graph, true);
-    func_graph->set_manager(mng);
-  }
-
   bool changed = false;
   auto todos = TopoSort(func_graph->get_return());
   for (const auto &anf_node : todos) {
@@ -381,5 +370,4 @@ bool ReorderOps::Run(const FuncGraphPtr &func_graph) {
 
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

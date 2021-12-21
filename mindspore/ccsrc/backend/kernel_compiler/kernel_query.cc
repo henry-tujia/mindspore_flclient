@@ -15,8 +15,6 @@
  */
 
 #include "backend/kernel_compiler/kernel_query.h"
-#include <memory>
-#include <algorithm>
 #include "backend/kernel_compiler/aicpu/aicpu_kernel_metadata.h"
 #include "backend/kernel_compiler/host/host_kernel_metadata.h"
 #include "backend/kernel_compiler/rts/rt_kernel_info.h"
@@ -33,6 +31,9 @@ namespace {
 void FilterInvalidKernelInfo(const CNodePtr &kernel_node,
                              std::vector<std::shared_ptr<kernel::KernelBuildInfo>> *kernel_info_list) {
   MS_EXCEPTION_IF_NULL(kernel_info_list);
+  if (kernel_info_list->empty()) {
+    return;
+  }
   MS_EXCEPTION_IF_NULL(kernel_node);
   size_t output_tensor_num = AnfAlgo::GetOutputTensorNum(kernel_node);
   size_t input_tensor_num = AnfAlgo::GetInputTensorNum(kernel_node);
@@ -55,8 +56,8 @@ void FilterInvalidKernelInfo(const CNodePtr &kernel_node,
         buffer << "Kernel node's output size [" << output_tensor_num << "]"
                << " cannot match the kernel's output size [" << kernel_info->GetOutputNum() << "]";
       } else {
-        buffer << "Kernel node's output size [" << input_tensor_num << "]"
-               << " cannot match the kernel's output size [" << kernel_info->GetInputNum() << "]";
+        buffer << "Kernel node's input size [" << input_tensor_num << "]"
+               << " cannot match the kernel's input size [" << kernel_info->GetInputNum() << "]";
       }
       MS_LOG(INFO) << "Kernel [ " << index << " ] :" << kernel_info->ToString() << buffer.str();
     }
@@ -67,35 +68,30 @@ void FilterInvalidKernelInfo(const CNodePtr &kernel_node,
 }
 }  // namespace
 
+void CheckKernelInfoListEmpty(const std::vector<std::shared_ptr<kernel::KernelBuildInfo>> *kernel_info_list,
+                              const std::string &type) {
+  MS_EXCEPTION_IF_NULL(kernel_info_list);
+  if (kernel_info_list->empty()) {
+    MS_LOG(INFO) << "Warning: kernel info list is empty, kernel type: " << type;
+  }
+}
+
 void KernelQueryAll(const CNodePtr &kernel_node,
                     std::vector<std::shared_ptr<kernel::KernelBuildInfo>> *kernel_info_list) {
   MS_EXCEPTION_IF_NULL(kernel_node);
   MS_EXCEPTION_IF_NULL(kernel_info_list);
-  std::string op_name = AnfAlgo::GetCNodeName(kernel_node);
   TbeMetadataInfo(kernel_node, kernel_info_list);
   if (kernel_info_list->empty()) {
-    AicpuMetadataInfo(kernel_node, kernel_info_list);
-    if (!kernel_info_list->empty()) {
-      MS_LOG(INFO) << "The node [" << kernel_node->DebugString()
-                   << "] cannot find valid TBE kernel info, try to get aicpu kernel info";
-      AnfAlgo::SetNodeAttr(kAttrIsAICPUKernel, MakeValue(true), kernel_node);
-    }
-  }
-  if (kernel_info_list->empty()) {
     GetRtKelInfo(kernel_node, kernel_info_list);
+    CheckKernelInfoListEmpty(kernel_info_list, "RT_Kernel");
   }
   if (kernel_info_list->empty()) {
     HcclMetadataInfo(kernel_node, kernel_info_list);
+    CheckKernelInfoListEmpty(kernel_info_list, "HCCL_Kernel");
   }
   if (kernel_info_list->empty()) {
     HostMetadataInfo(kernel_node, kernel_info_list);
-  }
-  if (kernel_info_list->empty()) {
-    MS_EXCEPTION(NotExistsError) << "Can not find any available operator info for op [" << op_name << ", "
-                                 << kernel_node->fullname_with_scope()
-                                 << "]. Node DebugString:" << kernel_node->DebugString()
-                                 << ", maybe the operator can not supported on current platform. \n trace "
-                                 << trace::DumpSourceLines(kernel_node);
+    CheckKernelInfoListEmpty(kernel_info_list, "HOST_Kernel");
   }
 }
 
@@ -124,14 +120,6 @@ void KernelQuery(const CNodePtr &kernel_node, std::vector<std::shared_ptr<kernel
     default:
       KernelQueryAll(kernel_node, kernel_info_list);
       break;
-  }
-
-  if (kernel_info_list->empty()) {
-    MS_EXCEPTION(NotExistsError) << "Can not find any available operator info for operator ["
-                                 << AnfAlgo::GetCNodeName(kernel_node) << ", " << kernel_node->fullname_with_scope()
-                                 << "]. Node DebugString:" << kernel_node->DebugString()
-                                 << ", maybe the operator can not supported on current platform. \n trace "
-                                 << trace::DumpSourceLines(kernel_node);
   }
   // check output
   FilterInvalidKernelInfo(kernel_node, kernel_info_list);

@@ -36,7 +36,7 @@ const std::map<std::string, std::string> kRegexTransforms = {
 const int32_t kMaxStringLength = 300;
 }  // namespace
 
-int NormalizeCPUKernel::Init() {
+int NormalizeCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   CHECK_NULL_RETURN(in_tensors_[0]);
@@ -109,12 +109,12 @@ int NormalizeCPUKernel::Run() {
 
   std::vector<lite::StringPack> out_string_pack;
   normalized_strs.resize(string_num, nullptr);
-
+  CHECK_LESS_RETURN(all_string_pack.size(), static_cast<uint32_t>(string_num));
   for (int i = 0; i < string_num; ++i) {
     auto chars = all_string_pack[i];
     std::string str(chars.data, chars.len);
     std::string result = Normalize(str);
-    int str_length = result.size();
+    size_t str_length = result.size();
 
     char *normalized_str = nullptr;
     normalized_str = reinterpret_cast<char *>(ms_context_->allocator->Malloc(sizeof(char) * str_length));
@@ -126,7 +126,7 @@ int NormalizeCPUKernel::Run() {
     normalized_strs[i] = normalized_str;
 
     memcpy(normalized_str, result.data(), str_length);
-    out_string_pack.push_back({str_length, normalized_str});
+    out_string_pack.push_back({static_cast<int>(str_length), normalized_str});
   }
   if (string_num == 0) {
     out_string_pack.push_back({1, ""});

@@ -28,7 +28,7 @@ namespace dataset {
 
 class MuLawDecodingOp : public TensorOp {
  public:
-  explicit MuLawDecodingOp(int quantization_channels = 256);
+  explicit MuLawDecodingOp(int32_t quantization_channels = 256);
 
   ~MuLawDecodingOp() override = default;
 
@@ -39,7 +39,7 @@ class MuLawDecodingOp : public TensorOp {
   std::string Name() const override { return kMuLawDecodingOp; }
 
  private:
-  int quantization_channels_;
+  int32_t quantization_channels_;
 };
 }  // namespace dataset
 }  // namespace mindspore

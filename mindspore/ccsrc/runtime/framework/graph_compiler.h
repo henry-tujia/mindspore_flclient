@@ -20,9 +20,9 @@
 #include <vector>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <map>
 #include <set>
+#include "utils/hash_map.h"
 #include "runtime/hardware/device_context.h"
 #include "runtime/framework/actor/actor_common.h"
 #include "runtime/framework/control_node_parser.h"
@@ -97,12 +97,19 @@ class GraphCompiler {
 
   // Construct kernel graph from anf nodes list and compile kernel graph in Graph mode,
   // the detailed implementation of compiling graph is in 'CompileGraphImpl'.
-  GraphId CompileGraph(const AnfNodePtrList &nodes, const AnfNodePtrList &outputs, const DeviceContext *device_context);
+  GraphId CompileGraph(const GraphSegmentPtr &segment, const AnfNodePtrList &outputs,
+                       const DeviceContext *device_context);
+
+  // Construct kernel graph from function graph and compile kernel graph in Graph mode,
+  // the detailed implementation of compiling graph is in 'CompileGraphImpl'.
+  GraphId CompileGraph(const FuncGraphPtr &func_graph, const DeviceContext *device_context);
 
   // Construct single op kernel graph and compile the kernel graph in PyNative mode.
-  GraphId CompileGraph(const session::OpRunInfo &op_run_info, const GraphInfo &graph_info,
-                       const std::vector<int64_t> *tensors_mask, std::vector<TensorPtr> *const input_tensors,
-                       bool *single_op_cache_hit, const DeviceContext *device_context);
+  GraphId CompileGraph(const session::OpRunInfo &op_run_info, bool *single_op_cache_hit,
+                       const DeviceContext *device_context);
+
+  // Create kernel and Create workspace for graphs in PyNative mode.
+  void BuildSingleOpGraphs(const std::vector<KernelGraphPtr> &graphs, const DeviceContext *device_context) const;
 
   // Get graph by graph id, if not exist return nullptr, used in Graph mode.
   KernelGraphPtr Fetch(GraphId graph_id) const;
@@ -131,15 +138,17 @@ class GraphCompiler {
                                           InputTensorInfo *const input_tensor_info, size_t input_index);
 
   // Get OpRunInfo and GraphInfo for single op compile and run.
-  void GetSingleOpRunInfoAndGraphInfo(const CNodePtr &kernel, const std::vector<TensorPtr> &input_tensors,
-                                      OpRunInfo *const run_info, GraphInfo *const graph_info);
+  void GetSingleOpRunInfoAndGraphInfo(const CNodePtr &kernel, const InputTensorInfo &tensor_info, OpRunInfo *run_info,
+                                      GraphInfo *graph_info, GraphOutputInfo *const graph_output_info);
 
   // Calculate ref count of PyNative back propagation operators.
-  void CalculateRefCount(const KernelGraphPtr &graph, std::map<KernelWithIndex, size_t> *ref_count) const;
+  void CalculateRefCount(const KernelGraphPtr &graph, std::map<KernelWithIndex, size_t> *ref_count,
+                         std::map<AnfNodePtr, size_t> *forward_output_refcount) const;
 
   // Update ref count of PyNative back propagation operators.
   void UpdateRefCount(const std::set<KernelWithIndex> &input_kernels_with_index,
                       std::map<KernelWithIndex, size_t> *ref_count,
+                      std::map<AnfNodePtr, size_t> *forward_output_refcount,
                       std::map<KernelWithIndex, tensor::TensorPtr> *op_output_map) const;
 
   // Handle single op output tensor and recover output of original complete kernel graph.
@@ -175,12 +184,20 @@ class GraphCompiler {
   GraphId CompileGraphImpl(const KernelGraphPtr &graph, const DeviceContext *device_context) const;
 
   // Create device address for all anf nodes of graph.
-  void CreateDeviceAddress(const KernelGraphPtr &graph, const DeviceContext *device_context) const;
+  void CreateDeviceAddress(const KernelGraphPtr &graph, const DeviceContext *device_context,
+                           bool is_gradient_out) const;
+
+  // Create device address for input and output of ops.
+  void CreateDeviceAddressWithoutWorkspace(const KernelGraphPtr &graph, const DeviceContext *device_context,
+                                           bool is_gradient_out) const;
+
+  // Set Graph's dependencies for pre_graph and post_graph.
+  void SetGraphDependency(const KernelGraphPtr &graph, const GraphSegmentPtr &segment) const;
 
   // Single op kernel graph cache for PyNative mode.
-  std::unordered_map<GraphInfo, KernelGraphPtr> run_op_graphs_;
+  mindspore::HashMap<GraphInfo, KernelGraphPtr> run_op_graphs_;
   // Single op kernel graph output nodes cache for PyNative mode.
-  std::unordered_map<GraphId, std::vector<KernelWithIndex>> run_op_graph_output_nodes_;
+  mindspore::HashMap<GraphId, std::vector<KernelWithIndex>> run_op_graph_output_nodes_;
 
   // The member variable 'session_' will be removed after removing session module.
   // Now all the GraphCompiler share the same 'session_'.

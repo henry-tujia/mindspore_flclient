@@ -28,48 +28,50 @@ namespace kernel {
 template <typename T>
 void EltWiseGradCPUKernel<T>::ReluGrad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
   if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "ReLUGrad only support float";
+    MS_LOG(EXCEPTION) << "For 'ReLUGrad', the dtype of input should be float.";
   }
 
   int ret = ::ReluGrad(input1 + start, input2 + start, end - start, out + start);
   if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "ReLUGrad execute failed.";
+    MS_LOG(EXCEPTION) << "ReLUGrad execute failed. Error no: " << ret;
   }
 }
 
 template <typename T>
 void EltWiseGradCPUKernel<T>::ReLU6Grad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
   if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "ReLU6Grad only support float";
+    MS_LOG(EXCEPTION) << "For 'ReLU6Grad', the dtype of input should be float.";
   }
 
   int ret = ::Relu6Grad(input1 + start, input2 + start, end - start, out + start);
   if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "ReLU6Grad execute failed.";
+    MS_LOG(EXCEPTION) << "ReLU6Grad execute failed. Error no: " << ret;
   }
 }
 
 template <typename T>
 void EltWiseGradCPUKernel<T>::AbsGrad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
-  if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "AbsGrad only support float";
-  }
-
-  int ret = ::ElementAbsGrad(input1 + start, input2 + start, out + start, end - start);
-  if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "AbsGrad execute failed.";
+  if constexpr (std::is_same<T, float>::value) {
+    int ret = ::ElementAbsGrad(input1 + start, input2 + start, out + start, end - start);
+    if (ret == NNACL_ERR) {
+      MS_LOG(EXCEPTION) << "AbsGrad execute failed. Error no: " << ret;
+    }
+  } else {
+    for (size_t i = start; i < end; i++) {
+      out[i] = (input1[i] < 0) ? -input2[i] : ((input1[i] > 0) ? input2[i] : 0);
+    }
   }
 }
 
 template <typename T>
 void EltWiseGradCPUKernel<T>::SigmoidGrad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
   if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "SigmoidGrad only support float";
+    MS_LOG(EXCEPTION) << "For 'SigmoidGrad', the dtype of input should be float.";
   }
 
   int ret = ::SigmoidGrad(input2 + start, input1 + start, end - start, out + start);
   if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "SigmoidGrad execute failed.";
+    MS_LOG(EXCEPTION) << "SigmoidGrad execute failed. Error no: " << ret;
   }
 }
 
@@ -83,12 +85,12 @@ void EltWiseGradCPUKernel<T>::SqrtGrad(const T *input1, const T *input2, T *out,
 template <typename T>
 void EltWiseGradCPUKernel<T>::TanhGrad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
   if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "TanhGrad only support float";
+    MS_LOG(EXCEPTION) << "For 'TanhGrad', the dtype of input should be float.";
   }
 
   int ret = ::TanhGrad(input2 + start, input1 + start, end - start, out + start);
   if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "TanhGrad execute failed.";
+    MS_LOG(EXCEPTION) << "TanhGrad execute failed. Error no: " << ret;
   }
 }
 
@@ -212,12 +214,64 @@ void EltWiseGradCPUKernel<T>::AcoshGrad(const T *input1, const T *input2, T *out
 template <typename T>
 void EltWiseGradCPUKernel<T>::SoftplusGrad(const T *input1, const T *input2, T *out, size_t start, size_t end) const {
   if constexpr (!std::is_same<T, float>::value) {
-    MS_LOG(EXCEPTION) << "SoftplusGrad only support float";
+    MS_LOG(EXCEPTION) << "For 'SoftplusGrad', the dtype of input should be float.";
   }
 
   int ret = ::SoftplusGrad(input1 + start, input2 + start, end - start, out + start);
   if (ret == NNACL_ERR) {
-    MS_LOG(EXCEPTION) << "SoftplusGrad execute failed.";
+    MS_LOG(EXCEPTION) << "SoftplusGrad execute failed. Error no: " << ret;
+  }
+}
+
+template <typename T>
+void EltWiseGradCPUKernel<T>::InitComputeFunc() {
+  if constexpr (std::is_same_v<T, double>) {
+    static const std::map<std::string,
+                          std::function<void(EltWiseGradCPUKernel *, const T *, const T *, T *, size_t, size_t)>>
+      elt_map{{prim::kPrimSqrtGrad->name(), &EltWiseGradCPUKernel<T>::SqrtGrad},
+              {prim::kPrimGeLUGrad->name(), &EltWiseGradCPUKernel<T>::GeluGrad},
+              {prim::kPrimAsinGrad->name(), &EltWiseGradCPUKernel<T>::AsinGrad},
+              {prim::kPrimACosGrad->name(), &EltWiseGradCPUKernel<T>::ACosGrad},
+              {prim::kPrimAtanGrad->name(), &EltWiseGradCPUKernel<T>::AtanGrad},
+              {prim::kPrimAsinhGrad->name(), &EltWiseGradCPUKernel<T>::AsinhGrad},
+              {prim::kPrimAcoshGrad->name(), &EltWiseGradCPUKernel<T>::AcoshGrad},
+              {prim::kPrimAbsGrad->name(), &EltWiseGradCPUKernel<T>::AbsGrad}};
+    if (elt_map.find(kernel_name_) == elt_map.end()) {
+      MS_LOG(EXCEPTION) << "EltWiseGradCPUKernel does not support " << kernel_name_ << " with double as input.";
+    }
+    compute_func_ = elt_map.at(kernel_name_);
+    return;
+  }
+  if constexpr (std::is_same_v<T, float>) {
+    static const std::map<std::string,
+                          std::function<void(EltWiseGradCPUKernel *, const T *, const T *, T *, size_t, size_t)>>
+      elt_map{{prim::kPrimReluGrad->name(), &EltWiseGradCPUKernel<T>::ReluGrad},
+              {prim::kPrimRelu6Grad->name(), &EltWiseGradCPUKernel<T>::ReLU6Grad},
+              {prim::kPrimSigmoidGrad->name(), &EltWiseGradCPUKernel<T>::SigmoidGrad},
+              {prim::kPrimAbsGrad->name(), &EltWiseGradCPUKernel<T>::AbsGrad},
+              {prim::kPrimTanhGrad->name(), &EltWiseGradCPUKernel<T>::TanhGrad},
+              {prim::kPrimSqrtGrad->name(), &EltWiseGradCPUKernel<T>::SqrtGrad},
+              {prim::kPrimGeLUGrad->name(), &EltWiseGradCPUKernel<T>::GeluGrad},
+              {prim::kPrimAsinGrad->name(), &EltWiseGradCPUKernel<T>::AsinGrad},
+              {prim::kPrimACosGrad->name(), &EltWiseGradCPUKernel<T>::ACosGrad},
+              {prim::kPrimAtanGrad->name(), &EltWiseGradCPUKernel<T>::AtanGrad},
+              {prim::kPrimAsinhGrad->name(), &EltWiseGradCPUKernel<T>::AsinhGrad},
+              {prim::kPrimAcoshGrad->name(), &EltWiseGradCPUKernel<T>::AcoshGrad},
+              {prim::kPrimSoftplusGrad->name(), &EltWiseGradCPUKernel<T>::SoftplusGrad}};
+    if (elt_map.find(kernel_name_) == elt_map.end()) {
+      MS_LOG(EXCEPTION) << "EltWiseGradCPUKernel does not support " << kernel_name_ << " with float as input.";
+    }
+    compute_func_ = elt_map.at(kernel_name_);
+    return;
+  }
+  if constexpr (std::is_same_v<T, int>) {
+    static const std::map<std::string,
+                          std::function<void(EltWiseGradCPUKernel *, const T *, const T *, T *, size_t, size_t)>>
+      elt_map{{prim::kPrimAbsGrad->name(), &EltWiseGradCPUKernel<T>::AbsGrad}};
+    if (elt_map.find(kernel_name_) == elt_map.end()) {
+      MS_LOG(EXCEPTION) << "EltWiseGradCPUKernel does not support " << kernel_name_ << " with int as input.";
+    }
+    compute_func_ = elt_map.at(kernel_name_);
   }
 }
 
@@ -225,34 +279,20 @@ template <typename T>
 void EltWiseGradCPUKernel<T>::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
   kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
+  InitComputeFunc();
 }
 
 template <typename T>
 bool EltWiseGradCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inputs,
                                      const std::vector<kernel::AddressPtr> &,
                                      const std::vector<kernel::AddressPtr> &outputs) {
-  static const std::map<std::string,
-                        std::function<void(EltWiseGradCPUKernel *, const T *, const T *, T *, size_t, size_t)>>
-    elt_map{{prim::kPrimReluGrad->name(), &EltWiseGradCPUKernel<T>::ReluGrad},
-            {prim::kPrimRelu6Grad->name(), &EltWiseGradCPUKernel<T>::ReLU6Grad},
-            {prim::kPrimSigmoidGrad->name(), &EltWiseGradCPUKernel<T>::SigmoidGrad},
-            {prim::kPrimAbsGrad->name(), &EltWiseGradCPUKernel<T>::AbsGrad},
-            {prim::kPrimTanhGrad->name(), &EltWiseGradCPUKernel<T>::TanhGrad},
-            {prim::kPrimSqrtGrad->name(), &EltWiseGradCPUKernel<T>::SqrtGrad},
-            {prim::kPrimGeLUGrad->name(), &EltWiseGradCPUKernel<T>::GeluGrad},
-            {prim::kPrimAsinGrad->name(), &EltWiseGradCPUKernel<T>::AsinGrad},
-            {prim::kPrimACosGrad->name(), &EltWiseGradCPUKernel<T>::ACosGrad},
-            {prim::kPrimAtanGrad->name(), &EltWiseGradCPUKernel<T>::AtanGrad},
-            {prim::kPrimAsinhGrad->name(), &EltWiseGradCPUKernel<T>::AsinhGrad},
-            {prim::kPrimAcoshGrad->name(), &EltWiseGradCPUKernel<T>::AcoshGrad},
-            {prim::kPrimSoftplusGrad->name(), &EltWiseGradCPUKernel<T>::SoftplusGrad}};
   if (inputs.size() < kInputMinNum || outputs.size() != kOutputNum) {
-    MS_LOG(ERROR) << kernel_name_ << " requires at least 2 inputs and 1 output, but got " << inputs.size()
-                  << " inputs and " << outputs.size() << " output.";
+    MS_LOG(ERROR) << "For '" << kernel_name_ << "', it requires at least 2 inputs and 1 output, but got "
+                  << inputs.size() << " input(s) and " << outputs.size() << " output(s).";
     return false;
   }
   if (outputs[0]->size == 0) {
-    MS_LOG(WARNING) << kernel_name_ << " output memory size should be greater than 0, but got 0.";
+    MS_LOG(WARNING) << "For '" << kernel_name_ << "', the memory size of output should be greater than 0, but got 0.";
     return true;
   }
   const auto input0 = reinterpret_cast<T *>(inputs[0]->addr);
@@ -260,7 +300,7 @@ bool EltWiseGradCPUKernel<T>::Launch(const std::vector<kernel::AddressPtr> &inpu
   auto output = reinterpret_cast<T *>(outputs[0]->addr);
 
   ParallelLaunchAutoSearch(
-    std::bind(elt_map.at(kernel_name_), this, input0, input1, output, std::placeholders::_1, std::placeholders::_2),
+    std::bind(compute_func_, this, input0, input1, output, std::placeholders::_1, std::placeholders::_2),
     outputs[0]->size / sizeof(T), this, &parallel_search_info_);
   return true;
 }

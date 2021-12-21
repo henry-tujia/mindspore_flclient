@@ -1,5 +1,6 @@
 #!/bin/bash
 source ./scripts/base_functions.sh
+version=1.5.0
 
 # Run Export on x86 platform and create output test files:
 docker_image=mindspore_build:210301
@@ -121,6 +122,7 @@ function GenerateWeightQuantConfig() {
 function parse_line() {
     i=1
     loss_name=
+    inputShapes=
     enable_fp16="false"
     virtual_batch="false"
     accuracy_limit=0.5
@@ -168,6 +170,10 @@ function parse_line() {
           "code_example")
              ret=1
              ;;
+          "inputShapes")
+            i=$(($i+1))
+            inputShapes=${line_array[i]}
+            ;;
           *)
             check=`echo "${line_array[i]}" | grep -E '^\-?[0-9]*\.?[0-9]+$'`
             if [ "${check}" != "" ] ; then
@@ -227,6 +233,7 @@ function Run_x86() {
             --accuracyThreshold=${accuracy_limit} --inferenceFile=${inference_file} \
             --exportFile=${export_file} \
             --virtualBatch=${virtual_batch} \
+            --inputShapes=${inputShapes} \
             --lossName=${loss_name} " >> ${run_x86_log_file}
         ${run_valgrind} ./tools/benchmark_train/benchmark_train \
             --modelFile=${model_file} \
@@ -236,6 +243,7 @@ function Run_x86() {
             --accuracyThreshold=${accuracy_limit} --inferenceFile=${inference_file} \
             --exportFile=${export_file} \
             --virtualBatch=${virtual_batch} \
+            --inputShapes=${inputShapes} \
             --lossName=${loss_name} >> "${run_x86_log_file}"
         if [ $? = 0 ]; then
             run_result='x86'${log_suffix}': '${model_name}''${suffix_print}' pass'; echo ${run_result} >> ${run_benchmark_train_result_file}
@@ -250,8 +258,7 @@ function Run_x86() {
 # Run on arm platform:
 # Gets two parameters
 function Run_arm() {
-    # $1:platform(arm64/arm32); $2:cfgFileList
-    tmp_dir=/data/local/tmp/benchmark_train_test
+    # $1:platform(arm64/arm32)
     local arm_path process_unit version_arm run_arm_log_file adb_cmd_run_file adb_push_log_file adb_cmd_file adb_cmd
     if [ "$1" == "arm64" ]; then
         arm_path=${arm64_path}
@@ -274,6 +281,13 @@ function Run_arm() {
         exit 1
     fi
 
+    # Copy the MindSpore models:
+    echo "Copy files to benchmark_train_test_arm32/64 folder, push them to the phone and run benchmark_train"
+    benchmark_train_test_path="${basepath}/benchmark_train_test_$1"
+    rm -rf ${benchmark_train_test_path}
+    mkdir -p ${benchmark_train_test_path}
+    cp -a ${ms_models_path}/*.ms ${benchmark_train_test_path}
+
     # Unzip
     cd ${arm_path} || exit 1
     tar -zxf mindspore-lite-${version_arm}-android-${process_unit}.tar.gz || exit 1
@@ -285,12 +299,9 @@ function Run_arm() {
         cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/libjpeg-turbo/lib/libturbojpeg.so* ${benchmark_train_test_path}/ || exit 1
         cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/lib/libminddata-lite.so ${benchmark_train_test_path}/libminddata-lite.so || exit 1
     fi
-    if [ "$1" == arm64 ] || [ "$1" == arm32 ]; then
-        cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai.so ${benchmark_train_test_path}/libhiai.so || exit 1
-        cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai_ir.so ${benchmark_train_test_path}/libhiai_ir.so || exit 1
-        cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai_ir_build.so ${benchmark_train_test_path}/libhiai_ir_build.so || exit 1
-    fi
-
+    cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai.so ${benchmark_train_test_path}/libhiai.so || exit 1
+    cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai_ir.so ${benchmark_train_test_path}/libhiai_ir.so || exit 1
+    cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/third_party/hiai_ddk/lib/libhiai_ir_build.so ${benchmark_train_test_path}/libhiai_ir_build.so || exit 1
     cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/lib/libmindspore-lite.so ${benchmark_train_test_path}/libmindspore-lite.so || exit 1
     cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/runtime/lib/libmindspore-lite-train.so ${benchmark_train_test_path}/libmindspore-lite-train.so || exit 1
     cp -a ${arm_path}/mindspore-lite-${version_arm}-android-${process_unit}/tools/benchmark_train/benchmark_train ${benchmark_train_test_path}/benchmark_train || exit 1
@@ -299,10 +310,11 @@ function Run_arm() {
     adb -s ${device_id} push ${benchmark_train_test_path} /data/local/tmp/ > ${adb_push_log_file}
 
     # run adb ,run session ,check the result:
-    echo 'cd  /data/local/tmp/benchmark_train_test' > ${adb_cmd_file}
+    tmp_dir="/data/local/tmp/benchmark_train_test_$1"
+    echo "cd ${tmp_dir}" > ${adb_cmd_file}
     echo 'chmod 777 benchmark_train' >> ${adb_cmd_file}
-
     adb -s ${device_id} shell < ${adb_cmd_file}
+
     local fail=0
     # Run mindir converted train models:
     while read line; do
@@ -330,8 +342,8 @@ function Run_arm() {
         fi
         # run benchmark_train test without clib data
         echo ${model_name} >> "${run_arm_log_file}"
-        adb -s ${device_id} push ${train_io_path}/${model_prefix}_input*.bin ${train_io_path}/${model_prefix}_output*.bin  /data/local/tmp/benchmark_train_test >> ${adb_push_log_file}
-        echo 'cd /data/local/tmp/benchmark_train_test' > ${adb_cmd_run_file}
+        adb -s ${device_id} push ${train_io_path}/${model_prefix}_input*.bin ${train_io_path}/${model_prefix}_output*.bin  ${tmp_dir}  >> ${adb_push_log_file}
+        echo "cd ${tmp_dir}" > ${adb_cmd_run_file}
         echo 'chmod 777 benchmark_train' >> ${adb_cmd_run_file}
         if [ "$1" == arm64 ]; then
             echo 'cp  /data/local/tmp/libc++_shared.so ./' >> ${adb_cmd_run_file}
@@ -350,7 +362,7 @@ function Run_arm() {
         fi
         adb -s ${device_id} shell < ${adb_cmd_run_file} >> ${run_arm_log_file}
         adb_cmd=$(cat <<-ENDM
-        export LD_LIBRARY_PATH=./:/data/local/tmp/:/data/local/tmp/benchmark_train_test;./benchmark_train \
+        export LD_LIBRARY_PATH=./:/data/local/tmp/:${tmp_dir};./benchmark_train \
         --epochs=${epoch_num} \
         --modelFile=${model_file} \
         --bbModelFile=${bb_model_file} \
@@ -362,6 +374,7 @@ function Run_arm() {
         --inferenceFile=${inference_file} \
         --exportFile=${export_file} \
         --virtualBatch=${virtual_batch} \
+        --inputShapes=${inputShapes} \
         --lossName=${loss_name}
 ENDM
 )
@@ -376,7 +389,7 @@ ENDM
             fail=1
         fi
     done < ${models_ms_train_config}
-    
+    adb -s ${device_id} shell "rm -rf ${tmp_dir}"
     return ${fail}
 }
 
@@ -395,10 +408,14 @@ function Run_CodeExamples() {
     export PATH=${x86_path}/mindspore-lite-${version}-linux-x64/tools/converter/converter/:$PATH
     export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${x86_path}/mindspore-lite-${version}-linux-x64/tools/converter/lib/:${x86_path}/mindspore-lite-${version}-linux-x64/tools/converter/third_party/glog/lib
 
-    if [[ "$should_run" == "1" && ($backend == "all" || $backend == "x86-all" || $backend == "x86_train" || $backend == "x86-java") ]]; then
+    if [[ "$should_run" == "1" && ($backend == "all" || $backend == "codegen_and_train"  || $backend == "x86-all" || $backend == "x86_train" || $backend == "x86-java") ]]; then
       cd ${basepath}/../../examples/train_lenet_java || exit 1
       chmod 777 ./prepare_and_run.sh
       ./prepare_and_run.sh -D ${datasets_path}/mnist -r ${tarball_path} -m ${models_path}/code_example.mindir >> ${run_code_examples_log_file}
+      if [ "$?" != "0" ]; then
+          echo "train_lenet_java prepare_and_run.sh failed"
+          exit 1
+      fi
       accurate=$(tail -10 ${run_code_examples_log_file} | awk -F= 'NF==2 && /accuracy/ { sum += $2} END { print (sum > 0.80) }')
       if [ $accurate -eq 1 ]; then
         echo "Lenet Java Trained  and reached accuracy" >> ${run_code_examples_log_file}
@@ -418,6 +435,10 @@ function Run_CodeExamples() {
         chmod 777 ./prepare_and_run.sh
         chmod 777 ./*/*.sh
         ./prepare_and_run.sh -D ${datasets_path}/mnist -r ${tarball_path} -t ${target} -m ${models_path}/code_example.mindir -e 1 >> ${run_code_examples_log_file}
+        if [ "$?" != "0" ]; then
+          echo "Unified API prepare_and_run.sh failed"
+          exit 1
+        fi
         accurate=$(tail -20 ${run_code_examples_log_file} | awk 'NF==3 && /Accuracy is/ { sum += $3} END { print (sum > 1.6) }')
         if [ $accurate -eq 1 ]; then
           echo "Unified API Trained and reached accuracy" >> ${run_code_examples_log_file}
@@ -438,6 +459,10 @@ function Run_CodeExamples() {
         chmod 777 ./prepare_and_run.sh
         chmod 777 ./*/*.sh
         ./prepare_and_run.sh -D ${datasets_path}/mnist -r ${tarball_path} -t ${target} -m ${models_path}/code_example.mindir -e 1 >> ${run_code_examples_log_file}
+        if [ "$?" != "0" ]; then
+          echo "train_lenet prepare_and_run.sh failed"
+          exit 1
+        fi
         accurate=$(tail -10 ${run_code_examples_log_file} | awk 'NF==3 && /Accuracy is/ { sum += $3} END { print (sum > 1.6) }')
         if [ $accurate -eq 1 ]; then
           echo "Lenet Trained and reached accuracy" >> ${run_code_examples_log_file}
@@ -453,7 +478,6 @@ function Run_CodeExamples() {
     fi
     return ${fail}
 }
-
 
 function Print_Result() {
     MS_PRINT_TESTCASE_END_MSG
@@ -484,11 +508,6 @@ while getopts "r:c:m:d:i:e:vt:q:D:M" opt; do
         m)
             models_path=${OPTARG}
             echo "models_path is ${OPTARG}"
-            ;;
-        M)
-            # "common" or "transfer" or "all"
-            train_mode=${OPTARG}
-            echo "training_mode is ${OPTARG}"
             ;;
         c)
            models_ms_train_config=${OPTARG}
@@ -584,18 +603,8 @@ echo ' ' > ${run_converter_result_file}
 
 START=$(date +%s.%N)
 
-train_mode=${train_mode:-"all"}
 echo "start run converter ..."
-train_cfg_file_list=()
-if [[ $train_mode == "all" || $train_mode == "common" ]]; then
-  # add cfg file for common training
-  train_cfg_file_list+=("${models_ms_train_config}")
-fi
-if [[ $train_mode == "all" || $train_mode == "transfer" ]]; then
-  # add cfg file for transfer learning
-  train_cfg_file_list+=("${models_ms_transfer_config}")
-fi
-
+train_cfg_file_list=("${models_ms_train_config}")
 Run_Converter "${train_cfg_file_list[*]}"
 Run_converter_status=$?
 
@@ -632,46 +641,37 @@ adb_cmd_arm32_run_file=${logs_path}/adb_arm32_cmd_run.txt
 run_code_examples_log_file=${logs_path}/run_code_examples_log.txt
 echo 'run code examlpe logs: ' > ${run_code_examples_log_file}
 
-# Copy the MindSpore models:
-echo "Push files to benchmark_train_test folder and run benchmark_train"
-benchmark_train_test_path=${basepath}/benchmark_train_test
-rm -rf ${benchmark_train_test_path}
-mkdir -p ${benchmark_train_test_path}
-cp -a ${ms_models_path}/*.ms ${benchmark_train_test_path}
-
 isFailed=0
-if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "codegen_and_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" ]]; then
     # Run on x86
     echo "Start Run x86 ..."
     Run_x86 &
     Run_x86_PID=$!
     sleep 1
 fi
-if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "x86-java" || $backend == "codegen_and_train" || $backend == "arm64_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "x86-java" || $backend == "arm64_train" ]]; then
     # Run Code Examples 
     echo "Start Code Examples ..."
     Run_CodeExamples &
     Run_CodeExamples_PID=$!
     sleep 1
 fi
-if [[ $backend == "all" || $backend == "train" || $backend == "arm64_train" || $backend == "codegen_and_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "arm64_train" ]]; then
     # Run on arm64
     echo "Start Run arm64 ..."
-    Run_arm arm64
-    Run_arm64_status=$?
-#   Run_arm64_PID=$!
-#   sleep 1
+    Run_arm arm64 &
+    Run_arm64_PID=$!
+    sleep 1
 fi
-if [[ $backend == "all" || $backend == "train" || $backend == "arm32_train" || $backend == "codegen_and_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "arm32_train" ]]; then
     # Run on arm32
     echo "Start Run arm32 ..."
-    Run_arm arm32
-    Run_arm32_status=$?
-#   Run_arm32_PID=$!
-#   sleep 1
+    Run_arm arm32 &
+    Run_arm32_PID=$!
+    sleep 1
 fi
 
-if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "codegen_and_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" ]]; then
     wait ${Run_x86_PID}
     Run_x86_status=$?
     if [[ ${Run_x86_status} != 0 ]];then
@@ -680,7 +680,7 @@ if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $ba
         isFailed=1
     fi
 fi
-if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "x86-java" || $backend == "codegen_and_train" || $backend == "arm64_train" ]]; then
+if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $backend == "x86-java" || $backend == "arm64_train" ]]; then
     wait ${Run_CodeExamples_PID}
     Run_CodeExamples_status=$?
     if [[ ${Run_CodeExamples_status} != 0 ]];then
@@ -689,20 +689,18 @@ if [[ $backend == "all" || $backend == "train" || $backend == "x86_train" || $ba
         isFailed=1
     fi
 fi
-
-
-if [[ $backend == "all" || $backend == "train" || $backend == "arm64_train" || $backend == "codegen_and_train" ]]; then
-#   wait ${Run_arm64_PID}
-#   Run_arm64_status=$?
+if [[ $backend == "all" || $backend == "train" || $backend == "arm64_train" ]]; then
+    wait ${Run_arm64_PID}
+    Run_arm64_status=$?
     if [[ ${Run_arm64_status} != 0 ]];then
         echo "Run_arm64 train failed"
         cat ${run_arm64_log_file}
         isFailed=1
     fi
 fi
-if [[ $backend == "all" || $backend == "train" || $backend == "arm32_train" || $backend == "codegen_and_train" ]]; then
-#   wait ${Run_arm32_PID}
-#   Run_arm32_status=$?
+if [[ $backend == "all" || $backend == "train" || $backend == "arm32_train" ]]; then
+    wait ${Run_arm32_PID}
+    Run_arm32_status=$?
     if [[ ${Run_arm32_status} != 0 ]];then
         echo "Run_arm32 train failed"
         cat ${run_arm32_log_file}

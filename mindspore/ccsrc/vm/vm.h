@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019-2020 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@
 #include <utility>
 #include <vector>
 #include <deque>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
 #include "pybind11/pybind11.h"
 
 #include "ir/anf.h"
@@ -119,7 +119,6 @@ class FinalVM {
   void InstSwitchReturn(const VectorRef &args);
   void InstSwitchLayer(const VectorRef &args);
   void set_insts(const InstSet &value) { insts_ = value; }
-  BaseRef RunHook(const PrimitivePtr &prim, const VectorRef &arg);
 
  protected:
   BaseRef Ref(int64_t i);
@@ -131,7 +130,6 @@ class FinalVM {
   void Pushsp();
   void Popsp();
   void DoJmp(const BaseRef &jmp);
-  void SyncData(const py::object &args);
 
  private:
   InstSet insts_;

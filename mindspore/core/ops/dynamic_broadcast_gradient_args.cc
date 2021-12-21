@@ -46,7 +46,7 @@ int64_t CheckInputsAndGetShape(const AbstractBasePtr &input_arg, const string &p
   } else if (input_arg->isa<abstract::AbstractTuple>()) {
     auto x_shape = dyn_cast<abstract::AbstractTuple>(input_arg);
     auto x_shape_data = x_shape->elements();
-    return x_shape_data.size();
+    return SizeToLong(x_shape_data.size());
   } else {
     MS_EXCEPTION(TypeError) << prim_name << " input must be a tuple or Tensor.";
   }

@@ -22,6 +22,15 @@
 namespace mindspore {
 namespace lite {
 namespace {
+void DestroySplitParameter(OpParameter *parameter) {
+  MS_CHECK_PTR_IF_NULL(parameter);
+  auto param = reinterpret_cast<SplitParameter *>(parameter);
+  if (param->split_sizes_ != nullptr) {
+    free(param->split_sizes_);
+    param->split_sizes_ = nullptr;
+  }
+}
+
 OpParameter *PopulateSplitParameter(const void *prim) {
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
   auto *primitive = static_cast<const schema::v0::Primitive *>(prim);
@@ -44,16 +53,13 @@ OpParameter *PopulateSplitParameter(const void *prim) {
     free(split_param);
     return nullptr;
   }
-  if (INT_MUL_OVERFLOW(static_cast<size_t>(split_param->num_split_), sizeof(int))) {
-    free(split_param);
-    return nullptr;
-  }
   int *split_sizes = reinterpret_cast<int *>(malloc(static_cast<size_t>(split_param->num_split_) * sizeof(int)));
   if (split_sizes == nullptr) {
     MS_LOG(ERROR) << "malloc split size of SplitParameter failed.";
     free(split_param);
     return nullptr;
   }
+  split_param->op_parameter_.destroy_func_ = DestroySplitParameter;
   memset(split_sizes, 0, static_cast<size_t>(split_param->num_split_) * sizeof(int));
   split_param->split_sizes_ = split_sizes;
   auto split_sizes_vector_ = split_prim->sizeSplits();

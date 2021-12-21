@@ -24,6 +24,7 @@
 #include "minddata/dataset/kernels/image/dvpp/dvpp_decode_png_op.h"
 #include "minddata/dataset/kernels/image/dvpp/dvpp_normalize_op.h"
 #include "minddata/dataset/kernels/image/dvpp/dvpp_resize_jpeg_op.h"
+#include "minddata/dataset/util/validators.h"
 
 namespace mindspore {
 namespace dataset {
@@ -40,8 +41,7 @@ Status DvppCropJpegOperation::ValidateParams() {
   if (crop_.empty() || crop_.size() > 2) {
     std::string err_msg =
       "DvppCropJpeg: Crop resolution must be a vector of one or two elements, got: " + std::to_string(crop_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(crop_.begin(), crop_.end()) < 32 || *max_element(crop_.begin(), crop_.end()) > 2048) {
     std::string err_msg = "Dvpp module supports crop image with resolution in range [32, 2048], got crop Parameters: ";
@@ -50,7 +50,7 @@ Status DvppCropJpegOperation::ValidateParams() {
     } else {
       MS_LOG(ERROR) << err_msg << "[" << crop_[0] << ", " << crop_[0] << "]";
     }
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -79,7 +79,7 @@ Status DvppCropJpegOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status DvppCropJpegOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Fail to find size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kDvppCropJpegOperation));
   std::vector<uint32_t> resize = op_params["size"];
   *operation = std::make_shared<vision::DvppCropJpegOperation>(resize);
   return Status::OK();
@@ -93,8 +93,7 @@ Status DvppDecodeResizeOperation::ValidateParams() {
   if (resize_.empty() || resize_.size() > 2) {
     std::string err_msg = "DvppDecodeResizeJpeg: resize resolution must be a vector of one or two elements, got: " +
                           std::to_string(resize_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(resize_.begin(), resize_.end()) < 32 || *max_element(resize_.begin(), resize_.end()) > 2048) {
     std::string err_msg =
@@ -104,7 +103,7 @@ Status DvppDecodeResizeOperation::ValidateParams() {
     } else {
       MS_LOG(ERROR) << err_msg << "[" << resize_[0] << ", " << resize_[0] << "]";
     }
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -134,7 +133,7 @@ Status DvppDecodeResizeOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status DvppDecodeResizeOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Fail to find size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kDvppDecodeResizeOperation));
   std::vector<uint32_t> resize = op_params["size"];
   *operation = std::make_shared<vision::DvppDecodeResizeOperation>(resize);
   return Status::OK();
@@ -150,14 +149,12 @@ Status DvppDecodeResizeCropOperation::ValidateParams() {
   if (crop_.empty() || crop_.size() > 2) {
     std::string err_msg = "DvppDecodeResizeCropJpeg: crop resolution must be a vector of one or two elements, got: " +
                           std::to_string(crop_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (resize_.empty() || resize_.size() > 2) {
     std::string err_msg = "DvppDecodeResizeCropJpeg: resize resolution must be a vector of one or two elements, got: " +
                           std::to_string(resize_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(crop_.begin(), crop_.end()) < 32 || *max_element(crop_.begin(), crop_.end()) > 2048) {
     std::string err_msg = "Dvpp module supports crop image with resolution in range [32, 2048], got Crop Parameters: ";
@@ -166,7 +163,7 @@ Status DvppDecodeResizeCropOperation::ValidateParams() {
     } else {
       MS_LOG(ERROR) << err_msg << "[" << crop_[0] << ", " << crop_[0] << "]";
     }
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(resize_.begin(), resize_.end()) < 32 || *max_element(resize_.begin(), resize_.end()) > 2048) {
     std::string err_msg =
@@ -176,15 +173,14 @@ Status DvppDecodeResizeCropOperation::ValidateParams() {
     } else {
       MS_LOG(ERROR) << err_msg << "[" << resize_[0] << "]";
     }
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (crop_.size() < resize_.size()) {
     if (crop_[0] > MIN(resize_[0], resize_[1])) {
       std::string err_msg =
         "Each value of crop parameter must be smaller than corresponding resize parameter, for example: x[0] <= "
         "y[0],  and x[1] <= y[1], please verify your input parameters.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   if (crop_.size() > resize_.size()) {
@@ -192,8 +188,7 @@ Status DvppDecodeResizeCropOperation::ValidateParams() {
       std::string err_msg =
         "Each value of crop parameter must be smaller than corresponding resize parameter, for example: x[0] <= "
         "y[0],  and x[1] <= y[1], please verify your input parameters.";
-      MS_LOG(ERROR) << err_msg;
-      RETURN_STATUS_SYNTAX_ERROR(err_msg);
+      LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
     }
   }
   if (crop_.size() == resize_.size()) {
@@ -202,8 +197,7 @@ Status DvppDecodeResizeCropOperation::ValidateParams() {
         std::string err_msg =
           "Each value of crop parameter must be smaller than corresponding resize parameter, for example: x[0] <= "
           "y[0],  and x[1] <= y[1], please verify your input parameters.";
-        MS_LOG(ERROR) << err_msg;
-        RETURN_STATUS_SYNTAX_ERROR(err_msg);
+        LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
       }
     }
   }
@@ -243,8 +237,8 @@ Status DvppDecodeResizeCropOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status DvppDecodeResizeCropOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("crop_size") != op_params.end(), "Fail to find crop_size");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("resize_size") != op_params.end(), "Fail to find resize_size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "crop_size", kDvppDecodeResizeCropOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "resize_size", kDvppDecodeResizeCropOperation));
   std::vector<uint32_t> crop = op_params["crop_size"];
   std::vector<uint32_t> resize = op_params["resize_size"];
   *operation = std::make_shared<vision::DvppDecodeResizeCropOperation>(crop, resize);
@@ -268,29 +262,25 @@ DvppNormalizeOperation::DvppNormalizeOperation(const std::vector<float> &mean, c
 Status DvppNormalizeOperation::ValidateParams() {
   if (mean_.size() != 3) {
     std::string err_msg = "DvppNormalization:: mean expecting size 3, got size: " + std::to_string(mean_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (std_.size() != 3) {
     std::string err_msg = "DvppNormalization: std expecting size 3, got size: " + std::to_string(std_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(mean_.begin(), mean_.end()) < 0 || *max_element(mean_.begin(), mean_.end()) > 256) {
     std::string err_msg =
       "Normalization can take parameters in range [0, 256] according to math theory of mean and sigma, got mean "
       "vector" +
       std::to_string(std_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(std_.begin(), std_.end()) < 0 || *max_element(std_.begin(), std_.end()) > 256) {
     std::string err_msg =
       "Normalization can take parameters in range [0, 256] according to math theory of mean and sigma, got mean "
       "vector" +
       std::to_string(std_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -315,8 +305,8 @@ Status DvppNormalizeOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status DvppNormalizeOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("mean") != op_params.end(), "Fail to find mean");
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("std") != op_params.end(), "Fail to find std");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "mean", kDvppNormalizeOperation));
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "std", kDvppNormalizeOperation));
   std::vector<float> mean = op_params["mean"];
   std::vector<float> std = op_params["std"];
   *operation = std::make_shared<vision::DvppNormalizeOperation>(mean, std);
@@ -331,8 +321,7 @@ Status DvppResizeJpegOperation::ValidateParams() {
   if (resize_.empty() || resize_.size() > 2) {
     std::string err_msg = "DvppResizeJpeg: resize resolution must be a vector of one or two elements, got: " +
                           std::to_string(resize_.size());
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   if (*min_element(resize_.begin(), resize_.end()) < 32 || *max_element(resize_.begin(), resize_.end()) > 2048) {
     std::string err_msg =
@@ -342,7 +331,7 @@ Status DvppResizeJpegOperation::ValidateParams() {
     } else {
       MS_LOG(ERROR) << err_msg << "[" << resize_[0] << ", " << resize_[0] << "]";
     }
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
   return Status::OK();
 }
@@ -371,7 +360,7 @@ Status DvppResizeJpegOperation::to_json(nlohmann::json *out_json) {
 }
 
 Status DvppResizeJpegOperation::from_json(nlohmann::json op_params, std::shared_ptr<TensorOperation> *operation) {
-  CHECK_FAIL_RETURN_UNEXPECTED(op_params.find("size") != op_params.end(), "Fail to find size");
+  RETURN_IF_NOT_OK(ValidateParamInJson(op_params, "size", kDvppResizeJpegOperation));
   std::vector<uint32_t> resize = op_params["size"];
   *operation = std::make_shared<vision::DvppResizeJpegOperation>(resize);
   return Status::OK();

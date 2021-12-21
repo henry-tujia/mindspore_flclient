@@ -22,8 +22,8 @@
 extern "C" {
 #endif
 
-static inline void ApproximateZerosLike(void *output, int number, int data_size) {
-  memset(output, 0.0, number * data_size);
+static inline void ApproximateZerosLike(void *output, int data_size) {
+  memset(output, 0.0, data_size);
   return;
 }
 

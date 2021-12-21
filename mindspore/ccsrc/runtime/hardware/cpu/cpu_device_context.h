@@ -49,27 +49,26 @@ class CPUDeviceContext : public DeviceContext {
 
   void SetOperatorInfo(const std::vector<CNodePtr> &nodes) const override;
   void CreateKernel(const std::vector<CNodePtr> &nodes) const override;
+  void UpdateDynamicShape(const CNodePtr &kernel) const override;
 
   void PreprocessBeforeRunGraph(const KernelGraphPtr &graph) const override;
-  void PreprocessBeforeRunSingleOpGraph(const KernelGraphPtr &graph) const override;
 
   bool LaunchKernel(const CNodePtr &kernel, const std::vector<AddressPtr> &inputs,
                     const std::vector<AddressPtr> &workspace, const std::vector<AddressPtr> &outputs,
                     bool is_dynamic_shape = false) const override;
 
+  bool LoadCollectiveCommLib() override;
+
  private:
   DISABLE_COPY_AND_ASSIGN(CPUDeviceContext);
 
-  // Update Graph Dynamic Shape Attr.
-  void UpdateGraphDynamicShapeAttr(const NotNull<KernelGraphPtr> &graph) const;
-
   void OptimizeGraphImpl(const KernelGraphPtr &graph) const;
-
+#ifndef ENABLE_SECURITY
   // Launch a kernel and record the elapsed time end to end.
   bool LaunchKernelWithProfiling(const CNodePtr &kernel, const std::vector<AddressPtr> &inputs,
                                  const std::vector<AddressPtr> &workspace,
                                  const std::vector<AddressPtr> &outputs) const;
-
+#endif
   // Launch a kernel by 'KernelMod' of the kernel.
   bool DoLaunchKernel(KernelMod *const kernel_mod, const std::vector<AddressPtr> &inputs,
                       const std::vector<AddressPtr> &workspace, const std::vector<AddressPtr> &outputs) const;

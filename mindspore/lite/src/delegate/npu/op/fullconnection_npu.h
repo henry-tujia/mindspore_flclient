@@ -52,5 +52,7 @@ class FullconnectionNPUOp : public ConvolutionBaseNPUOp {
   hiai::op::BiasAdd *biasadd_ = nullptr;
   hiai::op::Const *reshape_op_ = nullptr;
 };
+NPUOp *GetNPUFCOp(const schema::Primitive *primitive, const std::vector<mindspore::MSTensor> &in_tensors,
+                  const std::vector<mindspore::MSTensor> &out_tensors, std::string name);
 }  // namespace mindspore
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_DELEGATE_NPU_OP_FULLCONNECTION_NPU_H_

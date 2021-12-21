@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define MINDSPORE_ADAGRAD_GPU_KERNEL_H
 
 #include <vector>
+#include <string>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/adagrad_impl.cuh"
@@ -28,7 +29,13 @@ template <typename T, typename S, typename G>
 class AdagradGpuKernel : public GpuKernel {
  public:
   AdagradGpuKernel()
-      : variable_size_(0), accumulation_size_(0), learning_rate_size_(0), gradient_size_(0), update_slots(true) {}
+      : variable_size_(0),
+        accumulation_size_(0),
+        learning_rate_size_(0),
+        gradient_size_(0),
+        update_slots(true),
+        is_null_input_(false),
+        kernel_name_("ApplyAdagrad") {}
 
   ~AdagradGpuKernel() override = default;
 
@@ -38,6 +45,9 @@ class AdagradGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *variable = GetDeviceAddress<T>(inputs, 0);
     T *accumulation = GetDeviceAddress<T>(inputs, 1);
     S *learning_rate = GetDeviceAddress<S>(inputs, 2);
@@ -48,11 +58,11 @@ class AdagradGpuKernel : public GpuKernel {
                  reinterpret_cast<cudaStream_t>(stream_ptr));
 
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
-                               cudaMemcpyAsync(&variable_out[0], &variable[0], variable_size_, cudaMemcpyDeviceToDevice,
+                               cudaMemcpyAsync(variable_out, variable, variable_size_, cudaMemcpyDeviceToDevice,
                                                reinterpret_cast<cudaStream_t>(stream_ptr)),
                                "cudaMemcpyAsync output failed");
     CHECK_CUDA_RET_WITH_EXCEPT(kernel_node_,
-                               cudaMemcpyAsync(&accumulation_out[0], &accumulation[0], accumulation_size_,
+                               cudaMemcpyAsync(accumulation_out, accumulation, accumulation_size_,
                                                cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(stream_ptr)),
                                "cudaMemcpyAsync output failed");
 
@@ -60,11 +70,11 @@ class AdagradGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     update_slots = AnfAlgo::GetNodeAttr<bool>(kernel_node, "update_slots");
     if (input_num != 4) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but adagrad needs 4 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 4, but got " << input_num;
     }
     variable_size_ = sizeof(T);
     accumulation_size_ = sizeof(T);
@@ -72,16 +82,23 @@ class AdagradGpuKernel : public GpuKernel {
     gradient_size_ = sizeof(G);
 
     auto variable_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto accumulation_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
+    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
+    is_null_input_ = CHECK_SHAPE_NULL(variable_shape, kernel_name_, "var") ||
+                     CHECK_SHAPE_NULL(accumulation_shape, kernel_name_, "accum") ||
+                     CHECK_SHAPE_NULL(gradient_shape, kernel_name_, "grad");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < variable_shape.size(); i++) {
       variable_size_ *= variable_shape[i];
     }
 
-    auto accumulation_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     for (size_t i = 0; i < accumulation_shape.size(); i++) {
       accumulation_size_ *= accumulation_shape[i];
     }
 
-    auto gradient_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
     for (size_t i = 0; i < gradient_shape.size(); i++) {
       gradient_size_ *= gradient_shape[i];
     }
@@ -105,6 +122,8 @@ class AdagradGpuKernel : public GpuKernel {
   size_t learning_rate_size_;
   size_t gradient_size_;
   bool update_slots;
+  bool is_null_input_;
+  std::string kernel_name_;
 
   std::vector<size_t> input_size_list_;
   std::vector<size_t> output_size_list_;

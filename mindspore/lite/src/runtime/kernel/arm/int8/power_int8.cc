@@ -27,7 +27,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_PowFusion;
 
 namespace mindspore::kernel {
-int PowerInt8CPUKernel::Init() {
+int PowerInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto input = in_tensors_.at(0);
@@ -36,10 +36,12 @@ int PowerInt8CPUKernel::Init() {
   MSLITE_CHECK_PTR(output);
 
   auto in_quant_args = input->quant_params();
+  CHECK_LESS_RETURN(in_quant_args.size(), 1);
   param_->quant_arg_.in_args_.scale_ = in_quant_args.front().scale;
   param_->quant_arg_.in_args_.zp_ = in_quant_args.front().zeroPoint;
 
   auto out_quant_args = output->quant_params();
+  CHECK_LESS_RETURN(out_quant_args.size(), 1);
   param_->quant_arg_.out_args_.scale_ = out_quant_args.front().scale;
   param_->quant_arg_.out_args_.zp_ = out_quant_args.front().zeroPoint;
 
@@ -55,35 +57,17 @@ int PowerInt8CPUKernel::Init() {
 int PowerInt8CPUKernel::ReSize() { return RET_OK; }
 
 int PowerInt8CPUKernel::DoPower(int task_id) {
-  const int8_t *input_data = reinterpret_cast<const int8_t *>(in_tensors_[0]->data());
-  MSLITE_CHECK_PTR(input_data);
-  int8_t *output_data = reinterpret_cast<int8_t *>(out_tensors_[0]->data());
-  MSLITE_CHECK_PTR(output_data);
-
   auto size = in_tensors_.at(0)->ElementsNum();
+  MS_CHECK_GT(size, 0, RET_ERROR);
   int stride = UP_DIV(size, op_parameter_->thread_num_);
   int count = MSMIN(stride, size - stride * task_id);
-  int8_t *exp_ptr = nullptr;
-  MSLITE_CHECK_PTR(param_);
-  param_->broadcast_ = true;
-  if (in_tensors_.size() == 2) {
-    auto exp_tensor = in_tensors_.at(1);
-    auto exp_quant_args = exp_tensor->quant_params();
-    param_->quant_arg_.exp_args_.scale_ = exp_quant_args.front().scale;
-    param_->quant_arg_.exp_args_.zp_ = exp_quant_args.front().zeroPoint;
-    exp_ptr = reinterpret_cast<int8_t *>(exp_tensor->MutableData());
-    MSLITE_CHECK_PTR(exp_ptr);
-    param_->broadcast_ = false;
-    if (in_tensors_[0]->Size() != in_tensors_[1]->Size()) {
-      MS_LOG(ERROR) << "Power input size  " << in_tensors_[0]->Size() << " is not equal to exponent size  "
-                    << in_tensors_[1]->Size();
-      return RET_ERROR;
-    }
+  int8_t *cur_exp = nullptr;
+  if (param_->broadcast_) {
+    cur_exp = exp_ptr_;
+  } else {
+    cur_exp = exp_ptr_ + stride * task_id;
   }
-  if (!param_->broadcast_) {
-    exp_ptr = exp_ptr + stride * task_id;
-  }
-  auto ret = PowerInt8(input_data + stride * task_id, exp_ptr, output_data + stride * task_id, count, param_);
+  auto ret = PowerInt8(input_data_ + stride * task_id, cur_exp, output_data_ + stride * task_id, count, param_);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "PowerInt8 error ,task_id[" << task_id << "] error_code[" << ret << "]";
   }
@@ -100,6 +84,24 @@ int PowerInt8Run(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
 }
 
 int PowerInt8CPUKernel::Run() {
+  MSLITE_CHECK_PTR(in_tensors_[0]);
+  input_data_ = reinterpret_cast<int8_t *>(in_tensors_[0]->data());
+  MSLITE_CHECK_PTR(input_data_);
+  MSLITE_CHECK_PTR(out_tensors_[0]);
+  output_data_ = reinterpret_cast<int8_t *>(out_tensors_[0]->data());
+  MSLITE_CHECK_PTR(output_data_);
+  auto exp_tensor = in_tensors_.at(1);
+  MSLITE_CHECK_PTR(exp_tensor);
+  auto exp_quant_args = exp_tensor->quant_params();
+  if (exp_quant_args.size() < 1) {
+    MS_LOG(ERROR) << "exp_tensor->quant_params().size() must be greater than 0";
+    return RET_ERROR;
+  }
+  MSLITE_CHECK_PTR(param_);
+  param_->quant_arg_.exp_args_.scale_ = exp_quant_args.front().scale;
+  param_->quant_arg_.exp_args_.zp_ = exp_quant_args.front().zeroPoint;
+  param_->broadcast_ = in_tensors_[0]->shape() == in_tensors_[1]->shape() ? false : true;
+  exp_ptr_ = reinterpret_cast<int8_t *>(exp_tensor->MutableData());
   auto ret = ParallelLaunch(this->ms_context_, PowerInt8Run, this, op_parameter_->thread_num_);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "PowerInt8Run error, error_code[" << ret << "]";

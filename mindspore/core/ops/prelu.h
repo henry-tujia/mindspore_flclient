@@ -26,18 +26,22 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNamePReLU = "PReLU";
+/// \brief Parametric Rectified Linear Unit activation function.
+/// Refer to Python API @ref mindspore.ops.PReLU for more details.
 class MS_CORE_API PReLU : public PrimitiveC {
  public:
+  /// \brief Constructor.
   PReLU() : PrimitiveC(kNamePReLU) { InitIOName({"x"}, {"y"}); }
   explicit PReLU(const std::string k_name) : PrimitiveC(k_name) { InitIOName({"x"}, {"y"}); }
+  /// \brief Destructor.
   ~PReLU() = default;
   MS_DECLARE_PARENT(PReLU, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.PReLU for the inputs.
   void Init() {}
 };
 
 AbstractBasePtr PReLUInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                            const std::vector<AbstractBasePtr> &input_args);
-using PrimPReLUPtr = std::shared_ptr<PReLU>;
 }  // namespace ops
 }  // namespace mindspore
 

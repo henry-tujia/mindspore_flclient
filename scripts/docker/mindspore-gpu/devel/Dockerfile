@@ -1,6 +1,6 @@
 FROM nvidia/cuda:11.1-cudnn8-devel-ubuntu18.04
 
-MAINTAINER leonwanghui <leon.wanghui@huawei.com>
+MAINTAINER MindSpore Authors
 
 # Set env
 ENV PYTHON_ROOT_PATH /usr/local/python-3.7.5
@@ -36,7 +36,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt install -y \
     autoconf \
     libtool \
     automake \
-    flex
+    flex \
+    libjpeg8-dev
 
 # Install the rest dependent tools
 RUN DEBIAN_FRONTEND=noninteractive apt install -y \

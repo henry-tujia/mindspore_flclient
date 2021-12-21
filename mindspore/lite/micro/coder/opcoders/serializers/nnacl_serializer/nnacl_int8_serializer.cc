@@ -62,13 +62,13 @@ void NNaclInt8Serializer::CodeStruct(const std::string &name, const ConvParamete
 }
 
 void NNaclInt8Serializer::CodeStruct(const std::string &name, const MatMulParameter &matmul_parameter) {
-  CodeBaseStruct<false>("MatMulParameter", name, matmul_parameter.op_parameter_, matmul_parameter.has_bias_,
-                        matmul_parameter.row_, matmul_parameter.col_, matmul_parameter.row_4_, matmul_parameter.row_6_,
-                        matmul_parameter.row_12_, matmul_parameter.row_16_, matmul_parameter.row_align_,
-                        matmul_parameter.col_4_, matmul_parameter.col_8_, matmul_parameter.col_align_,
-                        matmul_parameter.deep_, matmul_parameter.deep_4_, matmul_parameter.deep_16_,
-                        matmul_parameter.batch, matmul_parameter.a_transpose_, matmul_parameter.b_transpose_,
-                        matmul_parameter.a_const_, matmul_parameter.b_const_, matmul_parameter.act_type_);
+  CodeBaseStruct<false>(
+    "MatMulParameter", name, matmul_parameter.op_parameter_, matmul_parameter.has_bias_, matmul_parameter.row_,
+    matmul_parameter.col_, matmul_parameter.row_4_, matmul_parameter.row_6_, matmul_parameter.row_12_,
+    matmul_parameter.row_16_, matmul_parameter.row_align_, matmul_parameter.col_4_, matmul_parameter.col_8_,
+    matmul_parameter.col_align_, matmul_parameter.deep_, matmul_parameter.deep_4_, matmul_parameter.deep_16_,
+    matmul_parameter.deep_align_, matmul_parameter.batch, matmul_parameter.a_transpose_, matmul_parameter.b_transpose_,
+    matmul_parameter.a_const_, matmul_parameter.b_const_, matmul_parameter.act_type_);
 }
 
 void NNaclInt8Serializer::CodeStruct(const std::string &name, const AddQuantParameter &add_quant_parameter) {
@@ -230,5 +230,10 @@ void NNaclInt8Serializer::CodeStruct(const std::string &name, const ReluXQuantAr
   CodeBaseStruct("ReluXQuantArg", name, relu_quant_arg.input_arg, relu_quant_arg.output_arg,
                  relu_quant_arg.input_multiplier_, relu_quant_arg.left_shift_, relu_quant_arg.right_shift_,
                  relu_quant_arg.quantized_output_min, relu_quant_arg.quantized_output_max);
+}
+void NNaclInt8Serializer::CodeStruct(const std::string &name, const SpliceWrapperParam &splice_param) {
+  CodeBaseStruct("SpliceWrapperParam", name, splice_param.src_row, splice_param.src_col, splice_param.dst_row,
+                 splice_param.dst_col, splice_param.context_size, ToString(splice_param.context),
+                 splice_param.src_to_dst_row_offset);
 }
 }  // namespace mindspore::lite::micro::nnacl

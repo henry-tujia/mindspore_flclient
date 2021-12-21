@@ -52,39 +52,11 @@ void TFRecordNode::Print(std::ostream &out) const {
 // Validator for TFRecordNode
 Status TFRecordNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
-  if (dataset_files_.empty()) {
-    std::string err_msg = "TFRecordNode: dataset_files is not specified.";
-    MS_LOG(ERROR) << err_msg;
-    return Status(StatusCode::kMDSyntaxError, __LINE__, __FILE__, err_msg);
-  }
-
-  for (const auto &f : dataset_files_) {
-    auto realpath = FileUtils::GetRealPath(f.data());
-    CHECK_FAIL_RETURN_UNEXPECTED(realpath.has_value(),
-                                 "TFRecordNode: dataset file: [" + f + "] is invalid or does not exist.");
-  }
-
-  if (num_samples_ < 0) {
-    std::string err_msg = "TFRecordNode: Invalid number of samples: " + std::to_string(num_samples_);
-    MS_LOG(ERROR) << err_msg;
-
-    return Status(StatusCode::kMDSyntaxError, __LINE__, __FILE__, err_msg);
-  }
-
-  if (num_shards_ <= 0) {
-    std::string err_msg = "TFRecordNode: Invalid num_shards: " + std::to_string(num_shards_);
-    MS_LOG(ERROR) << err_msg;
-
-    return Status(StatusCode::kMDSyntaxError, __LINE__, __FILE__, err_msg);
-  }
-
-  if (shard_id_ < 0 || shard_id_ >= num_shards_) {
-    std::string err_msg = "TFRecordNode: Invalid input, shard_id: " + std::to_string(shard_id_) +
-                          ", num_shards: " + std::to_string(num_shards_);
-    MS_LOG(ERROR) << err_msg;
-
-    return Status(StatusCode::kMDSyntaxError, __LINE__, __FILE__, err_msg);
-  }
+  RETURN_IF_NOT_OK(ValidateEnum("TFRecordDataset", "ShuffleMode", shuffle_,
+                                {ShuffleMode::kFalse, ShuffleMode::kFiles, ShuffleMode::kGlobal}));
+  RETURN_IF_NOT_OK(ValidateDatasetFilesParam("TFRecordDataset", dataset_files_));
+  RETURN_IF_NOT_OK(ValidateScalar("TFRecordDataset", "num_samples", num_samples_, {0}, false));
+  RETURN_IF_NOT_OK(ValidateDatasetShardParams("TFRecordDataset", num_shards_, shard_id_));
 
   std::vector<std::string> invalid_files(dataset_files_.size());
   auto it = std::copy_if(dataset_files_.begin(), dataset_files_.end(), invalid_files.begin(),
@@ -142,12 +114,12 @@ Status TFRecordNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_o
 
     // Add the shuffle op after this op
     RETURN_IF_NOT_OK(AddShuffleOp(sorted_dir_files.size(), num_shards_, num_rows, 0, connector_que_size_, &shuffle_op));
-    shuffle_op->set_total_repeats(GetTotalRepeats());
-    shuffle_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+    shuffle_op->SetTotalRepeats(GetTotalRepeats());
+    shuffle_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
     node_ops->push_back(shuffle_op);
   }
-  tf_reader_op->set_total_repeats(GetTotalRepeats());
-  tf_reader_op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  tf_reader_op->SetTotalRepeats(GetTotalRepeats());
+  tf_reader_op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   // Add TFReaderOp
   node_ops->push_back(tf_reader_op);
   return Status::OK();
@@ -233,15 +205,14 @@ Status TFRecordNode::to_json(nlohmann::json *out_json) {
 }
 
 Status TFRecordNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> *ds) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_parallel_workers") != json_obj.end(),
-                               "Failed to find num_parallel_workers");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("dataset_files") != json_obj.end(), "Failed to find dataset_files");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("columns_list") != json_obj.end(), "Failed to find columns_list");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_samples") != json_obj.end(), "Failed to find num_samples");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("shuffle") != json_obj.end(), "Failed to find shuffle");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("num_shards") != json_obj.end(), "Failed to find num_shards");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("shard_id") != json_obj.end(), "Failed to find shard_id");
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("shard_equal_rows") != json_obj.end(), "Failed to find shard_equal_rows");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_parallel_workers", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "dataset_files", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "columns_list", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_samples", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "shuffle", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "num_shards", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "shard_id", kTFRecordNode));
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "shard_equal_rows", kTFRecordNode));
   std::vector<std::string> dataset_files = json_obj["dataset_files"];
   std::vector<std::string> columns_list = json_obj["columns_list"];
   int64_t num_samples = json_obj["num_samples"];

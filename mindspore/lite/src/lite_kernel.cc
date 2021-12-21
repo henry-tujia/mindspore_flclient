@@ -39,7 +39,7 @@ bool LiteKernel::IsReady(const std::vector<lite::Tensor *> &scope_tensors) {
 void LiteKernel::InitOutTensorInitRefCount(const std::vector<LiteKernel *> *mask_kernels) {
   for (auto *tensor : this->out_tensors()) {
     MS_ASSERT(tensor != nullptr);
-    size_t init_ref_count = 0;
+    int init_ref_count = 0;
     for (auto *post_kernel : this->out_kernels_) {
       if ((mask_kernels == nullptr) ||
           std::find(mask_kernels->begin(), mask_kernels->end(), post_kernel) != mask_kernels->end()) {
@@ -76,33 +76,18 @@ std::string LiteKernel::ToString() const {
   return oss.str();
 }
 
-void LiteKernel::FindInoutKernels(const std::vector<kernel::LiteKernel *> &scope_kernels) {
-  // clean io kernels
-  this->in_kernels_.clear();
-  this->out_kernels_.clear();
-  // find io kernels, need optimize time
-  for (auto *tensor : this->in_tensors()) {
-    MS_ASSERT(tensor != nullptr);
-    for (auto *scope_kernel : scope_kernels) {
-      if (scope_kernel == this) {
-        continue;
-      }
-      if (lite::IsContain(scope_kernel->out_tensors(), tensor) && !lite::IsContain(this->in_kernels(), scope_kernel)) {
-        this->AddInKernel(scope_kernel);
-      }
+int LiteKernel::DoExecute() {
+  auto ret = kernel_->Execute();
+  if ((ret == lite::RET_OK) && (desc_.provider != kBuiltin)) {
+    for (auto *output : out_tensors()) {
+      MS_ASSERT(output != nullptr);
+      output->ResetRefCount();
+    }
+    for (auto &in_tensor : in_tensors()) {
+      MS_ASSERT(in_tensor != nullptr);
+      in_tensor->DecRefCount();
     }
   }
-
-  for (auto *tensor : this->out_tensors()) {
-    MS_ASSERT(tensor != nullptr);
-    for (auto *scope_kernel : scope_kernels) {
-      if (scope_kernel == this) {
-        continue;
-      }
-      if (lite::IsContain(scope_kernel->in_tensors(), tensor) && !lite::IsContain(this->out_kernels(), scope_kernel)) {
-        this->AddOutKernel(scope_kernel);
-      }
-    }
-  }
+  return ret;
 }
 }  // namespace mindspore::kernel

@@ -32,8 +32,6 @@ void ImpleAbs(void *origin, void *target, size_t size) {
   MS_EXCEPTION_IF_NULL(target);
   auto origin_data = reinterpret_cast<T *>(origin);
   auto target_data = reinterpret_cast<T *>(target);
-  MS_EXCEPTION_IF_NULL(origin_data);
-  MS_EXCEPTION_IF_NULL(target_data);
   auto zero_val = static_cast<T>(0);
   for (size_t i = 0; i < size; ++i) {
     target_data[i] = origin_data[i] >= zero_val ? origin_data[i] : -origin_data[i];
@@ -41,8 +39,16 @@ void ImpleAbs(void *origin, void *target, size_t size) {
 }
 
 abstract::ShapePtr AbsInferShape(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &input_args) {
-  auto in_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->GetShapeTrack())[kShape];
-  return std::make_shared<abstract::Shape>(in_shape);
+  MS_EXCEPTION_IF_NULL(primitive);
+  auto prim_name = primitive->name();
+  (void)CheckAndConvertUtils::CheckInteger("input number", SizeToLong(input_args.size()), kEqual, 1, prim_name);
+  MS_EXCEPTION_IF_NULL(input_args[0]);
+  CheckAndConvertUtils::CheckArgs<abstract::AbstractTensor>(prim_name, input_args, 0);
+  auto x = input_args[0]->BuildShape();
+  MS_EXCEPTION_IF_NULL(x);
+  auto shape_element = x->cast<abstract::ShapePtr>();
+  MS_EXCEPTION_IF_NULL(shape_element);
+  return shape_element;
 }
 
 TypePtr AbsInferType(const PrimitivePtr &prim, const std::vector<AbstractBasePtr> &input_args) {

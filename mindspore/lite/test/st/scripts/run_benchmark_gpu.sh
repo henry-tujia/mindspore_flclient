@@ -128,7 +128,7 @@ version=${file_name_array[2]}
 # Set models config filepath
 models_gpu_fp32_config=${basepath}/../config/models_gpu_fp32.cfg
 models_gpu_fp16_config=${basepath}/../config/models_gpu_fp16.cfg
-models_gpu_weightquant_config=${basepath}/../config/models_gpu_weightquant_8bit.cfg
+models_gpu_weightquant_config=${basepath}/../config/models_weightquant_8bit_gpu.cfg
 models_mindrt_parallel_config=${basepath}/../config/models_mindrt_parallel.cfg
 
 ms_models_path=${basepath}/ms_models
@@ -231,4 +231,5 @@ fi
 
 echo "Run_gpu and Run_cropper and mindrt_parallel is ended"
 Print_Benchmark_Result $run_benchmark_result_file
+adb -s ${device_id} shell "rm -rf /data/local/tmp/benchmark_test/*"
 exit ${isFailed}

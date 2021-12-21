@@ -21,7 +21,7 @@
 #include <utility>
 #include <string>
 #include <set>
-#include <unordered_set>
+#include "utils/hash_set.h"
 #include "ir/func_graph.h"
 #include "backend/session/kernel_graph.h"
 #include "utils/ms_utils.h"
@@ -137,6 +137,11 @@ bool UnVisited(const BaseRef &n);
 
 bool Visited(const BaseRef &n);
 
+CNodePtr NewCNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &fg,
+                  const std::vector<AnfNodePtr> &orig_nodes);
+
+CNodePtr NewCNode(const CNodePtr &cnode, const KernelGraphPtr &fg, const std::vector<AnfNodePtr> &orig_nodes);
+
 // check if the input node is CNode, then check it's input_size, return CNodePtr if check success.
 CNodePtr CheckAnfNodeIfCNodeAndInputSize(const AnfNodePtr &node, size_t input_size);
 
@@ -189,7 +194,7 @@ std::shared_ptr<std::vector<std::pair<AnfNodePtr, int>>> GetRealNodeUsedListByOu
                                                                                         size_t output_index);
 bool IsNotRealUsedByOthers(const FuncGraphPtr &graph, const AnfNodePtr &node);
 
-void ConstInputToAttr(const CNodePtr &cnode, const std::unordered_set<size_t> &input_attrs);
+void ConstInputToAttr(const CNodePtr &cnode, const mindspore::HashSet<size_t> &input_attrs);
 
 bool AnfEqual(const BaseRef &a, const BaseRef &b);
 
@@ -229,6 +234,9 @@ std::vector<int64_t> GetNodeOutputUsedNum(const session::KernelGraph &kernel_gra
 
 // Get total used number of node's output
 int64_t GetNodeOutputTotalUsedNum(const session::KernelGraph &kernel_graph, const AnfNodePtr &node);
+
+// Get custom operator attr input indexes
+void GetCustomOpAttrIndex(const PrimitivePtr &primitive, mindspore::HashSet<size_t> *indexes);
 }  // namespace opt
 }  // namespace mindspore
 #endif  // MINDSPORE_CCSRC_BACKEND_OPTIMIZER_COMMON_HELPER_H_

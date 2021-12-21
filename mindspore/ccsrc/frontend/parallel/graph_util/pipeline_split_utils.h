@@ -29,7 +29,7 @@ using PipelinePair = std::pair<std::vector<AnfNodePtr>, std::vector<AnfNodePtr>>
 AnfNodePtr FindAccuGrad(const CNodePtr &cnode);
 bool IsLastStage();
 void InsertVirtualAssignAdd(const std::pair<AnfNodePtr, int> &node_user, const FuncGraphManagerPtr &manager,
-                            const AnfNodePtr &accu_parameter);
+                            const AnfNodePtr &accu_parameter, const NodeUsersMap &node_user_map);
 void InsertVirtualAccuGrad(const AnfNodePtr &recv, const FuncGraphManagerPtr &manager, const AnfNodePtr &param);
 AnfNodePtr FindGradAccuParameter(const std::vector<AnfNodePtr> &parameters, const std::string &name);
 void HandleReceiveParam(const FuncGraphPtr &root, const std::vector<AnfNodePtr> &all_nodes);
@@ -53,15 +53,18 @@ void GetBorderNode(std::vector<AnfNodePtr> *forward_start, std::vector<AnfNodePt
                    std::vector<AnfNodePtr> *backward_start, std::vector<AnfNodePtr> *backward_end,
                    std::vector<AnfNodePtr> *forward_params, std::vector<AnfNodePtr> *backward_params,
                    std::vector<AnfNodePtr> *allreduce_params, const FuncGraphPtr &root);
-void Reorder(const FuncGraphPtr &root, const FuncGraphManagerPtr &manager);
+void Reorder(const FuncGraphPtr &root);
 void ReorderForPredict(const FuncGraphPtr &root, const FuncGraphManagerPtr &manager);
 void HandleMicroBatch(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager);
-void BroadCastMicroBatch(const CNodePtr &node, NodeUsersMap *node_users_map, const ValuePtr &value);
+void BroadCastMicroBatch(const CNodePtr &node, NodeUsersMap *node_users_map, const ValuePtr &value, size_t max_depth);
+void LabelNeedGrad(const FuncGraphManagerPtr &manager, const FuncGraphPtr &root);
+void BroadCastNeedGrad(const AnfNodePtr &node, NodeUsersMap *node_user_map, const FuncGraphPtr &root);
 AnfNodePtr GetPreNode(const AnfNodePtr &node);
-void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager);
+void LastStageEndNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager,
+                      const FuncGraphPtr &root);
 void SetStridedSliceStrategy(const AnfNodePtr &node);
 void ParameterStartNode(const std::vector<AnfNodePtr> &all_nodes, const FuncGraphManagerPtr &manager);
-ValuePtr Micro(const CNodePtr &cnode, NodeUsersMap *node_users_map);
+ValuePtr Micro(const CNodePtr &cnode, NodeUsersMap *node_users_map, size_t max_depth);
 void CheckBorderNode(const PipelinePair &forward_start_pair, const PipelinePair &forward_end_pair,
                      const PipelinePair &backward_start_pair, const PipelinePair &backward_end_pair, size_t micro_size);
 }  // namespace parallel

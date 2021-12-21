@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/eltwise_fusion_pass.h"
-#include <vector>
-#include <unordered_set>
-#include <memory>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -30,7 +26,7 @@ void EltwiseFusionPass::MatchEltwise(const CNodePtr &cnode, const session::Kerne
                                      FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  std::unordered_set<AnfNodePtr> record{cnode};
+  mindspore::HashSet<AnfNodePtr> record{cnode};
   auto eltwise_input = cnode->input(kIndex1);
   MS_EXCEPTION_IF_NULL(eltwise_input);
   while (CheckEltWiseNode(kernel_graph, eltwise_input)) {
@@ -55,14 +51,11 @@ void EltwiseFusionPass::MatchEltwise(const CNodePtr &cnode, const session::Kerne
 void EltwiseFusionPass::MatchSingleFusionPattern(const session::KernelGraph &kernel_graph,
                                                  FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::EltwiseFusionPass)) {
-    return;
-  }
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   std::reverse(node_list.begin(), node_list.end());
   for (auto &node : node_list) {
     MS_EXCEPTION_IF_NULL(node);
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

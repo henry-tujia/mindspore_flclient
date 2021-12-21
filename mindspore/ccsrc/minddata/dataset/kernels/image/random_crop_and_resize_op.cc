@@ -49,8 +49,14 @@ Status RandomCropAndResizeOp::Compute(const TensorRow &input, TensorRow *output)
   IO_CHECK_VECTOR(input, output);
   if (input.size() != 1) {
     for (size_t i = 0; i < input.size() - 1; i++) {
+      if (input[i]->Rank() != 2 && input[i]->Rank() != 3) {
+        std::string err_msg = "RandomCropAndResizeOp: image shape is not <H,W,C> or <H, W>, but got rank:" +
+                              std::to_string(input[i]->Rank());
+        RETURN_STATUS_UNEXPECTED(err_msg);
+      }
       if (input[i]->shape()[0] != input[i + 1]->shape()[0] || input[i]->shape()[1] != input[i + 1]->shape()[1]) {
-        RETURN_STATUS_UNEXPECTED("RandomCropAndResizeOp: The width and height of the image need to be the same size.");
+        RETURN_STATUS_UNEXPECTED(
+          "RandomCropAndResizeOp: Input images in different column of each row must have the same size.");
       }
     }
   }
@@ -65,7 +71,7 @@ Status RandomCropAndResizeOp::Compute(const TensorRow &input, TensorRow *output)
     int h_in = input[i]->shape()[0];
     int w_in = input[i]->shape()[1];
     if (i == 0) {
-      (void)GetCropBox(h_in, w_in, &x, &y, &crop_height, &crop_width);
+      RETURN_IF_NOT_OK(GetCropBox(h_in, w_in, &x, &y, &crop_height, &crop_width));
     }
     RETURN_IF_NOT_OK(CropAndResize(input[i], &(*output)[i], x, y, crop_height, crop_width, target_height_,
                                    target_width_, interpolation_));
@@ -95,21 +101,26 @@ Status RandomCropAndResizeOp::GetCropBox(int h_in, int w_in, int *x, int *y, int
   CHECK_FAIL_RETURN_UNEXPECTED(crop_width != nullptr, "crop_width is nullptr.");
   *crop_width = w_in;
   *crop_height = h_in;
-  CHECK_FAIL_RETURN_UNEXPECTED(w_in != 0, "RandomCropAndResize: Width cannot be 0.");
-  CHECK_FAIL_RETURN_UNEXPECTED(h_in != 0, "RandomCropAndResize: Height cannot be 0.");
-  CHECK_FAIL_RETURN_UNEXPECTED(aspect_lb_ > 0, "RandomCropAndResize: aspect lower bound must be greater than zero.");
+  CHECK_FAIL_RETURN_UNEXPECTED(w_in != 0, "RandomCropAndResize: Width of input cannot be 0.");
+  CHECK_FAIL_RETURN_UNEXPECTED(h_in != 0, "RandomCropAndResize: Height of input cannot be 0.");
+  CHECK_FAIL_RETURN_UNEXPECTED(
+    aspect_lb_ > 0,
+    "RandomCropAndResize: 'ratio'(aspect) lower bound must be greater than 0, but got:" + std::to_string(aspect_lb_));
   for (int32_t i = 0; i < max_iter_; i++) {
     double const sample_scale = rnd_scale_(rnd_);
     // In case of non-symmetrical aspect ratios, use uniform distribution on a logarithmic sample_scale.
     // Note rnd_aspect_ is already a random distribution of the input aspect ratio in logarithmic sample_scale.
     double const sample_aspect = exp(rnd_aspect_(rnd_));
 
-    CHECK_FAIL_RETURN_UNEXPECTED((std::numeric_limits<int32_t>::max() / h_in) > w_in,
-                                 "RandomCropAndResizeOp: multiplication out of bounds");
-    CHECK_FAIL_RETURN_UNEXPECTED((std::numeric_limits<int32_t>::max() / h_in / w_in) > sample_scale,
-                                 "RandomCropAndResizeOp: multiplication out of bounds");
+    CHECK_FAIL_RETURN_UNEXPECTED(
+      (std::numeric_limits<int32_t>::max() / h_in) > w_in,
+      "RandomCropAndResizeOp: multiplication out of bounds, check image width and image height first.");
+    CHECK_FAIL_RETURN_UNEXPECTED(
+      (std::numeric_limits<int32_t>::max() / h_in / w_in) > sample_scale,
+      "RandomCropAndResizeOp: multiplication out of bounds, check image width, image height and sample scale first.");
     CHECK_FAIL_RETURN_UNEXPECTED((std::numeric_limits<int32_t>::max() / h_in / w_in / sample_scale) > sample_aspect,
-                                 "RandomCropAndResizeOp: multiplication out of bounds");
+                                 "RandomCropAndResizeOp: multiplication out of bounds, check image width, image "
+                                 "height, sample scale and sample aspect first.");
     *crop_width = static_cast<int32_t>(std::round(std::sqrt(h_in * w_in * sample_scale * sample_aspect)));
     *crop_height = static_cast<int32_t>(std::round(*crop_width / sample_aspect));
 

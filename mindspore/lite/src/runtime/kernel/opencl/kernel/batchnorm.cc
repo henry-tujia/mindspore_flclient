@@ -37,15 +37,15 @@ constexpr int kNumInput4 = 4;
 namespace mindspore::kernel {
 int BatchNormOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_5 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   if (in_tensors_.at(0)->shape().size() != DIMENSION_4D) {
-    MS_LOG(ERROR) << "The dim of in_tensors->shape must be 4 but your dim is : " << in_tensors_.at(0)->shape().size();
+    MS_LOG(WARNING) << "The dim of in_tensors->shape must be 4 but your dim is : " << in_tensors_.at(0)->shape().size();
     return RET_ERROR;
   }
   if (in_tensors_.at(0)->shape()[0] > 1) {
-    MS_LOG(ERROR) << "  Unsupported batch_size >1 ";
+    MS_LOG(WARNING) << "  Unsupported batch_size >1 ";
     return RET_ERROR;
   }
   CHECK_NULL_RETURN(in_tensors_[kNumInput0]);
@@ -140,6 +140,7 @@ int BatchNormOpenCLKernel::MapBuffer() {
   return RET_OK;
 }
 
+#ifdef ENABLE_FP16
 int BatchNormOpenCLKernel::Initweight() {
   auto allocator = ocl_runtime_->GetAllocator();
   GpuTensorInfo img_info(in_tensors_.at(1));
@@ -196,7 +197,7 @@ int BatchNormOpenCLKernel::Initweight() {
       auto origin_mean_fp16 = reinterpret_cast<float16_t *>(in_tensors_.at(3)->data());
       auto origin_variance_fp16 = reinterpret_cast<float16_t *>(in_tensors_.at(4)->data());
 
-      for (int i = 0; i < img_info.ElementsNum; ++i) {
+      for (size_t i = 0; i < img_info.ElementsNum; ++i) {
         scale_fp32[i] = static_cast<float>(origin_scale_fp16[i]);
         offset_fp32[i] = static_cast<float>(origin_offset_fp16[i]);
         mean_fp32[i] = static_cast<float>(origin_mean_fp16[i]);
@@ -215,7 +216,7 @@ int BatchNormOpenCLKernel::Initweight() {
       auto origin_mean_fp32 = reinterpret_cast<float *>(in_tensors_.at(3)->data());
       auto origin_variance_fp32 = reinterpret_cast<float *>(in_tensors_.at(4)->data());
 
-      for (int i = 0; i < img_info.ElementsNum; ++i) {
+      for (size_t i = 0; i < img_info.ElementsNum; ++i) {
         scale_fp16[i] = static_cast<float16_t>(origin_scale_fp32[i]);
         offset_fp16[i] = static_cast<float16_t>(origin_offset_fp32[i]);
         mean_fp16[i] = static_cast<float16_t>(origin_mean_fp32[i]);
@@ -264,6 +265,86 @@ int BatchNormOpenCLKernel::Prepare() {
 
   return RET_OK;
 }
+#else
+int BatchNormOpenCLKernel::Initweight() {
+  auto allocator = ocl_runtime_->GetAllocator();
+  GpuTensorInfo img_info(in_tensors_.at(1));
+  size_t weight_size = img_info.OriginSize;
+  // allocated memory for weight and init value
+  scale_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (scale_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  offset_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (offset_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  mean_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (mean_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  variance_ = allocator->Malloc(weight_size, lite::opencl::MemType::BUF);
+  if (variance_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+
+  if (MapBuffer() != RET_OK) {
+    MS_LOG(ERROR) << "Map Buffer failed.";
+    return RET_ERROR;
+  }
+  memset(scale_, 1, weight_size);
+  memset(offset_, 0x00, weight_size);
+  memset(mean_, 0x00, weight_size);
+  memset(variance_, 0x00, weight_size);
+  CHECK_NULL_RETURN(in_tensors_.at(kNumInput1)->data());
+  CHECK_NULL_RETURN(in_tensors_.at(kNumInput2)->data());
+  CHECK_NULL_RETURN(in_tensors_.at(kNumInput3)->data());
+  CHECK_NULL_RETURN(in_tensors_.at(kNumInput4)->data());
+  memcpy(scale_, in_tensors_.at(1)->data(), weight_size);
+  memcpy(offset_, in_tensors_.at(2)->data(), weight_size);
+  memcpy(mean_, in_tensors_.at(3)->data(), weight_size);
+  memcpy(variance_, in_tensors_.at(4)->data(), weight_size);
+  if (UnmapBuffer() != RET_OK) {
+    MS_LOG(ERROR) << "UnmapBuffer failed.";
+    return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int BatchNormOpenCLKernel::Prepare() {
+  use_fp16_enable_ = ocl_runtime_->GetFp16Enable();
+  const std::string kernel_name = "Batch_normalization_NHWC4";
+  std::string source = batchnorm_source;
+  const std::string program_name = "Batch_normalization";
+  if (!ocl_runtime_->LoadSource(program_name, source)) {
+    MS_LOG(ERROR) << "Load source failed.";
+    return RET_ERROR;
+  }
+  auto build_options_ext = CreateBuildOptionsExtByDType(this->registry_data_type_);
+  auto ret = ocl_runtime_->BuildKernel(kernel_, program_name, kernel_name, build_options_ext);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "Build kernel failed.";
+    return ret;
+  }
+  MS_LOG(DEBUG) << kernel_name << " Init Done!";
+  ret = Initweight();
+  if (ret) {
+    MS_LOG(ERROR) << "Initweight failed ";
+    return RET_ERROR;
+  }
+  if (SetConstArgs() != RET_OK) {
+    MS_LOG(ERROR) << "SeConstArgs failed.";
+    return RET_ERROR;
+  }
+  SetGlobalLocal();
+
+  return RET_OK;
+}
+#endif
 
 int BatchNormOpenCLKernel::Run() {
   MS_LOG(DEBUG) << this->name() << " Running! ";

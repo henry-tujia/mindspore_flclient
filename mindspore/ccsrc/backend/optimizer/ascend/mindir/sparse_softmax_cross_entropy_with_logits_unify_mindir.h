@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,6 +65,15 @@ class PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR : public Patter
   explicit PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR(bool multigraph = true)
       : PatternProcessPass("pynative_grad_sparse_softmax_cross_entropy_with_logits_unify_mindir", multigraph) {}
   ~PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIR() override = default;
+  const BaseRef DefinePattern() const override;
+  const AnfNodePtr Process(const FuncGraphPtr &, const AnfNodePtr &, const EquivPtr &) const override;
+};
+
+class PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIRV2 : public PatternProcessPass {
+ public:
+  explicit PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIRV2(bool multigraph = true)
+      : PatternProcessPass("pynative_grad_sparse_softmax_cross_entropy_with_logits_unify_mindir_v2", multigraph) {}
+  ~PynativeGradSparseSoftmaxCrossEntropyWithLogitsUnifyMindIRV2() override = default;
   const BaseRef DefinePattern() const override;
   const AnfNodePtr Process(const FuncGraphPtr &, const AnfNodePtr &, const EquivPtr &) const override;
 };

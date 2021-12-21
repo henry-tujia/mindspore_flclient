@@ -21,7 +21,6 @@
 #include "tools/converter/legacy_optimizer/graph/subgraph_node_pass.h"
 #include "src/common/log_adapter.h"
 #include "src/common/utils.h"
-#include "tools/common/graph_util.h"
 #include "include/errorcode.h"
 #include "schema/inner/model_generated.h"
 #include "src/common/log_util.h"
@@ -65,7 +64,7 @@ bool SubgraphNodePass::IsNodeOutputInSubgraph(const std::set<uint32_t> &tensors_
   });
 }
 
-void SubgraphNodePass::DecreaseSubgraphNodeIndices(const size_t &node_idx, schema::MetaGraphT *graph) {
+void SubgraphNodePass::DecreaseSubgraphNodeIndices(const size_t &node_idx, const schema::MetaGraphT *graph) {
   for (auto &subgraph : graph->subGraph) {
     std::transform(subgraph->nodeIndices.begin(), subgraph->nodeIndices.end(), subgraph->nodeIndices.begin(),
                    [&node_idx](uint32_t idx) {
@@ -77,7 +76,7 @@ void SubgraphNodePass::DecreaseSubgraphNodeIndices(const size_t &node_idx, schem
   }
 }
 
-void SubgraphNodePass::IncreaseSubgraphNodeIndices(const size_t &node_idx, schema::MetaGraphT *graph) {
+void SubgraphNodePass::IncreaseSubgraphNodeIndices(const size_t &node_idx, const schema::MetaGraphT *graph) {
   for (auto &subgraph : graph->subGraph) {
     std::transform(subgraph->nodeIndices.begin(), subgraph->nodeIndices.end(), subgraph->nodeIndices.begin(),
                    [&node_idx](uint32_t idx) {

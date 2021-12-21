@@ -31,9 +31,9 @@
 #include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
 #include "backend/optimizer/graph_kernel/model/lite_graph.h"
 #include "backend/optimizer/graph_kernel/model/op_register.h"
+#include "backend/optimizer/graph_kernel/core/graph_builder.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 namespace {
 enum FormatType { kFormatUnknown, kFormatA, kFormatB };
 enum TransOpType { kTransAB, kTransBA };
@@ -185,14 +185,14 @@ class MinCut {
 };
 }  // namespace
 
-using graphkernel::LiteGraph;
-using graphkernel::LiteGraphPtr;
-using graphkernel::Node;
-using graphkernel::NodePtr;
-using graphkernel::NodePtrList;
-using graphkernel::NType;
-using graphkernel::PrimOp;
-using graphkernel::PrimOpPtr;
+using inner::LiteGraph;
+using inner::LiteGraphPtr;
+using inner::Node;
+using inner::NodePtr;
+using inner::NodePtrList;
+using inner::NType;
+using inner::PrimOp;
+using inner::PrimOpPtr;
 
 class TransformOp {
  public:
@@ -231,7 +231,7 @@ class TransformOp {
     if (perm.empty()) {
       MS_LOG(EXCEPTION) << "unsupported format: " << format_a_ << " to " << format_b_;
     }
-    auto op = graphkernel::OpRegistry::Instance().NewOp("Transpose", "new_trans");
+    auto op = inner::OpRegistry::Instance().NewOp("Transpose", "new_trans");
     op->SetAttr("perm", MakeValue(perm));
     return op;
   }
@@ -243,7 +243,7 @@ class TransformOp {
 };
 
 bool IsFlexibleOp(const NodePtr &node) {
-  static std::set<std::string> format_flexible_ops = {
+  static const std::set<std::string> format_flexible_ops = {
     "Abs",  "Add",     "Sub",     "Mul",   "Round",   "Cast",         "Neg",  "Exp",       "Log",
     "Pow",  "Minimum", "Maximum", "Rsqrt", "Sqrt",    "Reciprocal",   "Tanh", "Sin",       "Cos",
     "Asin", "ACos",    "RealDiv", "Equal", "Greater", "GreaterEqual", "Less", "LessEqual", "Sign"};
@@ -439,18 +439,15 @@ bool TransformOpOptimizer::Run(const FuncGraphPtr &kernel_graph) {
     auto litegraph = AnfGraph2LiteGraph(sub_func_graph);
     if (Process(litegraph)) {
       changed = true;
-      AnfNodePtrList outputs;
-      auto new_funcgraph = LiteGraph2AnfGraph(litegraph, &outputs);
+      auto new_funcgraph = LiteGraph2AnfGraph(litegraph);
       new_funcgraph->set_attr(FUNC_GRAPH_ATTR_GRAPH_KERNEL, sub_func_graph->get_attr(FUNC_GRAPH_ATTR_GRAPH_KERNEL));
       auto cnode = node->cast<CNodePtr>();
       AnfNodePtrList inputs(cnode->inputs().begin() + 1, cnode->inputs().end());
-      auto new_node = CreateNewFuseCNode(kernel_graph, new_funcgraph, inputs, outputs);
-      SetNewKernelInfo(new_node, new_funcgraph, inputs, outputs);
+      auto new_node = CreateNewFuseCNode(kernel_graph, new_funcgraph, inputs);
       (void)mng->Replace(node, new_node);
       mng->AddFuncGraph(new_funcgraph);
     }
   }
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

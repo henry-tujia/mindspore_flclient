@@ -26,9 +26,12 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameHSigmoid = "HSigmoid";
+/// \brief Hard sigmoid activation function. Refer to Python API @ref mindspore.ops.HSigmoid for more details.
 class MS_CORE_API HSigmoid : public PrimitiveC {
  public:
+  /// \brief Constructor.
   HSigmoid() : PrimitiveC(kNameHSigmoid) { InitIOName({"input_x"}, {"output"}); }
+  /// \brief Destructor.
   ~HSigmoid() = default;
   MS_DECLARE_PARENT(HSigmoid, PrimitiveC);  // come from ops/primitive_c.h
 };
@@ -36,7 +39,6 @@ class MS_CORE_API HSigmoid : public PrimitiveC {
 AbstractBasePtr HSigmoidInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                               const std::vector<AbstractBasePtr> &input_args);
 
-using PrimHSigmoidPtr = std::shared_ptr<HSigmoid>;
 }  // namespace ops
 }  // namespace mindspore
 

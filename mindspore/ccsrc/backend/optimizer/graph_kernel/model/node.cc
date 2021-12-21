@@ -20,27 +20,24 @@
 #include <functional>
 #include <sstream>
 #include <vector>
-#include <unordered_map>
 #include <iostream>
 #include <string>
 
-#include "mindspore/core/ir/dtype/type_id.h"
-#include "mindspore/core/ir/value.h"
-#include "mindspore/core/ir/tensor.h"
-#include "mindspore/core/utils/shape_utils.h"
+#include "utils/hash_map.h"
+#include "ir/dtype/type_id.h"
+#include "ir/value.h"
+#include "ir/tensor.h"
+#include "utils/shape_utils.h"
 #include "utils/utils.h"
-#include "backend/kernel_compiler/common_utils.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 void Node::DumpTensor(std::ostringstream &os) const {
   os << name_ << "[";
   for (size_t i = 0; i < shape.size(); i++) {
     os << shape[i];
     if (i + 1 < shape.size()) os << ",";
   }
-  os << "]{" << kernel::TypeId2String(type) << "x" << format << "}";
+  os << "]{" << TypeIdToString(type) << "x" << format << "}";
 }
 
 void Node::AddInput(const NodePtr &new_input) {
@@ -84,6 +81,4 @@ void Node::ReplaceWith(const NodePtr &other_node) {
     }
   }
 }
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner

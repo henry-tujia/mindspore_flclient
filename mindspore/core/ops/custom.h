@@ -21,7 +21,6 @@
 #include <vector>
 #include <map>
 #include <memory>
-#include <unordered_map>
 #include "ops/primitive_c.h"
 #include "ops/op_utils.h"
 #include "ir/anf.h"
@@ -29,19 +28,44 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameCustom = "Custom";
+/// \brief Custom defined user-defined operator prototype.
 class MS_CORE_API Custom : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Custom() : PrimitiveC(kNameCustom) {}
+
+  /// \brief Destructor.
   ~Custom() override = default;
+
   MS_DECLARE_PARENT(Custom, PrimitiveC);
+
+  /// \brief Method to init the op's attributes.
+  ///
+  /// \param[in] type Define the concrete type of the custom op, which is used to distinguish different custom op.
+  /// \param[in] attrs Define the attributes of the custom op.
   void Init(const std::string &type, const std::map<std::string, std::vector<uint8_t>> &attrs);
+
+  /// \brief Method to set type attribute.
+  ///
+  /// \param[in] type Define the concrete type of the custom op, which is used to distinguish different custom op.
   void set_type(const std::string &type);
+
+  /// \brief Method to get type attribute.
+  ///
+  /// \return a string
   std::string get_type() const;
+
+  /// \brief Method to set attr attribute.
+  ///
+  /// \param[in] attrs Define the attributes of the custom op.
   void set_attr(const std::map<std::string, std::vector<uint8_t>> &attrs);
+
+  /// \brief Method to get attr attribute.
+  ///
+  /// \return a map which contains all attributes of the custom op.
   std::map<std::string, std::vector<uint8_t>> get_attr() const;
 };
 
-using PrimCustomPtr = std::shared_ptr<Custom>;
 }  // namespace ops
 }  // namespace mindspore
 

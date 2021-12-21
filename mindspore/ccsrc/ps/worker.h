@@ -26,9 +26,9 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
-#include <unordered_set>
-#include <unordered_map>
 
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "utils/log_adapter.h"
 #include "ir/tensor.h"
 #include "ps/util.h"
@@ -68,13 +68,13 @@ class Worker {
   void SetKeyOptimId(size_t key, const std::string &optimizer_name);
   void SetOptimInputShapes(size_t key, const ShapeVector &shape);
   void AddEmbeddingTable(const Key &key, const size_t &row_count);
-  void InitPSEmbeddingTable(const size_t &key, const std::vector<size_t> &input_shape,
+  bool InitPSEmbeddingTable(const size_t &key, const std::vector<size_t> &input_shape,
                             const std::vector<size_t> &indices_shape, const std::vector<size_t> &output_shape,
-                            const ParamInitInfoMessage &info);
+                            const ParamInitInfoMessage &info, uint32_t timeout = core::kCommTimeoutInSeconds);
   void InitPSParamAndOptim(const AnfNodePtr &input_node, const tensor::TensorPtr &tensor);
-  void DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_ids, std::vector<float> *lookup_result,
+  bool DoPSEmbeddingLookup(const Key &key, const std::vector<int> &lookup_ids, std::vector<float> *lookup_result,
                            int64_t cmd);
-  void UpdateEmbeddingTable(const std::vector<Key> &keys, const std::vector<int> &lookup_ids,
+  bool UpdateEmbeddingTable(const std::vector<Key> &keys, const std::vector<int> &lookup_ids,
                             const std::vector<float> &vals);
 
   bool running() { return running_; }
@@ -95,7 +95,7 @@ class Worker {
   void InitPSParamData(const std::vector<size_t> &keys, void *const origin_addr, size_t size);
   bool IsReadyForPush(const Key &key);
   bool IsReadyForPull(const Key &key);
-  void PrepareSparseGradient(const size_t begin, const size_t end, const std::unordered_set<int> &distinct_ids,
+  void PrepareSparseGradient(const size_t begin, const size_t end, const mindspore::HashSet<int> &distinct_ids,
                              const std::vector<std::pair<int, float *>> &indice_to_grads, const int *all_indice,
                              const size_t segment_size, float *gradient, int *indices);
   void BuildSparseValue(const std::vector<int> &lengths, const size_t grad_index, const size_t indice_index,
@@ -143,10 +143,10 @@ class Worker {
   KVPartitioner worker_init_embedding_partitioner_;
   KVPartitioner update_embedding_partitioner_;
   KVPartitioner broadcast_partitioner_;
-  std::unordered_map<Key, int64_t> key_to_server_id_;
-  std::unordered_map<Key, size_t> embedding_row_cnt_;
+  mindspore::HashMap<Key, int64_t> key_to_server_id_;
+  mindspore::HashMap<Key, size_t> embedding_row_cnt_;
 
-  std::unordered_map<Key, std::shared_ptr<std::vector<EmbeddingTableShardMetadata>>> embedding_table_ranges_;
+  mindspore::HashMap<Key, std::shared_ptr<std::vector<EmbeddingTableShardMetadata>>> embedding_table_ranges_;
 };
 }  // namespace ps
 }  // namespace mindspore

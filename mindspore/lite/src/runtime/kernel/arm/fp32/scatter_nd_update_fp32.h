@@ -19,6 +19,7 @@
 
 #include <vector>
 #include "src/inner_kernel.h"
+#include "nnacl/fp32/scatter_nd_fp32.h"
 
 namespace mindspore::kernel {
 
@@ -26,22 +27,19 @@ class ScatterNdUpdateCPUKernel : public InnerKernel {
  public:
   explicit ScatterNdUpdateCPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
                                     const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
-      : InnerKernel(parameter, inputs, outputs, ctx) {}
+      : InnerKernel(parameter, inputs, outputs, ctx) {
+    param_ = reinterpret_cast<ScatterNDParameter *>(parameter);
+  }
   ~ScatterNdUpdateCPUKernel() override = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
   int ScatterNdUpdate(int task_id);
 
  private:
-  int thread_n_num_ = 1;
-  int thread_n_stride_ = 1;
-  int num_unit_ = 1;
-  int unit_size_ = 1;
-  float *output_ptr_ = nullptr;
-  float *update_ptr_ = nullptr;
-  std::vector<int> out_strides_;
+  ScatterNDParameter *param_ = nullptr;
+  void *output_ptr_ = nullptr;
   std::vector<int> output_unit_offsets_;
 };
 }  // namespace mindspore::kernel

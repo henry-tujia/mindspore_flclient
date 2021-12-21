@@ -72,6 +72,11 @@ void FunctionBlock::WriteVariable(const std::string &var_name, const AnfNodePtr 
   MS_EXCEPTION_IF_NULL(node);
   MS_LOG(DEBUG) << (func_graph_ ? func_graph_->ToString() : "FG(Null)") << " write var `" << var_name << "` with node "
                 << node->DebugString();
+
+  // The fallback feature is enabled in default.
+  // Not support change the flag during the process is alive.
+  static const auto use_fallback = (parser_.support_fallback() != "0");
+
   auto [iter, is_new_name] = assigned_vars_.emplace(var_name, std::make_pair(node, false));
   if (!is_new_name) {
     // If a cnode variable with same name already existed but not used,
@@ -92,14 +97,21 @@ void FunctionBlock::WriteVariable(const std::string &var_name, const AnfNodePtr 
       AddIsolatedNode(hidden_node);
     }
     iter->second = std::make_pair(node, false);
+    if (use_fallback) {
+      UpdateLocalPyParam(var_name, node);
+    }
+  } else {
+    if (use_fallback) {
+      AddLocalPyParam(var_name, node);
+    }
   }
 }
 
 // Read variable from predecessors
-AnfNodePtr FunctionBlock::ReadVariable(const std::string &var) {
-  MS_LOG(DEBUG) << "Read begin, var: " << var << ", block: " << ToString();
+AnfNodePtr FunctionBlock::ReadVariable(const std::string &var_name) {
+  MS_LOG(DEBUG) << "Read begin, var: " << var_name << ", block: " << ToString();
   // Get var node if it is found
-  auto found = assigned_vars_.find(var);
+  auto found = assigned_vars_.find(var_name);
   if (found != assigned_vars_.end()) {
     auto &node = found->second.first;
     MS_EXCEPTION_IF_NULL(node);
@@ -117,34 +129,40 @@ AnfNodePtr FunctionBlock::ReadVariable(const std::string &var) {
     if (prev_blocks_.size() == 1) {
       auto block = prev_blocks_[0];
       MS_EXCEPTION_IF_NULL(block);
-      auto res = block->ReadVariable(var);
-      MS_LOG(INFO) << "Update global params of block: " << ToString() << ", with previous block: " << block->ToString()
-                   << ",\nCurrent: " << py::str(global_py_params())
-                   << "\nInsert: " << py::str(block->global_py_params());
-      CopyGlobalPyParam(block->global_py_params());
+      auto res = block->ReadVariable(var_name);
+
+      // The fallback feature is enabled in default.
+      // Not support change the flag during the process is alive.
+      static const auto use_fallback = (parser_.support_fallback() != "0");
+      if (use_fallback) {
+        MS_LOG(DEBUG) << "Update global params of block: " << ToString()
+                      << ", with previous block: " << block->ToString() << ",\nCurrent: " << py::str(global_py_params())
+                      << "\nInsert: " << py::str(block->global_py_params());
+        UpdateGlobalPyParam(block->global_py_params());
+      }
       return res;
     } else if (prev_blocks_.empty()) {
       // Get namespace and make Resolve
-      auto it = var_to_resolve_.find(var);
+      auto it = var_to_resolve_.find(var_name);
       if (it != var_to_resolve_.end()) {
         return it->second;
       }
-      MS_LOG(DEBUG) << "var: " << var;
-      auto tmp_node = MakeResolveSymbol(var);
-      var_to_resolve_[var] = tmp_node;
+      MS_LOG(DEBUG) << "var: " << var_name;
+      auto tmp_node = MakeResolveSymbol(var_name);
+      var_to_resolve_[var_name] = tmp_node;
       return tmp_node;
     }
   }
   // If have more than one predecessor blocks then build a phi node.
   auto debug_info = std::make_shared<NodeDebugInfo>();
-  debug_info->set_name(var);
+  debug_info->set_name(var_name);
   TraceGuard guard(std::make_shared<TracePhi>(debug_info));
   ParameterPtr phi_param = std::make_shared<Parameter>(func_graph());
   MS_LOG(DEBUG) << (func_graph_ ? func_graph_->ToString() : "FG(Null)") << " generate phi node "
-                << phi_param->ToString() << " for " << var;
+                << phi_param->ToString() << " for " << var_name;
   func_graph()->add_parameter(phi_param);
-  phi_nodes_[phi_param] = var;
-  WriteVariable(var, phi_param);
+  phi_nodes_[phi_param] = var_name;
+  WriteVariable(var_name, phi_param);
   if (matured_) {
     SetPhiArgument(phi_param);
   }
@@ -177,33 +195,66 @@ AnfNodePtr FunctionBlock::MakeResolveClassMember(const std::string &attr) {
   return MakeResolve(name_space, symbol);
 }
 
-AnfNodePtr FunctionBlock::HandleNamespaceInfo(const py::tuple &namespace_info) {
-  const size_t namespace_info_size = 2;
-  const size_t namespace_more_info_size = 3;
-  if (namespace_info.size() != namespace_info_size && namespace_info.size() != namespace_more_info_size) {
-    MS_EXCEPTION(NameError) << "namespace info size should be 2 or 3, but got " << namespace_info.size();
+AnfNodePtr FunctionBlock::GetResolveNode(const py::tuple &info) {
+  constexpr size_t namespace_index = 0;
+  constexpr size_t symbol_index = 1;
+  NameSpacePtr name_space = std::make_shared<NameSpace>(RESOLVE_NAMESPACE_NAME_SYMBOL_STR, info[namespace_index]);
+  SymbolPtr symbol = std::make_shared<Symbol>(info[symbol_index].cast<std::string>());
+  return MakeResolve(name_space, symbol);
+}
+
+AnfNodePtr FunctionBlock::HandleNamespaceInfo(const py::tuple &info) {
+  constexpr size_t namespace_index = 0;
+  constexpr size_t symbol_index = 1;
+  constexpr size_t namespace_info_size = 2;
+  if (info.size() != namespace_info_size) {
+    MS_EXCEPTION(NameError) << "namespace info size should be 2, but got " << info.size();
   }
-  bool unsupported = false;
-  py::object py_obj;
-  if (namespace_info.size() == namespace_more_info_size) {
-    if (namespace_info[0].is_none()) {  // If namespace is None, the symbol is an undefined name.
-      MS_EXCEPTION(NameError) << namespace_info[namespace_more_info_size - 1].cast<std::string>();
-    } else {  // Or, the symbol is an unsupported builtin symbol in Graph mode.
-      unsupported = true;
-      py_obj = namespace_info[namespace_more_info_size - 1];
+
+  // If namespace is None, the symbol is an undefined name.
+  if (info[namespace_index].is_none()) {
+    MS_EXCEPTION(NameError) << info[symbol_index].cast<std::string>();
+  }
+  return GetResolveNode(info);
+}
+
+AnfNodePtr FunctionBlock::HandleBuiltinNamespaceInfo(const py::tuple &info) {
+  constexpr size_t closure_info_size = 2;
+  constexpr size_t namespace_info_size = 4;
+  constexpr size_t namespace_index = 0;
+  constexpr size_t symbol_index = 1;
+  constexpr size_t value_index = 2;
+  constexpr size_t flag_index = 3;
+  if (info.size() != closure_info_size && info.size() != namespace_info_size) {
+    MS_EXCEPTION(NameError) << "namespace info size should be 2 or 4, but got " << info.size();
+  }
+
+  // Handle closure namespace info.
+  if (info.size() == closure_info_size) {
+    // If namespace is None, the symbol is an undefined name.
+    if (info[namespace_index].is_none()) {
+      MS_EXCEPTION(NameError) << info[symbol_index].cast<std::string>();
+    }
+    return GetResolveNode(info);
+  }
+
+  // Handle global namespace info.
+  auto resolved_node = GetResolveNode(info);
+  auto syntax_support = info[flag_index].cast<int32_t>();
+  if (syntax_support != SYNTAX_SUPPORTED) {
+    resolved_node->set_interpret(true);
+    if (syntax_support == SYNTAX_UNSUPPORTED_INTERNAL_TYPE) {
+      resolved_node->set_interpret_internal_type(true);
+    }
+    if (syntax_support == SYNTAX_UNSUPPORTED_SPECIAL_TYPE) {
+      resolved_node->set_interpret_special_type(true);
     }
   }
-  NameSpacePtr name_space = std::make_shared<NameSpace>(RESOLVE_NAMESPACE_NAME_SYMBOL_STR, namespace_info[0]);
-  SymbolPtr symbol = std::make_shared<Symbol>(namespace_info[1].cast<std::string>());
-  MS_LOG(DEBUG) << "[" << func_graph()->ToString() << "] name_space: " << name_space->ToString()
-                << ", symbol: " << symbol->ToString() << ", unsupported: " << unsupported;
-  auto resolved_node = MakeResolve(name_space, symbol);
-  if (unsupported) {
-    resolved_node->set_interpret(true);
-    AddGlobalPyParam(symbol->name(), py_obj);
-    MS_LOG(INFO) << "[" << func_graph()->ToString() << "] Added global python symblol: {" << symbol->name() << " : "
-                 << py::str(py_obj) << "}";
-  }
+  SymbolPtr symbol = std::make_shared<Symbol>(info[symbol_index].cast<std::string>());
+  py::object py_obj = info[value_index];
+  AddGlobalPyParam(symbol->name(), py_obj);
+  MS_LOG(INFO) << "[" << func_graph()->ToString() << "] Added global python symbol: {" << symbol->name() << " : "
+               << py::str(py_obj) << "}";
   return resolved_node;
 }
 
@@ -224,13 +275,13 @@ AnfNodePtr FunctionBlock::MakeResolveSymbol(const std::string &value) {
 
   // The fallback feature is enabled in default.
   // Not support change the flag during the process is alive.
-  static const auto use_fallback = (parser_.support_fallback() == "1");
+  static const auto use_fallback = (parser_.support_fallback() != "0");
   if (!use_fallback) {
     py::tuple namespace_info = ast->CallParserObjMethod(PYTHON_PARSE_GET_NAMESPACE_SYMBOL, value);
     return HandleNamespaceInfo(namespace_info);
   } else {
     py::tuple namespace_info = ast->CallParserObjMethod(PYTHON_PARSE_GET_BUILTIN_NAMESPACE_SYMBOL, value);
-    return HandleNamespaceInfo(namespace_info);
+    return HandleBuiltinNamespaceInfo(namespace_info);
   }
 }
 
@@ -250,7 +301,7 @@ AnfNodePtr FunctionBlock::MakeResolveOperation(const std::string &value) {
 
 AnfNodePtr FunctionBlock::MakeResolve(const NameSpacePtr &name_space, const SymbolPtr &resolve_symbol) {
   MS_LOG(DEBUG) << "MakeResolve for " << (name_space ? (std::string)py::str(name_space->obj()) : "null namespace")
-                << " , " << (resolve_symbol ? (std::string)resolve_symbol->symbol() : "null resoleve symbol.");
+                << " , " << (resolve_symbol ? (std::string)resolve_symbol->symbol() : "null resolve symbol.");
   ValueNodePtr module_node = NewValueNode(name_space);
   ValueNodePtr symbol_node = NewValueNode(resolve_symbol);
   auto node = func_graph_->NewCNodeInOrder({NewValueNode(prim::kPrimResolve), module_node, symbol_node});
@@ -265,6 +316,7 @@ AnfNodePtr FunctionBlock::MakeInterpret(const std::string &script_text, const An
   auto node = func_graph_->NewCNodeInOrder(
     {NewValueNode(prim::kPrimPyInterpret), script_node, global_dict_node, local_dict_node});
   node->set_interpreted_node(orig_node);
+  node->set_interpret_internal_type(orig_node->interpret_internal_type());
   return node;
 }
 
@@ -325,7 +377,7 @@ AnfNodePtr FunctionBlock::SearchReplaceNode(const std::string &var, const Parame
 //    If all arguments of a φ-function are the same value s or the φfunction itself,
 //    then we remove the φ-function and let all users directly uses. We call such a
 //    φ-function obviously unnecessary.
-//    When we removed a φ-function p, then we recursively try to apply this simpliﬁcation
+//    When we removed a φ-function p, then we recursively try to apply this simplification
 //    rule with all (former) users of p, because they may have become obviously unnecessary
 //    due to the removal of p
 // <Quote>
@@ -337,19 +389,19 @@ AnfNodePtr FunctionBlock::SearchReplaceNode(const std::string &var, const Parame
 // Args: phi: This parameter node is functioning as a phi node.
 bool FunctionBlock::CollectRemovablePhi(const ParameterPtr &phi) {
   MS_EXCEPTION_IF_NULL(phi);
-  std::string var = phi_nodes_[phi];
-  MS_LOG(DEBUG) << "check phi " << phi->DebugString() << " for " << var;
+  std::string var_name = phi_nodes_[phi];
+  MS_LOG(DEBUG) << "check phi " << phi->DebugString() << " for " << var_name;
   if (prev_blocks_.empty()) {
-    MS_LOG(DEBUG) << "no phi " << phi->DebugString() << " for var " << var;
+    MS_LOG(DEBUG) << "no phi " << phi->DebugString() << " for var " << var_name;
     return false;
   }
-  AnfNodePtr arg_node = SearchReplaceNode(var, phi);
+  AnfNodePtr arg_node = SearchReplaceNode(var_name, phi);
   if (arg_node != nullptr) {
     arg_node->set_debug_info(phi->debug_info());
     MS_LOG(DEBUG) << "graph " << (func_graph_ ? func_graph_->ToString() : "FG(Null)") << " phi " << phi->ToString()
                   << " can be replaced with " << arg_node->DebugString();
     // Replace var with new one. This equal to statement in TR "v0 is immediately replaced by v1."
-    WriteVariable(var, arg_node);
+    WriteVariable(var_name, arg_node);
     removable_phis_[phi] = arg_node;
     resolve_to_removable_phis_[arg_node] = phi;
     // The following equal to statement "The φ-function defining v1, which now reads φ(v2, v1), is optimized
@@ -394,7 +446,6 @@ void FunctionBlock::Mature() {
 // Force the condition node to bool using bool operation
 CNodePtr FunctionBlock::ForceToBoolNode(const AnfNodePtr &cond) {
   MS_EXCEPTION_IF_NULL(cond);
-  TraceGuard trace_guard(std::make_shared<TraceForceBool>(cond->debug_info()));
   CNodePtr op_apply_node = func_graph_->NewCNodeInOrder({MakeResolveOperation(NAMED_PRIMITIVE_BOOL), cond});
   return op_apply_node;
 }
@@ -422,7 +473,7 @@ void FunctionBlock::Jump(const FunctionBlockPtr &target_block, const std::vector
   input_nodes.emplace_back(NewValueNode(target_block->func_graph()));
   (void)std::copy(args.begin(), args.end(), std::back_inserter(input_nodes));
 
-  CNodePtr jump = func_graph_->NewCNodeInOrder(input_nodes);
+  CNodePtr jump = func_graph_->NewCNodeInOrder(std::move(input_nodes));
   jumps_[target_block.get()] = jump;
   target_block->AddPrevBlock(shared_from_this());
   func_graph_->set_output(jump);
@@ -430,19 +481,25 @@ void FunctionBlock::Jump(const FunctionBlockPtr &target_block, const std::vector
 
 // Perform a conditional jump using switch operation.
 // The first CNode select graph with condition, and than execute this graph
-void FunctionBlock::ConditionalJump(AnfNodePtr condNode, const FunctionBlockPtr &true_block,
-                                    const FunctionBlockPtr &false_block, bool unroll_loop) {
-  MS_EXCEPTION_IF_NULL(true_block);
-  MS_EXCEPTION_IF_NULL(false_block);
+void FunctionBlock::ConditionalJump(AnfNodePtr cond_node, const AnfNodePtr &true_block_call,
+                                    const AnfNodePtr &false_block_call) {
+  MS_EXCEPTION_IF_NULL(true_block_call);
+  MS_EXCEPTION_IF_NULL(false_block_call);
   if (func_graph_->get_return() != nullptr) {
     MS_LOG(EXCEPTION) << "Failure: have return node! NodeInfo: "
                       << trace::GetDebugInfo(func_graph_->get_return()->debug_info());
   }
   CNodePtr switch_app =
-    func_graph_->NewCNodeInOrder({NewValueNode(prim::kPrimSwitch), condNode, NewValueNode(true_block->func_graph()),
-                                  NewValueNode(false_block->func_graph())});
+    func_graph_->NewCNodeInOrder({NewValueNode(prim::kPrimSwitch), cond_node, true_block_call, false_block_call});
   CNodePtr switch_app_new = func_graph_->NewCNodeInOrder({switch_app});
   func_graph_->set_output(switch_app_new);
+}
+
+void FunctionBlock::ConditionalJump(AnfNodePtr cond_node, const FunctionBlockPtr &true_block,
+                                    const FunctionBlockPtr &false_block) {
+  MS_EXCEPTION_IF_NULL(true_block);
+  MS_EXCEPTION_IF_NULL(false_block);
+  ConditionalJump(cond_node, NewValueNode(true_block->func_graph()), NewValueNode(false_block->func_graph()));
 }
 
 // Create cnode for the assign statement like 'self.target = source'.
@@ -504,27 +561,32 @@ void FunctionBlock::AttachIsolatedNodesBeforeReturn() {
   }
   std::vector<AnfNodePtr> states;
   states.emplace_back(NewValueNode(prim::kPrimMakeTuple));
+  constexpr int recursive_level = 2;
   for (auto &node : isolated_nodes_) {
     MS_EXCEPTION_IF_NULL(node);
-    MS_LOG(DEBUG) << "Adding dependency, node: " << node->DebugString(2) << " in " << func_graph_->ToString();
+    MS_LOG(DEBUG) << "Adding dependency, node: " << node->DebugString(recursive_level) << " in "
+                  << func_graph_->ToString();
     if (node->func_graph() == func_graph_) {
       states.emplace_back(node);
     } else {
-      MS_LOG(INFO) << "Ignored FV dependency, node: " << node->DebugString(2) << " in " << func_graph_->ToString();
+      MS_LOG(INFO) << "Ignored FV dependency, node: " << node->DebugString(recursive_level) << " in "
+                   << func_graph_->ToString();
     }
   }
   isolated_nodes_.clear();
 
   AnfNodePtr state = nullptr;
-  if (states.size() == 1) {
+  constexpr size_t no_state_size = 1;
+  constexpr size_t only_one_state_size = 2;
+  if (states.size() == no_state_size) {
     // Only MakeTuple, no state left.
     return;
-  } else if (states.size() == 2) {
+  } else if (states.size() == only_one_state_size) {
     // If there are only MakeTuple and another node in states(the states size is 2),
     // do not need to MakeTuple, just use the node.
     state = states[1];
   } else {
-    state = func_graph_->NewCNode(states);
+    state = func_graph_->NewCNode(std::move(states));
   }
 
   AnfNodePtr old_output = nullptr;

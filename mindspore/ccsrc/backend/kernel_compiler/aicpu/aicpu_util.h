@@ -17,6 +17,8 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_AICPU_AICPU_UTIL_H_
 
 #include <cstdint>
+#include <utility>
+#include <memory>
 #include <vector>
 #include <map>
 #include <set>
@@ -24,6 +26,8 @@
 #include "backend/kernel_compiler/kernel.h"
 namespace mindspore {
 namespace kernel {
+constexpr auto kLibAicpuKernelSoName = "libaicpu_kernels.so";
+constexpr auto kLibCpuKernelSoName = "libcpu_kernels.so";
 constexpr auto kInitDataSetQueue = "InitDataSetQueue";
 constexpr auto kInitData = "InitData";
 constexpr auto kGetNext = "GetNext";
@@ -51,23 +55,27 @@ constexpr auto kStackDestroy = "StackDestroy";
 constexpr auto kEditDistance = "EditDistance";
 constexpr auto kGatherD = "GatherD";
 constexpr auto kIdentity = "Identity";
+constexpr auto kRandomChoiceWithMask = "RandomChoiceWithMask";
 constexpr auto kUpdateCache = "UpdateCache";
 constexpr auto kCacheSwapTable = "CacheSwapTable";
 constexpr auto kSubAndFilter = "SubAndFilter";
 constexpr auto kPadAndShift = "PadAndShift";
-constexpr auto kCustRunApi = "RunCpuKernel";
+constexpr auto kCpuRunApi = "RunCpuKernel";
 constexpr auto kDropout2D = "Dropout2D";
 constexpr auto kDropout3D = "Dropout3D";
+constexpr auto kNonMaxSuppressionV3 = "NonMaxSuppressionV3";
 constexpr auto kMaskedSelect = "MaskedSelect";
 constexpr auto kMaskedSelectGrad = "MaskedSelectGrad";
 constexpr auto kDynamicStitch = "DynamicStitch";
 constexpr auto kSearchSorted = "SearchSorted";
 constexpr auto kResizeBilinear = "ResizeBilinear";
 constexpr auto kResizeBilinearGrad = "ResizeBilinearGrad";
-const std::set<std::string> kCustAiCpuKernelOps{kIdentity,     kMaskedSelect,   kMaskedSelectGrad,  kDynamicStitch,
-                                                kSearchSorted, kResizeBilinear, kResizeBilinearGrad};
-const std::set<std::string> kCacheKernelOps{kUpdateCache, kCacheSwapTable, kSubAndFilter,
-                                            kPadAndShift, kDropout3D,      kDropout2D};
+constexpr auto kScatterElements = "ScatterElements";
+const std::set<std::string> kCpuKernelOps{kIdentity,     kMaskedSelect,   kMaskedSelectGrad,   kDynamicStitch,
+                                          kSearchSorted, kResizeBilinear, kResizeBilinearGrad, kScatterElements};
+const std::set<std::string> kCacheKernelOps{kUpdateCache, kCacheSwapTable, kSubAndFilter,       kPadAndShift,
+                                            kDropout3D,   kDropout2D,      kNonMaxSuppressionV3};
+const std::set<std::string> kCpuKernelBaseOps{kGetNext, kInitData, kRandomChoiceWithMask};
 const std::set<std::string> kDynamicInputOps{
   kPrint, kPack, kMeshgrid, kStackInitOpName, kStackDestroyOpName, kStackPushOpName, kStackPopOpName, kDynamicStitch};
 struct AicpuParamHead {
@@ -117,6 +125,24 @@ class AicpuOpUtil {
   // kernel id
   static uint64_t KernelId_;
 };
+
+class OpKernelBin {
+ public:
+  OpKernelBin(std::string name, std::vector<char> &&data) : name_(std::move(name)), data_(std::move(data)) {}
+  ~OpKernelBin() = default;
+
+  const std::string &GetName() const { return name_; }
+  const uint8_t *GetBinData() const { return (const uint8_t *)data_.data(); }
+  size_t GetBinDataSize() const { return data_.size(); }
+  OpKernelBin(const OpKernelBin &) = delete;
+  const OpKernelBin &operator=(const OpKernelBin &) = delete;
+
+ private:
+  std::string name_;
+  std::vector<char> data_;
+};
+
+using OpKernelBinPtr = std::shared_ptr<OpKernelBin>;
 }  // namespace kernel
 }  // namespace mindspore
 

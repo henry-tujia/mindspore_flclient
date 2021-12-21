@@ -32,17 +32,46 @@
 #include "backend/kernel_compiler/tbe/tbe_json/tbe_json_utils.h"
 
 namespace mindspore::kernel {
-
 namespace {
-std::unordered_map<std::string, TypeID> type_id_map = {{kVTypeInt, TypeID::kIntID},
-                                                       {kVTypeInt64, TypeID::kInt64ID},
-                                                       {kVTypeStr, TypeID::kStrID},
-                                                       {kVTypeBool, TypeID::kBoolID},
-                                                       {kVTypeFloat, TypeID::kFloatID},
-                                                       {kVTypeListInt, TypeID::kListIntID},
-                                                       {kVTypeListFloat, TypeID::kListFloatID},
-                                                       {kVTypeListUInt64, TypeID::kListUInt64ID},
-                                                       {kVTypeListListInt, TypeID::kListListIntID}};
+static std::unordered_map<std::string, ATTR_DTYPE> type_attr_dtype_map = {
+  {kVTypeInt, ATTR_DTYPE::ATTR_INT32},
+  {kVTypeInt64, ATTR_DTYPE::ATTR_INT64},
+  {kVTypeStr, ATTR_DTYPE::ATTR_STR},
+  {kVTypeBool, ATTR_DTYPE::ATTR_BOOL},
+  {kVTypeFloat, ATTR_DTYPE::ATTR_FLOAT32},
+  {kVTypeListInt, ATTR_DTYPE::ATTR_LIST_INT32},
+  {kVTypeListFloat, ATTR_DTYPE::ATTR_LIST_FLOAT32},
+  {kVTypeListUInt64, ATTR_DTYPE::ATTR_LIST_UINT64},
+  {kVTypeListListInt, ATTR_DTYPE::ATTR_LIST_LIST_INT64}};
+
+static std::map<ATTR_DTYPE, std::string> tbe_attr_dtype_to_string_map = {
+  {ATTR_INT8, "int8"},
+  {ATTR_UINT8, "uint8"},
+  {ATTR_INT16, "int16"},
+  {ATTR_UINT16, "uint16"},
+  {ATTR_INT32, "int32"},
+  {ATTR_UINT32, "uint32"},
+  {ATTR_INT64, "int64"},
+  {ATTR_UINT64, "uint64"},
+  {ATTR_FLOAT32, "float32"},
+  {ATTR_DOUBLE, "double"},
+  {ATTR_BOOL, "bool"},
+  {ATTR_STR, "str"},
+  {ATTR_LIST_INT8, "list_int8"},
+  {ATTR_LIST_UINT8, "list_uint8"},
+  {ATTR_LIST_INT16, "list_int16"},
+  {ATTR_LIST_UINT16, "list_uint16"},
+  {ATTR_LIST_INT32, "list_int32"},
+  {ATTR_LIST_UINT32, "list_uint32"},
+  {ATTR_LIST_INT64, "list_int64"},
+  {ATTR_LIST_UINT64, "list_uint64"},
+  {ATTR_LIST_FLOAT32, "list_float32"},
+  {ATTR_LIST_DOUBLE, "list_double"},
+  {ATTR_LIST_BOOL, "list_bool"},
+  {ATTR_LIST_STR, "list_str"},
+  {ATTR_LIST_LIST_INT64, "list_list_int64"},
+  {ATTR_LIST_LIST_FLOAT, "list_list_float"},
+};
 
 bool ParseListIntValue(const mindspore::ValuePtr &value, std::vector<int64_t> *attr_value) {
   auto value_type = value->type();
@@ -73,30 +102,38 @@ bool ParseAttrValue(const std::string &type, const mindspore::ValuePtr &value, n
     MS_LOG(ERROR) << "Node's attr value is null.";
     return false;
   }
-  auto result = type_id_map.find(type);
-  if (result == type_id_map.end()) {
+  auto result = type_attr_dtype_map.find(type);
+  if (result == type_attr_dtype_map.end()) {
     MS_LOG(ERROR) << "Type: " << type << "not support";
     return false;
   }
+
+  auto dtype_string = tbe_attr_dtype_to_string_map.find(result->second);
+  if (dtype_string == tbe_attr_dtype_to_string_map.end()) {
+    MS_LOG(ERROR) << "Can't convert attr dtype " << result->second << " to string";
+    return false;
+  }
+  (*attr_obj)[kJDtype] = dtype_string->second;
+
   switch (result->second) {
-    case TypeID::kIntID:
+    case ATTR_DTYPE::ATTR_INT32:
       (*attr_obj)[kJValue] = value->isa<Int32Imm>() ? GetValue<int>(value) : GetValue<int64_t>(value);
       break;
-    case TypeID::kInt64ID:
+    case ATTR_DTYPE::ATTR_INT64:
       (*attr_obj)[kJValue] = GetValue<int64_t>(value);
       break;
-    case TypeID::kStrID: {
+    case ATTR_DTYPE::ATTR_STR: {
       auto attr_value = GetValue<std::string>(value);
       (*attr_obj)[kJValue] = attr_value == kOpFormat_FRAC_Z ? kJOpFormat_FRACTAL_Z : attr_value;
       break;
     }
-    case TypeID::kBoolID:
+    case ATTR_DTYPE::ATTR_BOOL:
       (*attr_obj)[kJValue] = GetValue<bool>(value);
       break;
-    case TypeID::kFloatID:
+    case ATTR_DTYPE::ATTR_FLOAT32:
       (*attr_obj)[kJValue] = GetValue<float>(value);
       break;
-    case TypeID::kListIntID: {
+    case ATTR_DTYPE::ATTR_LIST_INT32: {
       std::vector<int64_t> attr_value;
       if (!ParseListIntValue(value, &attr_value)) {
         MS_LOG(ERROR) << "Parse list_value failed, maybe the input is a nullptr.";
@@ -105,7 +142,7 @@ bool ParseAttrValue(const std::string &type, const mindspore::ValuePtr &value, n
       (*attr_obj)[kJValue] = attr_value;
       break;
     }
-    case TypeID::kListFloatID: {
+    case ATTR_DTYPE::ATTR_LIST_FLOAT32: {
       auto value_type = value->type();
       if (value_type == nullptr) {
         MS_LOG(ERROR) << "Value's type is null.";
@@ -115,43 +152,55 @@ bool ParseAttrValue(const std::string &type, const mindspore::ValuePtr &value, n
                                                                    : GetValue<std::vector<float>>(value);
       break;
     }
-    case TypeID::kListUInt64ID:
+    case ATTR_DTYPE::ATTR_LIST_UINT64:
       (*attr_obj)[kJValue] = GetValue<std::vector<size_t>>(value);
       break;
-    case TypeID::kListListIntID:
+    case ATTR_DTYPE::ATTR_LIST_LIST_INT64:
       (*attr_obj)[kJValue] = GetValue<std::vector<std::vector<int64_t>>>(value);
       break;
+
+    default:
+      MS_LOG(ERROR) << "Type: " << type << "not support";
+      return false;
   }
   return true;
 }
 
 bool ParseAttrDefaultValue(const std::string &type, const std::string &value, nlohmann::json *attr_obj) {
   MS_EXCEPTION_IF_NULL(attr_obj);
-  auto result = type_id_map.find(type);
-  if (result == type_id_map.end()) {
+  auto result = type_attr_dtype_map.find(type);
+  if (result == type_attr_dtype_map.end()) {
     MS_LOG(ERROR) << "Type: " << type << "not support";
     return false;
   }
+
+  auto dtype_string = tbe_attr_dtype_to_string_map.find(result->second);
+  if (dtype_string == tbe_attr_dtype_to_string_map.end()) {
+    MS_LOG(ERROR) << "Can't convert attr dtype " << result->second << " to string";
+    return false;
+  }
+  (*attr_obj)[kJDtype] = dtype_string->second;
+
   switch (result->second) {
-    case TypeID::kIntID:
+    case ATTR_DTYPE::ATTR_INT32:
       (*attr_obj)[kJValue] = std::stoi(value);
       break;
-    case TypeID::kInt64ID:
+    case ATTR_DTYPE::ATTR_INT64:
       (*attr_obj)[kJValue] = std::stoll(value);
       break;
-    case TypeID::kStrID:
+    case ATTR_DTYPE::ATTR_STR:
       (*attr_obj)[kJValue] = value;
       break;
-    case TypeID::kBoolID: {
+    case ATTR_DTYPE::ATTR_BOOL: {
       bool attr_value = false;
       std::istringstream(value) >> std::boolalpha >> attr_value;
       (*attr_obj)[kJValue] = attr_value;
       break;
     }
-    case TypeID::kFloatID:
+    case ATTR_DTYPE::ATTR_FLOAT32:
       (*attr_obj)[kJValue] = std::stof(value);
       break;
-    case TypeID::kListIntID: {
+    case ATTR_DTYPE::ATTR_LIST_INT32: {
       std::stringstream string_value(value);
       std::string list_elem;
       std::vector<int64_t> attrs_value;
@@ -167,7 +216,6 @@ bool ParseAttrDefaultValue(const std::string &type, const std::string &value, nl
   }
   return true;
 }
-
 }  // namespace
 
 bool TbeJsonCreator::GenComputeJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
@@ -227,6 +275,7 @@ size_t TbeJsonCreator::GenJsonHash(nlohmann::json tbe_json) {
     op.erase(kJName);
     op.erase(kJOriName);
     op.erase(kJPattern);
+    op.erase(kJOutputDataDesc);
     DeleteDescName(&op.at(kJOutputDesc));
     if (op[kJType] != kJData) {
       DeleteDescName(&op.at(kJInputDesc));
@@ -245,7 +294,7 @@ void TbeJsonCreator::AddOpNameForComputeNode(nlohmann::json *kernel_json) {
   }
 }
 
-bool TbeJsonCreator::GenAttrsJson(const AnfNodePtr &anf_node, const OpInfoPtr &op_info, nlohmann::json *attrs_json) {
+void TbeJsonCreator::GenAttrsJson(const AnfNodePtr &anf_node, const OpInfoPtr &op_info, nlohmann::json *attrs_json) {
   MS_EXCEPTION_IF_NULL(anf_node);
   MS_EXCEPTION_IF_NULL(op_info);
   MS_EXCEPTION_IF_NULL(attrs_json);
@@ -290,10 +339,9 @@ bool TbeJsonCreator::GenAttrsJson(const AnfNodePtr &anf_node, const OpInfoPtr &o
   if (!AttrsJsonPostProcessing(anf_node, op_info, attrs_json)) {
     MS_LOG(EXCEPTION) << "PostProcessing node attr error, node: " << anf_node->fullname_with_scope();
   }
-  return true;
 }
 
-bool TbeJsonCreator::GenAttrsDescJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
+void TbeJsonCreator::GenAttrsDescJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
   MS_EXCEPTION_IF_NULL(anf_node);
   MS_EXCEPTION_IF_NULL(compute_json);
   auto cnode = anf_node->cast<CNodePtr>();
@@ -302,7 +350,9 @@ bool TbeJsonCreator::GenAttrsDescJson(const AnfNodePtr &anf_node, nlohmann::json
   auto op_info_ptr = tbe::TbeDynamicShapeUtil::FindOp(op_name, cnode);
   nlohmann::json attrs_json;
   GenAttrsJson(cnode, op_info_ptr, &attrs_json);
-  (*compute_json)[kJAttrs] = attrs_json;
+  if (!attrs_json.empty()) {
+    (*compute_json)[kJAttrs] = attrs_json;
+  }
 
   nlohmann::json attrs_desc;
   for (const auto &attr : attrs_json) {
@@ -313,7 +363,6 @@ bool TbeJsonCreator::GenAttrsDescJson(const AnfNodePtr &anf_node, nlohmann::json
   if (!attrs_desc.empty()) {
     (*compute_json)[kJAttrDesc] = attrs_desc;
   }
-  return true;
 }
 
 void TbeJsonCreator::GenComputeCommonJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
@@ -485,7 +534,7 @@ bool TbeJsonCreator::AttrsJsonPreProcessing(const AnfNodePtr &anf_node, std::vec
   tbe::TbeAdapter::CastAttrJsonPrePass(anf_node, attrs_ptr, attrs_json);
   return true;
 }
-bool TbeJsonCreator::GenOutputDataDescJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
+void TbeJsonCreator::GenOutputDataDescJson(const AnfNodePtr &anf_node, nlohmann::json *compute_json) {
   MS_EXCEPTION_IF_NULL(anf_node);
   MS_EXCEPTION_IF_NULL(compute_json);
   auto op_desc = AnfAlgo::GetOutputDataDesc(anf_node);
@@ -503,7 +552,6 @@ bool TbeJsonCreator::GenOutputDataDescJson(const AnfNodePtr &anf_node, nlohmann:
     }
     (*compute_json)[kJOutputDataDesc] = outputs_data_desc;
   }
-  return true;
 }
 
 bool TbeJsonCreator::AttrsJsonPostProcessing(const AnfNodePtr &anf_node, const OpInfoPtr &op_info_ptr,

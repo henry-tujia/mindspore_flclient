@@ -145,22 +145,6 @@ void CompileGraph::PushParameters(const FuncGraphPtr &graph) {
   }
 }
 
-void CompileGraph::PushInputs(const FuncGraphPtr &graph) {
-  MS_EXCEPTION_IF_NULL(graph);
-  std::vector<AnfNodePtr> parameters = graph->parameters();
-  for (size_t i = parameters.size(); i != 0; i--) {
-    MS_EXCEPTION_IF_NULL(parameters[i - 1]);
-    auto param = parameters[i - 1]->cast<ParameterPtr>();
-    MS_EXCEPTION_IF_NULL(param);
-    if (param->has_default()) {
-      MS_LOG(DEBUG) << "Parameter " << (i - 1) << ": " << param->DebugString() << " has default value, skip.";
-      continue;
-    }
-    Push(param);
-    MS_LOG(DEBUG) << "Push parameter " << (i - 1) << ": " << param->DebugString(true);
-  }
-}
-
 int64_t CompileGraph::LinConvert(const FuncGraphPtr &graph, const GraphSegmentPtr &segment, const std::string &target) {
   MS_EXCEPTION_IF_NULL(segment);
   MS_LOG(DEBUG) << "LinConvert start";
@@ -273,15 +257,11 @@ bool CompileGraph::Compile(const FuncGraphPtr &graph) {
   return true;
 }
 
-InstSet CompileGraph::Run(const FuncGraphPtr &graph, bool push_weight) {
+InstSet CompileGraph::Run(const FuncGraphPtr &graph) {
   MS_EXCEPTION_IF_NULL(graph);
 
   Reset();
-  if (push_weight) {
-    PushParameters(graph);
-  } else {
-    PushInputs(graph);
-  }
+  PushParameters(graph);
 
   int64_t param_height = height_;
   MS_EXCEPTION_IF_NULL(graph->get_return());
@@ -396,6 +376,9 @@ int64_t CompileGraph::AddCall(const FuncGraphPtr &graph, const CNodePtr &node) {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(node);
   auto inputs = node->inputs();
+  if (inputs.empty()) {
+    MS_LOG(EXCEPTION) << "The node->inputs() is empty.";
+  }
   AnfNodePtr fn = inputs[0];
   (void)Ref(fn);
   size_t size = inputs.size();
@@ -606,11 +589,6 @@ BackendPtr CreateBackend() {
         if (single_op == "1") {
           context_ptr->set_param<bool>(MS_CTX_ENABLE_TASK_SINK, false);
         }
-        auto enable_mem_scheduler = common::GetEnv(kEnableMemScheduler);
-        if (enable_mem_scheduler == "1") {
-          context_ptr->set_param<bool>(MS_CTX_ENABLE_MEM_SCHEDULER, true);
-          context_ptr->set_param<bool>(MS_CTX_ENABLE_TASK_SINK, false);
-        }
       }
     }
     return backend;
@@ -626,19 +604,33 @@ void SetMindRTEnable() {
     return;
   }
 
-  std::string target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-  if ((target != kGPUDevice) && (target != kCPUDevice)) {
-    return;
-  }
-
-#if defined(_WIN32) || defined(_WIN64)
-  return;
-#endif
-
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
   if (ps::PSContext::instance()->is_ps_mode()) {
     return;
   }
+#endif
+
+  std::string target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  if (common::GetEnv("ENABLE_ASCEND_MINDRT") == "1" || common::kEnableAscendMindRT) {
+    // exception scenario: still run original process after enable ascend mindrt
+    auto mode = context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE);
+    bool is_pynative_infer = context_ptr->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER);
+    if (target == kAscendDevice && (mode == kPynativeMode || is_pynative_infer)) {
+      context_ptr->set_param<bool>(MS_CTX_ENABLE_MINDRT, false);
+      return;
+    }
+
+    if ((common::GetEnv(kGraphOpRun) == "1" && target == kAscendDevice)) {
+      return;
+    }
+  } else {
+    if ((target != kGPUDevice) && (target != kCPUDevice)) {
+      return;
+    }
+  }
+
+#if defined(_WIN32) || defined(_WIN64)
+  return;
 #endif
 
   MS_LOG(DEBUG) << "Enable mindRT.";

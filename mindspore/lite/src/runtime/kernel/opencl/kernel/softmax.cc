@@ -29,6 +29,9 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Softmax;
 
 namespace mindspore::kernel {
+namespace {
+const int SOFTMAX1x1_32_MAX_C4_NUM = 8;
+}
 std::vector<float> SoftmaxOpenCLKernel::GetMaskForLastChannel(int channels) {
   std::vector<float> mask{0.0f, 0.0f, 0.0f, 0.0f};
   const int reminder = channels % 4 == 0 ? 4 : channels % 4;
@@ -40,14 +43,14 @@ std::vector<float> SoftmaxOpenCLKernel::GetMaskForLastChannel(int channels) {
 
 int SoftmaxOpenCLKernel::CheckSpecs() {
   if (in_tensors_.size() != INPUT_TENSOR_SIZE_1 || out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   SoftmaxParameter *parameter = reinterpret_cast<SoftmaxParameter *>(op_parameter_);
   axis_ = parameter->axis_;
   auto in_shape = in_tensors_[0]->shape();
   if (in_shape.size() > DIMENSION_4D) {
-    MS_LOG(ERROR) << "Init Softmax kernel failed: Unsupported shape size: " << in_shape.size();
+    MS_LOG(WARNING) << "Init Softmax kernel failed: Unsupported shape size: " << in_shape.size();
     return RET_ERROR;
   }
   if (axis_ < 0) {
@@ -55,7 +58,7 @@ int SoftmaxOpenCLKernel::CheckSpecs() {
   }
   axis_ += DIMENSION_4D - in_shape.size();
   if (axis_ != 1 && axis_ != 2 && axis_ != 3) {
-    MS_LOG(ERROR) << "Init Softmax kernel failed: softmax axis should be H W or C";
+    MS_LOG(WARNING) << "Init Softmax kernel failed: softmax axis should be H W or C";
     return RET_ERROR;
   }
   return RET_OK;
@@ -70,6 +73,9 @@ int SoftmaxOpenCLKernel::Prepare() {
     // support 4d tensor
     onexone_flag_ = true;
     kernel_name += "1x1";
+    if (out_shape_.Slice <= SOFTMAX1x1_32_MAX_C4_NUM) {
+      kernel_name += "_32";
+    }
   } else {
     onexone_flag_ = false;
     kernel_name += "Axis" + std::to_string(axis_);
@@ -104,8 +110,13 @@ int SoftmaxOpenCLKernel::Prepare() {
 
 void SoftmaxOpenCLKernel::SetGlobalLocal() {
   if (onexone_flag_) {
-    local_size_ = {32, 1};
-    global_size_ = {32, out_shape_.N};
+    if (out_shape_.Slice <= SOFTMAX1x1_32_MAX_C4_NUM) {
+      local_size_ = {1, 1};
+      global_size_ = {1, out_shape_.N};
+    } else {
+      local_size_ = {32, 1};
+      global_size_ = {32, out_shape_.N};
+    }
   } else {
     size_t global_x, global_y;
     if (axis_ == 1) {

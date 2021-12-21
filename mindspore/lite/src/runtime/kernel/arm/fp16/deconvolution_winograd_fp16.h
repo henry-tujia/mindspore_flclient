@@ -32,11 +32,10 @@ class DeConvWinogradFp16CPUKernel : public ConvolutionBaseCPUKernel {
       : ConvolutionBaseCPUKernel(parameter, inputs, outputs, ctx, inputs.at(kWeightIndex)->data(),
                                  inputs.size() == kInputSize2 ? inputs.at(kBiasIndex)->data() : nullptr) {}
   ~DeConvWinogradFp16CPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int Run() override;
   int ReSize() override;
 
- public:
   int DoDeconv(int task_id);
   int DeDeconvPost(int task_id);
 
@@ -46,10 +45,13 @@ class DeConvWinogradFp16CPUKernel : public ConvolutionBaseCPUKernel {
   int InitParameter();
   void FreeDeconvParam();
   void FreeResizeBuf();
+  int InitRunBuf();
+  void FreeRunBuf();
 
- private:
   DeConvParam *deconv_param_ = nullptr;
-  std::mutex lock_;
+  std::mutex nc4hw4_mutex_;
+  std::condition_variable nc4hw4_cond_var_;
+  int completed_index_ = -1;
   float16_t *nhwc_input_ = nullptr;
   float16_t *nhwc_output_ = nullptr;
   float16_t *nc4hw4_output_ = nullptr;

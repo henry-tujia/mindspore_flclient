@@ -16,16 +16,14 @@
 #ifndef MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_MODEL_OP_REGISTER_H_
 #define MINDSPORE_CCSRC_BACKEND_OPTIMIZER_GRAPH_KERNEL_MODEL_OP_REGISTER_H_
 
-#include <unordered_map>
 #include <functional>
 #include <string>
 #include <memory>
 
+#include "utils/hash_map.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 #define OP_CREATOR(cls) \
   [](const std::string &op, const std::string &name) -> PrimOpPtr { return std::make_shared<cls>(op, name); }
 
@@ -82,10 +80,7 @@ class OpRegistry {
     Register("StandardNormal", OP_CREATOR(StandardNormalOp));
   }
   ~OpRegistry() = default;
-  std::unordered_map<std::string, std::function<PrimOpPtr(const std::string &, const std::string &)>> creators;
+  mindspore::HashMap<std::string, std::function<PrimOpPtr(const std::string &, const std::string &)>> creators;
 };
-
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner
 #endif

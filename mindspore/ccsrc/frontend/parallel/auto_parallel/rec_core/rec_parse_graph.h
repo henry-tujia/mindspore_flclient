@@ -30,10 +30,13 @@
 namespace mindspore {
 namespace parallel {
 static const std::set<OperatorType> ElementWiseOpType = {
-  OperatorType::kRecReLU,      OperatorType::kRecLog,      OperatorType::kRecExp,         OperatorType::kRecAdd,
-  OperatorType::kRecElmWiseOp, OperatorType::kRecBiasAdd,  OperatorType::kRecSub,         OperatorType::kRecMul,
-  OperatorType::kRecDiv,       OperatorType::kRecSqueeze,  OperatorType::kRecReduce,      OperatorType::kRecCast,
-  OperatorType::kRecReshape,   OperatorType::kRecGatherV2, OperatorType::kRecArgWithValue};
+  OperatorType::kRecReLU,      OperatorType::kRecLog,        OperatorType::kRecExp,          OperatorType::kRecAdd,
+  OperatorType::kRecElmWiseOp, OperatorType::kRecBiasAdd,    OperatorType::kRecSub,          OperatorType::kRecMul,
+  OperatorType::kRecDiv,       OperatorType::kRecSqueeze,    OperatorType::kRecReduce,       OperatorType::kRecCast,
+  OperatorType::kRecReshape,   OperatorType::kRecGatherV2,   OperatorType::kRecArgWithValue, OperatorType::kRecSoftmax,
+  OperatorType::kRecOneHot,    OperatorType::kRecExpandDims, OperatorType::kRecStridedSlice};
+
+static const std::set<OperatorType> StrictElementWiseOpType = {OperatorType::kRecElmWiseOp, OperatorType::kRecCast};
 
 const std::map<std::string, OperatorType> DictOpType{
   {MATMUL, OperatorType::kRecMatMul},
@@ -56,6 +59,8 @@ const std::map<std::string, OperatorType> DictOpType{
   {REDUCE_MIN, OperatorType::kRecReduce},
   {REDUCE_MEAN, OperatorType::kRecReduce},
   {GATHERV2, OperatorType::kRecGatherV2},
+  {EXPAND_DIMS, OperatorType::kRecExpandDims},
+  {STRIDEDSLICE, OperatorType::kRecStridedSlice},
   {ARGMAXWITHVALUE, OperatorType::kRecArgWithValue},
   {ARGMINWITHVALUE, OperatorType::kRecArgWithValue},
   {UNSORTED_SEGMENT_SUM, OperatorType::kRecUnsortedSegmentOp},
@@ -144,6 +149,7 @@ const std::map<std::string, OperatorType> DictOpType{
   {ASSIGN_SUB, OperatorType::kRecElmWiseOp},
   {"AssignAdd", OperatorType::kRecElmWiseOp},
   {DROPOUT_DO_MASK, OperatorType::kRecElmWiseOp},
+  {DROPOUT, OperatorType::kRecElmWiseOp},
   {STACK, OperatorType::kRecElmWiseOp}};
 
 const TensorParam MakeTensor(int64_t n, int64_t c, int64_t h, int64_t w);
@@ -170,6 +176,8 @@ void Eliminate_Aux(const size_t node_index, const std::shared_ptr<Graph> &graph,
 std::shared_ptr<Graph> EliminateGraph(const std::shared_ptr<Graph> &graph,
                                       const std::shared_ptr<std::vector<std::vector<size_t>>> &eli_list,
                                       const std::shared_ptr<std::vector<size_t>> &index_list);
+
+bool IsStrictElementWise(const std::vector<std::shared_ptr<OperatorInfo>> &ops, size_t iter_ops);
 }  // namespace parallel
 }  // namespace mindspore
 #endif  // PARALLEL_AUTO_PARALLEL_REC_PARSE_GRAPH_H_

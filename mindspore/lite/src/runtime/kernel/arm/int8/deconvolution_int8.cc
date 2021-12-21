@@ -62,7 +62,7 @@ int DeConvInt8CPUKernel::ReSize() {
 
   FreeTmpBuffer();
 
-  int error_code = ConvolutionBaseCPUKernel::Init();
+  int error_code = ConvolutionBaseCPUKernel::Prepare();
   if (error_code != RET_OK) {
     MS_LOG(ERROR) << "deconv int8 convolution base init failed.";
     return error_code;
@@ -81,7 +81,7 @@ int DeConvInt8CPUKernel::ReSize() {
   return RET_OK;
 }
 
-int DeConvInt8CPUKernel::Init() {
+int DeConvInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_NULL_RETURN(in_tensors_.at(kInputIndex));
   CHECK_NULL_RETURN(in_tensors_.at(kWeightIndex));
@@ -117,13 +117,17 @@ void DeConvInt8CPUKernel::CheckSupportOptimize() {
   support_optimize_ = true;
   matmul_func_ = MatMulInt8_16x4;
 #ifdef ENABLE_ARM64
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   if (mindspore::lite::IsSupportSDot()) {
     support_optimize_ = true;
     matmul_func_ = MatMulR4Int8_optimize_handler;
   } else {
+#endif
     support_optimize_ = false;
     matmul_func_ = MatMulR4Int8Neon64;
+#if !defined(SUPPORT_NNIE) && !defined(MACHINE_LINUX_ARM64)
   }
+#endif
 #endif
   return;
 }

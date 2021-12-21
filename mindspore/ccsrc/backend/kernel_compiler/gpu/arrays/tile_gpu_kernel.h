@@ -36,6 +36,9 @@ class TileGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input = GetDeviceAddress<T>(inputs, 0);
     size_t *input_shape_ptr = GetDeviceAddress<size_t>(workspace, 0);
     size_t *output_shape_ptr = GetDeviceAddress<size_t>(workspace, 1);
@@ -60,19 +63,28 @@ class TileGpuKernel : public GpuKernel {
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
       MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but Tile needs 1 input.";
-      return false;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
       MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but Tile has 1 output.";
-      return false;
     }
     input_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    output_shape_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shape_) || CHECK_NULL_INPUT(output_shape_);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'TileGpuKernel', input or output is null";
+      InitSizeLists();
+      return true;
+    }
+    if (output_shape_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For 'TileGpuKernel', the rank of output cannot be less than 1, but got "
+                        << output_shape_.size();
+    }
     input_size_ = 1;
     for (size_t i = 0; i < input_shape_.size(); i++) {
       input_size_ *= input_shape_[i];
     }
-    output_shape_ = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+
     output_size_ = 1;
     if (output_shape_.size() > TILE_MAX_DIMENSION) {
       MS_LOG(EXCEPTION) << "Output is " << output_shape_.size() << "-D, but Tile supports up to " << TILE_MAX_DIMENSION
@@ -85,7 +97,7 @@ class TileGpuKernel : public GpuKernel {
     std::vector<int64_t> multiples = GetAttr<std::vector<int64_t>>(kernel_node, "multiples");
     int64_t filling_value = static_cast<int64_t>(multiples.size()) - static_cast<int64_t>(input_shape_.size());
     // input_shape_.size() == output_shape_.size() == shape_size_
-    input_shape_.insert(input_shape_.begin(), LongToSize(filling_value), 1);
+    (void)input_shape_.insert(input_shape_.begin(), LongToSize(filling_value), 1);
     InitSizeLists();
     return true;
   }
@@ -94,6 +106,7 @@ class TileGpuKernel : public GpuKernel {
     input_size_ = 1;
     output_size_ = 1;
     shape_size_ = 1;
+    is_null_input_ = false;
     input_shape_.clear();
     output_shape_.clear();
     input_size_list_.clear();
@@ -113,6 +126,7 @@ class TileGpuKernel : public GpuKernel {
   size_t input_size_;
   size_t output_size_;
   size_t shape_size_;
+  bool is_null_input_;
   std::vector<size_t> input_shape_;
   std::vector<size_t> output_shape_;
 

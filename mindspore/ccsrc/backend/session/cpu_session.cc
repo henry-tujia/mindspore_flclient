@@ -21,17 +21,21 @@
 #include "ir/anf.h"
 #include "utils/ms_utils.h"
 #include "utils/trace_base.h"
+#include "utils/context/graph_kernel_flags.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "runtime/device/kernel_runtime.h"
+#include "backend/kernel_compiler/akg/cpu/akg_cpu_kernel_build.h"
 #include "backend/kernel_compiler/cpu/cpu_kernel_factory.h"
 #include "runtime/device/cpu/kernel_select_cpu.h"
 #include "backend/optimizer/common/optimizer.h"
 #include "backend/optimizer/common/pass_manager.h"
 #include "backend/optimizer/cpu/insert_cast_cpu.h"
 #include "backend/optimizer/cpu/insert_format_transform_op.h"
+#include "backend/optimizer/graph_kernel/graph_kernel_optimization.h"
 #include "backend/optimizer/pass/replace_node_by_proxy.h"
 #include "backend/optimizer/pass/erase_visit_attr.h"
 #include "debug/anf_ir_dump.h"
+#include "backend/optimizer/common/common_backend_optimization.h"
 #include "debug/dump_proto.h"
 #ifndef ENABLE_SECURITY
 #include "debug/data_dump/dump_json_parser.h"
@@ -57,7 +61,8 @@ void CPUSession::Init(uint32_t device_id) {
   InitExecutor(kCPUDevice, device_id);
 }
 
-ParameterPtr CPUSession::CreateNewParameterFromParameter(const AnfNodePtr &anf, KernelGraph *graph) {
+ParameterPtr CPUSession::CreateNewParameterFromParameter(const AnfNodePtr &anf, KernelGraph *graph,
+                                                         const std::string &) {
   MS_EXCEPTION_IF_NULL(anf);
   MS_EXCEPTION_IF_NULL(graph);
   if (!anf->isa<Parameter>()) {
@@ -81,7 +86,7 @@ void CPUSession::Reorder(std::vector<CNodePtr> *node_list) { AnfAlgo::ReorderPos
 void CPUSession::Optimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
   auto optimizer = std::make_shared<opt::GraphOptimizer>();
   auto pm = std::make_shared<opt::PassManager>();
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) != kPynativeMode && ps::PSContext::instance()->is_ps_mode()) {
@@ -94,36 +99,36 @@ void CPUSession::Optimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
   }
 #endif
   pm->AddPass(std::make_shared<opt::InsertFormatTransformOpCPU>("insert_format_transform_op_cpu"));
-  optimizer->AddPassManager(pm);
-  (void)optimizer->Optimize(kernel_graph);
-  kernel_graph->SetExecOrderByDefault();
-}
-
-void CPUSession::ProcessCast(const std::shared_ptr<KernelGraph> &kernel_graph) {
-  auto optimizer = std::make_shared<opt::GraphOptimizer>();
-  auto pm = std::make_shared<opt::PassManager>();
-  pm->AddPass(std::make_shared<opt::InsertCastCPU>("insert_cast_cpu"));
-  MS_LOG(INFO) << "Insert cast pass";
+  pm->AddPass(std::make_shared<opt::InsertCastCPU>("insert_cast"));
   pm->AddPass(std::make_shared<opt::EraseVisitAttr>());
   optimizer->AddPassManager(pm);
   (void)optimizer->Optimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
 }
 
+void CPUSession::GraphKernelOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
+#ifdef ENABLE_AKG
+  if (!graphkernel::GraphKernelFlags::GetInstance().IsEnableGraphKernel()) {
+    return;
+  }
+  graphkernel::GraphKernelOptimize(kernel_graph);
+  kernel_graph->SetExecOrderByDefault();
+#endif
+}
+
 GraphId CPUSession::CompileGraphImpl(const AnfNodePtrList &lst, const AnfNodePtrList &outputs) {
   auto graph_id = graph_sum_;
   auto graph = ConstructKernelGraph(lst, outputs);
   MS_EXCEPTION_IF_NULL(graph);
-  UpdateGraphDynamicShapeAttr(NOT_NULL(graph));
-  graph->UpdateGraphDynamicAttr();
+  opt::AddDynamicShapeAttrPass(graph);
   MS_LOG(INFO) << "Set kernel info";
   SetKernelInfo(graph.get());
   MS_LOG(INFO) << "Set kernel info end";
   Optimize(graph);
   FinalOptimize(graph);
+  GraphKernelOptimize(graph);
   MS_LOG(INFO) << "Build kernel";
   BuildKernel(graph.get());
-  ProcessCast(graph);
   // Remove reorder after PS feature finish adapting push/pull in auto_monad.
   auto execution_order = graph->execution_order();
   Reorder(&execution_order);
@@ -146,7 +151,9 @@ GraphId CPUSession::CompileGraphImpl(const AnfNodePtrList &lst, const AnfNodePtr
   MS_LOG(INFO) << "Assign kernel address";
   runtime_.AssignKernelAddress(graph.get());
   // set summary node
+#ifndef ENABLE_SECURITY
   SetSummaryNodes(graph.get());
+#endif
   runtime_.IncreaseSummaryRefCount(graph->summary_nodes());
   DumpGraph(graph);
   return graph_id;
@@ -154,7 +161,8 @@ GraphId CPUSession::CompileGraphImpl(const AnfNodePtrList &lst, const AnfNodePtr
 
 void CPUSession::CreateOutputTensors(const GraphId &graph_id, const std::vector<tensor::TensorPtr> &input_tensors,
                                      VectorRef *outputs,
-                                     std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node) {
+                                     std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node,
+                                     KernelMapTensor *) {
   auto kernel_graph = GetGraph(graph_id);
   MS_EXCEPTION_IF_NULL(kernel_graph);
   runtime_.CreateOutputTensors(kernel_graph.get(), input_tensors, outputs, tensor_to_node);
@@ -163,7 +171,7 @@ void CPUSession::CreateOutputTensors(const GraphId &graph_id, const std::vector<
 void CPUSession::LoadInputData(const std::shared_ptr<KernelGraph> &kernel_graph,
                                const std::vector<tensor::TensorPtr> &inputs_const) const {
   MS_EXCEPTION_IF_NULL(kernel_graph);
-  auto &input_nodes = kernel_graph->inputs();
+  auto &input_nodes = kernel_graph->input_nodes();
   if (input_nodes.size() != inputs_const.size()) {
     MS_LOG(EXCEPTION) << "Input size " << inputs_const.size() << " is not equal to input node size "
                       << input_nodes.size();
@@ -198,18 +206,20 @@ void CPUSession::PreExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_grap
   MS_LOG(INFO) << "Bind input output address";
   runtime_.BindInputOutput(kernel_graph.get(), inputs, outputs);
 
-#if ((defined ENABLE_CPU) && (!defined _WIN32))
+#if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   InitPSParamAndOptim(kernel_graph, inputs);
 #endif
 }
 
 void CPUSession::PostExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph,
                                   const std::vector<tensor::TensorPtr> &, VectorRef *const) {
+#ifndef ENABLE_SECURITY
   Summary(kernel_graph.get());
+#endif
 }
 
 void CPUSession::ExecuteGraph(const std::shared_ptr<KernelGraph> &kernel_graph) {
-  bool ret = runtime_.Run(kernel_graph.get(), false);
+  bool ret = runtime_.Run(*kernel_graph, false);
   if (!ret) {
     MS_LOG(EXCEPTION) << "Run graph failed";
   }
@@ -230,7 +240,6 @@ KernelGraphPtr CPUSession::BuildOpImpl(const OpRunInfo &op_run_info, const Graph
   SetKernelInfo(kernel_graph.get());
   Optimize(kernel_graph);
   BuildKernel(kernel_graph.get());
-  ProcessCast(kernel_graph);
   auto enable_op_graph_cache = MsContext::GetInstance()->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_OP_GRAPH_CACHE);
   if (enable_op_graph_cache) {
     run_op_graphs_[graph_info] = kernel_graph;
@@ -259,6 +268,7 @@ void CPUSession::UpdateDynamicOutputShape(const std::map<tensor::TensorPtr, Kern
       const auto &shape = AnfAlgo::GetOutputInferShape(kernel, output_index);
       std::vector<int64_t> refresh_shape;
       (void)std::copy(shape.begin(), shape.end(), std::back_inserter(refresh_shape));
+      MS_EXCEPTION_IF_NULL(tensor_node.first);
       tensor_node.first->set_shape(refresh_shape);
     }
   }
@@ -275,8 +285,10 @@ void CPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
                            const std::vector<int64_t> &tensors_mask) {
   MS_EXCEPTION_IF_NULL(input_tensors);
   MS_EXCEPTION_IF_NULL(op_run_info);
+  ProcessInputTensorsForHeterogeneous("CPU", *input_tensors);
   const auto &kernel_graph = BuildOpImpl(*op_run_info, graph_info, *input_tensors, tensors_mask);
   EraseValueNodeTensor(tensors_mask, input_tensors);
+
   // Remove reorder after PS feature finish adapting push/pull in auto_monad.
   auto execution_order = kernel_graph->execution_order();
   Reorder(&execution_order);
@@ -291,7 +303,7 @@ void CPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
   runtime_.CreateOutputTensors(kernel_graph.get(), *input_tensors, outputs, &tensor_to_node);
   runtime_.BindInputOutput(kernel_graph.get(), *input_tensors, outputs);
 
-  bool ret = runtime_.Run(kernel_graph.get(), false);
+  bool ret = runtime_.Run(*kernel_graph, false);
   if (!ret) {
     MS_LOG(EXCEPTION) << "Run Op failed";
   }
@@ -301,7 +313,7 @@ void CPUSession::RunOpImpl(const GraphInfo &graph_info, OpRunInfo *op_run_info,
     UpdateOutputAbstract(kernel_graph, op_run_info);
   }
   SetOutputFlags(*outputs);
-  runtime_.RunOpClearMemory(kernel_graph.get());
+  runtime_.RunOpClearMemory(*kernel_graph);
 }
 
 void CPUSession::SetKernelInfo(const KernelGraph *kernel_graph) {
@@ -351,17 +363,27 @@ void KernelNotSupportException(const AnfNodePtr &kernel_node) {
     operator_info << ") ";
   }
   operator_info << "is not support.";
-  MS_LOG(EXCEPTION) << operator_info.str() << " Trace: " << trace::DumpSourceLines(kernel_node);
+  MS_LOG(EXCEPTION) << operator_info.str() << trace::DumpSourceLines(kernel_node);
 }
 }  // namespace
 
 void CPUSession::BuildKernel(const KernelGraph *kernel_graph) {
   MS_EXCEPTION_IF_NULL(kernel_graph);
   auto &kernel_nodes = kernel_graph->execution_order();
+  kernel::KernelMeta *bin_map = kernel::KernelMeta::GetInstance();
+  MS_EXCEPTION_IF_NULL(bin_map);
+  std::vector<AnfNodePtr> akg_nodes;
   for (const auto &kernel_node : kernel_nodes) {
     MS_EXCEPTION_IF_NULL(kernel_node);
     std::string kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     MS_LOG(INFO) << "Cpu building operator[" << kernel_name << "].";
+    if (session::AnfRuntimeAlgorithm::GetKernelType(kernel_node) == KernelType::AKG_KERNEL) {
+      if (!bin_map->initialized()) {
+        bin_map->Initialize();
+      }
+      akg_nodes.push_back(kernel_node);
+      continue;
+    }
     std::shared_ptr<kernel::CPUKernel> cpu_kernel =
       kernel::CPUKernelFactory::GetInstance().Create(kernel_name, kernel_node);
     if (cpu_kernel == nullptr) {
@@ -370,11 +392,15 @@ void CPUSession::BuildKernel(const KernelGraph *kernel_graph) {
     try {
       cpu_kernel->Init(kernel_node);
     } catch (std::exception &e) {
-      MS_LOG(EXCEPTION) << e.what() << "\nTrace: " << trace::DumpSourceLines(kernel_node);
+      MS_LOG(EXCEPTION) << e.what() << trace::DumpSourceLines(kernel_node);
     }
     AnfAlgo::SetKernelMod(cpu_kernel, kernel_node.get());
     MS_LOG(INFO) << "Cpu build success operator[" << kernel_name << "].";
   }
+#ifdef ENABLE_AKG
+  kernel::AkgCpuKernelBuilder akg_cpu_kernel_builder;
+  (void)akg_cpu_kernel_builder.AkgKernelParallelBuild(akg_nodes);
+#endif
 }
 }  // namespace session
 }  // namespace mindspore

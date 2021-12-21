@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include "src/common/log_adapter.h"
+#include "src/common/utils.h"
 
 namespace mindspore {
 namespace lite {
@@ -70,16 +71,39 @@ std::shared_ptr<mindspore::KirinNPUDeviceInfo> NPUDeviceInfoFromNPUDeviceContext
   return npu_info;
 }
 
-std::shared_ptr<mindspore::Ascend310DeviceInfo> Ascend310DeviceInfoFromAscend310DeviceContext(
-  const lite::DeviceContext &ascend310_context) {
-  if (ascend310_context.device_type_ != DT_ASCEND310) {
-    MS_LOG(ERROR) << "Function input parameter is not ascend310 context.";
+std::vector<size_t> GetBatchSize(const std::string &batch_size) {
+  std::vector<size_t> res;
+  std::vector<std::string> batch_size_vec = StrSplit(batch_size, ",");
+  for (const auto &item : batch_size_vec) {
+    int32_t val;
+    if (ConvertStrToInt(item, &val)) {
+      auto tmp_val = static_cast<size_t>(val);
+      res.push_back(tmp_val);
+    } else {
+      MS_LOG(ERROR) << "Convert str to num failed, val = " << item;
+      return res;
+    }
+  }
+  MS_LOG(INFO) << "Batch size of context: " << batch_size;
+  return res;
+}
+
+std::shared_ptr<mindspore::AscendDeviceInfo> AscendDeviceInfoFromAscendDeviceContext(
+  const lite::DeviceContext &ascend_context) {
+  if (ascend_context.device_type_ != DT_ASCEND) {
+    MS_LOG(ERROR) << "Function input parameter is not ascend context.";
     return nullptr;
   }
-  auto ascend310_info = std::make_shared<mindspore::Ascend310DeviceInfo>();
-  MS_CHECK_TRUE_RET(ascend310_info != nullptr, nullptr);
-  ascend310_info->SetDeviceID(ascend310_context.device_info_.ascend310_device_info_.device_id_);
-  return ascend310_info;
+  auto ascend_info = std::make_shared<mindspore::AscendDeviceInfo>();
+  MS_CHECK_TRUE_RET(ascend_info != nullptr, nullptr);
+  ascend_info->SetDeviceID(ascend_context.device_info_.ascend_device_info_.device_id_);
+  std::string batch_size = ascend_context.device_info_.ascend_device_info_.batch_size_;
+  if (!batch_size.empty()) {
+    auto val = GetBatchSize(batch_size);
+    ascend_info->SetDynamicBatchSize(val);
+  }
+  ascend_info->SetDynamicImageSize(ascend_context.device_info_.ascend_device_info_.image_size_);
+  return ascend_info;
 }
 }  // namespace
 
@@ -102,20 +126,22 @@ mindspore::Context *MSContextFromContext(const lite::Context *context) {
     transfer_funcs = {{DT_CPU, CPUDeviceInfoFromCPUDeviceContext},
                       {DT_GPU, GPUDeviceInfoFromGPUDeviceContext},
                       {DT_NPU, NPUDeviceInfoFromNPUDeviceContext},
-                      {DT_ASCEND310, Ascend310DeviceInfoFromAscend310DeviceContext}};
+                      {DT_ASCEND, AscendDeviceInfoFromAscendDeviceContext}};
   for (auto &device_context : context->device_list_) {
     auto device_type = device_context.device_type_;
     if (transfer_funcs.find(device_type) == transfer_funcs.end()) {
       MS_LOG(ERROR) << "device type is invalid.";
+      delete ms_context;
       return nullptr;
     }
     auto device_info = transfer_funcs[device_type](device_context);
     if (device_info == nullptr) {
       MS_LOG(ERROR) << "transfer device context to device info failed.";
+      delete ms_context;
       return nullptr;
     }
     if (device_type == DT_CPU) {
-      ms_context->SetThreadAffinity(device_context.device_info_.cpu_device_info_.cpu_bind_mode_);
+      ms_context->SetThreadAffinity(static_cast<int>(device_context.device_info_.cpu_device_info_.cpu_bind_mode_));
     }
     device_infos.push_back(device_info);
   }

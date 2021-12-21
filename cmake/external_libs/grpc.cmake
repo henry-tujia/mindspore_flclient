@@ -1,46 +1,56 @@
 set(grpc_USE_STATIC_LIBS OFF)
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    set(grpc_CXXFLAGS "-fstack-protector-all -Wno-uninitialized -Wno-unused-parameter -fPIC -D_FORTIFY_SOURCE=2 -O2")
+    set(grpc_CXXFLAGS "-fstack-protector-all -Wno-uninitialized -Wno-unused-parameter -fPIC -D_FORTIFY_SOURCE=2 -O2 \
+        -Dgrpc=mindspore_grpc -Dgrpc_impl=mindspore_grpc_impl -Dgrpc_core=mindspore_grpc_core")
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set(grpc_CXXFLAGS "-fstack-protector-all -Wno-maybe-uninitialized -Wno-unused-parameter -D_FORTIFY_SOURCE=2 -O2")
 else()
     set(grpc_CXXFLAGS "-fstack-protector-all -Wno-maybe-uninitialized -Wno-unused-parameter -D_FORTIFY_SOURCE=2 -O2 \
-  -Dgrpc=mindspore_grpc -Dgrpc_impl=mindspore_grpc_impl -Dgrpc_core=mindspore_grpc_core")
+        -Dgrpc=mindspore_grpc -Dgrpc_impl=mindspore_grpc_impl -Dgrpc_core=mindspore_grpc_core")
     if(NOT ENABLE_GLIBCXX)
         set(grpc_CXXFLAGS "${grpc_CXXFLAGS} -D_GLIBCXX_USE_CXX11_ABI=0")
     endif()
 endif()
 
-set(grpc_LDFLAGS "-Wl,-z,relro,-z,now,-z,noexecstack")
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(grpc_LDFLAGS "-Wl,-z,relro,-z,now,-z,noexecstack")
+endif()
 
 if(EXISTS ${protobuf_ROOT}/lib64)
-  set(_FINDPACKAGE_PROTOBUF_CONFIG_DIR "${protobuf_ROOT}/lib64/cmake/protobuf")
+    set(_FINDPACKAGE_PROTOBUF_CONFIG_DIR "${protobuf_ROOT}/lib64/cmake/protobuf")
 else()
-  set(_FINDPACKAGE_PROTOBUF_CONFIG_DIR "${protobuf_ROOT}/lib/cmake/protobuf")
+    set(_FINDPACKAGE_PROTOBUF_CONFIG_DIR "${protobuf_ROOT}/lib/cmake/protobuf")
 endif()
 message("grpc using Protobuf_DIR : " ${_FINDPACKAGE_PROTOBUF_CONFIG_DIR})
 
 if(EXISTS ${absl_ROOT}/lib64)
-  set(_FINDPACKAGE_ABSL_CONFIG_DIR "${absl_ROOT}/lib64/cmake/absl")
+    set(_FINDPACKAGE_ABSL_CONFIG_DIR "${absl_ROOT}/lib64/cmake/absl")
 else()
-  set(_FINDPACKAGE_ABSL_CONFIG_DIR "${absl_ROOT}/lib/cmake/absl")
+    set(_FINDPACKAGE_ABSL_CONFIG_DIR "${absl_ROOT}/lib/cmake/absl")
 endif()
 message("grpc using absl_DIR : " ${_FINDPACKAGE_ABSL_CONFIG_DIR})
 
+if(EXISTS ${re2_ROOT}/lib64)
+    set(_FINDPACKAGE_RE2_CONFIG_DIR "${re2_ROOT}/lib64/cmake/re2")
+else()
+    set(_FINDPACKAGE_RE2_CONFIG_DIR "${re2_ROOT}/lib/cmake/re2")
+endif()
+message("grpc using re2_DIR : " ${_FINDPACKAGE_RE2_CONFIG_DIR})
+
 if(EXISTS ${openssl_ROOT})
-  set(_CMAKE_ARGS_OPENSSL_ROOT_DIR "-DOPENSSL_ROOT_DIR:PATH=${openssl_ROOT}")
+    set(_CMAKE_ARGS_OPENSSL_ROOT_DIR "-DOPENSSL_ROOT_DIR:PATH=${openssl_ROOT}")
 endif()
 
 if(ENABLE_GITEE)
-    set(REQ_URL "https://gitee.com/mirrors/grpc/repository/archive/v1.27.3.tar.gz")
-    set(MD5 "b8b6d8defeda0355105e3b64b4201786")
+    set(REQ_URL "https://gitee.com/mirrors/grpc/repository/archive/v1.36.1.tar.gz")
+    set(MD5 "71252ebcd8e9e32a818a907dfd4b63cc")
 else()
-    set(REQ_URL "https://github.com/grpc/grpc/archive/v1.27.3.tar.gz")
-    set(MD5 "0c6c3fc8682d4262dd0e5e6fabe1a7e2")
+    set(REQ_URL "https://github.com/grpc/grpc/archive/v1.36.1.tar.gz")
+    set(MD5 "90c93203e95e89af5f46738588217057")
 endif()
 
 mindspore_add_pkg(grpc
-        VER 1.27.3
+        VER 1.36.1
         LIBS mindspore_grpc++ mindspore_grpc mindspore_gpr mindspore_upb mindspore_address_sorting
         EXE grpc_cpp_plugin
         URL ${REQ_URL}
@@ -61,6 +71,8 @@ mindspore_add_pkg(grpc
         -Dc-ares_DIR:PATH=${c-ares_ROOT}/lib/cmake/c-ares
         -DgRPC_SSL_PROVIDER:STRING=package
         ${_CMAKE_ARGS_OPENSSL_ROOT_DIR}
+        -DgRPC_RE2_PROVIDER:STRING=package
+        -Dre2_DIR:PATH=${_FINDPACKAGE_RE2_CONFIG_DIR}
         )
 
 include_directories(${grpc_INC})
@@ -69,7 +81,7 @@ add_library(mindspore::grpc++ ALIAS grpc::mindspore_grpc++)
 
 # link other grpc libs
 target_link_libraries(grpc::mindspore_grpc++ INTERFACE grpc::mindspore_grpc grpc::mindspore_gpr grpc::mindspore_upb
-  grpc::mindspore_address_sorting)
+    grpc::mindspore_address_sorting)
 
 # modify mindspore macro define
 add_compile_definitions(grpc=mindspore_grpc)

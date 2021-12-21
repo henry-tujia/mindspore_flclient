@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,30 +15,30 @@
  */
 
 #include "ps/util.h"
-#include <unordered_map>
 #include <vector>
 #include <memory>
+#include "utils/hash_map.h"
 #include "ps/constants.h"
 #include "ps/ps_context.h"
 #include "utils/ms_utils.h"
 
 namespace mindspore {
 namespace ps {
-std::unordered_map<std::string, int64_t> Util::optimizer_to_ids{
+mindspore::HashMap<std::string, int64_t> Util::optimizer_to_ids{
   {kApplyMomentum, 0},
   {kSparseAdam, 1},
   {kSparseLazyAdam, 2},
   {kSparseFtrl, 3},
 };
 
-std::unordered_map<int64_t, std::string> Util::id_to_optimizers{
+mindspore::HashMap<int64_t, std::string> Util::id_to_optimizers{
   {0, kApplyMomentum},
   {1, kSparseAdam},
   {2, kSparseLazyAdam},
   {3, kSparseFtrl},
 };
 
-std::unordered_map<int64_t, std::string> Util::id_to_optimizer_nodes{
+mindspore::HashMap<int64_t, std::string> Util::id_to_optimizer_nodes{
   {0, kApplyMomentumOp},
   {1, kSparseAdamOp},
   {2, kSparseLazyAdamOp},
@@ -82,7 +82,8 @@ int64_t Util::LocalShard(int64_t first_dim, int64_t rank_id, int64_t server_num)
 
 std::map<int64_t, int64_t> Util::AllRankLocalShard(int64_t first_dim, int64_t rank_id, int64_t server_num) {
   if (first_dim <= 0 || server_num <= 0 || rank_id < 0) {
-    MS_LOG(EXCEPTION) << "Input values are invalid.";
+    MS_LOG(EXCEPTION) << "Input values are invalid, first_dim: " << first_dim << ", server_num: " << server_num
+                      << ", rank_id: " << rank_id;
   }
   if (rank_id >= server_num) {
     MS_LOG(EXCEPTION) << "The rank ID " << rank_id << " should be less than the number of servers " << server_num;
@@ -136,6 +137,34 @@ bool Util::FuseServerCommOps(const pipeline::ResourcePtr &res) {
   return true;
 }
 
+WeightPtr Util::MakeWeightPtr(const std::shared_ptr<std::vector<float>> &data, bool enable_recovery,
+                              const std::shared_ptr<std::vector<int>> &shape) {
+  WeightPtr weight_ptr;
+  if (!enable_recovery) {
+    weight_ptr = std::make_shared<Weight>(data, shape);
+  } else {
+    weight_ptr = std::make_shared<PersistentWeight>(data, shape);
+  }
+  return weight_ptr;
+}
+
+std::string Util::GetPrimitiveName(const CNodePtr &cnode) {
+  MS_EXCEPTION_IF_NULL(cnode);
+  auto &inputs = cnode->inputs();
+  if (inputs.empty()) {
+    MS_LOG(EXCEPTION) << "Inputs of node " << cnode->fullname_with_scope() << " is empty.";
+    return "";
+  }
+  auto fn = inputs[0];
+  if (!IsValueNode<Primitive>(fn)) {
+    return "";
+  }
+
+  auto node_prim = GetValueNode<PrimitivePtr>(fn);
+  MS_EXCEPTION_IF_NULL(node_prim);
+  return node_prim->name();
+}
+
 void Util::DoFusion(const FuncGraphPtr &func_graph, const std::string &cnode_name,
                     const std::string &fused_cnode_name) {
   MS_EXCEPTION_IF_NULL(func_graph);
@@ -146,7 +175,7 @@ void Util::DoFusion(const FuncGraphPtr &func_graph, const std::string &cnode_nam
   std::vector<int64_t> indices;
   for (const AnfNodePtr &node : node_list) {
     if (node != nullptr && node->isa<CNode>()) {
-      if (AnfAlgo::GetCNodeName(node) == cnode_name) {
+      if (GetPrimitiveName(node->cast<CNodePtr>()) == cnode_name) {
         single_nodes.push_back(node);
 
         auto weight_name_value_node =
@@ -214,12 +243,12 @@ kernel::KernelBuildInfoPtr Util::GenerateKernelBuildInfo(const std::vector<AnfNo
     MS_EXCEPTION_IF_NULL(cnode);
     size_t input_num = AnfAlgo::GetInputTensorNum(cnode);
     for (size_t input_index = 0; input_index < input_num; ++input_index) {
-      inputs_device_format.push_back(kOpFormat_DEFAULT);
+      (void)inputs_device_format.emplace_back(kOpFormat_DEFAULT);
       inputs_device_type.push_back(AnfAlgo::GetPrevNodeOutputInferDataType(cnode, input_index));
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(cnode);
     for (size_t output_index = 0; output_index < output_num; ++output_index) {
-      outputs_device_format.push_back(kOpFormat_DEFAULT);
+      (void)outputs_device_format.emplace_back(kOpFormat_DEFAULT);
       outputs_device_type.push_back(AnfAlgo::GetOutputInferDataType(cnode, output_index));
       outputs_shape.push_back(AnfAlgo::GetOutputInferShape(cnode, output_index));
     }

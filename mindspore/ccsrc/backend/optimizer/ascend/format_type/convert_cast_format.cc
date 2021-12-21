@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/optimizer/common/helper.h"
 namespace mindspore {
@@ -33,7 +33,7 @@ const BaseRef ConvertCastFormat::DefinePattern() const {
 
 const AnfNodePtr ConvertCastFormat::Process(const FuncGraphPtr &func_graph, const AnfNodePtr &node,
                                             const EquivPtr &) const {
-  if (node == nullptr || !node->isa<CNode>() || !AnfAlgo::IsRealCNodeKernel(node)) {
+  if (node == nullptr || !node->isa<CNode>() || !AnfUtils::IsRealCNodeKernel(node)) {
     return nullptr;
   }
   auto node_name = AnfAlgo::GetCNodeName(node);
@@ -50,14 +50,17 @@ const AnfNodePtr ConvertCastFormat::Process(const FuncGraphPtr &func_graph, cons
       continue;
     }
     auto cast_node = input_node->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(cast_node);
     ChangeCastFormat(cast_node, func_graph);
   }
   return nullptr;
 }
 
 void ConvertCastFormat::SetCastFormat(const CNodePtr &cast_node, const string &format) const {
+  MS_EXCEPTION_IF_NULL(cast_node);
   auto info_builder =
     std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>(AnfAlgo::GetSelectKernelBuildInfo(cast_node));
+  MS_EXCEPTION_IF_NULL(info_builder);
   info_builder->SetInputsFormat({format});
   info_builder->SetOutputsFormat({format});
   AnfAlgo::SetSelectKernelBuildInfo(info_builder->Build(), cast_node.get());
@@ -65,6 +68,7 @@ void ConvertCastFormat::SetCastFormat(const CNodePtr &cast_node, const string &f
 
 void ConvertCastFormat::ChangeCastFormat(const CNodePtr &cast_node, const FuncGraphPtr &func_graph) const {
   MS_EXCEPTION_IF_NULL(cast_node);
+  MS_EXCEPTION_IF_NULL(func_graph);
   auto input_node_name = AnfAlgo::GetCNodeName(cast_node);
   if (input_node_name != prim::kPrimCast->name()) {
     return;
@@ -75,7 +79,7 @@ void ConvertCastFormat::ChangeCastFormat(const CNodePtr &cast_node, const FuncGr
   AnfAlgo::SetNodeAttr(kAttrVisited, MakeValue(true), cast_node);
   auto used_cast_node_list = GetRealNodeUsedList(func_graph, cast_node);
   MS_EXCEPTION_IF_NULL(used_cast_node_list);
-  std::unordered_map<string, size_t> format_counter = CalculateFormat(used_cast_node_list, cast_node);
+  mindspore::HashMap<string, size_t> format_counter = CalculateFormat(used_cast_node_list, cast_node);
   auto cast_input_format = AnfAlgo::GetPrevNodeOutputFormat(cast_node, 0);
   string convert_format = kOpFormat_DEFAULT;
   if (cast_input_format == kOpFormat_DEFAULT) {
@@ -105,12 +109,12 @@ void ConvertCastFormat::ChangeCastFormat(const CNodePtr &cast_node, const FuncGr
   }
 }
 
-std::unordered_map<string, size_t> ConvertCastFormat::CalculateFormat(
+mindspore::HashMap<string, size_t> ConvertCastFormat::CalculateFormat(
   const std::shared_ptr<std::vector<std::pair<AnfNodePtr, int>>> &used_cast_node_list,
   const CNodePtr &cast_node) const {
   MS_EXCEPTION_IF_NULL(used_cast_node_list);
   MS_EXCEPTION_IF_NULL(cast_node);
-  std::unordered_map<string, size_t> format_counter;
+  mindspore::HashMap<string, size_t> format_counter;
   for (const auto &node_info : *used_cast_node_list) {
     MS_EXCEPTION_IF_NULL(node_info.first);
     auto cast_out_node = node_info.first->cast<CNodePtr>();

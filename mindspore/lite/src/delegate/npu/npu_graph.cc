@@ -17,7 +17,7 @@
 #include "src/delegate/npu/npu_graph.h"
 #include <queue>
 #include "src/delegate/npu/npu_subgraph.h"
-#include "src/delegate/npu/npu_graph_utils.h"
+#include "src/delegate/delegate_utils.h"
 #include "src/delegate/npu/op/transpose_npu.h"
 #include "src/delegate/npu/transpose_kernel.h"
 namespace mindspore {
@@ -29,7 +29,7 @@ NPUGraph::~NPUGraph() {
     delete op;
   }
   for (auto tensor : insert_tensors_) {
-    delete tensor;
+    MSTensor::DestroyTensorPtr(tensor);
   }
 }
 
@@ -258,9 +258,11 @@ kernel::Kernel *NPUGraph::CreateNPUSubgraphKernel(std::vector<NPUOp *> npu_ops) 
     MS_LOG(ERROR) << "New NPU Subgraph failed.";
     return nullptr;
   }
-  subgraph->set_inputs(NPUGraphUtils::GetGraphInTensors(npu_ops));
+  std::vector<size_t> input_index;
+  subgraph->set_inputs(lite::GetGraphInTensors(npu_ops, &input_index));
+  subgraph->UpdateInputMappingRelationShip(input_index);
   // The output of NPUGraph should be assigned to the corresponding NPUSubgraph
-  auto subgraph_outputs = NPUGraphUtils::GetGraphOutTensors(npu_ops);
+  auto subgraph_outputs = lite::GetGraphOutTensors(npu_ops);
   for (auto graph_output : this->outputs()) {
     for (auto subgraph_op : npu_ops) {
       auto subgraph_op_outputs = subgraph_op->outputs();

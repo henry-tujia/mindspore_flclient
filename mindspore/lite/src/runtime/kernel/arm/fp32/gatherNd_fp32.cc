@@ -36,7 +36,7 @@ GatherNdCPUKernel::~GatherNdCPUKernel() {
   }
 }
 
-int GatherNdCPUKernel::Init() {
+int GatherNdCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), C2NUM);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   if (!InferShapeDone()) {
@@ -73,14 +73,22 @@ int GatherNdCPUKernel::ReSize() {
   return RET_OK;
 }
 
-void GatherNdCPUKernel::InitOffset() {
+int GatherNdCPUKernel::InitOffset() {
   MS_ASSERT(in_offset_ != nullptr);
   auto indices_tensor = in_tensors_.at(1);
   auto indices_shape = indices_tensor->shape();
   auto in_shape = in_tensors_.front()->shape();
   int indices_rank = indices_shape.size();
   int in_rank = in_shape.size();
+  if (indices_rank < 1) {
+    MS_LOG(ERROR) << name() << " indices shape size must be greater than or equal to 1!";
+    return RET_ERROR;
+  }
   int idx_lastshape = indices_shape[indices_rank - 1];
+  if (idx_lastshape > in_rank) {
+    MS_LOG(ERROR) << name() << " indices shape error!";
+    return RET_ERROR;
+  }
   auto indices_ptr = reinterpret_cast<int *>(indices_tensor->data());
   MS_ASSERT(indices_ptr != nullptr);
   area_ = 1;
@@ -97,18 +105,26 @@ void GatherNdCPUKernel::InitOffset() {
   (void)memset(in_offset_, 0, count_ * sizeof(int));
   for (int j = 0; j < count_; ++j) {
     for (int k = 0; k < idx_lastshape; ++k) {
-      in_offset_[j] += indices_ptr[j * idx_stride + k] * in_stride.at(k);
+      if (indices_ptr[j * idx_stride + k] >= 0 && indices_ptr[j * idx_stride + k] < in_shape[k]) {
+        in_offset_[j] += indices_ptr[j * idx_stride + k] * in_stride.at(k);
+      } else {
+        MS_LOG(ERROR) << name() << " indices value invalid!";
+        return RET_ERROR;
+      }
     }
   }
+  return RET_OK;
 }
 
-int GatherNdCPUKernel::DoGatherNd(int task_id) {
+int GatherNdCPUKernel::DoGatherNd(int task_id) const {
   int count = MSMIN(thread_sz_stride_, count_ - task_id * thread_sz_stride_);
   if (count <= 0) {
     return RET_OK;
   }
   int offset = task_id * thread_sz_stride_;
-  auto ret = GatherNd(in_ptr_, out_ptr_ + offset * area_, in_offset_ + offset, area_, count);
+  int dtype_len = lite::DataTypeSize(in_tensors_.front()->data_type());
+  auto ret = GatherNd(in_ptr_, static_cast<int8_t *>(out_ptr_) + offset * area_ * dtype_len, in_offset_ + offset, area_,
+                      count, dtype_len);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "GatherNdRun error task_id[" << task_id << "] error_code[" << ret << "]";
     return ret;
@@ -116,8 +132,8 @@ int GatherNdCPUKernel::DoGatherNd(int task_id) {
   return RET_OK;
 }
 
-int GatherNdRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
-  auto g_kernel = reinterpret_cast<GatherNdCPUKernel *>(cdata);
+int GatherNdRun(const void *cdata, int task_id, float, float) {
+  auto g_kernel = reinterpret_cast<const GatherNdCPUKernel *>(cdata);
   auto ret = g_kernel->DoGatherNd(task_id);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "GatherNdRun error task_id[" << task_id << "] error_code[" << ret << "]";
@@ -127,11 +143,14 @@ int GatherNdRun(void *cdata, int task_id, float lhs_scale, float rhs_scale) {
 }
 
 int GatherNdCPUKernel::Run() {
-  in_ptr_ = reinterpret_cast<float *>(in_tensors_.front()->data());
-  out_ptr_ = reinterpret_cast<float *>(out_tensors_.front()->data());
+  in_ptr_ = in_tensors_.front()->data();
+  out_ptr_ = out_tensors_.front()->data();
   CHECK_NULL_RETURN(in_ptr_);
   CHECK_NULL_RETURN(out_ptr_);
-  InitOffset();
+  if (InitOffset() != RET_OK) {
+    MS_LOG(ERROR) << "InitOffset failed.";
+    return RET_ERROR;
+  }
   auto ret = ParallelLaunch(this->ms_context_, GatherNdRun, this, thread_sz_count_);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "gatherNd error error_code[" << ret << "]";
@@ -142,4 +161,7 @@ int GatherNdCPUKernel::Run() {
 
 REG_KERNEL(kCPU, kNumberTypeFloat32, PrimitiveType_GatherNd, LiteKernelCreator<GatherNdCPUKernel>)
 REG_KERNEL(kCPU, kNumberTypeInt32, PrimitiveType_GatherNd, LiteKernelCreator<GatherNdCPUKernel>)
+#ifdef ENABLE_FP16
+REG_KERNEL(kCPU, kNumberTypeFloat16, PrimitiveType_GatherNd, LiteKernelCreator<GatherNdCPUKernel>)
+#endif
 }  // namespace mindspore::kernel

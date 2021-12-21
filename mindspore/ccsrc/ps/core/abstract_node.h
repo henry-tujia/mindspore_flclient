@@ -44,13 +44,16 @@ class AbstractNode : public Node {
       : heart_beat_thread_(nullptr),
         client_to_scheduler_thread_(nullptr),
         client_to_scheduler_(nullptr),
+        client_to_server_(nullptr),
         server_(nullptr),
         server_thread_(nullptr),
         worker_num_(-1),
         server_num_(-1),
+        is_connected_to_scheduler_(false),
         is_current_node_scale_in_(false),
         follower_scaler_(nullptr),
         node_recovery_(nullptr),
+        persistent_state_(PersistentState::NOT_ENABLE_PERSIST),
         scheduler_ip_(""),
         scheduler_port_(0) {}
   ~AbstractNode() override = default;
@@ -61,7 +64,11 @@ class AbstractNode : public Node {
                                               const std::shared_ptr<MessageMeta> &meta, const Protos &protos,
                                               const void *data, size_t size);
 
+#ifdef __APPLE__
+  using DataPtr = std::shared_ptr<unsigned char>;
+#else
   using DataPtr = std::shared_ptr<unsigned char[]>;
+#endif
   using VectorPtr = std::shared_ptr<std::vector<unsigned char>>;
   using RequestHandler =
     std::function<void(const std::shared_ptr<TcpConnection> &conn, const std::shared_ptr<MessageMeta> &meta,
@@ -90,14 +97,14 @@ class AbstractNode : public Node {
   void RegisterCustomEventCallback(const uint32_t &event, const EventCallback &event_cb);
 
   bool Send(const NodeRole &node_role, const uint32_t &rank_id, const DataPtr &data, size_t len, int command,
-            const uint32_t &timeout = kTimeoutInSeconds);
+            const uint32_t &timeout = kCommTimeoutInSeconds);
   bool Send(const NodeRole &node_role, const std::vector<uint32_t> &rank_ids, const std::vector<DataPtr> &data,
-            const std::vector<size_t> &lens, int command, const uint32_t &timeout = kTimeoutInSeconds);
+            const std::vector<size_t> &lens, int command, const uint32_t &timeout = kCommTimeoutInSeconds);
   bool Send(const NodeRole &node_role, const uint32_t &rank_id, const DataPtr &message, size_t len, int command,
-            VectorPtr *output, const uint32_t &timeout = kTimeoutInSeconds);
+            VectorPtr *output, const uint32_t &timeout = kCommTimeoutInSeconds);
   bool Send(const NodeRole &node_role, const std::vector<uint32_t> &rank_ids, const std::vector<DataPtr> &data,
             const std::vector<size_t> &data_lens, int command, std::vector<VectorPtr> *output,
-            const uint32_t &timeout = kTimeoutInSeconds);
+            const uint32_t &timeout = kCommTimeoutInSeconds);
 
   uint64_t CollectiveSendAsync(const NodeRole &node_role, const uint32_t &rank_id, const void *data, size_t size);
   std::pair<uint32_t, uint64_t> CollectiveReceiveAsync(const NodeRole &node_role, const uint32_t &rank_id,
@@ -114,6 +121,9 @@ class AbstractNode : public Node {
   // Register handlers after scaling operations for server.
   void RegisterFollowerScalerHandlerAfterScaleOut(const std::string &module, const HandlerAfterScaleOut &handler);
   void RegisterFollowerScalerHandlerAfterScaleIn(const std::string &module, const HandlerAfterScaleIn &handler);
+
+  PersistentState persistent_state() const;
+  void set_persistent_state(PersistentState persistent_state);
 
   int32_t worker_num() const;
   int32_t server_num() const;
@@ -166,6 +176,10 @@ class AbstractNode : public Node {
   void ProcessScaleInDone(const std::shared_ptr<TcpConnection> &conn, const std::shared_ptr<MessageMeta> &meta,
                           const Protos &protos, const void *data, size_t size);
 
+  // The worker/server processes the scheduler recovery message from scheduelr
+  void ProcessSchedulerRecovery(const std::shared_ptr<TcpConnection> &conn, const std::shared_ptr<MessageMeta> &meta,
+                                const Protos &, const void *data, size_t size);
+
   // The worker/server processes the SEND_EVENT message from scheduelr
   void ProcessEvent(const std::shared_ptr<TcpConnection> &conn, const std::shared_ptr<MessageMeta> &meta,
                     const Protos &protos, const void *data, size_t size);
@@ -176,7 +190,9 @@ class AbstractNode : public Node {
   bool Disconnect(const std::shared_ptr<TcpClient> &client, const uint32_t &timeout);
   bool WaitForDisconnect(const uint32_t &timeout);
   bool InitClientToScheduler();
-  const std::shared_ptr<TcpClient> &GetOrCreateTcpClient(const uint32_t &rank_id);
+  void InitClientToServer();
+  const std::shared_ptr<TcpClient> &GetOrCreateTcpClient(const uint32_t &rank_id,
+                                                         const NodeRole &role = NodeRole::SERVER);
   bool SendMessageSync(const std::shared_ptr<TcpClient> &client, const CommMessage &message,
                        const uint32_t &timeout = kCommTimeoutInSeconds);
   bool SendMessageSync(const std::shared_ptr<TcpClient> &client, const std::shared_ptr<MessageMeta> &meta,
@@ -211,14 +227,22 @@ class AbstractNode : public Node {
 
   void CreateTcpServer();
 
+  void UpdateClusterState(const ClusterState &state);
+
+  void PersistMetaData();
+
+  void ProcessPrepareBuildingNetwork(const std::shared_ptr<TcpConnection> &conn,
+                                     const std::shared_ptr<MessageMeta> &meta, const Protos &protos, const void *data,
+                                     size_t size);
+
   std::unique_ptr<std::thread> heart_beat_thread_;
   std::unique_ptr<std::thread> client_to_scheduler_thread_;
   std::shared_ptr<TcpClient> client_to_scheduler_;
-
+  std::shared_ptr<TcpClient> client_to_server_;
   // the key is: <node_role,rank_id>, the value is: <ip, port>
   std::map<std::pair<NodeRole, uint32_t>, std::pair<std::string, uint16_t>> nodes_address_;
   // the map's key is: rank_id
-  std::unordered_map<uint32_t, std::shared_ptr<TcpClient>> connected_nodes_;
+  std::map<std::pair<NodeRole, uint32_t>, std::shared_ptr<TcpClient>> connected_nodes_;
 
   // the key is <rank_id, rank_request_id>
   std::map<std::pair<uint32_t, uint64_t>, std::shared_ptr<std::vector<unsigned char>>> received_data_;
@@ -242,7 +266,7 @@ class AbstractNode : public Node {
 
   int32_t worker_num_;
   int32_t server_num_;
-
+  std::atomic<bool> is_connected_to_scheduler_;
   // Identify whether the current node is a scale in node.
   std::atomic<bool> is_current_node_scale_in_;
 
@@ -262,6 +286,10 @@ class AbstractNode : public Node {
   // Recovery for worker/server node.
   std::unique_ptr<RecoveryBase> node_recovery_;
 
+  // The state of the persistent storage, such as ready to be persisted, in the process of being persisted, has
+  // completed the persistence, etc.
+  std::atomic<PersistentState> persistent_state_;
+
   // The ip of scheduler.
   std::string scheduler_ip_;
   // The port of scheduler.
@@ -273,6 +301,7 @@ class AbstractNode : public Node {
 
   std::unordered_map<std::string, std::shared_ptr<CommunicatorBase>> communicators_;
   std::mutex communicator_mutex_;
+  std::mutex cluster_state_mutex_;
 };
 }  // namespace core
 }  // namespace ps

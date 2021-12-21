@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORTED_SEGMENT_MIN_H_
-#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORTED_SEGMENT_MIN_H_
+#ifndef MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_MIN_GPU_KERNEL_H_
+#define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_MIN_GPU_KERNEL_H_
 
 #include <vector>
 #include <limits>
@@ -50,14 +50,15 @@ class UnsortedSegmentMinGpuKernel : public GpuKernel {
 
   bool Init(const CNodePtr &kernel_node) override {
     auto input_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(input_shapes);
+    auto segment_ids_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
+    auto output_shapes = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
+    is_null_input_ =
+      CHECK_NULL_INPUT(input_shapes) || CHECK_NULL_INPUT(segment_ids_shapes) || CHECK_NULL_INPUT(output_shapes);
     if (is_null_input_) {
-      MS_LOG(WARNING) << "UnsortedSegmentMin input is null";
+      MS_LOG(WARNING) << "For 'UnsortedSegmentMinGpuKernel', input or output is null";
       InitSizeLists();
       return true;
     }
-    auto segment_ids_shapes = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 1);
-    auto output_shapes = AnfAlgo::GetOutputRealDeviceShapeIfExist(kernel_node, 0);
 
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num == 3) {
@@ -132,4 +133,4 @@ class UnsortedSegmentMinGpuKernel : public GpuKernel {
 }  // namespace kernel
 }  // namespace mindspore
 
-#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_UNSORTED_SEGMENT_MIN_H_
+#endif  // MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_ARRAYS_UNSORTED_SEGMENT_MIN_GPU_KERNEL_H_

@@ -18,6 +18,7 @@
 #define MINDSPORE_CCSRC_BACKEND_KERNEL_COMPILER_GPU_NN_BCE_WITH_LOGITS_LOSS_KERNEL_H_
 
 #include <vector>
+#include <string>
 #include "backend/kernel_compiler/gpu/gpu_kernel.h"
 #include "backend/kernel_compiler/gpu/gpu_kernel_factory.h"
 #include "backend/kernel_compiler/gpu/cuda_impl/bce_with_logits_loss_impl.cuh"
@@ -36,6 +37,9 @@ class BCEWithLogitsLossKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *predict = GetDeviceAddress<T>(inputs, 0);
     T *target = GetDeviceAddress<T>(inputs, 1);
     T *weight = GetDeviceAddress<T>(inputs, 2);
@@ -65,29 +69,47 @@ class BCEWithLogitsLossKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 4) {
-      MS_LOG(EXCEPTION) << "Input number is " << input_num << ", but BCEWithLogitsLoss needs 4 inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of inputs should be 4, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(EXCEPTION) << "Output number is " << output_num << ", but BCEWithLogitsLoss has 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
     input_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    weight_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
+    pos_weight_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape_, kernel_name_, "logits") ||
+                     CHECK_SHAPE_NULL(weight_shape_, kernel_name_, "weight") ||
+                     CHECK_SHAPE_NULL(pos_weight_shape_, kernel_name_, "pos_weight");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
+    if (input_shape_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of logits cannot be less than 1, but got "
+                        << input_shape_.size();
+    }
+    if (weight_shape_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of weight cannot be less than 1, but got "
+                        << weight_shape_.size();
+    }
+    if (pos_weight_shape_.size() < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of pos_weight cannot be less than 1, but got "
+                        << pos_weight_shape_.size();
+    }
     input_size_ = 1;
     if (input_shape_.size() > MAX_LOGITS_DIMENSION) {
-      MS_LOG(EXCEPTION) << "Input dimension is " << input_shape_.size()
-                        << ", but BCEWithLogitsLoss can only support up to " << MAX_LOGITS_DIMENSION << "-D.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of logits cannot be greater than "
+                        << MAX_LOGITS_DIMENSION << ", but got " << input_shape_.size();
     }
     for (size_t i = 0; i < input_shape_.size(); i++) {
       input_size_ *= input_shape_[i];
     }
     // weight shape
-    weight_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 2);
     weight_size_ = 1;
     for (size_t i = 0; i < weight_shape_.size(); i++) {
       weight_size_ *= weight_shape_[i];
@@ -95,7 +117,6 @@ class BCEWithLogitsLossKernel : public GpuKernel {
     weight_need_broadcast_ = NeedBroadcast(&weight_shape_, input_shape_);
     // pos_weight shape
     pos_weight_size_ = 1;
-    pos_weight_shape_ = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 3);
     for (size_t i = 0; i < pos_weight_shape_.size(); i++) {
       pos_weight_size_ *= pos_weight_shape_[i];
     }
@@ -110,6 +131,8 @@ class BCEWithLogitsLossKernel : public GpuKernel {
     pos_weight_size_ = 1;
     weight_need_broadcast_ = false;
     pos_weight_need_broadcast_ = false;
+    is_null_input_ = false;
+    kernel_name_ = "BCEWithLogitsLoss";
     input_shape_.clear();
     weight_shape_.clear();
     pos_weight_shape_.clear();
@@ -137,7 +160,7 @@ class BCEWithLogitsLossKernel : public GpuKernel {
   bool NeedBroadcast(std::vector<size_t> *shape, const std::vector<size_t> &result_shape) {
     // result_shape is larger that shape
     // and shape is able to broadcasted to result_shape
-    if (shape->size() != result_shape.size()) {
+    if (shape->size() < result_shape.size()) {
       size_t fill_size = result_shape.size() - shape->size();
       (void)shape->insert(shape->begin(), fill_size, 1);
       return true;
@@ -155,6 +178,8 @@ class BCEWithLogitsLossKernel : public GpuKernel {
   size_t pos_weight_size_;
   bool weight_need_broadcast_;
   bool pos_weight_need_broadcast_;
+  bool is_null_input_;
+  std::string kernel_name_;
   std::vector<size_t> input_shape_;
   std::vector<size_t> weight_shape_;
   std::vector<size_t> pos_weight_shape_;

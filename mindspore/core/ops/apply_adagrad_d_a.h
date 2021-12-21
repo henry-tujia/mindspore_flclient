@@ -29,13 +29,17 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameApplyAdagradDA = "ApplyAdagradDA";
+/// \brief Update var according to the proximal adagrad scheme.
+/// Refer to Python API @ref mindspore.ops.ApplyAdagradDA for more details.
 class ApplyAdagradDA : public PrimitiveC {
  public:
+  /// \brief Constructor.
   ApplyAdagradDA() : PrimitiveC(kNameApplyAdagradDA) {
     InitIOName({"var", "gradient_accumulator", "gradient_squared_accumulator", "grad", "lr", "l1", "l2", "global_step"},
                {"var", "gradient_accumulator", "gradient_squared_accumulator"});
   }
 
+  /// \brief Destructor.
   ~ApplyAdagradDA() = default;
 
   MS_DECLARE_PARENT(ApplyAdagradDA, PrimitiveC);
@@ -44,7 +48,6 @@ class ApplyAdagradDA : public PrimitiveC {
 AbstractBasePtr ApplyAdagradDAInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                     const std::vector<AbstractBasePtr> &input_args);
 
-using PrimApplyAdagradDAPtr = std::shared_ptr<ApplyAdagradDA>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_APPLY_ADAGRAD_D_A_H_

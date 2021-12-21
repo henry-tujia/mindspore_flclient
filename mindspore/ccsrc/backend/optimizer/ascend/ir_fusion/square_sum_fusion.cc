@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,12 +26,26 @@
 #include "backend/optimizer/common/helper.h"
 #include "runtime/device/kernel_info.h"
 #include "utils/trace_base.h"
-#include "runtime/device/ascend/lic_manager.h"
 
 namespace mindspore {
 namespace opt {
 namespace {
-CNodePtr GenerateSquareSumV1(const FuncGraphPtr &graph, const CNodePtr &square, const CNodePtr &sum) {
+std::tuple<CNodePtr, AnfNodePtr, CNodePtr> GetPrevNodes(const AnfNodePtr &node) {
+  MS_EXCEPTION_IF_NULL(node);
+  auto sum = node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(sum);
+  CheckCNodeInputSize(sum, kSumNodeInputTensorNum);
+  auto square_anf = sum->input(1);
+  MS_EXCEPTION_IF_NULL(square_anf);
+  auto square = square_anf->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(square);
+
+  return std::make_tuple(sum, square_anf, square);
+}
+}  // namespace
+
+CNodePtr SquareSumFusion::GenerateSquareSumV1(const FuncGraphPtr &graph, const CNodePtr &square,
+                                              const CNodePtr &sum) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(square);
   MS_EXCEPTION_IF_NULL(sum);
@@ -39,7 +53,7 @@ CNodePtr GenerateSquareSumV1(const FuncGraphPtr &graph, const CNodePtr &square, 
   auto prim = std::make_shared<Primitive>(kSquareSumV1OpName);
   MS_EXCEPTION_IF_NULL(prim);
   std::vector<AnfNodePtr> square_sumv1_inputs = {NewValueNode(prim), square->input(1)};
-  auto square_sumv1 = graph->NewCNode(square_sumv1_inputs);
+  auto square_sumv1 = NewCNode(square_sumv1_inputs, graph);
   MS_EXCEPTION_IF_NULL(square_sumv1);
   auto kernel_info = std::make_shared<device::KernelInfo>();
   MS_EXCEPTION_IF_NULL(kernel_info);
@@ -55,7 +69,8 @@ CNodePtr GenerateSquareSumV1(const FuncGraphPtr &graph, const CNodePtr &square, 
   return square_sumv1;
 }
 
-CNodePtr GenerateSquareSumV2(const FuncGraphPtr &graph, const CNodePtr &square, const CNodePtr &sum) {
+CNodePtr SquareSumFusion::GenerateSquareSumV2(const FuncGraphPtr &graph, const CNodePtr &square,
+                                              const CNodePtr &sum) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(square);
   MS_EXCEPTION_IF_NULL(sum);
@@ -63,7 +78,7 @@ CNodePtr GenerateSquareSumV2(const FuncGraphPtr &graph, const CNodePtr &square, 
   auto prim = std::make_shared<Primitive>(kSquareSumV2OpName);
   MS_EXCEPTION_IF_NULL(prim);
   std::vector<AnfNodePtr> square_sumv2_inputs = {NewValueNode(prim), square->input(1)};
-  auto square_sumv2 = graph->NewCNode(square_sumv2_inputs);
+  auto square_sumv2 = NewCNode(square_sumv2_inputs, graph);
   MS_EXCEPTION_IF_NULL(square_sumv2);
   auto types = {AnfAlgo::GetOutputInferDataType(sum, 0), AnfAlgo::GetOutputInferDataType(square, 0)};
   auto shapes = {AnfAlgo::GetOutputInferShape(sum, 0), AnfAlgo::GetOutputInferShape(square, 0)};
@@ -76,20 +91,6 @@ CNodePtr GenerateSquareSumV2(const FuncGraphPtr &graph, const CNodePtr &square, 
   return square_sumv2;
 }
 
-std::tuple<CNodePtr, AnfNodePtr, CNodePtr> GetPrevNodes(const AnfNodePtr &node) {
-  MS_EXCEPTION_IF_NULL(node);
-  auto sum = node->cast<CNodePtr>();
-  MS_EXCEPTION_IF_NULL(sum);
-  CheckCNodeInputSize(sum, kSumNodeInputTensorNum);
-  auto square_anf = sum->input(1);
-  MS_EXCEPTION_IF_NULL(square_anf);
-  auto square = square_anf->cast<CNodePtr>();
-  MS_EXCEPTION_IF_NULL(square);
-
-  return std::make_tuple(sum, square_anf, square);
-}
-}  // namespace
-
 const BaseRef SquareSumFusion::DefinePattern() const {
   VarPtr X = std::make_shared<Var>();
   MS_EXCEPTION_IF_NULL(X);
@@ -100,10 +101,6 @@ const AnfNodePtr SquareSumFusion::Process(const FuncGraphPtr &graph, const AnfNo
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(node);
 
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::SquareSumFusion)) {
-    return node;
-  }
-
   CNodePtr sum = nullptr;
   AnfNodePtr square_anf = nullptr;
   CNodePtr square = nullptr;
@@ -113,8 +110,7 @@ const AnfNodePtr SquareSumFusion::Process(const FuncGraphPtr &graph, const AnfNo
   auto manager = graph->manager();
   MS_EXCEPTION_IF_NULL(manager);
   if (manager->node_users().find(square_anf) == manager->node_users().end()) {
-    MS_LOG(EXCEPTION) << "Square node has no output in NodeUsersMap"
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "Square node has no output in NodeUsersMap" << trace::DumpSourceLines(node);
   }
   AnfNodePtr ret_node = nullptr;
   if (manager->node_users()[square_anf].size() == 1) {
@@ -125,8 +121,7 @@ const AnfNodePtr SquareSumFusion::Process(const FuncGraphPtr &graph, const AnfNo
     std::vector<AnfNodePtr> square_sumv2_outputs;
     CreateMultipleOutputsOfAnfNode(graph, square_sumv2, kSquareSumv2OutputNum, &square_sumv2_outputs);
     if (square_sumv2_outputs.size() != kSquareSumv2OutputNum) {
-      MS_LOG(EXCEPTION) << "make SquareSumV2 outputs fail"
-                        << " trace: " << trace::DumpSourceLines(square_sumv2);
+      MS_LOG(EXCEPTION) << "make SquareSumV2 outputs fail" << trace::DumpSourceLines(square_sumv2);
     }
     (void)manager->Replace(square, square_sumv2_outputs[1]);
     ret_node = square_sumv2_outputs[0];

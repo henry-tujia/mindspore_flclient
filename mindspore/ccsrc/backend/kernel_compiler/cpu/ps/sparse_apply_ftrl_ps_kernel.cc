@@ -24,6 +24,7 @@ constexpr size_t kSparseApplyFtrlPSInputSize = 5;
 
 void SparseApplyFtrlPSKernel::InitKernel(
   const CNodePtr &cnode, const std::shared_ptr<std::vector<std::shared_ptr<std::vector<size_t>>>> &shapes) {
+  MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(shapes);
   const std::vector<std::shared_ptr<std::vector<size_t>>> &shape_vec = *shapes;
   if (shape_vec.size() < kSparseApplyFtrlPSInputSize) {
@@ -100,7 +101,7 @@ void SparseApplyFtrlPSKernel::ReInit(const std::vector<std::vector<size_t>> &sha
 
 void SparseApplyFtrlPSKernel::ReInit(const std::vector<AddressPtr> &inputs) {
   if (inputs.size() < kSparseApplyFtrlPSInputSize) {
-    MS_LOG(EXCEPTION) << "Input numbers should not less than " << kSparseApplyFtrlPSInputSize << ", but got "
+    MS_LOG(EXCEPTION) << "Input numbers should not be less than " << kSparseApplyFtrlPSInputSize << ", but got "
                       << inputs.size();
   }
   const auto &indices_addr = inputs[4];

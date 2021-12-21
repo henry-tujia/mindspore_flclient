@@ -37,23 +37,23 @@ namespace mindspore::kernel {
 int FullConnectionOpenCLKernel::CheckSpecs() {
   if ((in_tensors_.size() != INPUT_TENSOR_SIZE_2 && in_tensors_.size() != INPUT_TENSOR_SIZE_3) ||
       out_tensors_.size() != OUTPUT_TENSOR_SIZE_1) {
-    MS_LOG(ERROR) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
+    MS_LOG(WARNING) << "in size: " << in_tensors_.size() << ", out size: " << out_tensors_.size();
     return RET_ERROR;
   }
   auto param = reinterpret_cast<MatMulParameter *>(op_parameter_);
   if (param->a_transpose_) {
-    MS_LOG(ERROR) << "fullconnection only support a_transpose_=false yet.";
+    MS_LOG(WARNING) << "fullconnection only support a_transpose_=false yet.";
     return RET_ERROR;
   }
   auto out_gpu_info = GpuTensorInfo(out_tensors_[0]);
   if (out_gpu_info.H != 1 || out_gpu_info.W != 1) {
-    MS_LOG(ERROR) << "fullconnection only support 2d output shape or 4d output but H=W=1";
+    MS_LOG(WARNING) << "fullconnection only support 2d output shape or 4d output but H=W=1";
     return RET_ERROR;
   }
   // for fusion: ActivationType_TANH
   if (param->act_type_ != ActType_No && param->act_type_ != ActType_Relu && param->act_type_ != ActType_Relu6 &&
       static_cast<schema::ActivationType>(param->act_type_) != ActivationType_TANH) {
-    MS_LOG(ERROR) << "Unsupported activation type " << param->act_type_;
+    MS_LOG(WARNING) << "Unsupported activation type " << param->act_type_;
     return RET_ERROR;
   }
   N_ = out_gpu_info.N;
@@ -61,26 +61,25 @@ int FullConnectionOpenCLKernel::CheckSpecs() {
   auto intensor_shape = GpuTensorInfo(in_tensors_[0]);
   int input_nhw = intensor_shape.N * intensor_shape.H * intensor_shape.W;
   if (input_nhw < N_) {
-    MS_LOG(ERROR) << "Unsupported fullconnection shape";
+    MS_LOG(WARNING) << "Unsupported fullconnection shape";
   }
   if (!in_tensors_.at(kWeightIndex)->IsConst()) {
     weight_var_ = true;
     if (!param->b_transpose_) {
-      MS_LOG(ERROR) << "If fullconnection input weight is not constant, b_transpose_ should be true.";
+      MS_LOG(WARNING) << "If fullconnection input weight is not constant, b_transpose_ should be true.";
       return RET_ERROR;
     }
     if (in_tensors_.at(kWeightIndex)->shape().size() != DIMENSION_2D) {
-      MS_LOG(ERROR) << "If fullconnection input weight is not constant, it should be 2d.";
+      MS_LOG(WARNING) << "If fullconnection input weight is not constant, it should be 2d.";
       return RET_ERROR;
     }
-    if (intensor_shape.C != in_tensors_.at(kWeightIndex)->shape()[1]) {
-      MS_LOG(ERROR)
-        << "If fullconnection input weight is not constant, input channel should equal to weight in_channel.";
+    if (static_cast<int>(intensor_shape.C) != in_tensors_.at(kWeightIndex)->shape()[1]) {
+      MS_LOG(WARNING) << "input weight is not constant, input channel should equal to weight in_channel.";
       return RET_ERROR;
     }
   }
   if (in_tensors_.size() == INPUT_TENSOR_SIZE_3 && !in_tensors_.at(2)->IsConst()) {
-    MS_LOG(ERROR) << "FullConnection don't support non-constant bias yet.";
+    MS_LOG(WARNING) << "FullConnection don't support non-constant bias yet.";
     return RET_ERROR;
   }
   CI_remainder_ = input_nhw / N_;
@@ -132,6 +131,7 @@ int FullConnectionOpenCLKernel::InitWeights() {
   return InitBias();
 }  // namespace mindspore::kernel
 
+#ifdef ENABLE_FP16
 int FullConnectionOpenCLKernel::InitFilter() {
   auto allocator = ocl_runtime_->GetAllocator();
   auto intensor_shape = GpuTensorInfo(in_tensors_[0]);
@@ -163,11 +163,11 @@ int FullConnectionOpenCLKernel::InitFilter() {
   // if tranposeB, COHWCI -> (HWCI4)(CO4)(4 from CO)(4 from CI)
   int index = 0;
   for (int nhw = 0; nhw < nhw_remainder; nhw++) {
-    for (int i = 0; i < intensor_shape.Slice; ++i) {
+    for (size_t i = 0; i < intensor_shape.Slice; ++i) {
       for (int j = 0; j < co4; ++j) {
         for (int k = 0; k < C4NUM; ++k) {
           for (int l = 0; l < C4NUM; ++l) {
-            int src_ci = i * C4NUM + l;
+            size_t src_ci = i * C4NUM + l;
             int src_co = j * C4NUM + k;
             if (src_ci < intensor_shape.C && src_co < CO_) {
               int originId = (nhw * intensor_shape.C + src_ci) * CO_ + src_co;
@@ -249,6 +249,97 @@ int FullConnectionOpenCLKernel::InitBias() {
   FreeStoredData(stored_bias_);
   return RET_OK;
 }
+#else
+int FullConnectionOpenCLKernel::InitFilter() {
+  auto allocator = ocl_runtime_->GetAllocator();
+  auto intensor_shape = GpuTensorInfo(in_tensors_[0]);
+  int co4 = UP_DIV(CO_, C4NUM);
+  int nhw_remainder = intensor_shape.N * intensor_shape.H * intensor_shape.W / N_;
+  size_t dtype_size = enable_fp16_ ? sizeof(uint16_t) : sizeof(float);
+  padWeight_ = allocator->Malloc(nhw_remainder * intensor_shape.Slice * co4 * C4NUM * C4NUM * dtype_size,
+                                 lite::opencl::MemType::BUF);
+  if (padWeight_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  padWeight_ = allocator->MapBuffer(padWeight_, CL_MAP_WRITE, nullptr, true);
+  if (padWeight_ == nullptr) {
+    MS_LOG(ERROR) << "Map Buffer failed.";
+    return RET_ERROR;
+  }
+  auto padWeight = reinterpret_cast<float *>(padWeight_);
+  memset(padWeight_, 0x00, nhw_remainder * intensor_shape.Slice * co4 * C4NUM * C4NUM * dtype_size);
+  void *src_data = stored_weight_ == nullptr ? in_tensors_.at(kWeightIndex)->data() : stored_weight_;
+  MS_ASSERT(src_data);
+  auto originWeight = reinterpret_cast<float *>(src_data);
+
+  // pad weight
+  // HWCICO -> (HWCI4)(CO4)(4 from CO)(4 from CI)
+  // if tranposeB, COHWCI -> (HWCI4)(CO4)(4 from CO)(4 from CI)
+  int index = 0;
+  for (int nhw = 0; nhw < nhw_remainder; nhw++) {
+    for (size_t i = 0; i < intensor_shape.Slice; ++i) {
+      for (int j = 0; j < co4; ++j) {
+        for (int k = 0; k < C4NUM; ++k) {
+          for (int l = 0; l < C4NUM; ++l) {
+            size_t src_ci = i * C4NUM + l;
+            size_t src_co = j * C4NUM + k;
+            if (src_ci < intensor_shape.C && static_cast<int>(src_co) < CO_) {
+              int originId = (nhw * intensor_shape.C + src_ci) * CO_ + src_co;
+              if (transposeB) {
+                originId = src_co * intensor_shape.C * nhw_remainder + nhw * intensor_shape.C + src_ci;
+              }
+              padWeight[index++] = originWeight[originId];
+            } else {
+              index++;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (allocator->UnmapBuffer(padWeight_) != RET_OK) {
+    MS_LOG(ERROR) << "UnmapBuffer failed.";
+    return RET_ERROR;
+  }
+  FreeStoredData(stored_weight_);
+  return RET_OK;
+}
+
+int FullConnectionOpenCLKernel::InitBias() {
+  // pad FC Bias
+  auto allocator = ocl_runtime_->GetAllocator();
+  int co4 = UP_DIV(CO_, C4NUM);
+  size_t dtype_size = sizeof(float);
+  size_t im_dst_x, im_dst_y;
+  im_dst_x = co4;
+  im_dst_y = 1;
+  size_t img_dtype = CL_FLOAT;
+  ImageSize img_size{im_dst_x, im_dst_y, img_dtype};
+  bias_ = allocator->Malloc(img_size);
+  if (bias_ == nullptr) {
+    MS_LOG(ERROR) << "Malloc failed.";
+    return RET_ERROR;
+  }
+  bias_ = allocator->MapBuffer(bias_, CL_MAP_WRITE, nullptr, true);
+  if (bias_ == nullptr) {
+    MS_LOG(ERROR) << "Map Buffer failed.";
+    return RET_ERROR;
+  }
+  memset(bias_, 0x00, co4 * C4NUM * dtype_size);
+  if (in_tensors_.size() == INPUT_TENSOR_SIZE_3) {
+    void *src_data = stored_bias_ == nullptr ? in_tensors_.at(kBiasIndex)->data() : stored_bias_;
+    MS_ASSERT(src_data);
+    memcpy(bias_, src_data, CO_ * dtype_size);
+  }
+  if (allocator->UnmapBuffer(bias_) != RET_OK) {
+    MS_LOG(ERROR) << "UnmapBuffer failed.";
+    return RET_ERROR;
+  }
+  FreeStoredData(stored_bias_);
+  return RET_OK;
+}
+#endif
 
 void FullConnectionOpenCLKernel::SetGlobalLocal() {
   local_size_ = {32, 4, 1};

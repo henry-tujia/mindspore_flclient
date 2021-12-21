@@ -36,13 +36,6 @@
 using mindspore::ops::PrimitiveC;
 
 namespace mindspore::lite {
-
-constexpr const int kMainGraphIndex = 0;
-constexpr const int kFirstDataIndex = 1;
-constexpr const int kSecondDataIndex = 2;
-constexpr const int kPrimIndex = 0;
-constexpr const int kSwitchFalseIndex = 3;
-
 class AnfExporter {
  public:
   AnfExporter() = default;
@@ -50,7 +43,7 @@ class AnfExporter {
   schema::MetaGraphT *Export(const FuncGraphPtr &func_graph, bool keep_graph = false, bool copy_primitive = false,
                              bool train_flag = false);
   int SetOpOutputNode(const CNodePtr &cnode, const std::unique_ptr<schema::MetaGraphT> &meta_graphT,
-                       schema::CNodeT *fb_node);
+                      schema::CNodeT *fb_node);
   int SetOpInputNode(const CNodePtr &cnode, const std::unique_ptr<schema::MetaGraphT> &meta_graphT,
                      schema::CNodeT *fb_node);
 
@@ -84,6 +77,13 @@ class AnfExporter {
   int SetMetaGraphInput(const FuncGraphPtr &func_graph, const std::unique_ptr<schema::MetaGraphT> &meta_graphT);
   int SetMetaGraphOutput(const FuncGraphPtr &func_graph, const std::unique_ptr<schema::MetaGraphT> &meta_graphT);
   int CreateNewTensorForParameter(const std::unique_ptr<schema::MetaGraphT> &meta_graphT, const AnfNodePtr &input);
+  bool CaseToContinue(const string &prim_name);
+
+ private:
+  void SetNonTailCall(const CNodePtr &cnode, schema::CNodeT *node);
+  int SetTailCallForReturn(const CNodePtr &return_cnode);
+  // To deal witch case which call node has not output.
+  int SetTailCallForNonOutput();
 
  private:
   // Key is a pair of node and its output id. Value is the mapped tensor id of meta_graph.
@@ -93,9 +93,9 @@ class AnfExporter {
   std::vector<AnfNodePtr> graph_inputs_;
   std::set<AnfNodePtr> graph_inputs_has_exported_;
   std::map<AnfNodePtr, int> graph_inputs_map_;
+  std::map<AnfNodePtr, schema::CNodeT *> call_node_map_;
   uint32_t node_idx_ = 0;
   bool train_flag_ = false;
-  bool reorder_input_ = false;
 };
 // by default, copy_primitive is false, which means that the MetaGraph and func_graph share the same schema::PrimitiveT.
 // but in PostQuantization, the func_graph need to transfer to MetaGraph first and do MetaGraph pass, which may modify

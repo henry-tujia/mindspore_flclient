@@ -17,10 +17,13 @@
 #ifndef MINDSPORE_CCSRC_RUNTIME_DEVICE_GPU_GPU_COMMON_H_
 #define MINDSPORE_CCSRC_RUNTIME_DEVICE_GPU_GPU_COMMON_H_
 
+#include <cublas_v2.h>
 #include <iostream>
 #include <vector>
+#include <string>
 #include <algorithm>
 #include <map>
+#include <sstream>
 #include "utils/log_adapter.h"
 #include "utils/trace_base.h"
 #include "include/curand.h"
@@ -135,29 +138,32 @@ namespace gpu {
     }                                                                                      \
   }
 
-#define CHECK_CUBLAS_RET_WITH_EXCEPT_NOTRACE(expression, message)                        \
-  {                                                                                      \
-    cublasStatus_t status = (expression);                                                \
-    if (status != CUBLAS_STATUS_SUCCESS) {                                               \
-      MS_LOG(EXCEPTION) << "cuBLAS Error: " << message << " | Error Number: " << status; \
-    }                                                                                    \
+#define CHECK_CUBLAS_RET_WITH_EXCEPT_NOTRACE(expression, message)                              \
+  {                                                                                            \
+    cublasStatus_t status = (expression);                                                      \
+    if (status != CUBLAS_STATUS_SUCCESS) {                                                     \
+      MS_LOG(EXCEPTION) << "cuBLAS Error: " << message << " | Error Number: " << status << " " \
+                        << mindspore::device::gpu::cuBlasGetErrorString(status);               \
+    }                                                                                          \
   }
 
-#define CHECK_CUBLAS_RET_WITH_EXCEPT(node, expression, message)                         \
-  {                                                                                     \
-    cublasStatus_t status = (expression);                                               \
-    if (status != CUBLAS_STATUS_SUCCESS) {                                              \
-      MS_LOG(EXCEPTION) << "cuBLAS Error: " << message << " | Error Number: " << status \
-                        << trace::DumpSourceLines(node.lock());                         \
-    }                                                                                   \
+#define CHECK_CUBLAS_RET_WITH_EXCEPT(node, expression, message)                                \
+  {                                                                                            \
+    cublasStatus_t status = (expression);                                                      \
+    if (status != CUBLAS_STATUS_SUCCESS) {                                                     \
+      MS_LOG(EXCEPTION) << "cuBLAS Error: " << message << " | Error Number: " << status << " " \
+                        << mindspore::device::gpu::cuBlasGetErrorString(status)                \
+                        << trace::DumpSourceLines(node.lock());                                \
+    }                                                                                          \
   }
 
-#define CHECK_CUBLAS_RET_WITH_ERROR(expression, message)                             \
-  {                                                                                  \
-    cublasStatus_t status = (expression);                                            \
-    if (status != CUBLAS_STATUS_SUCCESS) {                                           \
-      MS_LOG(ERROR) << "cuBLAS Error: " << message << " | Error Number: " << status; \
-    }                                                                                \
+#define CHECK_CUBLAS_RET_WITH_ERROR(expression, message)                                   \
+  {                                                                                        \
+    cublasStatus_t status = (expression);                                                  \
+    if (status != CUBLAS_STATUS_SUCCESS) {                                                 \
+      MS_LOG(ERROR) << "cuBLAS Error: " << message << " | Error Number: " << status << " " \
+                    << mindspore::device::gpu::cuBlasGetErrorString(status);               \
+    }                                                                                      \
   }
 
 #define CHECK_CUSOLVER_RET_WITH_EXCEPT_NOTRACE(expression, message)                        \
@@ -210,6 +216,35 @@ inline bool CheckNullInput(const std::vector<size_t> &input_shape) {
 }
 #define CHECK_NULL_INPUT(input_shape) mindspore::device::gpu::CheckNullInput(input_shape)
 
+template <typename T>
+inline std::string ConvertVectorToString(const std::vector<T> &value) {
+  std::stringstream ss;
+  ss << "(";
+  for (auto it = value.begin(); it != value.end(); it++) {
+    if (it == value.begin()) {
+      ss << *it;
+    } else {
+      ss << ", " << *it;
+    }
+  }
+  ss << ")";
+  return ss.str();
+}
+
+#define CONVERT_VECTOR_TO_STRING(value) mindspore::device::gpu::ConvertVectorToString(value)
+
+inline bool CheckShapeNull(const std::vector<size_t> &shape, std::string kernel_name, std::string param_name) {
+  if (CHECK_NULL_INPUT(shape)) {
+    MS_LOG(WARNING) << "For '" << kernel_name << "', the shape of " << param_name << " cannot contain zero, but got "
+                    << CONVERT_VECTOR_TO_STRING(shape);
+    return true;
+  }
+  return false;
+}
+
+#define CHECK_SHAPE_NULL(shape, kernel_name, param_name) \
+  mindspore::device::gpu::CheckShapeNull(shape, kernel_name, param_name)
+
 inline const char *CurandGetErrorString(curandStatus_t status) {
   switch (status) {
     case CURAND_STATUS_VERSION_MISMATCH:
@@ -238,6 +273,41 @@ inline const char *CurandGetErrorString(curandStatus_t status) {
       return "Internal library error.";
     default:
       return "Unknown the curandStatus.";
+  }
+}
+
+inline const char *cuBlasGetErrorString(cublasStatus_t status) {
+  switch (status) {
+    case CUBLAS_STATUS_SUCCESS:
+      return "CUBLAS_STATUS_SUCCESS: The operation completed successfully.";
+    case CUBLAS_STATUS_NOT_INITIALIZED:
+      return "CUBLAS_STATUS_NOT_INITIALIZED: The cuBLAS library was not initialized.";
+    case CUBLAS_STATUS_ALLOC_FAILED:
+      return "CUBLAS_STATUS_ALLOC_FAILED: Resource allocation failed inside the cuBLAS library. This is usually caused "
+             "by a cudaMalloc() failure. ";
+    case CUBLAS_STATUS_INVALID_VALUE:
+      return "CUBLAS_STATUS_INVALID_VALUE: An unsupported value or parameter was passed to the function (a negative "
+             "vector size, for example).";
+    case CUBLAS_STATUS_ARCH_MISMATCH:
+      return "CUBLAS_STATUS_ARCH_MISMATCH: The function requires a feature absent from the device architecture; "
+             "usually caused by compute capability lower than 5.0.";
+    case CUBLAS_STATUS_MAPPING_ERROR:
+      return "CUBLAS_STATUS_MAPPING_ERROR: An access to GPU memory space failed, which is usually caused by a failure "
+             "to bind a texture.";
+    case CUBLAS_STATUS_EXECUTION_FAILED:
+      return "CUBLAS_STATUS_EXECUTION_FAILED: The GPU program failed to execute. This is often caused by a launch "
+             "failure of the kernel on the GPU, which can be caused by multiple reasons.";
+    case CUBLAS_STATUS_INTERNAL_ERROR:
+      return "CUBLAS_STATUS_INTERNAL_ERROR: An internal cuBLAS operation failed. This error is usually caused by a "
+             "cudaMemcpyAsync() failure. ";
+    case CUBLAS_STATUS_NOT_SUPPORTED:
+      return "CUBLAS_STATUS_NOT_SUPPORTED: The functionality requested is not supported.";
+    case CUBLAS_STATUS_LICENSE_ERROR:
+      return "CUBLAS_STATUS_LICENSE_ERROR: The functionality requested requires some license and an error was detected "
+             "when trying to check the current licensing. This error can happen if the license is not present or is "
+             "expired or if the environment variable NVIDIA_LICENSE_FILE is not set properly. ";
+    default:
+      return "Unknown cublasStatus.";
   }
 }
 

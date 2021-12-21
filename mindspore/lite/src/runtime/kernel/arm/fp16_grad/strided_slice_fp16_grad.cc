@@ -30,7 +30,7 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_StridedSliceGrad;
 
 namespace mindspore::kernel {
-int StridedSliceGradCPUKernelFp16::Init() {
+int StridedSliceGradCPUKernelFp16::Prepare() {
   if (!InferShapeDone()) {
     return RET_OK;
   }
@@ -41,14 +41,11 @@ int StridedSliceGradCPUKernelFp16::Init() {
   auto input = in_tensors_.at(0);
   CHECK_NULL_RETURN(input);
   CHECK_NULL_RETURN(out_tensors_.at(0));
-  switch (input->data_type()) {
-    case kNumberTypeFloat16:
-      param_->data_type = kDataTypeFloat16;
-      break;
-    default:
-      MS_LOG(ERROR) << "Not supported data type: " << input->data_type();
-      return RET_ERROR;
+  if (input->data_type() != kNumberTypeFloat16) {
+    MS_LOG(ERROR) << "Not supported data type: " << input->data_type();
+    return RET_ERROR;
   }
+  param_->data_type = kDataTypeFloat16;
   FillEmptyDims();
   FillOutputDim();
   return ReSize();

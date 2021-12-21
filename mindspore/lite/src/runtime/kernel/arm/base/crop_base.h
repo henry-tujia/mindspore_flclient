@@ -32,7 +32,7 @@ class CropBaseCPUKernel : public InnerKernel {
   }
   ~CropBaseCPUKernel() = default;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override { return 0; }
 
@@ -40,7 +40,7 @@ class CropBaseCPUKernel : public InnerKernel {
   std::vector<int> input_shape_;
   std::vector<int> output_shape_;
   CropParameter *crop_para_;
-  void PadOffset(int input_dim, CropParameter *crop_para) const;
+  int PadOffset(int input_dim, CropParameter *crop_para) const;
 };
 }  // namespace mindspore::kernel
 

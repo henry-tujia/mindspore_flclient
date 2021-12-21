@@ -29,7 +29,7 @@ namespace mindspore::kernel {
 namespace {
 constexpr size_t kDoubleInputsSize = 2;
 }
-int TileCPUKernel::Init() {
+int TileCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   if (!InferShapeDone()) {
@@ -39,7 +39,6 @@ int TileCPUKernel::Init() {
 }
 
 int TileCPUKernel::ReSize() {
-  tile_parameter_ = reinterpret_cast<TileParameter *>(op_parameter_);
   CHECK_NULL_RETURN(tile_parameter_);
   if (in_tensors_.size() == kDoubleInputsSize) {
     if (in_tensors_[1]->ElementsNum() > static_cast<int>(in_tensors_[0]->shape().size())) {

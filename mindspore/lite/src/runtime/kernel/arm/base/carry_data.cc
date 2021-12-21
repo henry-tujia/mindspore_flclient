@@ -39,13 +39,13 @@ int CarryDataKernel::MoveData(const std::vector<lite::Tensor *>::iterator &dst_b
     }
     lite::STATUS ret = RET_OK;
     if (src_tensor->IsConst() || src_tensor->IsGraphInput()) {
+      MS_LOG(DEBUG) << "Carry const data and graph inputs.";
       dst_tensor->set_data(src_tensor->data());
       dst_tensor->set_own_data(false);
-      MS_LOG(ERROR) << "Carry const data and graph inputs.";
     } else {
       if (src_tensor->data_type() == kObjectTypeTensorType && dst_tensor->data_type() == kObjectTypeTensorType) {
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
-        MS_LOG(ERROR) << "Carry MoveTensorListData";
+        MS_LOG(DEBUG) << "Carry MoveTensorListData";
         ret = MoveTensorListData(reinterpret_cast<lite::TensorList *>(dst_tensor),
                                  reinterpret_cast<lite::TensorList *>(src_tensor));
 #else
@@ -53,7 +53,7 @@ int CarryDataKernel::MoveData(const std::vector<lite::Tensor *>::iterator &dst_b
         return RET_NOT_SUPPORT;
 #endif
       } else {
-        MS_LOG(ERROR) << "Carry MoveTensorData";
+        MS_LOG(DEBUG) << "Carry MoveTensorData";
         ret = MoveTensorData(dst_tensor, src_tensor);
       }
     }
@@ -82,10 +82,14 @@ int CarryDataKernel::MoveTensorData(lite::Tensor *dst_tensor, lite::Tensor *src_
     return RET_ERROR;
   }
 
+  CHECK_NULL_RETURN(src_tensor->data());
+  CHECK_NULL_RETURN(dst_tensor->data());
   // need replace with increase data ref count
+  MS_CHECK_FALSE(src_tensor->Size() == 0, RET_ERROR);
   memcpy(dst_tensor->data(), src_tensor->data(), src_tensor->Size());
   return RET_OK;
 }
+
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
 int CarryDataKernel::MoveTensorListData(lite::TensorList *dst_tensorlist, lite::TensorList *src_tensorlist) {
   // shape may change, because tensors.size() can be change in RunGraph

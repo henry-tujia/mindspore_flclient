@@ -14,6 +14,9 @@ set(CPACK_PACK_ROOT_DIR ${BUILD_PATH}/package/)
 set(CPACK_CMAKE_SOURCE_DIR ${CMAKE_SOURCE_DIR})
 set(CPACK_ENABLE_SYM_FILE ${ENABLE_SYM_FILE})
 set(CPACK_CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE})
+set(CPACK_PYTHON_EXE ${Python3_EXECUTABLE})
+set(CPACK_PYTHON_VERSION ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR})
+
 if(ENABLE_GE)
     set(CPACK_MS_BACKEND "ge")
     set(CPACK_MS_TARGET "ascend or cpu")
@@ -21,23 +24,44 @@ if(ENABLE_GE)
 elseif(ENABLE_GPU)
     set(CPACK_MS_BACKEND "ms")
     set(CPACK_MS_TARGET "gpu or cpu")
-    set(CPACK_MS_PACKAGE_NAME "mindspore-gpu")
+    if(BUILD_DEV_MODE)
+        # providing cuda11 version of dev package only
+        set(CPACK_MS_PACKAGE_NAME "mindspore-cuda11-dev")
+    else()
+        set(CPACK_MS_PACKAGE_NAME "mindspore-gpu")
+    endif()
 elseif(ENABLE_D)
     set(CPACK_MS_BACKEND "ms")
     set(CPACK_MS_TARGET "ascend or cpu")
-    set(CPACK_MS_PACKAGE_NAME "mindspore-ascend")
+    if(BUILD_DEV_MODE)
+        set(CPACK_MS_PACKAGE_NAME "mindspore-ascend-dev")
+    else()
+        set(CPACK_MS_PACKAGE_NAME "mindspore-ascend")
+    endif()
 elseif(ENABLE_CPU)
     set(CPACK_MS_BACKEND "ms")
     set(CPACK_MS_TARGET "cpu")
-    set(CPACK_MS_PACKAGE_NAME "mindspore")
+    if(BUILD_DEV_MODE)
+        set(CPACK_MS_PACKAGE_NAME "mindspore-dev")
+    else()
+        set(CPACK_MS_PACKAGE_NAME "mindspore")
+    endif()
 elseif(ENABLE_ACL)
     set(CPACK_MS_BACKEND "debug")
     set(CPACK_MS_TARGET "ascend or gpu or cpu")
-    set(CPACK_MS_PACKAGE_NAME "mindspore-ascend")
+    if(BUILD_DEV_MODE)
+        set(CPACK_MS_PACKAGE_NAME "mindspore-ascend-dev")
+    else()
+        set(CPACK_MS_PACKAGE_NAME "mindspore-ascend")
+    endif()
 else()
     set(CPACK_MS_BACKEND "debug")
     set(CPACK_MS_TARGET "ascend or gpu or cpu")
-    set(CPACK_MS_PACKAGE_NAME "mindspore")
+    if(BUILD_DEV_MODE)
+        set(CPACK_MS_PACKAGE_NAME "mindspore-dev")
+    else()
+        set(CPACK_MS_PACKAGE_NAME "mindspore")
+    endif()
 endif()
 include(CPack)
 
@@ -105,21 +129,12 @@ if(ENABLE_MINDDATA)
             COMPONENT mindspore
         )
     endif()
-    if(PYTHON_VERSION MATCHES "3.8" OR PYTHON_VERSION MATCHES "3.7")
-      install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.2.0
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_core.so.4.2 COMPONENT mindspore)
-      install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.2.0
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgcodecs.so.4.2 COMPONENT mindspore)
-      install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.2.0
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgproc.so.4.2 COMPONENT mindspore)
-    elseif(PYTHON_VERSION MATCHES "3.9")
-      install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.5.1
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_core.so.4.5 COMPONENT mindspore)
-      install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.5.1
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgcodecs.so.4.5 COMPONENT mindspore)
-      install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.5.1
-        DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgproc.so.4.5 COMPONENT mindspore)
-    endif()
+    install(FILES ${opencv_LIBPATH}/libopencv_core.so.4.5.2
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_core.so.4.5 COMPONENT mindspore)
+    install(FILES ${opencv_LIBPATH}/libopencv_imgcodecs.so.4.5.2
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgcodecs.so.4.5 COMPONENT mindspore)
+    install(FILES ${opencv_LIBPATH}/libopencv_imgproc.so.4.5.2
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libopencv_imgproc.so.4.5 COMPONENT mindspore)
     install(FILES ${tinyxml2_LIBPATH}/libtinyxml2.so.8.0.0
       DESTINATION ${INSTALL_LIB_DIR} RENAME libtinyxml2.so.8 COMPONENT mindspore)
 
@@ -164,6 +179,11 @@ if(ENABLE_MPI)
             DESTINATION ${INSTALL_LIB_DIR}
             COMPONENT mindspore
         )
+        install(
+          TARGETS mpi_collective
+          DESTINATION ${INSTALL_LIB_DIR}
+          COMPONENT mindspore
+        )
     endif()
     if(ENABLE_D)
         install(
@@ -180,6 +200,11 @@ if(ENABLE_GPU)
             TARGETS gpu_collective
             DESTINATION ${INSTALL_LIB_DIR}
             COMPONENT mindspore
+        )
+        install(
+          TARGETS nvidia_collective
+          DESTINATION ${INSTALL_LIB_DIR}
+          COMPONENT mindspore
         )
     endif()
     install(
@@ -235,16 +260,16 @@ if(NOT ENABLE_GE)
 endif()
 
 if(MS_BUILD_GRPC)
-    install(FILES ${grpc_LIBPATH}/libmindspore_grpc++.so.1.27.3
+    install(FILES ${grpc_LIBPATH}/libmindspore_grpc++.so.1.36.1
       DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc++.so.1 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_grpc.so.9.0.0
-      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_gpr.so.9.0.0
-      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_gpr.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_upb.so.9.0.0
-      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_upb.so.9 COMPONENT mindspore)
-    install(FILES ${grpc_LIBPATH}/libmindspore_address_sorting.so.9.0.0
-      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_address_sorting.so.9 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_grpc.so.15.0.0
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_grpc.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_gpr.so.15.0.0
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_gpr.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_upb.so.15.0.0
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_upb.so.15 COMPONENT mindspore)
+    install(FILES ${grpc_LIBPATH}/libmindspore_address_sorting.so.15.0.0
+      DESTINATION ${INSTALL_LIB_DIR} RENAME libmindspore_address_sorting.so.15 COMPONENT mindspore)
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Windows")
@@ -264,7 +289,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Windows")
 endif()
 
 # set python files
-file(GLOB MS_PY_LIST ${CMAKE_SOURCE_DIR}/mindspore/*.py)
+file(GLOB MS_PY_LIST ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/*.py)
 install(
     FILES ${MS_PY_LIST}
     DESTINATION ${INSTALL_PY_DIR}
@@ -273,25 +298,25 @@ install(
 
 install(
     DIRECTORY
-        ${CMAKE_SOURCE_DIR}/mindspore/nn
-        ${CMAKE_SOURCE_DIR}/mindspore/_extends
-        ${CMAKE_SOURCE_DIR}/mindspore/parallel
-        ${CMAKE_SOURCE_DIR}/mindspore/mindrecord
-        ${CMAKE_SOURCE_DIR}/mindspore/numpy
-        ${CMAKE_SOURCE_DIR}/mindspore/train
-        ${CMAKE_SOURCE_DIR}/mindspore/boost
-        ${CMAKE_SOURCE_DIR}/mindspore/common
-        ${CMAKE_SOURCE_DIR}/mindspore/ops
-        ${CMAKE_SOURCE_DIR}/mindspore/communication
-        ${CMAKE_SOURCE_DIR}/mindspore/profiler
-        ${CMAKE_SOURCE_DIR}/mindspore/explainer
-        ${CMAKE_SOURCE_DIR}/mindspore/compression
-        ${CMAKE_SOURCE_DIR}/mindspore/run_check
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/nn
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/_extends
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/parallel
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/mindrecord
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/numpy
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/scipy
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/train
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/boost
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/common
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/ops
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/communication
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/profiler
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/compression
+        ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/run_check
     DESTINATION ${INSTALL_PY_DIR}
     COMPONENT mindspore
 )
 
-if((ENABLE_D OR ENABLE_GPU) AND ENABLE_AKG)
+if(ENABLE_AKG AND CMAKE_SYSTEM_NAME MATCHES "Linux")
     set (AKG_PATH ${BUILD_PATH}/mindspore/akg)
     file(REMOVE_RECURSE ${AKG_PATH}/_akg)
     file(MAKE_DIRECTORY ${AKG_PATH}/_akg)
@@ -305,9 +330,9 @@ if((ENABLE_D OR ENABLE_GPU) AND ENABLE_AKG)
     )
 endif()
 
-if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/dataset)
+if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/dataset)
     install(
-        DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/dataset
+        DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/dataset
         DESTINATION ${INSTALL_PY_DIR}
         COMPONENT mindspore
     )
@@ -316,9 +341,9 @@ endif()
 if(CMAKE_SYSTEM_NAME MATCHES "Windows")
     message("offline debugger does not support windows system temporarily")
 else()
-    if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/offline_debug)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/offline_debug)
         install(
-            DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/offline_debug
+            DIRECTORY ${CMAKE_SOURCE_DIR}/mindspore/python/mindspore/offline_debug
             DESTINATION ${INSTALL_PY_DIR}
             COMPONENT mindspore
         )

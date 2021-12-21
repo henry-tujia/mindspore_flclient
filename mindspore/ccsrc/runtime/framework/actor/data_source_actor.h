@@ -20,9 +20,9 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include <unordered_map>
 #include <queue>
 #include <utility>
+#include "utils/hash_map.h"
 #include "runtime/framework/actor/actor_common.h"
 #include "runtime/framework/actor/debug_aware_actor.h"
 #include "runtime/hardware/device_context.h"
@@ -48,36 +48,24 @@ class DataSourceActor : public DebugAwareActor {
 
   void Init() override;
 
-  // The process entry of data processing.
-  void FetchData(OpContext<DeviceTensor> *const context);
-
-  // The memory related operation interface.
-  void SendMemoryAllocReq(OpContext<DeviceTensor> *const context) override{};
-  void SendMemoryFreeReq(OpContext<DeviceTensor> *const context) override{};
-  // Copy data from data source to the device tensor buffer of actor after memory alloc finished.
-  void OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) override{};
-
  protected:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
+
+  void Run(OpContext<DeviceTensor> *const context) override { FetchData(context); }
+
+  // The process entry of data processing.
+  void FetchData(OpContext<DeviceTensor> *const context);
 
   // Construct the device tensors and fill to device tensor buffer from the member nodes during the data fetching.
   virtual void FillDataBuffer() = 0;
 
-  // Send output result of graph output to output actor.
-  virtual void SendResult(OpContext<DeviceTensor> *const context) = 0;
-
-  // Send recorder info to recorder actor, only the device queue data source actor need.
-  virtual void SendRecorderInfo(OpContext<DeviceTensor> *const context) {}
-
-  // Send output to downstream actors to trigger computing after fetching data finished.
-  void SendOutput(OpContext<DeviceTensor> *const context);
+  void UpdateOutputData(OpData<DeviceTensor> *const output_data, const DataArrowPtr &data_arrow,
+                        const AnfNodePtr &output_node, OpContext<DeviceTensor> *const context) override;
 
   // The buffers store the device tensors.
   std::queue<std::vector<DeviceTensor *>> buffers_;
   size_t buffer_capacity_;
-
-  //  The output_data_ corresponds to the output_data_arrows_ one by one.
-  std::vector<OpDataUniquePtr<DeviceTensor>> output_data_;
 };
 
 // The class represents that the data source is device queue.
@@ -93,20 +81,23 @@ class DeviceQueueDataSourceActor : public DataSourceActor {
 
   void Init() override;
 
+  // The memory related operation interface.
   void SendMemoryAllocReq(OpContext<DeviceTensor> *const context) override;
   void SendMemoryFreeReq(OpContext<DeviceTensor> *const context) override;
+  // Copy data from data source to the device tensor buffer of actor after memory alloc finished.
   void OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) override;
 
   void SendDebugReq(OpContext<DeviceTensor> *const context) override;
-  void OnDebugFinish(OpContext<DeviceTensor> *const context) override;
+
+  const CNodePtr &data_kernel() const { return data_kernel_; }
 
  protected:
   void FillDataBuffer() override;
-  void SendResult(OpContext<DeviceTensor> *const context) override;
-  void SendRecorderInfo(OpContext<DeviceTensor> *const context) override;
+  void SendRecorderInfo(OpContext<DeviceTensor> *const context) const override;
 
  private:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
 
   // Input data kernel(for example GetNext) fetches data from device queue.
   CNodePtr data_kernel_{nullptr};
@@ -126,20 +117,22 @@ class HostQueueDataSourceActor : public DataSourceActor {
         host_queue_(host_queue) {}
   ~HostQueueDataSourceActor() override = default;
 
+  // The memory related operation interface.
   void SendMemoryAllocReq(OpContext<DeviceTensor> *const context) override;
   void SendMemoryFreeReq(OpContext<DeviceTensor> *const context) override;
+  // Copy data from data source to the device tensor buffer of actor after memory alloc finished.
   void OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) override;
 
   size_t FetchNodePosition(const AnfNodePtr &node) const override;
   AnfNodePtr FetchNode(size_t node_position) const;
-  std::vector<AnfNodePtr> &data_nodes() { return data_nodes_; }
+  const std::vector<AnfNodePtr> &data_nodes() const { return data_nodes_; }
 
  protected:
   void FillDataBuffer() override;
-  void SendResult(OpContext<DeviceTensor> *const context) override;
 
  private:
   friend class GraphScheduler;
+  friend class ControlNodeScheduler;
 
   // Judge all the data_nodes_ is from the same device.
   bool IsSameDeviceType() const;
@@ -149,7 +142,7 @@ class HostQueueDataSourceActor : public DataSourceActor {
   std::vector<AnfNodePtr> data_nodes_;
 
   // The location of the data node in the data source actor.
-  std::unordered_map<AnfNodePtr, size_t> data_node_position_map_;
+  mindspore::HashMap<AnfNodePtr, size_t> data_node_position_map_;
 };
 
 using DataSourceActorPtr = std::shared_ptr<DataSourceActor>;

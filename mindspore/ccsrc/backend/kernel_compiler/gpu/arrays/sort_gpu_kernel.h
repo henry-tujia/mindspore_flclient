@@ -42,6 +42,9 @@ class SortGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input_device = GetDeviceAddress<T>(inputs, 0);
 
     T *output_device = GetDeviceAddress<T>(outputs, 0);
@@ -114,24 +117,29 @@ class SortGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_count = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_count != 1) {
-      MS_LOG(ERROR) << input_count << " inputs were provided, but SortGpuKernel expects 1.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 1, but got " << input_count;
     }
 
     size_t output_count = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_count != 2) {
-      MS_LOG(ERROR) << "Number of outputs is " << output_count << ", but should be 2 for SortGpuKernel.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 2, but got " << output_count;
     }
 
     input_shape_ = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape_, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
 
     input_rank_ = input_shape_.size();
-    if (input_rank_ > TRANSPOSE_MAX_DIMENSION) {
-      MS_LOG(ERROR) << "Sort cannot support input that has more than " << TRANSPOSE_MAX_DIMENSION << " dimensions.";
-      return false;
+    if (input_rank_ > TRANSPOSE_MAX_DIMENSION || input_rank_ < 1) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of input cannot be greater than "
+                        << TRANSPOSE_MAX_DIMENSION << ", or less than 1"
+                        << ", but got " << input_rank_;
     }
 
     input_size_ = 1;
@@ -144,6 +152,10 @@ class SortGpuKernel : public GpuKernel {
 
     if (axis_ < 0) {
       axis_ += input_rank_;
+    }
+    if ((size_t)axis_ >= input_rank_) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the value of 'axis' should be less than " << input_rank_
+                        << ", but got " << (size_t)axis_;
     }
 
     perm_.resize(input_rank_);
@@ -172,6 +184,7 @@ class SortGpuKernel : public GpuKernel {
     input_size_ = 0;
     axis_ = 0;
     descending_ = false;
+    is_null_input_ = false;
     input_shape_.clear();
     input_rank_ = 0;
     transposed_shape_.clear();
@@ -206,6 +219,7 @@ class SortGpuKernel : public GpuKernel {
   size_t input_size_;
   int64_t axis_;
   bool descending_;
+  bool is_null_input_;
   std::vector<size_t> input_shape_;
   size_t input_rank_;
 

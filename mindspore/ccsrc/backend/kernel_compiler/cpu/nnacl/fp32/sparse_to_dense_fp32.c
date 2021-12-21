@@ -14,29 +14,58 @@
  * limitations under the License.
  */
 #include "nnacl/fp32/sparse_to_dense_fp32.h"
+#include "nnacl/errorcode.h"
 
-void SparseToDense(int **sparse_indices, const int *output_shape, const float *sparse_values, float default_value,
-                   float *output, bool isScalar, int index_start, int index_end, int out_width) {
-  for (int i = index_start; i < index_end; i++) {
-    for (int j = 0; j < out_width; j++) {
-      output[i * out_width + j] = default_value;
+int SparseToDenseSetDefault(float *output, float default_value, SparseToDenseParameter *param, int task_id) {
+  if (param->op_parameter_.thread_num_ == 0) {
+    return NNACL_ERR;
+  }
+  int unit_per_thread = UP_DIV(param->output_num, param->op_parameter_.thread_num_);
+  int begin = unit_per_thread * task_id;
+  int end = MSMIN(begin + unit_per_thread, param->output_num);
+  for (int i = begin; i < end; i++) {
+    output[i] = default_value;
+  }
+  return NNACL_OK;
+}
+
+int SparseToDense(int *indices_vec, const float *sparse_values, float default_value, float *output,
+                  SparseToDenseParameter *param, int task_id) {
+  if (param->op_parameter_.thread_num_ == 0) {
+    return NNACL_ERR;
+  }
+  int unit_per_thread = UP_DIV(param->index_num, param->op_parameter_.thread_num_);
+  int begin = unit_per_thread * task_id;
+  int end = MSMIN(begin + unit_per_thread, param->index_num);
+
+  int stride0 = param->output_stride[0];
+  int stride1 = param->output_stride[1];
+  int stride2 = param->output_stride[2];
+
+  if (param->validate_indices_ == true) {
+    int index_before = -1;
+    for (int i = begin; i < end; i++) {
+      int *indices = indices_vec + i * DIMENSION_4D;
+      int index = stride0 * indices[0] + stride1 * indices[1] + stride2 * indices[2] + indices[3];
+      if (index <= index_before) {
+        return NNACL_ERR;
+      }
+      index_before = index;
     }
   }
 
-  int d1 = output_shape[1] * output_shape[2] * output_shape[3];
-  int d2 = output_shape[2] * output_shape[3];
-  int d3 = output_shape[3];
-
-  int index;
-  if (isScalar == true) {
-    for (int i = index_start; i < index_end; i++) {
-      index = d1 * sparse_indices[i][0] + d2 * sparse_indices[i][1] + d3 * sparse_indices[i][2] + sparse_indices[i][3];
+  if (param->is_scalar == true) {
+    for (int i = begin; i < end; i++) {
+      int *indices = indices_vec + i * DIMENSION_4D;
+      int index = stride0 * indices[0] + stride1 * indices[1] + stride2 * indices[2] + indices[3];
       output[index] = sparse_values[0];
     }
   } else {
-    for (int i = index_start; i < index_end; i++) {
-      index = d1 * sparse_indices[i][0] + d2 * sparse_indices[i][1] + d3 * sparse_indices[i][2] + sparse_indices[i][3];
+    for (int i = begin; i < end; i++) {
+      int *indices = indices_vec + i * DIMENSION_4D;
+      int index = stride0 * indices[0] + stride1 * indices[1] + stride2 * indices[2] + indices[3];
       output[index] = sparse_values[i];
     }
   }
+  return NNACL_OK;
 }

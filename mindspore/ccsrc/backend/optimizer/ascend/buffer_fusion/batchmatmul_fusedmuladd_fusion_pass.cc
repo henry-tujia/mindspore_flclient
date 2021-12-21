@@ -14,12 +14,7 @@
  * limitations under the License.
  */
 #include "backend/optimizer/ascend/buffer_fusion/batchmatmul_fusedmuladd_fusion_pass.h"
-#include <vector>
-#include <unordered_set>
-#include <memory>
-#include <string>
 #include "backend/kernel_compiler/kernel_fusion.h"
-#include "debug/anf_ir_dump.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "base/core_ops.h"
 #include "utils/ms_context.h"
@@ -28,14 +23,14 @@
 namespace mindspore {
 namespace opt {
 void BatchMatmulFusedMulAddFusionPass::MatchBatchMatmulFusedMulAdd(const CNodePtr &cnode,
-                                                                   const session::KernelGraph & /*kernel_graph*/,
+                                                                   const session::KernelGraph & /* kernel_graph */,
                                                                    FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(cnode);
   MS_EXCEPTION_IF_NULL(candidate_fusion);
   auto batch_matmul = cnode->input(kIndex2);
   MS_EXCEPTION_IF_NULL(batch_matmul);
   if (batch_matmul->isa<CNode>() && AnfAlgo::CheckPrimitiveType(batch_matmul, prim::kPrimBatchMatMul)) {
-    std::unordered_set<AnfNodePtr> record{cnode, batch_matmul};
+    mindspore::HashSet<AnfNodePtr> record{cnode, batch_matmul};
     candidate_fusion->push_back(record);
     SetRecordFusionId(record);
   }
@@ -44,12 +39,10 @@ void BatchMatmulFusedMulAddFusionPass::MatchBatchMatmulFusedMulAdd(const CNodePt
 void BatchMatmulFusedMulAddFusionPass::MatchSingleFusionPattern(const session::KernelGraph &kernel_graph,
                                                                 FusedNodeRecord *candidate_fusion) {
   MS_EXCEPTION_IF_NULL(candidate_fusion);
-  if (!LicManager::GetInstance().GetPassSwitch(OptPassEnum::BatchMatmulFusedMulAddFusionPass)) {
-    return;
-  }
   std::vector<AnfNodePtr> node_list = TopoSort(kernel_graph.get_return());
   for (auto &node : node_list) {
-    if (!AnfAlgo::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
+    MS_EXCEPTION_IF_NULL(node);
+    if (!AnfUtils::IsRealCNodeKernel(node) || fusion_id_allocator->HasFusionIdAttr(node) ||
         AnfAlgo::CheckPrimitiveType(node, prim::kPrimReturn)) {
       continue;
     }

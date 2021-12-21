@@ -27,6 +27,27 @@
 namespace mindspore {
 namespace ops {
 namespace {
+int64_t Log2Ceil(int64_t length) {
+  if (length == 0) {
+    return -1;
+  }
+  int64_t floor = 0;
+  for (int64_t i = 4; i >= 0; --i) {
+    const int64_t shift = static_cast<int64_t>(1UL << static_cast<unsigned>(i));
+    int64_t tmp = SizeToLong(static_cast<uint64_t>(length) >> static_cast<uint64_t>(shift));
+    if (tmp != 0) {
+      length = tmp;
+      floor += shift;
+    }
+  }
+  return length == (length & ~(unsigned int)(length - 1)) ? floor : floor + 1;
+}
+
+int64_t GetFftLength(int64_t length) {
+  int64_t shift = Log2Ceil(length);
+  return SizeToLong(1UL << LongToSize(shift));
+}
+
 abstract::ShapePtr AudioSpectrogramInferShape(const PrimitivePtr &primitive,
                                               const std::vector<AbstractBasePtr> &input_args) {
   auto input_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->BuildShape())[kShape];
@@ -52,8 +73,8 @@ abstract::ShapePtr AudioSpectrogramInferShape(const PrimitivePtr &primitive,
 }
 
 TypePtr AudioSpectrogramInferType(const PrimitivePtr &prim, const std::vector<AbstractBasePtr> &input_args) {
-  const int64_t x_index = 0;
-  return CheckAndConvertUtils::GetInputTensorType(input_args, x_index, prim->name());
+  const size_t x_index = 0;
+  return CheckAndConvertUtils::GetTensorInputType(prim->name(), input_args, x_index);
 }
 }  // namespace
 
@@ -69,27 +90,6 @@ void AudioSpectrogram::set_stride(const int64_t stride) { (void)this->AddAttr(kS
 int64_t AudioSpectrogram::get_stride() const {
   auto value_ptr = GetAttr(kStride);
   return GetValue<int64_t>(value_ptr);
-}
-
-int64_t Log2Ceil(int64_t length) {
-  if (length == 0) {
-    return -1;
-  }
-  int64_t floor = 0;
-  for (int64_t i = 4; i >= 0; --i) {
-    const int64_t shift = (int64_t)(1 << i);
-    int64_t tmp = SizeToLong(length >> shift);
-    if (tmp != 0) {
-      length = tmp;
-      floor += shift;
-    }
-  }
-  return length == (length & ~(unsigned int)(length - 1)) ? floor : floor + 1;
-}
-
-int64_t GetFftLength(int64_t length) {
-  int64_t shift = Log2Ceil(length);
-  return SizeToLong(1 << (unsigned int)shift);
 }
 
 void AudioSpectrogram::set_mag_square(const bool mag_square) { (void)this->AddAttr(kMagSquare, MakeValue(mag_square)); }

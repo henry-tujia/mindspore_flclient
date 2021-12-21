@@ -21,6 +21,7 @@
 #include "src/inner_kernel.h"
 #include "nnacl/matmul_parameter.h"
 #include "include/errorcode.h"
+#include "src/common/common.h"
 
 using mindspore::lite::RET_ERROR;
 using mindspore::lite::RET_MEMORY_FAILED;
@@ -28,6 +29,10 @@ using mindspore::lite::RET_OK;
 
 namespace mindspore::kernel {
 using MatrixPackFun = void (*)(const float *src_ptr, float *dst_ptr, int row, int col);
+using GemmFun = void (*)(const float *a, const float *b, float *c, const float *bias, const int act_type,
+                         const int depth, const int cur_col, const int col_align, const int row);
+using GemvFun = void (*)(const float *a, const float *b, float *c, const float *bias, const int act_type,
+                         const int depth, const int cur_col, const int col_align);
 class MatmulFp32BaseCPUKernel : public InnerKernel {
  public:
   MatmulFp32BaseCPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
@@ -37,18 +42,21 @@ class MatmulFp32BaseCPUKernel : public InnerKernel {
     vec_matmul_ = false;
   }
   ~MatmulFp32BaseCPUKernel() override;
-  int Init() override;
+  int Prepare() override;
   int ReSize() override;
   int Run() override;
 
  public:
-  int FloatRun(int task_id) const;
+  int ParallelRunByOC(int task_id) const;
+  int ParallelRunByBatch(int task_id) const;
+  using ParallelRun = int (MatmulFp32BaseCPUKernel::*)(int task_id) const;
+  ParallelRun parallel_fun_ = nullptr;
 
  protected:
   int InitBufferA();
   int InitBufferB();
-  int InitMatrixA(const float *src_ptr);
-  int InitMatrixB(const float *src_ptr);
+  int InitMatrixA(const float *src_ptr) const;
+  int InitMatrixB(const float *src_ptr) const;
   void FreeBiasBuf();
   int InitBiasData();
   void InitParameter();
@@ -58,20 +66,25 @@ class MatmulFp32BaseCPUKernel : public InnerKernel {
   void ResizeParameter();
   void FreeResizeBufA();
   void FreeResizeBufB();
-  void FreeBuffSrcB();
   int CalBroadCastBiasDataElements();
   int InitTmpOutBuffer();
+  void GetThreadCuttingPolicy();
 
  protected:
   MatMulParameter *params_ = nullptr;
   float *a_pack_ptr_ = nullptr;
   float *b_pack_ptr_ = nullptr;
+  int a_batch_ = 1;
+  int b_batch_ = 1;
+  std::vector<int> a_offset_;
+  std::vector<int> b_offset_;
 
  private:
   int col_tile_ = 0;
   int row_tile_ = 0;
   int oc_res_ = 0;
-  int thread_stride_ = 0;
+  int batch_stride_ = 0;
+  int oc_stride_ = 0;
   int thread_count_ = 0;
   bool vec_matmul_ = false;
   float *bias_ptr_ = nullptr;
@@ -81,9 +94,13 @@ class MatmulFp32BaseCPUKernel : public InnerKernel {
   float *output_data_ = nullptr;
   int matrix_a_pack_size_ = -1;
   int matrix_b_pack_size_ = -1;
-  float *src_b_ = nullptr;
   MatrixPackFun matrix_a_pack_fun_ = nullptr;
   MatrixPackFun matrix_b_pack_fun_ = nullptr;
+  bool batch_split_ = false;
+#if defined(ENABLE_AVX) || defined(ENABLE_AVX512)
+  GemmFun gemmCalFun = nullptr;
+  GemvFun gemvCalFun = nullptr;
+#endif
 };
 }  // namespace mindspore::kernel
 #endif  // MINDSPORE_LITE_SRC_RUNTIME_KERNEL_ARM_FP32_MATMUL_FP32_BASE_H_

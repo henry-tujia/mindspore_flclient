@@ -23,6 +23,9 @@ class MindDataTestPipeline : public UT::DatasetOpTesting {
  protected:
 };
 
+/// Feature: AlbumDataset.
+/// Description: test basic usage of AlbumDataset.
+/// Expectation: get correct number of data.
 TEST_F(MindDataTestPipeline, TestAlbumBasic) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumBasic.";
 
@@ -56,6 +59,108 @@ TEST_F(MindDataTestPipeline, TestAlbumBasic) {
   iter->Stop();
 }
 
+// Feature: Test Album dataset
+// Description: Create Album dataset without column names to load, iterate over dataset and count rows
+// Expectation: Ensure dataset is created and has 7 rows
+TEST_F(MindDataTestPipeline, TestAlbumNoOrder) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumBasic.";
+
+  std::string folder_path = datasets_root_path_ + "/testAlbum/images";
+  std::string schema_file = datasets_root_path_ + "/testAlbum/datasetSchema.json";
+  // Create a Album Dataset
+  std::shared_ptr<Dataset> ds = Album(folder_path, schema_file);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // Iterate the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 7);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Album dataset
+// Description: Create Album dataset with floatSchema.json, iterate over dataset and count rows
+// Expectation: Ensure dataset is created and has 7 rows
+TEST_F(MindDataTestPipeline, TestAlbumWithSchemaFloat) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumWithSchemaFloat.";
+
+  std::string folder_path = datasets_root_path_ + "/testAlbum/images";
+  std::string schema_file = datasets_root_path_ + "/testAlbum/floatSchema.json";
+  // Create a Album Dataset
+  std::shared_ptr<Dataset> ds = Album(folder_path, schema_file);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // Iterate the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 7);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+// Feature: Test Album dataset
+// Description: Create Album dataset with fullSchema.json, iterate over dataset and count rows
+// Expectation: Ensure dataset is created and has 7 rows
+TEST_F(MindDataTestPipeline, TestAlbumWithFullSchema) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumWithFullSchema.";
+
+  std::string folder_path = datasets_root_path_ + "/testAlbum/images";
+  std::string schema_file = datasets_root_path_ + "/testAlbum/fullSchema.json";
+  // Create a Album Dataset
+  std::shared_ptr<Dataset> ds = Album(folder_path, schema_file);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // This will trigger the creation of the Execution Tree and launch it.
+  std::shared_ptr<Iterator> iter = ds->CreateIterator();
+  EXPECT_NE(iter, nullptr);
+
+  // Iterate the dataset and get each row
+  std::unordered_map<std::string, mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    i++;
+    ASSERT_OK(iter->GetNextRow(&row));
+  }
+
+  EXPECT_EQ(i, 7);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+/// Feature: AlbumDatasetWithPipeline.
+/// Description: test usage of AlbumDataset with pipeline.
+/// Expectation: get correct number of data.
 TEST_F(MindDataTestPipeline, TestAlbumBasicWithPipeline) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumBasicWithPipeline.";
 
@@ -111,6 +216,69 @@ TEST_F(MindDataTestPipeline, TestAlbumBasicWithPipeline) {
   iter->Stop();
 }
 
+/// Feature: AlbumIteratorOneColumn.
+/// Description: test iterator of AlbumDataset with only the "image" column.
+/// Expectation: get correct data.
+TEST_F(MindDataTestPipeline, TestAlbumIteratorOneColumn) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumIteratorOneColumn.";
+  // Create a Album Dataset
+  std::string folder_path = datasets_root_path_ + "/testAlbum/images";
+  std::string schema_file = datasets_root_path_ + "/testAlbum/datasetSchema.json";
+  std::vector  <std::string> column_names = {"image", "label", "id"};
+  std::shared_ptr<Dataset> ds = Album(folder_path, schema_file, column_names);
+  EXPECT_NE(ds, nullptr);
+
+  // Create a Batch operation on ds
+  int32_t batch_size = 1;
+  ds = ds->Batch(batch_size);
+  EXPECT_NE(ds, nullptr);
+
+  // Create an iterator over the result of the above dataset
+  // Only select "image" column and drop others
+  std::vector<std::string> columns = {"image"};
+  std::shared_ptr<Iterator> iter = ds->CreateIterator(columns, -1);
+  EXPECT_NE(iter, nullptr);
+
+  // Iterate the dataset and get each row
+  std::vector<mindspore::MSTensor> row;
+  ASSERT_OK(iter->GetNextRow(&row));
+
+  uint64_t i = 0;
+  while (row.size() != 0) {
+    for (auto &v : row) {
+      MS_LOG(INFO) << "image shape:" << v.Shape();
+    }
+    ASSERT_OK(iter->GetNextRow(&row));
+    i++;
+  }
+  
+  EXPECT_EQ(i, 7);
+
+  // Manually terminate the pipeline
+  iter->Stop();
+}
+
+/// Feature: AlbumIteratorWrongColumn.
+/// Description: test iterator of AlbumDataset with wrong column.
+/// Expectation: get none piece of data.
+TEST_F(MindDataTestPipeline, TestAlbumIteratorWrongColumn) {
+  MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumIteratorWrongColumn.";
+  // Create a Album Dataset
+  std::string folder_path = datasets_root_path_ + "/testAlbum/images";
+  std::string schema_file = datasets_root_path_ + "/testAlbum/datasetSchema.json";
+  std::vector<std::string> column_names = {"image", "label", "id"};
+  std::shared_ptr<Dataset> ds = Album(folder_path, schema_file, column_names);
+  EXPECT_NE(ds, nullptr);
+
+  // Pass wrong column name
+  std::vector<std::string> columns = {"digital"};
+  std::shared_ptr<Iterator> iter = ds->CreateIterator(columns);
+  EXPECT_EQ(iter, nullptr);
+}
+
+/// Feature: AlbumDatasetGetters.
+/// Description: test usage of getters AlbumDataset.
+/// Expectation: get correct number of data and correct tensor shape.
 TEST_F(MindDataTestPipeline, TestAlbumGetters) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumGetters.";
 
@@ -139,6 +307,9 @@ TEST_F(MindDataTestPipeline, TestAlbumGetters) {
   EXPECT_EQ(num_samples, 7);
 }
 
+/// Feature: AlbumDecode.
+/// Description: test usage of AlbumDecode.
+/// Expectation: get correct number of data.
 TEST_F(MindDataTestPipeline, TestAlbumDecode) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumDecode.";
   std::string folder_path = datasets_root_path_ + "/testAlbum/images";
@@ -174,6 +345,9 @@ TEST_F(MindDataTestPipeline, TestAlbumDecode) {
   iter->Stop();
 }
 
+/// Feature: AlbumNumSampler.
+/// Description: test usage of AlbumDataset with num sampler.
+/// Expectation: get correct piece of data.
 TEST_F(MindDataTestPipeline, TestAlbumNumSamplers) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumNumSamplers.";
 
@@ -207,6 +381,9 @@ TEST_F(MindDataTestPipeline, TestAlbumNumSamplers) {
   iter->Stop();
 }
 
+/// Feature: AlbumError.
+/// Description: test failure of Album Dataset.
+/// Expectation: get none piece of data.
 TEST_F(MindDataTestPipeline, TestAlbumError) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumError.";
   std::string folder_path = datasets_root_path_ + "/testAlbum/ima";
@@ -222,6 +399,9 @@ TEST_F(MindDataTestPipeline, TestAlbumError) {
   EXPECT_EQ(iter, nullptr);
 }
 
+/// Feature: AlbumWithNullSamplerError.
+/// Description: test failure of Album Dataset.
+/// Expectation: get none piece of data.
 TEST_F(MindDataTestPipeline, TestAlbumWithNullSamplerError) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumWithNullSamplerError.";
   std::string folder_path = datasets_root_path_ + "/testAlbum/images";
@@ -237,6 +417,9 @@ TEST_F(MindDataTestPipeline, TestAlbumWithNullSamplerError) {
   EXPECT_EQ(iter, nullptr);
 }
 
+/// Feature: AlbumDuplicateColumnNameError.
+/// Description: test failure of Album Dataset.
+/// Expectation: get none piece of data.
 TEST_F(MindDataTestPipeline, TestAlbumDuplicateColumnNameError) {
   MS_LOG(INFO) << "Doing MindDataTestPipeline-TestAlbumDuplicateColumnNameError.";
   std::string folder_path = datasets_root_path_ + "/testAlbum/images";

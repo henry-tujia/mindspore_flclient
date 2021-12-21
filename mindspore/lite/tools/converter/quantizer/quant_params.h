@@ -19,6 +19,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <set>
 #include "schema/inner/model_generated.h"
 namespace mindspore::lite::quant {
 enum ActivationQuantizedMethod {
@@ -27,21 +28,31 @@ enum ActivationQuantizedMethod {
   REMOVAL_OUTLIER = 2,
 };
 
+enum TargetDevice {
+  CPU,
+  KIRIN,
+};
+
 struct CommonQuantParam {
   schema::QuantType quant_type = schema::QuantType_QUANT_NONE;
   int bit_num = 8;
   int min_quant_weight_size = 0;
   int min_quant_weight_channel = 16;
+  bool is_debug = false;
+  std::string debug_info_save_path;
+  std::set<std::string> skip_quant_node;
+  int thread_num = 4;
 };
 
 struct MixedBitWeightQuantParam {
   double init_scale = 0.02;
+  bool auto_tune = false;
 };
 
 struct FullQuantParam {
   ActivationQuantizedMethod activation_quant_method = MAX_MIN;
   bool bias_correction = true;
-  int thread_num = 1;
+  TargetDevice target_device = CPU;
 };
 }  // namespace mindspore::lite::quant
 

@@ -40,10 +40,10 @@ std::vector<int64_t> ConvertAnyUtil(const ValuePtr &value, const std::string &na
   MS_EXCEPTION_IF_NULL(value);
   std::vector<int64_t> list;
   if (name == "pad") {
-    if (!value->isa<ValueSequeue>()) {
+    if (!value->isa<ValueSequence>()) {
       MS_LOG(EXCEPTION) << "Value should be ValueTuple, but got" << value->type_name();
     }
-    auto vec = value->cast<ValueSequeuePtr>();
+    auto vec = value->cast<ValueSequencePtr>();
     list.resize(vec->value().size() + 2);
     list[0] = 1;
     list[1] = 1;
@@ -307,8 +307,10 @@ std::string GetOpIOFormat(const AnfNodePtr &anf) {
     ValuePtr format = prim->GetAttr("format");
     MS_EXCEPTION_IF_NULL(format);
     if (format->isa<Int64Imm>()) {
-      CheckAndConvertUtils::ConvertAttrValueToString(prim->name(), "format", &format);
-      return GetValue<std::string>(format);
+      bool converted = CheckAndConvertUtils::ConvertAttrValueToString(prim->name(), "format", &format);
+      if (converted) {
+        return GetValue<std::string>(format);
+      }
     } else {
       return GetValue<std::string>(format);
     }

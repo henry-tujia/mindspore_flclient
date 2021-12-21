@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,33 +27,50 @@
 #include <string>
 #include <vector>
 #include <type_traits>
-#include <unordered_map>
 #include <algorithm>
+
+#include "utils/hash_map.h"
 #include "base/base.h"
 #include "ir/named.h"
 #include "ir/dtype/type.h"
 
 namespace mindspore {
-// Number, abstract class.
+/// \brief Number defines an Object class whose type is number.
 class MS_CORE_API Number : public Object {
  public:
+  /// \brief Default constructor for Number.
   Number() : Object(kObjectTypeNumber), number_type_(kObjectTypeNumber), nbits_(0) {}
+
+  /// \brief Constructor for  Number.
+  ///
+  /// \param[in] number_type Define the number type of Number object.
+  /// \param[in] nbits Define the bit length of Number object.
+  /// \param[in] is_generic Define whether it is generic for Number object.
   Number(const TypeId number_type, const int nbits, bool is_generic = true)
       : Object(kObjectTypeNumber, is_generic), number_type_(number_type), nbits_(nbits) {}
+
+  /// \brief Destructor of Number.
   ~Number() override = default;
   MS_DECLARE_PARENT(Number, Object)
 
+  /// \brief Get the bit length of Number object.
+  ///
+  /// \return bit length of Number object.
   int nbits() const { return nbits_; }
 
   TypeId number_type() const override { return number_type_; }
   TypeId type_id() const override { return number_type_; }
   TypeId generic_type_id() const override { return kObjectTypeNumber; }
-
   bool operator==(const Type &other) const override;
   TypePtr DeepCopy() const override { return std::make_shared<Number>(); }
   std::string ToString() const override { return "Number"; }
   std::string ToReprString() const override { return "number"; }
   std::string DumpText() const override { return "Number"; }
+
+  /// \brief Get type name for Number object.
+  ///
+  /// \param Define the type name.
+  /// \return The full type name of the Number object.
   std::string GetTypeName(const std::string &type_name) const {
     std::ostringstream oss;
     oss << type_name;
@@ -71,26 +88,39 @@ class MS_CORE_API Number : public Object {
 using NumberPtr = std::shared_ptr<Number>;
 
 // Bool
+/// \brief Bool defines a Number class whose type is boolean.
 class MS_CORE_API Bool : public Number {
  public:
+  /// \brief Default constructor for Bool.
   Bool() : Number(kNumberTypeBool, 8) {}
+
+  /// \brief Destructor of Bool.
   ~Bool() override = default;
   MS_DECLARE_PARENT(Bool, Number)
 
   TypeId generic_type_id() const override { return kNumberTypeBool; }
   TypePtr DeepCopy() const override { return std::make_shared<Bool>(); }
   std::string ToString() const override { return "Bool"; }
-  std::string ToReprString() const override { return "bool"; }
+  std::string ToReprString() const override { return "bool_"; }
   std::string DumpText() const override { return "Bool"; }
 };
 
 // Int
+/// \brief Int defines a Number class whose type is int.
 class MS_CORE_API Int : public Number {
  public:
+  /// \brief Default constructor for Int.
   Int() : Number(kNumberTypeInt, 0) {}
+
+  /// \brief Constructor for Int.
+  ///
+  /// \param nbits Define the bit length of Int object.
   explicit Int(const int nbits);
+
+  /// \brief Destructor of Int.
   ~Int() override = default;
   MS_DECLARE_PARENT(Int, Number)
+
   TypeId generic_type_id() const override { return kNumberTypeInt; }
   TypePtr DeepCopy() const override {
     if (nbits() == 0) {
@@ -98,6 +128,7 @@ class MS_CORE_API Int : public Number {
     }
     return std::make_shared<Int>(nbits());
   }
+
   std::string ToString() const override { return GetTypeName("Int"); }
   std::string ToReprString() const override { return nbits() == 0 ? "int_" : GetTypeName("int"); }
   std::string DumpText() const override {
@@ -106,12 +137,20 @@ class MS_CORE_API Int : public Number {
 };
 
 // UInt
+/// \brief UInt defines a Number class whose type is uint.
 class MS_CORE_API UInt : public Number {
  public:
+  /// \brief Default constructor for UInt.
   UInt() : Number(kNumberTypeUInt, 0) {}
+
+  /// \brief Constructor for UInt.
+  ///
+  /// \param nbits Define the bit length of UInt object.
   explicit UInt(const int nbits);
+
   TypeId generic_type_id() const override { return kNumberTypeUInt; }
 
+  /// \brief Destructor of UInt.
   ~UInt() override {}
   MS_DECLARE_PARENT(UInt, Number)
 
@@ -121,6 +160,7 @@ class MS_CORE_API UInt : public Number {
     }
     return std::make_shared<UInt>(nbits());
   }
+
   std::string ToString() const override { return GetTypeName("UInt"); }
   std::string ToReprString() const override { return GetTypeName("uint"); }
   std::string DumpText() const override {
@@ -129,10 +169,18 @@ class MS_CORE_API UInt : public Number {
 };
 
 // Float
+/// \brief Float defines a Number class whose type is float.
 class MS_CORE_API Float : public Number {
  public:
+  /// \brief Default constructor for Float.
   Float() : Number(kNumberTypeFloat, 0) {}
+
+  /// \brief Constructor for Float.
+  ///
+  /// \param nbits Define the bit length of Float object.
   explicit Float(const int nbits);
+
+  /// \brief Destructor of Float.
   ~Float() override {}
   MS_DECLARE_PARENT(Float, Number)
 
@@ -143,6 +191,7 @@ class MS_CORE_API Float : public Number {
     }
     return std::make_shared<Float>(nbits());
   }
+
   std::string ToString() const override { return GetTypeName("Float"); }
   std::string ToReprString() const override { return nbits() == 0 ? "float_" : GetTypeName("float"); }
   std::string DumpText() const override {
@@ -151,38 +200,52 @@ class MS_CORE_API Float : public Number {
 };
 
 // Complex
+/// \brief Complex defines a Number class whose type is complex.
 class MS_CORE_API Complex : public Number {
  public:
-  Complex() : Number(kNumberTypeComplex64, 64, false) {}
+  /// \brief Default constructor for Complex.
+  Complex() : Number(kNumberTypeComplex, 0) {}
+
+  /// \brief Constructor for Complex.
+  ///
+  /// \param nbits Define the bit length of Complex object.
   explicit Complex(const int nbits);
+
+  /// \brief Destructor of Complex.
   ~Complex() override {}
   MS_DECLARE_PARENT(Complex, Number)
 
-  TypeId generic_type_id() const override { return kNumberTypeComplex64; }
-  TypePtr DeepCopy() const override { return std::make_shared<Complex>(nbits()); }
+  TypeId generic_type_id() const override { return kNumberTypeComplex; }
+  TypePtr DeepCopy() const override {
+    if (nbits() == 0) {
+      return std::make_shared<Complex>();
+    }
+    return std::make_shared<Complex>(nbits());
+  }
+
   std::string ToString() const override { return GetTypeName("Complex"); }
   std::string ToReprString() const override { return GetTypeName("complex"); }
   std::string DumpText() const override { return std::string("C") + std::to_string(nbits()); }
 };
 
 inline const TypePtr kBool = std::make_shared<Bool>();
-inline const TypePtr kInt8 = std::make_shared<Int>(8);
-inline const TypePtr kInt16 = std::make_shared<Int>(16);
-inline const TypePtr kInt32 = std::make_shared<Int>(32);
-inline const TypePtr kInt64 = std::make_shared<Int>(64);
-inline const TypePtr kUInt8 = std::make_shared<UInt>(8);
-inline const TypePtr kUInt16 = std::make_shared<UInt>(16);
-inline const TypePtr kUInt32 = std::make_shared<UInt>(32);
-inline const TypePtr kUInt64 = std::make_shared<UInt>(64);
-inline const TypePtr kFloat16 = std::make_shared<Float>(16);
-inline const TypePtr kFloat32 = std::make_shared<Float>(32);
-inline const TypePtr kFloat64 = std::make_shared<Float>(64);
+inline const TypePtr kInt8 = std::make_shared<Int>(static_cast<int>(BitsNum::eBits8));
+inline const TypePtr kInt16 = std::make_shared<Int>(static_cast<int>(BitsNum::eBits16));
+inline const TypePtr kInt32 = std::make_shared<Int>(static_cast<int>(BitsNum::eBits32));
+inline const TypePtr kInt64 = std::make_shared<Int>(static_cast<int>(BitsNum::eBits64));
+inline const TypePtr kUInt8 = std::make_shared<UInt>(static_cast<int>(BitsNum::eBits8));
+inline const TypePtr kUInt16 = std::make_shared<UInt>(static_cast<int>(BitsNum::eBits16));
+inline const TypePtr kUInt32 = std::make_shared<UInt>(static_cast<int>(BitsNum::eBits32));
+inline const TypePtr kUInt64 = std::make_shared<UInt>(static_cast<int>(BitsNum::eBits64));
+inline const TypePtr kFloat16 = std::make_shared<Float>(static_cast<int>(BitsNum::eBits16));
+inline const TypePtr kFloat32 = std::make_shared<Float>(static_cast<int>(BitsNum::eBits32));
+inline const TypePtr kFloat64 = std::make_shared<Float>(static_cast<int>(BitsNum::eBits64));
 inline const TypePtr kInt = std::make_shared<Int>();
 inline const TypePtr kUInt = std::make_shared<UInt>();
 inline const TypePtr kFloat = std::make_shared<Float>();
 inline const TypePtr kNumber = std::make_shared<Number>();
-inline const TypePtr kComplex64 = std::make_shared<Complex>(64);
-inline const TypePtr kComplex128 = std::make_shared<Complex>(128);
+inline const TypePtr kComplex64 = std::make_shared<Complex>(static_cast<int>(BitsNum::eBits64));
+inline const TypePtr kComplex128 = std::make_shared<Complex>(static_cast<int>(BitsNum::eBits128));
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CORE_IR_DTYPE_NUMBER_H_

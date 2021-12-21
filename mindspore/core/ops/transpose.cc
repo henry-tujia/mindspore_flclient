@@ -33,6 +33,9 @@ abstract::ShapePtr InferShape(const PrimitivePtr &primitive, const std::vector<A
   auto x_max_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->BuildShape())[kMaxShape];
   ShapeVector p_value;
   if (input_args.size() == 1) {
+    if (!primitive->HasAttr("perm")) {
+      MS_EXCEPTION(ValueError) << "For '" << op_name << "', the value of input_perm is required!";
+    }
     ValuePtr perm = primitive->GetAttr("perm");
     auto perm_val = perm->cast<ValueTuplePtr>();
     MS_EXCEPTION_IF_NULL(perm_val);
@@ -43,9 +46,9 @@ abstract::ShapePtr InferShape(const PrimitivePtr &primitive, const std::vector<A
     auto perm_value = input_args[1]->BuildValue();
     MS_EXCEPTION_IF_NULL(perm_value);
     if (perm_value->isa<tensor::Tensor>()) {
-      p_value = CheckAndConvertUtils::CheckTensorIntValue("perm value", perm_value, op_name);
+      p_value = CheckAndConvertUtils::CheckTensorIntValue("perm", perm_value, op_name);
     } else {
-      p_value = CheckAndConvertUtils::CheckAttrTupleInt("perm value", perm_value, op_name);
+      p_value = CheckAndConvertUtils::CheckTupleInt("input[perm]", perm_value, op_name);
     }
   }
   if (x_shape.size() != p_value.size()) {
@@ -67,7 +70,7 @@ abstract::ShapePtr InferShape(const PrimitivePtr &primitive, const std::vector<A
     }
   }
   std::vector<int64_t> in_shape(p_value);
-  (void)std::transform(in_shape.begin(), in_shape.end(), in_shape.begin(), [x_shape](int64_t i) { return x_shape[i]; });
+  (void)std::transform(in_shape.begin(), in_shape.end(), in_shape.begin(), [x_shape](size_t i) { return x_shape[i]; });
   if (!x_min_shape.empty() && !x_max_shape.empty()) {
     std::vector<int64_t> min_shape;
     std::vector<int64_t> max_shape;

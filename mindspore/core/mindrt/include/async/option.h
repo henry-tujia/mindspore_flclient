@@ -23,7 +23,6 @@
 #include "actor/log.h"
 
 namespace mindspore {
-
 template <typename T>
 struct InnerSome {
   explicit InnerSome(const T &t) : _t(std::move(t)) {}
@@ -42,7 +41,7 @@ class Option {
  public:
   Option() : data(), state(NONE) {}
 
-  explicit Option(const T &t) : data(t), state(SOME) {}
+  explicit Option(const T t) : data(t), state(SOME) {}
 
   explicit Option(T &&t) : data(std::move(t)), state(SOME) {}
 
@@ -105,7 +104,6 @@ class Option {
   T data;
   State state;
 };
-
 }  // namespace mindspore
 
 #endif

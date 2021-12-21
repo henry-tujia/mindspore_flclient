@@ -1,7 +1,7 @@
 file(GLOB_RECURSE DEVICE_SRC_LIST RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "common/*.cc"
     "kernel_info.cc" "executor/dynamic_kernel.cc" "executor/executor_callback.cc" "kernel_runtime.cc"
     "memory_manager.cc" "kernel_runtime_manager.cc" "convert_tensor_utils.cc" "memory_scheduler.cc"
-    "bucket.cc" "launch_kernel.cc" "launch_mul.cc"
+    "memory_offload_strategy.cc" "bucket.cc" "launch_kernel.cc" "launch_mul.cc" "tensor_array.cc"
 )
 
 if("${ENABLE_HIDDEN}" STREQUAL "OFF")
@@ -36,7 +36,7 @@ if(ENABLE_MPI)
         set_property(SOURCE ${MPI_SRC_LIST}
             PROPERTY COMPILE_DEFINITIONS SUBMODULE_ID=mindspore::SubModuleId::SM_DEVICE)
         add_library(mpi_adapter SHARED ${MPI_SRC_LIST})
-        target_link_libraries(mpi_adapter PRIVATE mindspore::ompi)
+        target_link_libraries(mpi_adapter PRIVATE mindspore::ompi mindspore::pybind11_module -ldl ${SECUREC_LIBRARY})
     endif()
 
     if(ENABLE_GPU)
@@ -90,12 +90,6 @@ if(ENABLE_SECURITY)
     list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/profiling_callback_register.cc")
     list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/profiling_manager.cc")
     list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/profiling_utils.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/desc_reporter.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/graph_desc_reporter.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/op_name_task_stream_reporter.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/point_reporter.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/profiling_desc.cc")
-    list(REMOVE_ITEM D_SRC_LIST "ascend/profiling/reporter/task_desc_reporter.cc")
 endif()
 
 set_property(SOURCE ${DEVICE_SRC_LIST} ${D_SRC_LIST} ${CPU_SRC_LIST}

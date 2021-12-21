@@ -53,7 +53,10 @@ class RandomOpGpuKernel : public GpuKernel {
         output_size_(sizeof(T)),
         workspace_size_(sizeof(curandState)),
         seed_(0),
-        seed2_(0) {}
+        seed2_(0),
+        mask_generator_(nullptr),
+        states_init_(false),
+        is_null_input_(false) {}
   ~RandomOpGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -62,14 +65,40 @@ class RandomOpGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
-    void *workspace_addr = GetDeviceAddress<void *>(workspace, 0);
-    curandState *devStates = reinterpret_cast<curandState *>(workspace_addr);
+    if (is_null_input_) {
+      return true;
+    }
+
+    curandState *devStates = nullptr;
+    // Operator StandardNormal and CudnnUniformReal use curand
+    // so they do not need workspace memory.
+    if (random_op_type_ >= RANDOM_OP_UNIFORM_INT && random_op_type_ <= RANDOM_OP_UNIFORM_REAL) {
+      void *workspace_addr = GetDeviceAddress<void *>(workspace, 0);
+      devStates = reinterpret_cast<curandState *>(workspace_addr);
+    }
     T *output_addr = GetDeviceAddress<T>(outputs, 0);
 
     switch (random_op_type_) {
       case RANDOM_OP_NORMAL: {
-        StandardNormal(seed_, seed2_, devStates, output_addr, outputs[0]->size / sizeof(T),
-                       reinterpret_cast<cudaStream_t>(stream_ptr));
+        float *mask_f = GetDeviceAddress<float>(outputs, 0);
+        std::random_device rd;
+        int RNG_seed = static_cast<int>(rd());
+        if (seed2_ != 0) {
+          RNG_seed = seed2_;
+        } else if (seed_ != 0) {
+          RNG_seed = seed_;
+        }
+        CHECK_CURAND_RET_WITH_EXCEPT(curandCreateGenerator(&mask_generator_, CURAND_RNG_PSEUDO_PHILOX4_32_10),
+                                     "Failed to create generator");
+        CHECK_CURAND_RET_WITH_EXCEPT(curandSetPseudoRandomGeneratorSeed(mask_generator_, RNG_seed),
+                                     "Failed to SetPseudoRandomGeneratorSeed");
+        MS_EXCEPTION_IF_NULL(mask_generator_);
+        CHECK_CURAND_RET_WITH_EXCEPT(curandSetStream(mask_generator_, reinterpret_cast<cudaStream_t>(stream_ptr)),
+                                     "Failed to set stream for generator");
+        // curandGen only support float or double for mask.
+        CHECK_CURAND_RET_WITH_EXCEPT(
+          curandGenerateNormal(mask_generator_, mask_f, outputs[0]->size / sizeof(float), 0.0, 1.0),
+          "Failed to generate uniform");
         break;
       }
       case RANDOM_OP_UNIFORM_INT: {
@@ -92,7 +121,7 @@ class RandomOpGpuKernel : public GpuKernel {
       case RANDOM_OP_CUDNN_UNIFORM_REAL: {
         float *mask_f = GetDeviceAddress<float>(outputs, 0);
         if (!states_init_) {
-          CHECK_CURAND_RET_WITH_EXCEPT(curandCreateGenerator(&mask_generator_, CURAND_RNG_PSEUDO_DEFAULT),
+          CHECK_CURAND_RET_WITH_EXCEPT(curandCreateGenerator(&mask_generator_, CURAND_RNG_PSEUDO_PHILOX4_32_10),
                                        "Failed to create generator");
           CHECK_CURAND_RET_WITH_EXCEPT(curandSetPseudoRandomGeneratorSeed(mask_generator_, seed_),
                                        "Failed to SetPseudoRandomGeneratorSeed");
@@ -136,6 +165,13 @@ class RandomOpGpuKernel : public GpuKernel {
       return false;
     }
     auto input_shape_0 = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shape_0) || CHECK_NULL_INPUT(output_shape);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'RandomOpGpuKernel', input or output is null";
+      InitSizeLists();
+      return true;
+    }
     for (size_t i = 0; i < input_shape_0.size(); i++) {
       input_size_0_ *= input_shape_0[i];
     }
@@ -144,14 +180,20 @@ class RandomOpGpuKernel : public GpuKernel {
       input_size_1_ *= 1;
       input_size_2_ *= 1;
     }
-    auto output_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+
     for (size_t i = 0; i < output_shape.size(); i++) {
       output_size_ *= output_shape[i];
       workspace_size_ *= output_shape[i];
     }
-    MS_EXCEPTION_IF_NULL(AnfAlgo::GetCNodePrimitive(kernel_node));
-    seed_ = static_cast<int>(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed")));
-    seed2_ = static_cast<int>(GetValue<int64_t>(AnfAlgo::GetCNodePrimitive(kernel_node)->GetAttr("seed2")));
+    // Operator CudnnUniformReal does not need workspace memory.
+    if (random_op_type_ == RANDOM_OP_CUDNN_UNIFORM_REAL) {
+      workspace_size_ = 0;
+    }
+
+    auto prim = AnfAlgo::GetCNodePrimitive(kernel_node);
+    MS_EXCEPTION_IF_NULL(prim);
+    seed_ = static_cast<int>(GetValue<int64_t>(prim->GetAttr("seed")));
+    seed2_ = static_cast<int>(GetValue<int64_t>(prim->GetAttr("seed2")));
     InitSizeLists();
     return true;
   }
@@ -180,7 +222,8 @@ class RandomOpGpuKernel : public GpuKernel {
   std::vector<size_t> output_size_list_;
   std::vector<size_t> workspace_size_list_;
   curandGenerator_t mask_generator_;
-  bool states_init_{false};
+  bool states_init_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

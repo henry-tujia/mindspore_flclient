@@ -34,9 +34,10 @@ constexpr auto kReduceOpSum = "sum";
 constexpr auto kDeviceNum = "device_num";
 constexpr size_t kPositionOffset = 3;
 constexpr int64_t kFusionNumThreshold = 2;
+}  // namespace
 
-bool CreateOutputsOfBNTrainingReduce(const FuncGraphPtr &graph, const CNodePtr &bn_cnode,
-                                     std::vector<AnfNodePtr> *bn_training_reduce_outputs) {
+bool BnSplit::CreateOutputsOfBNTrainingReduce(const FuncGraphPtr &graph, const CNodePtr &bn_cnode,
+                                              std::vector<AnfNodePtr> *bn_training_reduce_outputs) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(bn_cnode);
   if (AnfAlgo::GetInputTensorNum(bn_cnode) != kBnInputTensorNum) {
@@ -46,7 +47,7 @@ bool CreateOutputsOfBNTrainingReduce(const FuncGraphPtr &graph, const CNodePtr &
   std::vector<AnfNodePtr> bn_training_reduce_inputs = {
     NewValueNode(std::make_shared<Primitive>(kBNTrainingReduceOpName))};
   bn_training_reduce_inputs.push_back(bn_cnode->input(kIndex1));
-  auto bn_training_reduce = graph->NewCNode(bn_training_reduce_inputs);
+  auto bn_training_reduce = NewCNode(bn_training_reduce_inputs, graph);
   MS_EXCEPTION_IF_NULL(bn_training_reduce);
   auto kernel_info = std::make_shared<device::KernelInfo>();
   MS_EXCEPTION_IF_NULL(kernel_info);
@@ -67,14 +68,13 @@ bool CreateOutputsOfBNTrainingReduce(const FuncGraphPtr &graph, const CNodePtr &
   return true;
 }
 
-AnfNodePtr CreateOutputsOfBNTrainingUpdate(const FuncGraphPtr &graph, const CNodePtr &bn_cnode,
-                                           const std::vector<AnfNodePtr> &bn_training_reduce_outputs) {
+AnfNodePtr BnSplit::CreateOutputsOfBNTrainingUpdate(const FuncGraphPtr &graph, const CNodePtr &bn_cnode,
+                                                    const std::vector<AnfNodePtr> &bn_training_reduce_outputs) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(bn_cnode);
   CheckCNodeInputSize(bn_cnode, kBnInputTensorNum);
   if (bn_training_reduce_outputs.size() != kBNTrainingReduceOutputNum) {
-    MS_LOG(EXCEPTION) << "BN1 outputs has wrong input size"
-                      << " trace: " << trace::DumpSourceLines(bn_cnode);
+    MS_LOG(EXCEPTION) << "BN1 outputs has wrong input size" << trace::DumpSourceLines(bn_cnode);
   }
   // the inputs of BNTrainingUpdate are from the outputs of BNTrainingReduce and the inputs of BN
   std::vector<AnfNodePtr> bn_training_update_inputs = {
@@ -86,7 +86,7 @@ AnfNodePtr CreateOutputsOfBNTrainingUpdate(const FuncGraphPtr &graph, const CNod
   bn_training_update_inputs.push_back(bn_cnode->input(kIndex3));
   bn_training_update_inputs.push_back(bn_cnode->input(kIndex4));
   bn_training_update_inputs.push_back(bn_cnode->input(kIndex5));
-  auto bn_training_update = graph->NewCNode(bn_training_update_inputs);
+  auto bn_training_update = NewCNode(bn_training_update_inputs, graph);
   MS_EXCEPTION_IF_NULL(bn_training_update);
   auto kernel_info = std::make_shared<device::KernelInfo>();
   MS_EXCEPTION_IF_NULL(kernel_info);
@@ -100,7 +100,7 @@ AnfNodePtr CreateOutputsOfBNTrainingUpdate(const FuncGraphPtr &graph, const CNod
   return bn_training_update;
 }
 
-AnfNodePtr SplitBatchNormForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr &node) {
+AnfNodePtr BnSplit::SplitBatchNormForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr &node) const {
   MS_EXCEPTION_IF_NULL(func_graph);
   MS_EXCEPTION_IF_NULL(node);
 
@@ -117,15 +117,14 @@ AnfNodePtr SplitBatchNormForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr
     return nullptr;
   }
   if (bn_training_reduce_outputs.size() != kBN1OutputNum) {
-    MS_LOG(EXCEPTION) << "make outputs of op BNTrainingReduce fail"
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "make outputs of op BNTrainingReduce fail" << trace::DumpSourceLines(node);
   }
 
   // Create BNTrainingUpdate node
   return CreateOutputsOfBNTrainingUpdate(func_graph, cnode, bn_training_reduce_outputs);
 }
 
-AnfNodePtr SyncBNSplitForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr &node) {
+AnfNodePtr SyncBnSplit::SyncBNSplitForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr &node) const {
   MS_EXCEPTION_IF_NULL(func_graph);
   MS_EXCEPTION_IF_NULL(node);
 
@@ -142,30 +141,30 @@ AnfNodePtr SyncBNSplitForTBE(const FuncGraphPtr &func_graph, const AnfNodePtr &n
     return nullptr;
   }
   if (bn_training_reduce_outputs.size() != kBN1OutputNum) {
-    MS_LOG(EXCEPTION) << "make outputs of op BNTrainingReduce fail"
-                      << " trace: " << trace::DumpSourceLines(node);
+    MS_LOG(EXCEPTION) << "make outputs of op BNTrainingReduce fail" << trace::DumpSourceLines(node);
   }
 
   std::vector<AnfNodePtr> allreduce_mul_outputs;
   for (size_t i = 0; i < bn_training_reduce_outputs.size(); ++i) {
-    auto allreduce_mul_output = CreateAllReduceAndMul(func_graph, bn_training_reduce_outputs[i], cnode);
+    auto allreduce_mul_output = CreateAllReduceAndMul(func_graph, bn_training_reduce_outputs[i], cnode, *this);
     allreduce_mul_outputs.emplace_back(allreduce_mul_output);
   }
 
   // Create BNTrainingUpdate node
   return CreateOutputsOfBNTrainingUpdate(func_graph, cnode, allreduce_mul_outputs);
 }
-}  // namespace
 
 AnfNodePtr CreateValueNodeOfDeviceNumReciprocal(const FuncGraphPtr &graph, const CNodePtr &sync_bn_cnode) {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(sync_bn_cnode);
   if (!AnfAlgo::HasNodeAttr(kDeviceNum, sync_bn_cnode)) {
-    MS_LOG(EXCEPTION) << "The node [" << sync_bn_cnode->DebugString() << "] does not have attr device_num.";
+    MS_LOG(EXCEPTION) << "The node [" << sync_bn_cnode->DebugString() << "] does not have attr device_num."
+                      << trace::DumpSourceLines(sync_bn_cnode);
   }
   auto device_num = AnfAlgo::GetNodeAttr<int64_t>(sync_bn_cnode, kDeviceNum);
   if (device_num == 0) {
-    MS_LOG(EXCEPTION) << "The device_num attr of node [" << sync_bn_cnode->DebugString() << "] should not be 0";
+    MS_LOG(EXCEPTION) << "The device_num attr of node [" << sync_bn_cnode->DebugString() << "] should not be 0."
+                      << trace::DumpSourceLines(sync_bn_cnode);
   }
   MS_LOG(INFO) << "device_num value: " << device_num;
   const float device_num_reciprocal = 1.0 / device_num;
@@ -201,7 +200,7 @@ AnfNodePtr InsertCast(const FuncGraphPtr &graph, const AnfNodePtr &input, const 
 }
 
 AnfNodePtr CreateAllReduceAndMul(const FuncGraphPtr &graph, const AnfNodePtr &allreduce_input,
-                                 const CNodePtr &sync_bn_cnode) {
+                                 const CNodePtr &sync_bn_cnode, const PatternProcessPass &pass) {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(allreduce_input);
   MS_EXCEPTION_IF_NULL(sync_bn_cnode);
@@ -214,7 +213,7 @@ AnfNodePtr CreateAllReduceAndMul(const FuncGraphPtr &graph, const AnfNodePtr &al
 
   // create AllReduce
   std::vector<AnfNodePtr> allreduce_inputs = {NewValueNode(std::make_shared<Primitive>(kAllReduceOpName)), input_node};
-  auto allreduce = graph->NewCNode(allreduce_inputs);
+  auto allreduce = pass.NewCNode(allreduce_inputs, graph);
   MS_EXCEPTION_IF_NULL(allreduce);
   allreduce->set_abstract(input_node->abstract());
   allreduce->set_scope(allreduce_input->scope());
@@ -224,7 +223,8 @@ AnfNodePtr CreateAllReduceAndMul(const FuncGraphPtr &graph, const AnfNodePtr &al
   auto sync_bn_opname = sync_bn_cnode->fullname_with_scope();
   auto opid_pos = sync_bn_opname.rfind("-op");
   if (opid_pos == std::string::npos || opid_pos + kPositionOffset >= sync_bn_opname.size()) {
-    MS_LOG(EXCEPTION) << "op[" << sync_bn_cnode->DebugString() << "] has no opid.";
+    MS_LOG(EXCEPTION) << "Op[" << sync_bn_cnode->DebugString() << "] has no opid."
+                      << trace::DumpSourceLines(sync_bn_cnode);
     return nullptr;
   }
   int64_t opid = std::stol(sync_bn_opname.substr(opid_pos + kPositionOffset));
@@ -238,7 +238,7 @@ AnfNodePtr CreateAllReduceAndMul(const FuncGraphPtr &graph, const AnfNodePtr &al
   auto device_num_reciprocal_vnode = CreateValueNodeOfDeviceNumReciprocal(graph, sync_bn_cnode);
   std::vector<AnfNodePtr> mul_inputs = {NewValueNode(std::make_shared<Primitive>(kMulOpName)), allreduce,
                                         device_num_reciprocal_vnode};
-  auto mul = graph->NewCNode(mul_inputs);
+  auto mul = pass.NewCNode(mul_inputs, graph);
   MS_EXCEPTION_IF_NULL(mul);
   mul->set_abstract(input_node->abstract());
   mul->set_scope(allreduce_input->scope());

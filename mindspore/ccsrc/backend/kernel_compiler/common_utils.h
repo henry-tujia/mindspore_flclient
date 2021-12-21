@@ -33,16 +33,15 @@
 
 namespace mindspore {
 namespace kernel {
-constexpr auto kCceKernelMeta = "./kernel_meta/";
-constexpr auto kGpuKernelMeta = "./cuda_meta";
+constexpr auto kAkgKernelMeta = "kernel_meta/";
 constexpr auto kProcessorAiCore = "aicore";
 constexpr auto kProcessorAiCpu = "aicpu";
 constexpr auto kProcessorCuda = "cuda";
+constexpr auto kProcessorCpu = "cpu";
 constexpr auto kProcessorUnknown = "unknown";
 constexpr auto kJsonSuffix = ".json";
 constexpr auto kInfoSuffix = ".info";
 constexpr unsigned int AUTODIFF_COMPILE_OVERTIME = 600;
-constexpr auto kArgDataformat = "data_format";
 
 const std::vector<std::string> support_devices = {"aicore", "aicpu", "cuda"};
 
@@ -72,24 +71,21 @@ class KernelMeta {
   std::unordered_map<std::string, std::string> kernel_meta_map_;
 };
 
+std::string GetCompilerCachePath();
 bool CheckCache(const std::string &kernel_name);
 KernelPackPtr SearchCache(const std::string &kernel_name, const std::string &processor);
 KernelPackPtr InsertCache(const std::string &kernel_name, const std::string &processor);
 TypeId DtypeToTypeId(const std::string &dtypes);
 std::string Dtype2ShortType(const std::string &dtypes);
-std::string TypeId2String(TypeId type_id, bool unknown_as_default = false);
 size_t GetDtypeNbyte(const std::string &dtypes);
 bool GetShapeSize(const std::vector<size_t> &shape, const TypePtr &type_ptr, int64_t *size_i);
 bool ParseMetadata(const CNodePtr &kernel_node, const std::shared_ptr<const OpInfo> &op_info_ptr, Processor processor,
                    std::vector<std::shared_ptr<KernelBuildInfo>> *const kernel_info_list);
-void SaveJsonInfo(const std::string &json_name, const std::string &info, const std::string &base_path = kCceKernelMeta);
+void SaveJsonInfo(const std::string &json_name, const std::string &info, const std::string &base_path);
 std::string GetProcessor(const AnfNodePtr &anf_node);
 Processor GetProcessor(const string &processor);
 bool IsSameShape(const std::vector<size_t> &shape_a, const std::vector<size_t> &shape_b);
 int Sign(float x);
-std::pair<AnfNodePtr, size_t> GetKernelInput(const AnfNodePtr &anf_node, size_t index);
-std::vector<std::pair<AnfNodePtr, std::pair<size_t, size_t>>> GetInputIndex(const std::vector<AnfNodePtr> &node_list,
-                                                                            const std::vector<AnfNodePtr> &input_list);
 std::vector<std::pair<AnfNodePtr, size_t>> GetOutputIndex(const std::vector<AnfNodePtr> &node_list,
                                                           const std::vector<AnfNodePtr> &input_list,
                                                           const std::vector<AnfNodePtr> &output_list);
@@ -97,7 +93,6 @@ void GetValidKernelNodes(const FuncGraphPtr &func_graph, std::vector<AnfNodePtr>
 void GetValidKernelNodes(const FuncGraphPtr &func_graph, std::vector<AnfNodePtr> *node_list,
                          std::vector<AnfNodePtr> *input_list, std::vector<AnfNodePtr> *output_list);
 void GetFuncGraphOutputNodes(const FuncGraphPtr &func_graph, std::vector<AnfNodePtr> *output_list);
-bool GetInputTensorValue(const AnfNodePtr &anf_node, size_t input_idx, nlohmann::json *const node_json);
 void GetGraphRealOutput(const FuncGraphPtr &func_graph, std::vector<std::pair<AnfNodePtr, size_t>> *node_list);
 bool IsWeightBoundary(const AnfNodePtr &node);
 std::vector<int64_t> GetReduceAttrAxis(const CNodePtr &cnode);
@@ -129,6 +124,36 @@ inline std::string Vector2Str(const std::vector<T> &inputs) {
 }
 
 template <typename T>
+inline std::string Map2Str(const std::map<std::string, T> value) {
+  std::stringstream ss;
+  ss << "(";
+  for (auto it = value.begin(); it != value.end(); it++) {
+    if (it == value.begin()) {
+      ss << it->first;
+    } else {
+      ss << ", " << it->first;
+    }
+  }
+  ss << ")";
+  return ss.str();
+}
+
+template <typename T>
+inline std::string Unorderedmap2Str(const std::unordered_map<std::string, T> value) {
+  std::stringstream ss;
+  ss << "(";
+  for (auto it = value.begin(); it != value.end(); it++) {
+    if (it == value.begin()) {
+      ss << it->first;
+    } else {
+      ss << ", " << it->first;
+    }
+  }
+  ss << ")";
+  return ss.str();
+}
+
+template <typename T>
 inline T ComputeLerp(T top_left, T top_right, T bottom_left, T bottom_right, T x_lerp, T y_lerp) {
   T top = top_left + (top_right - top_left) * x_lerp;
   T bottom = bottom_left + (bottom_right - bottom_left) * x_lerp;
@@ -144,6 +169,30 @@ std::vector<int64_t> CalDimOffset(const std::vector<int64_t> &input_shape);
 size_t GetCopySize(const std::vector<int64_t> &dim_offset, const std::vector<int64_t> &start,
                    const std::vector<int64_t> &stop);
 size_t UnitSizeInBytes(const mindspore::TypeId &t);
+
+#define CHECK_KERNEL_INPUTS_NUM(actual_inputs_num, expect_inputs_num, kernel_name)                     \
+  do {                                                                                                 \
+    if ((actual_inputs_num) != (expect_inputs_num)) {                                                  \
+      MS_LOG(EXCEPTION) << (kernel_name) << " requires " << (expect_inputs_num) << " inputs, but got " \
+                        << (actual_inputs_num) << ".";                                                 \
+    }                                                                                                  \
+  } while (0)
+
+#define CHECK_KERNEL_OUTPUTS_NUM(actual_outputs_num, expect_outputs_num, kernel_name)                       \
+  do {                                                                                                      \
+    if ((actual_outputs_num) != (expect_outputs_num)) {                                                     \
+      MS_LOG(EXCEPTION) << (kernel_name) << " should have " << (expect_outputs_num) << " outputs, but got " \
+                        << (actual_outputs_num) << ".";                                                     \
+    }                                                                                                       \
+  } while (0)
+
+#define CHECK_KERNEL_WORKSPACE_SIZE(actual_size, expect_size, kernel_name)                                           \
+  do {                                                                                                               \
+    if ((actual_size) != (expect_size)) {                                                                            \
+      MS_LOG(EXCEPTION) << (kernel_name) << " requires " << (expect_size) << " workspace, but got " << (actual_size) \
+                        << ".";                                                                                      \
+    }                                                                                                                \
+  } while (0)
 }  // namespace kernel
 }  // namespace mindspore
 

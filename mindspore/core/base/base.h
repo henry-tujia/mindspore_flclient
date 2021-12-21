@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,10 @@
 #include <mutex>
 #include <string>
 #include <typeinfo>
-#include <unordered_map>
 #include <vector>
 #include <utility>
+#include <algorithm>
+#include "utils/hashing.h"
 #include "utils/visible.h"
 #include "utils/log_adapter.h"
 #include "utils/ordered_set.h"
@@ -37,10 +38,29 @@ struct is_shared_ptr : public std::false_type {};
 template <typename T>
 struct is_shared_ptr<std::shared_ptr<T>> : public std::true_type {};
 
+/// \brief Base is a base class of many derived classes, which provides basic interfaces such as hash, and so on.
 class MS_CORE_API Base : public std::enable_shared_from_this<Base> {
  public:
+  /// \brief The type id of this class.
+  static constexpr uint32_t kTypeId = ConstStringHash("Base");
+
+  /// \brief The constructor of Base.
+  ///
+  /// \return The instance of Base.
   constexpr Base() = default;
+
+  /// \brief The copy constructor of Base.
+  ///
+  /// \param[in] other Define another instance of Base.
+  ///
+  /// \return The instance of Base.
   Base(const Base &other) : std::enable_shared_from_this<Base>(other) {}
+
+  /// \brief The operator overloading for "==".
+  ///
+  /// \param[in] rhs Define the right operand of "==".
+  ///
+  /// \return The comparison result.
   virtual bool operator==(const Base &rhs) {
     if (this == &rhs) {
       return true;
@@ -48,29 +68,81 @@ class MS_CORE_API Base : public std::enable_shared_from_this<Base> {
     return false;
   }
 
+  /// \brief The copy assignment operator of Base.
+  ///
+  /// \param[in] Define another instance of Base.
+  ///
+  /// \return The instance of Base.
   virtual Base &operator=(const Base &) { return *this; }
+
+  /// \brief The destructor of Base.
   virtual ~Base() = default;
+
+  /// \brief Get the hash value of this object.
+  ///
+  /// \return The hash value.
   virtual std::size_t hash() const { return tid(); }
+
+  /// \brief Get the string representation of this object.
+  ///
+  /// \return The string representation.
   virtual std::string ToString() const { return type_name(); }
+
+  /// \brief Export the string representation to the standard output stream.
   virtual void dump() const { std::cout << ToString() << std::endl; }
 
+  /// \brief Get the text representation of this object.
+  ///
+  /// \return The text representation.
   virtual std::string DumpText() const { return ToString(); }
 
-  virtual const bool IsFromTypeId(uint32_t tid) const;
-  virtual std::string type_name() const { return "Base"; }
-  static uint32_t GetTypeId(const char *const type_key);
-  virtual uint32_t tid() const {
-    static const uint32_t tid = GetTypeId(typeid(Base).name());
-    return tid;
-  }
+  /// \brief Judge whether this object is an instance of class with the given type id.
+  ///
+  /// \param[in] tid Define a type id.
+  ///
+  /// \return The result of the judgment.
+  virtual bool IsFromTypeId(uint32_t tid) const { return Base::IsDerivedFrom(tid); }
 
+  /// \brief Judge whether the type id of this object is same as the given type id.
+  ///
+  /// \param[in] tid Define a type id.
+  ///
+  /// \return The result of the judgment.
+  virtual bool IsSameTypeId(uint32_t tid) const { return tid == Base::kTypeId; }
+
+  /// \brief Get the type name of this object.
+  ///
+  /// \return The type name.
+  virtual std::string type_name() const { return "Base"; }
+
+  /// \brief Get the type id of this object.
+  ///
+  /// \return The type id.
+  virtual uint32_t tid() const { return Base::kTypeId; }
+
+  /// \brief Judge whether this class is derived from class with the given type id.
+  ///
+  /// \param[in] tid Define a type id.
+  ///
+  /// \return The result of the judgment.
+  static bool IsDerivedFrom(uint32_t tid) __attribute__((__always_inline__)) { return tid == Base::kTypeId; }
+
+  /// \brief Judge whether this object is an instance of a given class which is derived from Base.
+  ///
+  /// \return The result of the judgment.
   template <typename T,
             typename std::enable_if<!is_shared_ptr<T>::value && std::is_base_of<Base, T>::value, T>::type * = nullptr>
   inline bool isa() const {
-    static const uint32_t tid = GetTypeId(typeid(T).name());
-    return this->IsFromTypeId(tid);
+    if constexpr (std::is_final<T>::value) {
+      return this->IsSameTypeId(T::kTypeId);
+    } else {
+      return this->IsFromTypeId(T::kTypeId);
+    }
   }
 
+  /// \brief Cast a shared_ptr of this object to a given class.
+  ///
+  /// \return If success, a shared_ptr of the given class will be returned. Otherwise a nullptr will be returned.
   template <typename T, typename U = typename std::enable_if<is_shared_ptr<T>::value, typename T::element_type>::type>
   inline T cast() {
     if (isa<U>()) {
@@ -81,6 +153,9 @@ class MS_CORE_API Base : public std::enable_shared_from_this<Base> {
   }
 
  protected:
+  /// \brief Get the shared_ptr of Base.
+  ///
+  /// \return The shared_ptr of Base.
   template <typename Derived>
   std::shared_ptr<Derived> shared_from_base() {
     return std::static_pointer_cast<Derived>(shared_from_this());
@@ -110,18 +185,14 @@ inline std::shared_ptr<T> dyn_cast(const std::shared_ptr<U> &r) {
   }
 }
 
-#define MS_DECLARE_PARENT(current_t, parent_t)                             \
-  uint32_t tid() const override {                                          \
-    static const uint32_t tid = GetTypeId(typeid(current_t).name());       \
-    return tid;                                                            \
-  }                                                                        \
-  const bool IsFromTypeId(uint32_t from_tid) const override {              \
-    static const uint32_t tid = Base::GetTypeId(typeid(current_t).name()); \
-    if (tid == from_tid) {                                                 \
-      return true;                                                         \
-    }                                                                      \
-    return parent_t::IsFromTypeId(from_tid);                               \
-  }                                                                        \
+#define MS_DECLARE_PARENT(current_t, parent_t)                                             \
+  static constexpr uint32_t kTypeId = ConstStringHash(#parent_t "_" #current_t);           \
+  static bool IsDerivedFrom(uint32_t tid) __attribute__((__always_inline__)) {             \
+    return (tid == current_t::kTypeId) || parent_t::IsDerivedFrom(tid);                    \
+  }                                                                                        \
+  uint32_t tid() const override { return current_t::kTypeId; }                             \
+  bool IsFromTypeId(uint32_t tid) const override { return current_t::IsDerivedFrom(tid); } \
+  bool IsSameTypeId(uint32_t tid) const override { return tid == current_t::kTypeId; }     \
   std::string type_name() const override { return #current_t; }
 
 class Type;
@@ -144,14 +215,6 @@ using AbstractAttribute = std::pair<std::string, AbstractBasePtr>;
 class AnalysisContext;
 using AnalysisContextPtr = std::shared_ptr<AnalysisContext>;
 }  // namespace abstract
-
-struct MS_EXPORT TypeIdManager {
-  std::mutex mutex;
-  std::atomic<uint32_t> type_counter{0};
-  std::unordered_map<std::string, uint32_t> map;
-  static TypeIdManager *Get();
-  TypeIdManager() : mutex(), type_counter(0), map() {}
-};
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CORE_BASE_BASE_H_

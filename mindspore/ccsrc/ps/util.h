@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,11 @@
 #define MINDSPORE_CCSRC_PS_UTIL_H_
 
 #include <map>
+#include <memory>
 #include <vector>
 #include <string>
-#include <unordered_map>
+#include "utils/hash_map.h"
+#include "ps/constants.h"
 #include "frontend/optimizer/optimizer.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/common_utils.h"
@@ -55,15 +57,18 @@ class Util {
                                    const size_t first_dim_size, const size_t outer_dim_size,
                                    mindspore::kernel::SparseGradient<int> *unique_sparse_grad);
   static bool FuseServerCommOps(const pipeline::ResourcePtr &res);
+  static WeightPtr MakeWeightPtr(const std::shared_ptr<std::vector<float>> &data, bool enable_recovery,
+                                 const std::shared_ptr<std::vector<int>> &shape = nullptr);
+  static std::string GetPrimitiveName(const CNodePtr &cnode);
 
  private:
   static void DoFusion(const FuncGraphPtr &func_graph, const std::string &cnode_name,
                        const std::string &fused_cnode_name);
   static kernel::KernelBuildInfoPtr GenerateKernelBuildInfo(const std::vector<AnfNodePtr> &node_list);
 
-  static std::unordered_map<std::string, int64_t> optimizer_to_ids;
-  static std::unordered_map<int64_t, std::string> id_to_optimizers;
-  static std::unordered_map<int64_t, std::string> id_to_optimizer_nodes;
+  static mindspore::HashMap<std::string, int64_t> optimizer_to_ids;
+  static mindspore::HashMap<int64_t, std::string> id_to_optimizers;
+  static mindspore::HashMap<int64_t, std::string> id_to_optimizer_nodes;
   static int64_t rank_id_;
 };
 }  // namespace ps

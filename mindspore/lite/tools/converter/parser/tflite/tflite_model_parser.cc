@@ -24,7 +24,6 @@
 #include "ops/primitive_c.h"
 #include "ir/func_graph.h"
 #include "src/common/file_utils.h"
-#include "tools/converter/ops/ops_def.h"
 #include "tools/common/graph_util.h"
 #include "tools/converter/quant_param_holder.h"
 #include "tools/converter/converter_context.h"
@@ -34,6 +33,9 @@
 #include "tools/converter/parser/unify_format.h"
 #include "nnacl/op_base.h"
 #include "src/common/log_util.h"
+#include "ops/make_tuple.h"
+#include "ops/return.h"
+#include "ops/tuple_get_item.h"
 
 using mindspore::converter::kFmkTypeTflite;
 namespace mindspore::lite {
@@ -56,6 +58,62 @@ std::unique_ptr<tflite::ModelT> TfliteModelParser::ReadTfliteModel(const std::st
   return tflite::UnPackModel(tflite_model_buf_);
 }
 
+STATUS TfliteModelParser::TfliteModelVerify() {
+  if (tflite_model_->subgraphs.empty()) {
+    MS_LOG(ERROR) << "tflite model does not has a main graph.";
+    return RET_ERROR;
+  }
+  const auto tflite_model_buffers_size = tflite_model_->buffers.size();
+  const auto tflite_model_operator_codes_size = tflite_model_->operator_codes.size();
+
+  for (auto &subgraph : tflite_model_->subgraphs) {
+    if (subgraph == nullptr) {
+      MS_LOG(ERROR) << "tflite contain nullptr subgraph.";
+      return RET_ERROR;
+    }
+    auto all_singraph_tensor_size = subgraph->tensors.size();
+    if (subgraph->inputs.empty() || subgraph->outputs.empty()) {
+      MS_LOG(ERROR) << "tflite subgraph inputs or outputs is empty.";
+      return RET_ERROR;
+    }
+    if (std::any_of(subgraph->inputs.begin(), subgraph->inputs.end(), [&all_singraph_tensor_size](int32_t index) {
+          return index >= static_cast<int32_t>(all_singraph_tensor_size) || index < 0;
+        })) {
+      MS_LOG(ERROR) << "tflite input illegal.";
+      return RET_ERROR;
+    }
+    if (std::any_of(subgraph->outputs.begin(), subgraph->outputs.end(), [&all_singraph_tensor_size](int32_t index) {
+          return index >= static_cast<int32_t>(all_singraph_tensor_size) || index < 0;
+        })) {
+      MS_LOG(ERROR) << "tflite output illegal.";
+      return RET_ERROR;
+    }
+    for (auto &op : subgraph->operators) {
+      if (op == nullptr) {
+        MS_LOG(ERROR) << "tflite contain nullptr op.";
+        return RET_ERROR;
+      }
+      if (op->opcode_index >= tflite_model_operator_codes_size) {
+        MS_LOG(ERROR) << "op is not a tflite opcode";
+        return RET_ERROR;
+      }
+    }
+
+    for (auto &tensor : subgraph->tensors) {
+      if (tensor == nullptr) {
+        MS_LOG(ERROR) << "tflite model contain nullptr tensor.";
+        return RET_ERROR;
+      }
+      if (tensor->buffer >= tflite_model_buffers_size) {
+        MS_LOG(ERROR) << "tflite tensor buffer index beyond upper limit.";
+        return RET_ERROR;
+      }
+    }
+  }
+
+  return RET_OK;
+}
+
 api::FuncGraphPtr TfliteModelParser::Parse(const converter::ConverterParameters &flag) {
   auto model_file = flag.model_file;
   // load graph
@@ -66,7 +124,14 @@ api::FuncGraphPtr TfliteModelParser::Parse(const converter::ConverterParameters 
     return nullptr;
   }
 
-  auto status = ConvertTfliteGraph();
+  auto status = TfliteModelVerify();
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "tflite model verify failed.";
+    ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
+    return nullptr;
+  }
+
+  status = ConvertTfliteGraph();
   if (status != RET_OK) {
     MS_LOG(ERROR) << "Convert tflite graph failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
@@ -80,16 +145,16 @@ api::FuncGraphPtr TfliteModelParser::Parse(const converter::ConverterParameters 
     return nullptr;
   }
 
-  std::set<FuncGraphPtr> all_func_graphs = {};
   auto func_graph = std::dynamic_pointer_cast<FuncGraph>(res_graph_);
   MS_CHECK_TRUE_RET(func_graph != nullptr, nullptr);
-  GetAllFuncGraph(func_graph, &all_func_graphs);
-
-  if ((status = CommonAnfAdjust(all_func_graphs)) != RET_OK) {
+  if ((status = CommonAnfAdjust(func_graph)) != RET_OK) {
     MS_LOG(ERROR) << "AdjustForAnf failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
     return nullptr;
   }
+
+  std::set<FuncGraphPtr> all_func_graphs = {};
+  GetAllFuncGraph(func_graph, &all_func_graphs);
   if ((status = Tflite2AnfAdjust(all_func_graphs)) != RET_OK) {
     MS_LOG(ERROR) << "Tflite2AnfAdjust failed.";
     ReturnCode::GetSingleReturnCode()->UpdateReturnCode(status);
@@ -173,6 +238,7 @@ std::string GetTensorName(size_t index, const tflite::BuiltinOperator &op_type, 
 STATUS TfliteModelParser::ConvertOps(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                      const FuncGraphPtr &func_graph,
                                      std::unordered_map<int, AnfNodePtr> *anf_node_map) {
+  MS_ASSERT(anf_node_map != nullptr && func_graph != nullptr && tflite_subgraph != nullptr);
   NotSupportOp::GetInstance()->set_fmk_type("TFLITE");
   STATUS status = RET_OK;
   int op_idx = 0;
@@ -218,42 +284,7 @@ STATUS TfliteModelParser::ConvertOps(const std::unique_ptr<tflite::SubGraphT> &t
     }
 
     // parse inputs
-    bool is_uint8_weight_quant = false;
-    for (int i = 0; i < static_cast<int>(op->inputs.size()); i++) {
-      auto input_idx = op->inputs.at(i);
-      if (tflite_op_type == tflite::BuiltinOperator_FULLY_CONNECTED && input_idx == -1) {
-        continue;
-      }
-      if (input_idx < 0) {
-        input_idx += tflite_subgraph->tensors.size();
-      }
-      const auto &input_tensor = tflite_subgraph->tensors[input_idx];
-      auto type_id = GetTfliteDataType(input_tensor->type);
-      if (anf_node_map->find(input_idx) != anf_node_map->end()) {
-        if (utils::isa<CNodePtr>(anf_node_map->at(input_idx)) && type_id != kNumberTypeUInt8) {
-          is_uint8_weight_quant = true;
-        }
-        op_inputs.emplace_back(anf_node_map->at(input_idx));
-        continue;
-      }
-
-      // const tensor
-      std::string tensor_name;
-      if (!input_tensor->name.empty()) {
-        tensor_name = input_tensor->name;
-      } else {
-        tensor_name = GetTensorName(i, tflite_op_type, op_name);
-      }
-      auto parameter = func_graph->add_parameter();
-      status = ConvertConstTensor(input_tensor, parameter, tensor_name, is_uint8_weight_quant);
-      if (status != RET_OK) {
-        MS_LOG(ERROR) << "convert " << op_name << " node: " << input_idx << " const node failed.";
-        continue;
-      }
-      parameter->set_name(tensor_name);
-      op_inputs.emplace_back(parameter);
-      anf_node_map->insert(std::pair(input_idx, parameter));
-    }
+    ConvertInputTensor(tflite_subgraph, func_graph, op, tflite_op_type, anf_node_map, op_name, &op_inputs);
     auto new_cnode = func_graph->NewCNode(op_inputs);
     MSLITE_CHECK_PTR(new_cnode);
     new_cnode->set_fullname_with_scope(op_name);
@@ -275,6 +306,7 @@ STATUS TfliteModelParser::ConvertOps(const std::unique_ptr<tflite::SubGraphT> &t
 
 STATUS TfliteModelParser::ProcessControlFlowOp(const std::unique_ptr<tflite::OperatorT> &op, const CNodePtr &anf_node,
                                                const std::string &op_type) {
+  MS_ASSERT(op != nullptr && anf_node != nullptr);
   if (op_type == "WHILE") {
     const auto &tflite_attr = op->builtin_options.AsWhileOptions();
     if (tflite_attr == nullptr) {
@@ -299,6 +331,7 @@ STATUS TfliteModelParser::ProcessControlFlowOp(const std::unique_ptr<tflite::Ope
 
 STATUS TfliteModelParser::SetTensorQuantParam(const std::unique_ptr<tflite::TensorT> &tflite_tensor,
                                               std::vector<QuantParamT> *quant_params, int round_type) {
+  MS_ASSERT(quant_params != nullptr);
   if (tflite_tensor == nullptr) {
     MS_LOG(ERROR) << "tflite_tensor is null, set tensor quant params failed.";
     return RET_NULL_PTR;
@@ -347,6 +380,7 @@ STATUS TfliteModelParser::SetTensorQuantParam(const std::unique_ptr<tflite::Tens
 STATUS TfliteModelParser::ConvertOpQuantParams(const std::unique_ptr<tflite::OperatorT> &op,
                                                const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                                ops::PrimitiveC *primitive_c) {
+  MS_ASSERT(tflite_subgraph != nullptr);
   if (op == nullptr) {
     MS_LOG(ERROR) << "tflite op is null, get quant params failed.";
     return RET_NULL_PTR;
@@ -398,15 +432,17 @@ STATUS TfliteModelParser::ConvertOpQuantParams(const std::unique_ptr<tflite::Ope
 STATUS TfliteModelParser::ConvertGraphInputs(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                              const FuncGraphPtr &func_graph,
                                              std::unordered_map<int, AnfNodePtr> *anf_node_map) {
+  MS_ASSERT(anf_node_map != nullptr && func_graph != nullptr && tflite_subgraph != nullptr);
   for (size_t i = 0; i < tflite_subgraph->inputs.size(); i++) {
     auto tflite_graph_input = tflite_subgraph->inputs.at(i);
     if (tflite_graph_input < 0) {
       tflite_graph_input = tflite_graph_input + tflite_subgraph->tensors.size();
     }
     auto parameter = func_graph->add_parameter();
+    MSLITE_CHECK_PTR(parameter);
     const auto &tensor = tflite_subgraph->tensors.at(tflite_graph_input);
-    std::vector<int64_t> shape_vector = ConverterContext::GetInstance()->GetGraphInputTensorShape(tensor->name);
-    if (ConverterContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape_vector.empty()) {
+    std::vector<int64_t> shape_vector = ConverterInnerContext::GetInstance()->GetGraphInputTensorShape(tensor->name);
+    if (ConverterInnerContext::GetInstance()->GetGraphInputTensorShapeMapSize() > 0 && shape_vector.empty()) {
       MS_LOG(WARNING) << "Can not find name in map. name is " << tensor->name;
     }
     if (shape_vector.empty()) {
@@ -422,7 +458,6 @@ STATUS TfliteModelParser::ConvertGraphInputs(const std::unique_ptr<tflite::SubGr
     parameter->set_abstract(abstract_tensor);
     if (tflite_subgraph == tflite_model_->subgraphs.front()) {
       parameter->set_name(tensor->name);
-      ConverterContext::GetInstance()->AddGraphInputTensorNames(tensor->name);
     } else {
       parameter->set_name(tflite_subgraph->name + "_input_" + std::to_string(i) + "_parameter");
     }
@@ -434,6 +469,7 @@ STATUS TfliteModelParser::ConvertGraphInputs(const std::unique_ptr<tflite::SubGr
 STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                               const FuncGraphPtr &func_graph,
                                               std::unordered_map<int, AnfNodePtr> *anf_node_map) {
+  MS_ASSERT(anf_node_map != nullptr && func_graph != nullptr && tflite_subgraph != nullptr);
   std::vector<AnfNodePtr> output_nodes;
   if (tflite_subgraph->outputs.size() > 1) {
     for (auto output_node : tflite_subgraph->outputs) {
@@ -445,7 +481,7 @@ STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubG
       }
       output_nodes.emplace_back(cnode);
     }
-    auto make_tuple_prim_ptr = std::make_shared<lite::MakeTuple>();
+    auto make_tuple_prim_ptr = std::make_shared<ops::MakeTuple>();
     if (make_tuple_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new MakeTuple failed";
       return RET_NULL_PTR;
@@ -457,7 +493,7 @@ STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubG
     auto make_tuple_cnode = func_graph->NewCNode(make_tuple_inputs);
     MSLITE_CHECK_PTR(make_tuple_cnode);
     make_tuple_cnode->set_fullname_with_scope("return_tuple");
-    auto return_prim_ptr = std::make_shared<lite::Return>();
+    auto return_prim_ptr = std::make_shared<ops::Return>();
     if (return_prim_ptr == nullptr) {
       MS_LOG(ERROR) << "new Return failed";
       return RET_NULL_PTR;
@@ -471,7 +507,7 @@ STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubG
     cnode->set_fullname_with_scope("Return");
     func_graph->set_return(cnode);
   } else {
-    auto returnPrim = std::make_shared<lite::Return>();
+    auto returnPrim = std::make_shared<ops::Return>();
     if (returnPrim == nullptr) {
       MS_LOG(ERROR) << "new Return failed";
       return RET_NULL_PTR;
@@ -501,7 +537,7 @@ STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubG
     auto output_idx = tflite_subgraph->outputs;
     std::transform(output_idx.begin(), output_idx.end(), std::back_inserter(output_names),
                    [&](auto out_idx) { return tflite_subgraph->tensors.at(out_idx)->name; });
-    ConverterContext::GetInstance()->SetGraphOutputTensorNames(output_names);
+    ConverterInnerContext::GetInstance()->SetGraphOutputTensorNames(output_names);
   } else {
     // set output cnode name for subgraph
     for (size_t i = 0; i < output_nodes.size(); i++) {
@@ -520,6 +556,7 @@ STATUS TfliteModelParser::ConvertGraphOutputs(const std::unique_ptr<tflite::SubG
 
 STATUS TfliteModelParser::BuildSubFuncGraphMap(size_t subgraph_idx, const FuncGraphPtr &sub_func_graph,
                                                const std::string &subgraph_name) {
+  MS_ASSERT(sub_func_graph != nullptr);
   auto control_flow_node = control_flow_nodes_.at(subgraph_idx);
   if (opt::CheckPrimitiveType(control_flow_node, prim::kPrimWhile)) {
     if (subgraph_name.find("cond") != std::string::npos) {
@@ -651,10 +688,57 @@ STATUS TfliteModelParser::ConvertConstTensor(const std::unique_ptr<tflite::Tenso
   return RET_OK;
 }
 
+void TfliteModelParser::ConvertInputTensor(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
+                                           const FuncGraphPtr &func_graph, const std::unique_ptr<tflite::OperatorT> &op,
+                                           tflite::BuiltinOperator tflite_op_type,
+                                           std::unordered_map<int, AnfNodePtr> *anf_node_map, std::string op_name,
+                                           std::vector<AnfNodePtr> *op_inputs) {
+  MS_ASSERT(anf_node_map != nullptr && tflite_subgraph != nullptr && func_graph != nullptr && op_inputs != nullptr);
+  bool is_uint8_weight_quant = false;
+  for (int i = 0; i < static_cast<int>(op->inputs.size()); i++) {
+    auto input_idx = op->inputs.at(i);
+    if (tflite_op_type == tflite::BuiltinOperator_FULLY_CONNECTED && input_idx == -1) {
+      continue;
+    }
+    if (input_idx < 0) {
+      input_idx += tflite_subgraph->tensors.size();
+    }
+    const auto &input_tensor = tflite_subgraph->tensors[input_idx];
+    auto type_id = GetTfliteDataType(input_tensor->type);
+    if (anf_node_map->find(input_idx) != anf_node_map->end()) {
+      if (utils::isa<CNodePtr>(anf_node_map->at(input_idx)) && type_id != kNumberTypeUInt8) {
+        is_uint8_weight_quant = true;
+      }
+      op_inputs->emplace_back(anf_node_map->at(input_idx));
+      continue;
+    }
+
+    // const tensor
+    std::string tensor_name;
+    if (!input_tensor->name.empty()) {
+      tensor_name = input_tensor->name;
+    } else {
+      tensor_name = GetTensorName(i, tflite_op_type, op_name);
+    }
+    auto parameter = func_graph->add_parameter();
+    MS_CHECK_PTR_IF_NULL(parameter);
+    auto status = ConvertConstTensor(input_tensor, parameter, tensor_name, is_uint8_weight_quant);
+    if (status != RET_OK) {
+      MS_LOG(ERROR) << "convert " << op_name << " node: " << input_idx << " const node failed.";
+      continue;
+    }
+    parameter->set_name(tensor_name);
+    op_inputs->emplace_back(parameter);
+    anf_node_map->insert(std::pair(input_idx, parameter));
+  }
+  return;
+}
+
 STATUS TfliteModelParser::ConvertOutputTensor(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                               const FuncGraphPtr &func_graph,
                                               const std::unique_ptr<tflite::OperatorT> &op, const CNodePtr &dst_cnode,
                                               std::unordered_map<int, AnfNodePtr> *anf_node_map) {
+  MS_ASSERT(anf_node_map != nullptr && tflite_subgraph != nullptr && func_graph != nullptr);
   if (op == nullptr) {
     MS_LOG(ERROR) << "op is null, get output tensor failed.";
     return RET_NULL_PTR;
@@ -692,7 +776,7 @@ STATUS TfliteModelParser::ConvertOutputTensor(const std::unique_ptr<tflite::SubG
         return RET_ERROR;
       }
       abstract_list.emplace_back(abstract_tensor);
-      auto tuple_get_item_prim_ptr = std::make_shared<lite::TupleGetItem>();
+      auto tuple_get_item_prim_ptr = std::make_shared<ops::TupleGetItem>();
       if (tuple_get_item_prim_ptr == nullptr) {
         MS_LOG(ERROR) << "new TupleGetItem failed";
         return RET_NULL_PTR;

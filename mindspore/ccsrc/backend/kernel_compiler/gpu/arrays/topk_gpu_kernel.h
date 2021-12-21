@@ -29,7 +29,8 @@ namespace kernel {
 template <typename T, typename S>
 class TopKGpuKernel : public GpuKernel {
  public:
-  TopKGpuKernel() : sorted_(false), outer_size_(1), inner_size_(1), k_(1), input_shape_size_(0) {}
+  TopKGpuKernel()
+      : sorted_(false), is_null_input_(false), outer_size_(1), inner_size_(1), k_(1), input_shape_size_(0) {}
   ~TopKGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -38,6 +39,9 @@ class TopKGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspaces,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *input_addr = GetDeviceAddress<T>(inputs, 0);
     S *k = GetDeviceAddress<S>(inputs, 1);
     T *output_addr = GetDeviceAddress<T>(outputs, 0);
@@ -82,6 +86,12 @@ class TopKGpuKernel : public GpuKernel {
     kernel_node_ = kernel_node;
     auto input_shapes = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     auto output_shapes = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_NULL_INPUT(input_shapes) || CHECK_NULL_INPUT(output_shapes);
+    if (is_null_input_) {
+      MS_LOG(WARNING) << "For 'TopkGpuKernel', input or output is null";
+      InitSizeLists();
+      return true;
+    }
     input_shape_size_ = input_shapes.size();
     for (size_t i = 0; i < input_shapes.size() - 1; i++) {
       outer_size_ *= input_shapes[i];
@@ -111,6 +121,7 @@ class TopKGpuKernel : public GpuKernel {
 
  private:
   bool sorted_;
+  bool is_null_input_;
   size_t outer_size_;
   size_t inner_size_;
   size_t k_;

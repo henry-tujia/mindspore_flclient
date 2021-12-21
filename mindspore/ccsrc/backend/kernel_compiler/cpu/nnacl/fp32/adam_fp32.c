@@ -173,10 +173,10 @@ int AdamWeightDecayFp32(float *var, float *m, float *v, float lr, float beta1, f
   float *v_ptr = v + start;
 
   for (; c1 < c16; c1 += C16NUM) {
-    __m512 g_r = _mm512_loadu_ps(gradient_ptr);
     __m512 var_r = _mm512_loadu_ps(var_ptr);
     __m512 m_r = _mm512_loadu_ps(m_ptr);
     __m512 v_r = _mm512_loadu_ps(v_ptr);
+    __m512 g_r = _mm512_loadu_ps(gradient_ptr);
 
     m_r = _mm512_mul_ps(m_r, beta1_r);
     v_r = _mm512_mul_ps(v_r, beta2_r);
@@ -187,9 +187,9 @@ int AdamWeightDecayFp32(float *var, float *m, float *v, float lr, float beta1, f
     avx_r0 = _mm512_div_ps(m_r, _mm512_add_ps(avx_r0, epsilon_r));
     avx_r0 = _mm512_fmadd_ps(var_r, decay_r, avx_r0);
     var_r = _mm512_fmadd_ps(avx_r0, lr_neg_r, var_r);
-    _mm512_storeu_ps(var_ptr, var_r);
     _mm512_storeu_ps(m_ptr, m_r);
     _mm512_storeu_ps(v_ptr, v_r);
+    _mm512_storeu_ps(var_ptr, var_r);
 
     gradient_ptr += C16NUM;
     var_ptr += C16NUM;
@@ -207,7 +207,7 @@ int AdamWeightDecayFp32(float *var, float *m, float *v, float lr, float beta1, f
 }
 
 size_t FusedCastAdamFp32(float *var, float *m, float *v, float lr, float beta1, float beta2, float epsilon, float decay,
-                         const int16_t *gradient16, size_t start, size_t end) {
+                         const int16_t *gradient16, float global_norm_reciprocal, size_t start, size_t end) {
   size_t c1 = start;
 #ifdef ENABLE_AVX512
   __m512 beta1_r = _mm512_set1_ps(beta1);
@@ -217,6 +217,7 @@ size_t FusedCastAdamFp32(float *var, float *m, float *v, float lr, float beta1, 
   __m512 lr_neg_r = _mm512_set1_ps(-lr);
   __m512 epsilon_r = _mm512_set1_ps(epsilon);
   __m512 decay_r = _mm512_set1_ps(decay);
+  __m512 global_norm_reciprocal_r = _mm512_set1_ps(global_norm_reciprocal);
   size_t c16 = ((end - start) / C16NUM) * C16NUM + start;
 
   const int16_t *gradient16_ptr = gradient16 + start;
@@ -225,11 +226,12 @@ size_t FusedCastAdamFp32(float *var, float *m, float *v, float lr, float beta1, 
   float *v_ptr = v + start;
 
   for (; c1 < c16; c1 += C16NUM) {
-    __m512 g_r = _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(gradient16_ptr)));
     __m512 var_r = _mm512_loadu_ps(var_ptr);
     __m512 m_r = _mm512_loadu_ps(m_ptr);
     __m512 v_r = _mm512_loadu_ps(v_ptr);
+    __m512 g_r = _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(gradient16_ptr)));
 
+    g_r = _mm512_mul_ps(g_r, global_norm_reciprocal_r);
     m_r = _mm512_mul_ps(m_r, beta1_r);
     v_r = _mm512_mul_ps(v_r, beta2_r);
     __m512 avx_r0 = _mm512_mul_ps(g_r, g_r);
@@ -253,7 +255,8 @@ size_t FusedCastAdamFp32(float *var, float *m, float *v, float lr, float beta1, 
 }
 
 size_t FusedCastAdamFp16(int16_t *var16, float *m, float *v, float lr, float beta1, float beta2, float epsilon,
-                         float decay, const int16_t *gradient16, size_t start, size_t end) {
+                         float decay, const int16_t *gradient16, float global_norm_reciprocal, size_t start,
+                         size_t end) {
   size_t c1 = start;
 #ifdef ENABLE_AVX512
   __m512 beta1_r = _mm512_set1_ps(beta1);
@@ -263,6 +266,7 @@ size_t FusedCastAdamFp16(int16_t *var16, float *m, float *v, float lr, float bet
   __m512 lr_neg_r = _mm512_set1_ps(-lr);
   __m512 epsilon_r = _mm512_set1_ps(epsilon);
   __m512 decay_r = _mm512_set1_ps(decay);
+  __m512 global_norm_reciprocal_r = _mm512_set1_ps(global_norm_reciprocal);
   size_t c16 = ((end - start) / C16NUM) * C16NUM + start;
 
   const int16_t *gradient16_ptr = gradient16 + start;
@@ -271,11 +275,11 @@ size_t FusedCastAdamFp16(int16_t *var16, float *m, float *v, float lr, float bet
   float *v_ptr = v + start;
 
   for (; c1 < c16; c1 += C16NUM) {
-    __m512 g_r = _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(gradient16_ptr)));
     __m512 var_r = _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(var16_ptr)));
     __m512 m_r = _mm512_loadu_ps(m_ptr);
     __m512 v_r = _mm512_loadu_ps(v_ptr);
-
+    __m512 g_r = _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(gradient16_ptr)));
+    g_r = _mm512_mul_ps(g_r, global_norm_reciprocal_r);
     m_r = _mm512_mul_ps(m_r, beta1_r);
     v_r = _mm512_mul_ps(v_r, beta2_r);
     __m512 avx_r0 = _mm512_mul_ps(g_r, g_r);

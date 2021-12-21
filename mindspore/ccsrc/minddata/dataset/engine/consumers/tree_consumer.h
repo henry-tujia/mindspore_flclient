@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,10 @@ namespace mindspore::dataset {
 // Forward declare
 class TreeAdapter;
 class DatasetNode;
-
+#ifndef ENABLE_SECURITY
+class AutoTune;
+class ProfilingManager;
+#endif
 /// A base class for tree consumers which would fetch rows from the tree pipeline
 class TreeConsumer {
  public:
@@ -48,9 +51,32 @@ class TreeConsumer {
   /// \return Status error code
   virtual Status Terminate();
 
+  /// Function for all consumers to get the offload JSON string.
+  /// \return Offload JSON string.
+  std::string GetOffload();
+
+#ifndef ENABLE_SECURITY
+  virtual Status RegisterProfilingManager();
+
+  /// \brief Getter for profiling manager, no ownership
+  ProfilingManager *GetProfilingManager() { return profiling_manager_.get(); }
+
+  /// \brief Return profiling manager pointer
+  std::shared_ptr<ProfilingManager> GetProfilingManagerPtr() { return profiling_manager_; }
+
+  Status InitAutoTune();
+#endif
+
  protected:
   /// The class owns the tree_adapter that handles execution tree operations.
   std::unique_ptr<TreeAdapter> tree_adapter_;
+
+#ifndef ENABLE_SECURITY
+  /// Profiling Manager
+  std::shared_ptr<ProfilingManager> profiling_manager_;
+  std::shared_ptr<AutoTune> autotune_;
+#endif
+
   /// Method to return the name of the consumer
   /// \return string
   virtual std::string Name() = 0;
@@ -81,6 +107,8 @@ class IteratorConsumer : public TreeConsumer {
   /// \param[out] out std::vector of pairs of string to Tensor
   /// \return Status error code
   Status GetNextAsOrderedPair(std::vector<std::pair<std::string, std::shared_ptr<Tensor>>> *const vec);
+
+  Status RegisterProfilingManager() override;
 
  protected:
   /// Method to return the name of the consumer
@@ -159,6 +187,8 @@ class ToDevice : public TreeConsumer {
   ~ToDevice() = default;
 
   Status Init(std::shared_ptr<DatasetNode> d) override;
+
+  Status RegisterProfilingManager() override;
 
   Status Terminate() override;
 

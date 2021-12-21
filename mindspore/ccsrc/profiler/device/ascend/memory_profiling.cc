@@ -22,27 +22,34 @@
 #include "utils/ms_utils.h"
 #include "nlohmann/json.hpp"
 #include "profiler/device/ascend/ascend_profiling.h"
+#include "profiler/device/ascend/options.h"
 
 namespace mindspore {
 namespace profiler {
 namespace ascend {
 constexpr char kOutputPath[] = "output";
 
-bool MemoryProfiling::IsMemoryProfilingEnable() const {
-  auto ascend_profiler = AscendProfiler::GetInstance();
-  MS_EXCEPTION_IF_NULL(ascend_profiler);
-  if (!ascend_profiler->GetProfilingEnableFlag()) {
-    return false;
+void MemoryProfiling::SetMemoryProfilingInitialize(const std::string &profiling_options) {
+  nlohmann::json options;
+  try {
+    options = nlohmann::json::parse(profiling_options);
+  } catch (nlohmann::json::exception &e) {
+    MS_LOG(EXCEPTION) << "Failed to parse profiling options because of format error.";
   }
 
-  const std::string prof_options_str = ascend_profiler->GetProfilingOptions();
-  nlohmann::json options = nlohmann::json::parse(prof_options_str);
-  if (options["profile_memory"] == "off") {
-    return false;
+  if (options["profile_memory"] == "on") {
+    is_initialized_ = true;
   }
-
-  return true;
 }
+
+void MemoryProfiling::StartMemoryProfiling() {
+  is_enabled_ = true;
+  if (NeedSaveMemoryProfiling()) {
+    SaveMemoryProfiling();
+  }
+}
+
+void MemoryProfiling::StopMemoryProfiling() { is_enabled_ = false; }
 
 std::shared_ptr<GraphMemory> MemoryProfiling::AddGraphMemoryNode(uint32_t graph_id) {
   std::shared_ptr<GraphMemory> node = std::make_shared<GraphMemory>(graph_id);
@@ -60,15 +67,28 @@ std::shared_ptr<GraphMemory> MemoryProfiling::GetGraphMemoryNode(uint32_t graph_
   return nullptr;
 }
 
-void MemoryProfiling::MemoryToPB() {
+bool MemoryProfiling::MemoryToPB() {
   memory_proto_.set_total_mem(device_mem_size_);
+  if (graph_memory_.size() == 0) {
+    MS_LOG(INFO) << "No memory profiling data need to be reported.";
+    return false;
+  }
+
   for (const auto &graph : graph_memory_) {
     GraphMemProto *graph_proto = memory_proto_.add_graph_mem();
+    if (graph_proto == nullptr) {
+      MS_LOG(ERROR) << "Add graph memory proto failed.";
+      return false;
+    }
     graph_proto->set_graph_id(graph.second->GetGraphId());
     graph_proto->set_static_mem(graph.second->GetStaticMemSize());
     // node memory to PB
     for (const auto &node : graph.second->GetNodeMemory()) {
       NodeMemProto *node_mem = graph_proto->add_node_mems();
+      if (node_mem == nullptr) {
+        MS_LOG(ERROR) << "Add node memory proto failed.";
+        return false;
+      }
       node_mem->set_node_name(node.GetNodeName());
       node_mem->set_node_id(node.GetNodeId());
       for (const auto &id : node.GetInputTensorId()) {
@@ -84,6 +104,10 @@ void MemoryProfiling::MemoryToPB() {
     // tensor memory to PB
     for (const auto &node : graph.second->GetTensorMemory()) {
       TensorMemProto *tensor_mem = graph_proto->add_tensor_mems();
+      if (tensor_mem == nullptr) {
+        MS_LOG(ERROR) << "Add node memory proto failed.";
+        return false;
+      }
       tensor_mem->set_tensor_id(node.GetTensorId());
       tensor_mem->set_size(node.GetAlignedSize());
       std::string type = node.GetType();
@@ -94,43 +118,8 @@ void MemoryProfiling::MemoryToPB() {
       tensor_mem->set_life_long(life_long);
     }
   }
-  MS_LOG(INFO) << "Memory profiling data to PB end";
-  return;
-}
-
-std::string MemoryProfiling::GetOutputPath() const {
-  auto ascend_profiler = AscendProfiler::GetInstance();
-  MS_EXCEPTION_IF_NULL(ascend_profiler);
-  const std::string options_str = ascend_profiler->GetProfilingOptions();
-  nlohmann::json options_json;
-  try {
-    options_json = nlohmann::json::parse(options_str);
-  } catch (nlohmann::json::parse_error &e) {
-    MS_LOG(EXCEPTION) << "Parse profiling option json failed, error:" << e.what();
-  }
-  auto iter = options_json.find(kOutputPath);
-  if (iter != options_json.end() && iter->is_string()) {
-    char real_path[PATH_MAX] = {0};
-    if ((*iter).size() >= PATH_MAX) {
-      MS_LOG(ERROR) << "Path is invalid for memory profiling.";
-      return "";
-    }
-#if defined(_WIN32) || defined(_WIN64)
-    if (_fullpath(real_path, common::SafeCStr(*iter), PATH_MAX) == nullptr) {
-      MS_LOG(ERROR) << "Path is invalid for memory profiling.";
-      return "";
-    }
-#else
-    if (realpath(common::SafeCStr(*iter), real_path) == nullptr) {
-      MS_LOG(ERROR) << "Path is invalid for memory profiling.";
-      return "";
-    }
-#endif
-    return real_path;
-  }
-
-  MS_LOG(ERROR) << "Output path is not found when save memory profiling data";
-  return "";
+  MS_LOG(INFO) << "Memory profiling data to PB end.";
+  return true;
 }
 
 void MemoryProfiling::SaveMemoryProfiling() {
@@ -142,15 +131,19 @@ void MemoryProfiling::SaveMemoryProfiling() {
   if (device_id.empty()) {
     device_id = "0";
   }
+
+  if (!MemoryToPB()) {
+    return;
+  }
+
   std::string file = dir_path + std::string("/memory_usage_") + std::string(device_id) + std::string(".pb");
-
-  MemoryToPB();
-
   std::fstream handle(file, std::ios::out | std::ios::trunc | std::ios::binary);
   if (!memory_proto_.SerializeToOstream(&handle)) {
     MS_LOG(ERROR) << "Save memory profiling data to file failed";
   }
   handle.close();
+
+  has_save_memory_data_ = true;
   MS_LOG(INFO) << "Start save memory profiling data to " << file << " end";
   return;
 }

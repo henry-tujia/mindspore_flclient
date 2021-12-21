@@ -14,19 +14,25 @@
  * limitations under the License.
  */
 
-#ifndef MINDSPORE_LITE_INCLUDE_LITE_SESSION_H
-#define MINDSPORE_LITE_INCLUDE_LITE_SESSION_H
+#ifndef MINDSPORE_LITE_INCLUDE_LITE_SESSION_H_
+#define MINDSPORE_LITE_INCLUDE_LITE_SESSION_H_
 
 #ifndef NOT_USE_STL
 #include <unordered_map>
 #endif  // NOT_USE_STL
 #include <vector>
 #include <string>
+#include <map>
 #include "include/ms_tensor.h"
 #include "include/model.h"
 #include "include/context.h"
 #include "include/errorcode.h"
 #include "include/lite_types.h"
+#ifdef ENABLE_OPENGL_TEXTURE
+#include "EGL/egl.h"
+#include "GLES3/gl3.h"
+#include "GLES3/gl32.h"
+#endif
 
 namespace mindspore {
 namespace lite {
@@ -120,6 +126,17 @@ class MS_API LiteSession {
   /// \return Pointer of MindSpore Lite MSTensor.
   virtual mindspore::tensor::MSTensor *GetOutputByTensorName(const String &tensor_name) const = 0;
 
+#ifdef ENABLE_OPENGL_TEXTURE
+  /// \brief Bind GLTexture2D object to cl Memory.
+  ///
+  /// \param[in] inputGlTexture The input GLTexture id for Model.
+  /// \param[in] outputGLTexture The output GLTexture id for Model.
+  ///
+  /// \return Status of operation.
+  virtual int BindGLTexture2DMemory(const std::map<std::string, GLuint> &inputGlTexture,
+                                    std::map<std::string, GLuint> *outputGLTexture) = 0;
+#endif
+
   /// \brief Resize inputs shape.
   ///
   /// \param[in] inputs Define the inputs of the model.
@@ -190,6 +207,14 @@ class MS_API LiteSession {
     return mindspore::lite::RET_ERROR;
   }
 
+  /// \brief Change the size and or content of weight tensors
+  ///
+  /// \param[in] new_weights a vector of tensors with new shapes and data to use in the model
+  ///            If data pointer is null, the data of the original tensors will be copied to the new ones
+  ///
+  /// \return STATUS as an error code of operation, STATUS is defined in errorcode.h.
+  virtual int UpdateWeights(std::vector<tensor::MSTensor *> new_weights) { return mindspore::lite::RET_ERROR; }
+
   /// \brief Get model featuremap MindSpore Lite MSTensors of Training model prediction
   ///
   /// \return a vector of output tensors (MindSpore Lite MSTensor).
@@ -233,4 +258,4 @@ class MS_API LiteSession {
 };
 }  // namespace session
 }  // namespace mindspore
-#endif  // MINDSPORE_LITE_INCLUDE_LITE_SESSION_H
+#endif  // MINDSPORE_LITE_INCLUDE_LITE_SESSION_H_

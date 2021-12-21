@@ -42,20 +42,19 @@ void ProjectNode::Print(std::ostream &out) const { out << (Name() + "(column: " 
 Status ProjectNode::ValidateParams() {
   RETURN_IF_NOT_OK(DatasetNode::ValidateParams());
   if (columns_.empty()) {
-    std::string err_msg = "ProjectNode: No columns are specified.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
+    std::string err_msg = "Project: No 'columns' are specified.";
+    LOG_AND_RETURN_STATUS_SYNTAX_ERROR(err_msg);
   }
 
-  RETURN_IF_NOT_OK(ValidateDatasetColumnParam("ProjectNode", "columns", columns_));
+  RETURN_IF_NOT_OK(ValidateDatasetColumnParam("Project", "columns", columns_));
 
   return Status::OK();
 }
 
 Status ProjectNode::Build(std::vector<std::shared_ptr<DatasetOp>> *const node_ops) {
   auto op = std::make_shared<ProjectOp>(columns_);
-  op->set_total_repeats(GetTotalRepeats());
-  op->set_num_repeats_per_epoch(GetNumRepeatsPerEpoch());
+  op->SetTotalRepeats(GetTotalRepeats());
+  op->SetNumRepeatsPerEpoch(GetNumRepeatsPerEpoch());
   node_ops->push_back(op);
   return Status::OK();
 }
@@ -69,7 +68,7 @@ Status ProjectNode::to_json(nlohmann::json *out_json) {
 
 Status ProjectNode::from_json(nlohmann::json json_obj, std::shared_ptr<DatasetNode> ds,
                               std::shared_ptr<DatasetNode> *result) {
-  CHECK_FAIL_RETURN_UNEXPECTED(json_obj.find("columns") != json_obj.end(), "Failed to find columns");
+  RETURN_IF_NOT_OK(ValidateParamInJson(json_obj, "columns", kProjectNode));
   std::vector<std::string> columns = json_obj["columns"];
   *result = std::make_shared<ProjectNode>(ds, columns);
   return Status::OK();

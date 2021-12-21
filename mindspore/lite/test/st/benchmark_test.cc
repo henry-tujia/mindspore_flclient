@@ -17,6 +17,7 @@
 #include <string>
 #include "common/common_test.h"
 #include "tools/benchmark/run_benchmark.h"
+#include "include/errorcode.h"
 
 namespace mindspore {
 namespace lite {
@@ -83,8 +84,8 @@ TEST_F(BenchmarkTest, mindrtParallelOffline1) {
                                    "--modelFile=./mindrtParallel/mindrt_parallel_model_split.ms",
                                    "--inDataFile=./mindrtParallel/mindrt_parallel_model.bin",
                                    "--benchmarkDataFile=./mindrtParallel/mindrt_parallel_model.out"};
-  int converter_ret = mindspore::lite::RunBenchmark(6, benchmark_argv1);
-  ASSERT_EQ(converter_ret, lite::RET_OK);
+  int status = mindspore::lite::RunBenchmark(6, benchmark_argv1);
+  ASSERT_EQ(status, lite::RET_OK);
 }
 
 TEST_F(BenchmarkTest, mindrtParallelOffline2) {
@@ -94,8 +95,8 @@ TEST_F(BenchmarkTest, mindrtParallelOffline2) {
                                    "--modelFile=./mindrtParallel/mindrt_parallel_model_split.ms",
                                    "--inDataFile=./mindrtParallel/mindrt_parallel_model.bin",
                                    "--benchmarkDataFile=./mindrtParallel/mindrt_parallel_model.out"};
-  int converter_ret = mindspore::lite::RunBenchmark(6, benchmark_argv2);
-  ASSERT_EQ(converter_ret, lite::RET_OK);
+  int status = mindspore::lite::RunBenchmark(6, benchmark_argv2);
+  ASSERT_EQ(status, lite::RET_OK);
 }
 
 TEST_F(BenchmarkTest, mindrtParallelOffline3) {
@@ -105,8 +106,16 @@ TEST_F(BenchmarkTest, mindrtParallelOffline3) {
                                    "--modelFile=./mindrtParallel/mindrt_parallel_model_split.ms",
                                    "--inDataFile=./mindrtParallel/mindrt_parallel_model.bin",
                                    "--benchmarkDataFile=./mindrtParallel/mindrt_parallel_model.out"};
-  int converter_ret = mindspore::lite::RunBenchmark(6, benchmark_argv3);
-  ASSERT_EQ(converter_ret, lite::RET_OK);
+  int status = mindspore::lite::RunBenchmark(6, benchmark_argv3);
+  ASSERT_EQ(status, lite::RET_OK);
 }
+
+#ifdef RUNTIME_CONVERT
+TEST_F(BenchmarkTest, runtimeConvert1) {
+  const char *benchmark_argv3[] = {"./benchmark", "--modelFile=./relu.mindir", "--loopCount=1", "--warmUpLoopCount=0"};
+  int status = mindspore::lite::RunBenchmark(4, benchmark_argv3);
+  ASSERT_EQ(status, lite::RET_OK);
+}
+#endif
 }  // namespace lite
 }  // namespace mindspore

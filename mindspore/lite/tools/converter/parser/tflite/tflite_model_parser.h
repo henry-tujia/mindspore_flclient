@@ -34,17 +34,18 @@ class TfliteModelParser : public converter::ModelParser {
  public:
   TfliteModelParser() = default;
 
-  ~TfliteModelParser() override = default;
+  ~TfliteModelParser() override {
+    if (tflite_model_buf_ != nullptr) {
+      delete[] tflite_model_buf_;
+      tflite_model_buf_ = nullptr;
+    }
+  }
 
   api::FuncGraphPtr Parse(const converter::ConverterParameters &flag) override;
 
   static int Tflite2AnfAdjust(const std::set<FuncGraphPtr> &all_func_graphs);
 
  private:
-  std::unique_ptr<tflite::ModelT> tflite_model_;
-  std::map<int, CNodePtr> control_flow_nodes_;
-  std::map<CNodePtr, std::pair<FuncGraphPtr, FuncGraphPtr>> control_flow_map_;
-  char *tflite_model_buf_ = nullptr;
   std::unique_ptr<tflite::ModelT> ReadTfliteModel(const std::string &model_path);
   STATUS ConvertConstTensor(const std::unique_ptr<tflite::TensorT> &tensor, const ParameterPtr &parameter,
                             const std::string &tensor_name, bool is_uint8_weight_quant);
@@ -60,6 +61,10 @@ class TfliteModelParser : public converter::ModelParser {
   STATUS BuildSubFuncGraphMap(size_t subgraph_idx, const FuncGraphPtr &sub_func_graph,
                               const std::string &subgraph_name);
   STATUS ControlFlowNodePostProcess();
+  void ConvertInputTensor(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph, const FuncGraphPtr &func_graph,
+                          const std::unique_ptr<tflite::OperatorT> &op, tflite::BuiltinOperator tflite_op_type,
+                          std::unordered_map<int, AnfNodePtr> *anf_node_map, std::string op_name,
+                          std::vector<AnfNodePtr> *op_inputs);
   static STATUS ConvertOutputTensor(const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                     const FuncGraphPtr &func_graph, const std::unique_ptr<tflite::OperatorT> &op,
                                     const CNodePtr &dst_cnode, std::unordered_map<int, AnfNodePtr> *anf_node_map);
@@ -68,6 +73,13 @@ class TfliteModelParser : public converter::ModelParser {
                                      ops::PrimitiveC *primitive_c);
   static STATUS SetTensorQuantParam(const std::unique_ptr<tflite::TensorT> &tflite_tensor,
                                     std::vector<QuantParamT> *quant_params, int round_type = 1);
+  STATUS TfliteModelVerify();
+
+ private:
+  std::unique_ptr<tflite::ModelT> tflite_model_;
+  std::map<int, CNodePtr> control_flow_nodes_;
+  std::map<CNodePtr, std::pair<FuncGraphPtr, FuncGraphPtr>> control_flow_map_;
+  char *tflite_model_buf_ = nullptr;
 };
 }  // namespace lite
 }  // namespace mindspore

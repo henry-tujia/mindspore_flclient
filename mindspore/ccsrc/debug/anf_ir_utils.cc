@@ -19,9 +19,9 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include <unordered_map>
 #include <algorithm>
 #include <iomanip>
+#include "utils/hash_map.h"
 #include "ir/graph_utils.h"
 #include "utils/symbolic.h"
 #include "ir/meta_func_graph.h"
@@ -164,7 +164,7 @@ inline bool Skip(const MetaFuncGraphPtr &meta_func_graph) {
          meta_func_graph->isa<prim::MakeListGradient>() || meta_func_graph->isa<prim::TupleAdd>() ||
          meta_func_graph->isa<prim::TupleSlice>() || meta_func_graph->isa<prim::UnpackCall>() ||
          meta_func_graph->isa<prim::ZipOperation>() || meta_func_graph->isa<prim::ListAppend>() ||
-         meta_func_graph->isa<prim::DoSignatureMetaFuncGraph>();
+         meta_func_graph->isa<prim::ListInsert>() || meta_func_graph->isa<prim::DoSignatureMetaFuncGraph>();
 }
 
 /* inherit relation of MetaFuncGraph
@@ -294,7 +294,7 @@ std::string AnfExporter::GetSymbolicKeyInstanceText(const FuncGraphPtr &func_gra
 std::string AnfExporter::GetSequenceText(const FuncGraphPtr &func_graph, const ValuePtr &value) {
   std::ostringstream oss;
   // Output ValueList, ValueTuple
-  ValueSequeuePtr seq = dyn_cast<ValueSequeue>(value);
+  ValueSequencePtr seq = dyn_cast<ValueSequence>(value);
   MS_EXCEPTION_IF_NULL(seq);
   MS_EXCEPTION_IF_NULL(value);
   bool is_tuple = value->isa<ValueTuple>();
@@ -340,49 +340,42 @@ std::string AnfExporter::GetOtherValueText(const FuncGraphPtr &, const ValuePtr 
   return oss.str();
 }
 
+static bool CanUseDumpText(const ValuePtr &value) {
+  return (value->isa<RefKey>() || value->isa<Scalar>() || value->isa<StringImm>() || value->isa<tensor::Tensor>() ||
+          value->isa<parse::Symbol>() || value->isa<None>() || value->isa<Null>() || value->isa<ValueSlice>() ||
+          value->isa<Type>() || value->isa<KeywordArg>());
+}
+
 std::string AnfExporter::GetValueText(const FuncGraphPtr &func_graph, const ValuePtr &value) {
-  std::ostringstream oss;
-  bool is_null_ptr = (func_graph == nullptr || value == nullptr);
-  if (is_null_ptr) {
-    return oss.str();
+  if (func_graph == nullptr || value == nullptr) {
+    return "";
   }
-
   if (value->isa<Primitive>()) {
-    oss << GetPrimitiveText(value->cast<PrimitivePtr>());
-  } else if (value->isa<MetaFuncGraph>()) {
-    MetaFuncGraphPtr meta_func_graph = value->cast<MetaFuncGraphPtr>();
-    oss << GetMetaFuncGraphText(meta_func_graph);
-  } else if (value->isa<SymbolicKeyInstance>()) {
-    oss << GetSymbolicKeyInstanceText(func_graph, value->cast<SymbolicKeyInstancePtr>());
-  } else if (value->isa<RefKey>()) {
-    oss << value->DumpText();
-  } else if (value->isa<Scalar>() || value->isa<StringImm>()) {
-    oss << value->DumpText();
-  } else if (value->isa<tensor::Tensor>()) {
-    oss << value->DumpText();
-  } else if (value->isa<parse::Symbol>() || value->isa<None>() || value->isa<Null>()) {
-    oss << value->DumpText();
-  } else if (value->isa<ValueSequeue>()) {
-    oss << GetSequenceText(func_graph, value);
-  } else if (value->isa<ValueDictionary>()) {
-    oss << GetDictText(func_graph, value);
-  } else if (value->isa<ValueSlice>()) {
-    ValueSlicePtr slice = value->cast<ValueSlicePtr>();
-    oss << slice->DumpText();
-  } else if (value->isa<Type>()) {
-    oss << value->DumpText();
-  } else if (value->isa<parse::NameSpace>()) {
-    oss << GetNameSpaceText(value->cast<parse::NameSpacePtr>());
-  } else if (value->isa<parse::PyObjectWrapper>()) {
-    oss << value->type_name();
-  } else if (value->isa<KeywordArg>()) {
-    KeywordArgPtr keyword_arg = value->cast<KeywordArgPtr>();
-    oss << keyword_arg->DumpText();
-  } else {
-    return GetOtherValueText(func_graph, value);
+    return GetPrimitiveText(value->cast<PrimitivePtr>());
   }
-
-  return oss.str();
+  if (value->isa<MetaFuncGraph>()) {
+    MetaFuncGraphPtr meta_func_graph = value->cast<MetaFuncGraphPtr>();
+    return GetMetaFuncGraphText(meta_func_graph);
+  }
+  if (value->isa<SymbolicKeyInstance>()) {
+    return GetSymbolicKeyInstanceText(func_graph, value->cast<SymbolicKeyInstancePtr>());
+  }
+  if (value->isa<ValueSequence>()) {
+    return GetSequenceText(func_graph, value);
+  }
+  if (value->isa<ValueDictionary>()) {
+    return GetDictText(func_graph, value);
+  }
+  if (value->isa<parse::NameSpace>()) {
+    return GetNameSpaceText(value->cast<parse::NameSpacePtr>());
+  }
+  if (value->isa<parse::PyObjectWrapper>()) {
+    return value->type_name();
+  }
+  if (CanUseDumpText(value)) {
+    return value->DumpText();
+  }
+  return GetOtherValueText(func_graph, value);
 }
 
 // This function is used to output node in CNode's inputs
@@ -419,7 +412,7 @@ std::string AnfExporter::GetAnfNodeText(const FuncGraphPtr &func_graph, const An
 }
 
 void AnfExporter::OutputParameters(std::ofstream &ofs, const std::vector<AnfNodePtr> &parameters,
-                                   OrderedMap<AnfNodePtr, int, ParamPtrHasher, ParamPtrEqual> *param_map) {
+                                   ParamIndexMap *param_map) {
   bool first_flag = true;
   for (const AnfNodePtr &param : parameters) {
     if (first_flag) {
@@ -475,7 +468,7 @@ void AnfExporter::OutputStatementComment(std::ofstream &ofs, const CNodePtr &nod
       comment << ",";
     }
     FuncGraphPtr fg = GetValueNode<FuncGraphPtr>(arg);
-    std::string func_graph_id = fg->debug_info()->get_id();
+    auto func_graph_id = fg->debug_info()->get_id();
     comment << " fg_" << func_graph_id << "=" << fg->ToString();
   }
   if (has_comment) {
@@ -526,7 +519,7 @@ void AnfExporter::OutputCNodes(std::ofstream &ofs, const std::vector<AnfNodePtr>
   if (func_graph == nullptr) {
     return;
   }
-
+  MS_LOG_TRY_CATCH_SCOPE;
   int idx = 1;
   std::map<AnfNodePtr, int> apply_map;
   for (const AnfNodePtr &node : nodes) {
@@ -576,7 +569,7 @@ void AnfExporter::ExportOneFuncGraph(std::ofstream &ofs, const FuncGraphPtr &fun
 
   std::vector<AnfNodePtr> nodes = TopoSort(func_graph->get_return(), SuccIncoming, AlwaysInclude);
   std::vector<AnfNodePtr> parameters = func_graph->parameters();
-  OrderedMap<AnfNodePtr, int, ParamPtrHasher, ParamPtrEqual> param_map;
+  ParamIndexMap param_map;
 
   if (*(func_graph->switch_input())) {
     ofs << "switch_input: " << *(func_graph->switch_input()) << "\n";
@@ -617,8 +610,7 @@ void AnfExporter::ExportFuncGraph(const std::string &filename, const FuncGraphPt
 
   std::ofstream ofs(filename);
   if (!ofs.is_open()) {
-    MS_LOG(ERROR) << "Open file '" << filename << "' failed!"
-                  << " Errno:" << errno << " ErrInfo:" << strerror(errno);
+    MS_LOG(ERROR) << "Open file '" << filename << "' failed!" << ErrnoToString(errno);
     return;
   }
 

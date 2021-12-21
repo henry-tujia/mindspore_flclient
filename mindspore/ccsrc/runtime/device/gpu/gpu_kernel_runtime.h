@@ -43,10 +43,10 @@ class GPUKernelRuntime : public KernelRuntime {
   bool Init() override;
   void ReleaseDeviceRes() override;
   void ClearGraphRuntimeResource(uint32_t graph_id) override;
-  void AssignMemory(session::KernelGraph *graph) override;
-  bool Run(session::KernelGraph *graph, bool is_task_sink) override;
-  bool GenDynamicKernel(const session::KernelGraph *graph) override { return true; }
-  bool RunDynamicKernelAsync(const session::KernelGraph *graph) override { return true; }
+  void AssignMemory(const session::KernelGraph &graph) override;
+  bool Run(const session::KernelGraph &graph, bool is_task_sink) override;
+  bool GenDynamicKernel(const session::KernelGraph &graph) override { return true; }
+  bool RunDynamicKernelAsync(const session::KernelGraph &graph) override { return true; }
   DeviceAddressType GetTargetDeviceAddressType() const override { return DeviceAddressType::kGPU; }
   std::shared_ptr<DeviceEvent> CreateDeviceEvent() override;
   void *compute_stream() const override { return stream_; }
@@ -110,8 +110,8 @@ class GPUKernelRuntime : public KernelRuntime {
   bool IsDistributedTraining(const session::KernelGraph *graph);
   void FetchMemUnitSize(const session::KernelGraph *graph);
 
-  DeviceAddressPtr GetPrevNodeMutableOutputAddr(const AnfNodePtr &node, size_t i, bool visit_nop_node);
-  DeviceAddressPtr GetMutableOutputAddr(const AnfNodePtr &node, size_t i, bool visit_nop_node);
+  DeviceAddressPtr GetPrevNodeMutableOutputAddr(const AnfNodePtr &node, size_t i, bool skip_nop_node);
+  DeviceAddressPtr GetMutableOutputAddr(const AnfNodePtr &node, size_t i, bool skip_nop_node);
   session::KernelWithIndex GetPrevNodeOutput(const AnfNodePtr &node, size_t i);
 
   void LaunchKernelWithoutMock(const session::KernelGraph *graph, const AnfNodePtr &kernel,

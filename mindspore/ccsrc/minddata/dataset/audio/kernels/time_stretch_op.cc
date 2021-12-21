@@ -23,7 +23,6 @@
 
 namespace mindspore {
 namespace dataset {
-
 const float TimeStretchOp::kHopLength = std::numeric_limits<float>::quiet_NaN();
 const int TimeStretchOp::kNFreq = 201;
 const float TimeStretchOp::kFixedRate = std::numeric_limits<float>::quiet_NaN();
@@ -33,25 +32,33 @@ Status TimeStretchOp::Compute(const std::shared_ptr<Tensor> &input, std::shared_
   IO_CHECK(input, output);
 
   // check shape
-  if (input->shape().Rank() < 3 || !input->IsComplex()) {
-    std::string err_msg = "TimeStretch: input tensor is not in shape of <..., freq, num_frame, complex=2>.";
-    MS_LOG(ERROR) << err_msg;
-    RETURN_STATUS_SYNTAX_ERROR(err_msg);
-  }
+  RETURN_IF_NOT_OK(ValidateTensorShape("TimeStretch", input->shape().Size() > kDefaultAudioDim && input->IsComplex(),
+                                       "<..., freq, num_frame, complex=2>"));
 
   std::shared_ptr<Tensor> input_tensor;
-  // std::shared_ptr<Tensor> phase_advance;
   float hop_length = std::isnan(hop_length_) ? (n_freq_ - 1) : hop_length_;
+  float fixed_rate = std::isnan(fixed_rate_) ? 1 : fixed_rate_;
   // typecast
-  CHECK_FAIL_RETURN_UNEXPECTED(input->type() != DataType::DE_STRING,
-                               "TimeStretch: input tensor type should be int, float or double, but got: string.");
+  RETURN_IF_NOT_OK(ValidateTensorNumeric("TimeStretch", input));
   if (input->type() != DataType::DE_FLOAT64) {
     RETURN_IF_NOT_OK(TypeCast(input, &input_tensor, DataType(DataType::DE_FLOAT32)));
   } else {
     input_tensor = input;
   }
 
-  return TimeStretch(input_tensor, output, fixed_rate_, hop_length, n_freq_);
+  return TimeStretch(input_tensor, output, fixed_rate, hop_length, n_freq_);
+}
+
+Status TimeStretchOp::OutputType(const std::vector<DataType> &inputs, std::vector<DataType> &outputs) {
+  RETURN_IF_NOT_OK(TensorOp::OutputType(inputs, outputs));
+  RETURN_IF_NOT_OK(
+    ValidateTensorType("TimeStretch", inputs[0].IsNumeric(), "[int, float, double]", inputs[0].ToString()));
+  if (inputs[0] == DataType(DataType::DE_FLOAT64)) {
+    outputs[0] = DataType(DataType::DE_FLOAT64);
+  } else {
+    outputs[0] = DataType(DataType::DE_FLOAT32);
+  }
+  return Status::OK();
 }
 
 Status TimeStretchOp::OutputShape(const std::vector<TensorShape> &inputs, std::vector<TensorShape> &outputs) {

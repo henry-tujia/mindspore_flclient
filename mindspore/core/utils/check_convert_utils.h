@@ -146,7 +146,7 @@ const std::map<CompareEnum, std::string> kCompareToString = {
 
 const std::map<CompareRange, std::pair<std::string, std::string>> kCompareRangeToString = {
   {kIncludeNeither, {"in (", ")"}},
-  {kIncludeLeft, {" in [", ")"}},
+  {kIncludeLeft, {"in [", ")"}},
   {kIncludeRight, {"in (", "]"}},
   {kIncludeBoth, {"in [", "]"}}};
 
@@ -175,14 +175,14 @@ class CheckAndConvertUtils {
     if (prim_name.empty()) {
       buffer << "The attribute[" << arg_name << "] must ";
     } else {
-      buffer << "For primitive[" << prim_name << "]'s " << arg_name << " must ";
+      buffer << "For primitive[" << prim_name << "], the " << arg_name << " must ";
     }
     auto iter_to_string = kCompareToString.find(compare_operator);
     if (iter_to_string == kCompareToString.end()) {
       MS_EXCEPTION(NotExistsError) << "compare_operator " << compare_operator
                                    << " cannot find in the compare string map";
     }
-    buffer << iter_to_string->second << "\'" << match_value << "\' , but got \'" << arg_value << "\'";
+    buffer << iter_to_string->second << match_value << " , but got " << arg_value << ".";
     MS_EXCEPTION(ValueError) << buffer.str();
   }
 
@@ -204,7 +204,7 @@ class CheckAndConvertUtils {
     if (prim_name.empty()) {
       buffer << "The attribute[" << arg_name << "] must ";
     } else {
-      buffer << "For primitive[" << prim_name << "] " << arg_name << " must ";
+      buffer << "For primitive[" << prim_name << "], the " << arg_name << " must ";
     }
     auto iter_to_string = kCompareRangeToString.find(compare_operator);
     if (iter_to_string == kCompareRangeToString.end()) {
@@ -212,14 +212,16 @@ class CheckAndConvertUtils {
                                    << " cannot find in the compare string map";
     }
     auto range_strng = iter_to_string->second;
-    buffer << range_strng.first << range.first << "," << range.second << range_strng.second << " ,but got "
-           << arg_value;
+    buffer << range_strng.first << range.first << "," << range.second << range_strng.second << " ,but got " << arg_value
+           << ".";
     MS_EXCEPTION(ValueError) << buffer.str();
   }
 
   static ShapeMap ConvertShapePtrToShapeMap(const BaseShapePtr &shape);
   static abstract::ShapePtr GetTensorInputShape(const std::string &prim_name,
-                                                const std::vector<AbstractBasePtr> &input_args, int64_t index);
+                                                const std::vector<AbstractBasePtr> &input_args, size_t index);
+  static TypePtr GetTensorInputType(const std::string &prim_name, const std::vector<AbstractBasePtr> &input_args,
+                                    size_t index);
   static void Check(const std::string &arg_name, int64_t arg_value, CompareEnum compare_type,
                     const std::string &value_name, int64_t value, const std::string &prim_name = "",
                     ExceptionType exception_type = ValueError);
@@ -242,23 +244,23 @@ class CheckAndConvertUtils {
     if (prim_name.empty()) {
       buffer << "The attribute[" << arg_name << "]:";
     } else {
-      buffer << "For primitive[" << prim_name << "]'s " << arg_name << ":";
+      buffer << "For primitive[" << prim_name << "], the " << arg_name << ":";
     }
     auto iter_to_string = kCompareToString.find(compare_type);
     if (iter_to_string == kCompareToString.end()) {
       MS_EXCEPTION(NotExistsError) << "compare_operator " << compare_type << " cannot find in the compare string map";
     }
 
-    buffer << " \"{";
+    buffer << " [";
     for (auto item : arg_value) {
       buffer << item << ",";
     }
-    buffer << "}\"";
-    buffer << " must " << iter_to_string->second << " \"{";
+    buffer << "]";
+    buffer << " must " << iter_to_string->second << "[";
     for (auto item : value) {
       buffer << item << ",";
     }
-    buffer << "}\" ";
+    buffer << "]";
     MS_EXCEPTION(exception_type) << buffer.str();
   }
 
@@ -272,7 +274,7 @@ class CheckAndConvertUtils {
     MS_EXCEPTION_IF_NULL(args_spec);
     auto arg = dyn_cast<T>(args_spec);
     if (arg == nullptr) {
-      MS_EXCEPTION(TypeError) << "Primitive[" << op << "]'s input[" << index << "] should be a "
+      MS_EXCEPTION(TypeError) << "For primitive[" << op << "], the input[" << index << "] should be a "
                               << abstract::ReportNameTraits<T>::name << ", but got "
                               << args_spec_list[index]->BuildType()->ToString() << ".";
     }
@@ -304,22 +306,24 @@ class CheckAndConvertUtils {
   static void CheckSummaryParam(const AbstractBasePtr &name, const AbstractBasePtr &value,
                                 const std::string &class_name);
   static void CheckMode(const std::string &class_name);
-  static std::vector<int64_t> CheckAttrIntOrTupleInt(const std::string &prim_name, const ValuePtr &attr,
-                                                     const std::string &arg_name);
-  static std::vector<int64_t> CheckAttrTupleInt(const std::string &prim_name, const ValuePtr &attr,
-                                                const std::string &arg_name);
+  static std::vector<int64_t> CheckIntOrTupleInt(const std::string &prim_name, const ValuePtr &attr,
+                                                 const std::string &arg_name);
+  static std::vector<int64_t> CheckTupleInt(const std::string &prim_name, const ValuePtr &attr,
+                                            const std::string &arg_name);
   static void CheckMinMaxShape(const ShapeVector &shape, ShapeVector *min_shape, ShapeVector *max_shape);
   static int64_t GetAndCheckFormat(const ValuePtr &value);
   static size_t GetRemoveMonadAbsNum(const AbstractBasePtrList &abs_list);
   static void CheckInputArgs(const std::vector<AbstractBasePtr> &input_args, const CompareEnum compare_operator,
                              const int64_t match_value, const std::string &prim_name);
-  static TypePtr GetInputTensorType(const std::vector<AbstractBasePtr> &input_args, const size_t index,
-                                    const std::string &prim_name);
   static bool HasDynamicShapeInput(const AbstractBasePtrList &abs_list);
+  static void GetFormatStringVal(const PrimitivePtr &prim, std::string *format);
 
  private:
   static TypePtr _CheckTypeSame(const std::map<std::string, TypePtr> &args, const std::string &prim_name,
-                                const std::set<TypePtr> &check_list, const bool allow_mix);
+                                const bool allow_mix);
+  static TypePtr CheckTensorSubClass(const std::string &type_name, const TypePtr &type,
+                                     const std::set<TypePtr> &template_types, const std::string &prim_name,
+                                     bool is_mix = false);
 };
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_UTILS_CHECK_CONVERT_UTILS_H_

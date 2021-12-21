@@ -29,6 +29,18 @@
 
 namespace mindspore {
 namespace lite {
+constexpr const char MINDIR_POSTFIX[] = ".mindir";
+#ifdef _WIN32
+constexpr const char FILE_SEPARATOR[] = "\\";
+#else
+constexpr const char FILE_SEPARATOR[] = "/";
+#endif
+bool IsCharEndWith(const char *src, const char *end);
+
+std::fstream *OpenFile(const std::string &file_path, std::ios_base::openmode open_mode = std::ios::in | std::ios::out);
+
+char *ReadFileSegment(const std::string &file, int64_t offset, int64_t len);
+
 char *ReadFile(const char *file, size_t *size);
 
 std::string RealPath(const char *path);
@@ -68,6 +80,8 @@ inline int WriteToBin(const std::string &file_path, void *data, const size_t siz
   out_file.close();
   return RET_OK;
 }
+
+std::string GetDirectory(const std::string &path);
 
 std::string GetAndroidPackageName();
 std::string GetAndroidPackagePath();

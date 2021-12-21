@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,42 +17,33 @@
 #ifndef MINDSPORE_CORE_UTILS_INFO_H_
 #define MINDSPORE_CORE_UTILS_INFO_H_
 
-#include <iostream>
 #include <string>
 #include <memory>
-#include <stack>
 #include <utility>
 #include <vector>
 
 #include "base/base.h"
+#include "utils/visible.h"
+#include "ir/scope.h"
 #include "utils/trace_info.h"
 
 namespace mindspore {
-// namespace to support intermediate representation definition
 enum SourceLineTip { kSourceLineTipDiscard = 0, kSourceLineTipNextLine = 1, kSourceLineTipInLine = 2 };
-
+typedef enum CacheBool { UNCACHED = -1, FALSE, TRUE } CacheBool;
 // Location class record the location in source code.
 class Location {
  public:
   Location(const std::string &file_name, int line, int column, int line_end, int column_end)
       : file_name_(file_name), line_(line), column_(column), line_end_(line_end), column_end_(column_end) {}
-  Location(const Location &loc)
-      : file_name_(loc.file_name_),
-        line_(loc.line_),
-        column_(loc.column_),
-        line_end_(loc.line_end_),
-        column_end_(loc.column_end_) {}
+  ~Location() = default;
   std::string ToString(SourceLineTip tip = kSourceLineTipNextLine) const;
   std::string file_name() const { return file_name_; }
   int line() const { return line_; }
-  void set_line(int line) { line_ = line; }
   int line_end() const { return line_end_; }
-  void set_line_end(int line) { line_end_ = line; }
   int column() const { return column_; }
-  void set_column(int column) { column_ = column; }
   int column_end() const { return column_end_; }
-  void set_column_end(int column) { column_end_ = column; }
-  ~Location() = default;
+
+  bool operator<(const Location &other) const;
 
  private:
   std::string file_name_;
@@ -61,31 +52,103 @@ class Location {
   int line_end_;
   int column_end_;
 };
-class TraceContext;
-using TraceContextPtr = std::shared_ptr<TraceContext>;
 
+class TraceContext {
+ public:
+  explicit TraceContext(const LocationPtr &loc);
+  explicit TraceContext(const std::string &func_name);
+  explicit TraceContext(const TraceInfoPtr &trace_info);
+  TraceContext(const LocationPtr &loc, const std::string &func_name);
+  ~TraceContext() = default;
+  const LocationPtr &location() const { return location_; }
+  const TraceInfoPtr &trace_info() const { return trace_info_; }
+  const std::string &func_name() const { return func_name_; }
+
+ private:
+  LocationPtr location_;
+  TraceInfoPtr trace_info_;
+  std::string func_name_;
+};
+
+using TraceContextPtr = TraceContext *;
+
+/// \brief TraceManager defines interface for debug trace management.
 class MS_CORE_API TraceManager {
  public:
+  /// \brief Constructor of TraceManager.
   TraceManager() = default;
+
+  /// \brief Destructor of TraceManager.
   ~TraceManager() = default;
-  static TraceContextPtr CurrentContextInfo();
+
+  /// \brief Get current trace context.
+  ///
+  /// \return The current trace context.
+  static TraceContextPtr CurrentContextInfo() {
+    if (!trace_context_stack_.empty()) {
+      return &trace_context_stack_.back();
+    }
+    return nullptr;
+  }
+
+  /// \brief Debug trace with the given function name and location.
+  ///
+  /// \param[in] func_name The function name for debug trace.
+  /// \param[in] location The source code location for debug trace.
   static void DebugTrace(const std::string &func_name, const LocationPtr &location);
+
+  /// \brief Debug trace with the given location.
+  ///
+  /// \param[in] location The source code location for debug trace.
   static void DebugTrace(const LocationPtr &location);
+
+  /// \brief Debug trace with the given trace info.
+  ///
+  /// \param[in] trace_info The trace info for debug.
   static void DebugTrace(const TraceInfoPtr &trace_info);
-  // debug trace with a cloned trace info with debug_info
+
+  /// \brief Debug trace with a cloned trace info and debug info.
+  ///
+  /// \param[in] debug_info The debug info for debug trace.
+  /// \param[in] trace_info The trace info for debug trace.
   static void DebugTrace(const DebugInfoPtr &debug_info, const TraceInfoPtr &trace_info);
-  static void EndTrace();
 
+  /// \brief End current debug trace.
+  static void EndTrace() { trace_context_stack_.pop_back(); }
+
+  /// \brief Clear debug info for parse or resolve.
   static void ClearParseOrResolveDebugInfo();
-  static DebugInfoPtr GetParseOrResolveDebugInfo();
 
-  thread_local static std::stack<TraceContextPtr> trace_context_stack_;
-  thread_local static DebugInfoPtr parse_or_resolve_debug_info_;
+  /// \brief Get debug info for parse or resolve.
+  ///
+  /// \return The debug info for parse or resolve.
+  static DebugInfoPtr record_debug_info();
+
+  /// \brief Get the flag of recording a debug info.
+  ///
+  /// \return A bool.
+  static bool record_debug_info_flag();
+
+  /// \brief Set the flag to false for not recording a debug info.
+  static void CloseRecordDebugInfoFlag();
+
+  /// \brief Set the flag to true for recording a debug info.
+  static void OpenRecordDebugInfoFlag();
+
+ private:
+  /// \brief Trace context stack for current thread.
+  thread_local static std::vector<TraceContext> trace_context_stack_;
+
+  /// \brief Record a debug info for print.
+  thread_local static DebugInfoPtr record_debug_info_;
+
+  /// \brief A flag to decide whether record a debug info or not.
+  thread_local static bool record_debug_info_flag_;
 };
 
 class TraceGuard {
  public:
-  TraceGuard(const std::string func_name, const LocationPtr &location) {
+  TraceGuard(const std::string &func_name, const LocationPtr &location) {
     TraceManager::DebugTrace(func_name, location);
   }
   explicit TraceGuard(const LocationPtr &location) { TraceManager::DebugTrace(location); }
@@ -96,137 +159,186 @@ class TraceGuard {
   ~TraceGuard() { TraceManager::EndTrace(); }
 };
 
-class TraceContext {
+/// \brief DebugInfo defines information for debug trace.
+class MS_CORE_API DebugInfo {
  public:
-  ~TraceContext() = default;
-  explicit TraceContext(const LocationPtr &loc) {
-    ProcessAttributeFromContext();
-    location_ = loc;
+  /// \brief Construct a default DebugInfo.
+  DebugInfo() : DebugInfo("") {}
+
+  /// \brief Construct DebugInfo with the given name.
+  ///
+  /// \param[in] name The DebugInfo name.
+  explicit DebugInfo(const std::string &name) : unique_id_(gen_unique_id()), name_(name) {
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      trace_info_ = top->trace_info();
+      location_ = top->location();
+    }
   }
-  explicit TraceContext(const std::string &func_name) {
-    ProcessAttributeFromContext();
-    func_name_ = func_name;
+
+  /// \brief Construct DebugInfo with the given location.
+  ///
+  /// \param[in] loc The location for DebugInfo.
+  explicit DebugInfo(const LocationPtr &loc) : unique_id_(gen_unique_id()), location_(loc) {
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      trace_info_ = top->trace_info();
+    }
   }
-  explicit TraceContext(const TraceInfoPtr &trace_info) {
-    ProcessAttributeFromContext();
-    trace_info_ = trace_info;
-  }
-  void set_location(const LocationPtr &loc) { location_ = loc; }
-  LocationPtr location() { return location_; }
-  void set_trace_info(const TraceInfoPtr &trace_info) { trace_info_ = trace_info; }
-  TraceInfoPtr trace_info() const { return trace_info_; }
-  void set_func_name(const std::string &func_name) { func_name_ = func_name; }
-  std::string func_name() { return func_name_; }
 
- protected:
-  void ProcessAttributeFromContext();
+  /// \brief Construct DebugInfo with the given trace info.
+  ///
+  /// \param[in] trace_info The trace info for DebugInfo.
+  explicit DebugInfo(TraceInfoPtr &&trace_info) : unique_id_(gen_unique_id()), trace_info_(std::move(trace_info)) {}
 
- private:
-  LocationPtr location_;
-  TraceInfoPtr trace_info_;
-  std::string func_name_;
-};
+  /// \brief Destructor of DebugInfo.
+  virtual ~DebugInfo() = default;
 
-class MS_CORE_API DebugInfo : public Base {
- public:
-  DebugInfo();
+  /// \brief Get the id.
+  ///
+  /// \return The id of the debug info.
+  int64_t get_id() const;
 
-  explicit DebugInfo(const std::string &name);
-
-  explicit DebugInfo(const LocationPtr &loc);
-
-  ~DebugInfo() override = default;
-  MS_DECLARE_PARENT(DebugInfo, Base);
-  int64_t debug_id();
+  /// \brief Get the unique id.
+  ///
+  /// \return The unique id.
   int64_t unique_id() const { return unique_id_; }
+
+  /// \brief Get the unique id through copy.
+  ///
+  /// \return The unique id through copy.
   int64_t unique_id_through_copy() const;
-  std::string get_id() { return std::to_string(debug_id()); }
 
+  /// \brief Set the trace info.
+  ///
+  /// \param[in] trace_info The trace info to be set.
   void set_trace_info(const TraceInfoPtr &trace_info) { trace_info_ = trace_info; }
-  TraceInfoPtr trace_info() const { return trace_info_; }
-  void set_location(const LocationPtr &loc) { location_ = loc; }
-  virtual LocationPtr location() { return location_; }
-  std::string name() { return name_; }
-  void set_name(const std::string &name) { name_ = name; }
-  virtual std::string debug_name();
 
+  /// \brief Get the trace info.
+  ///
+  /// \return The trace info.
+  TraceInfoPtr trace_info() const { return trace_info_; }
+
+  /// \brief Set the location.
+  ///
+  /// \param[in] loc The location to be set.
+  void set_location(const LocationPtr &loc) { location_ = loc; }
+
+  /// \brief Get the location.
+  ///
+  /// \return The location.
+  virtual LocationPtr location() const { return location_; }
+
+  /// \brief Get the name.
+  ///
+  /// \return The name of the DebugInfo.
+  std::string name() { return name_; }
+
+  /// \brief Set the name.
+  ///
+  /// \param[in] name The name to be set.
+  void set_name(const std::string &name) { name_ = name; }
+
+  /// \brief Get the debug name.
+  ///
+  /// \return The debug name of the DebugInfo.
+  virtual std::string debug_name() { return name_; }
+
+  /// \brief Get the python function name that this DebugInfo belongs to.
+  ///
+  /// \return The python function name that this DebugInfo belongs to.
   virtual std::string get_python_func_belonged() { return ""; }
 
  protected:
-  template <typename Derived>
-  std::shared_ptr<Derived> shared_from_base() {
-    return std::static_pointer_cast<Derived>(shared_from_this());
-  }
-
- private:
-  void InitValueFromContext() {
-    if (TraceManager::CurrentContextInfo() != nullptr) {
-      auto context_info = TraceManager::CurrentContextInfo();
-      trace_info_ = context_info->trace_info();
-      location_ = context_info->location();
-    }
-  }
   static int64_t gen_unique_id() {
     static int64_t cur_unique_id = 0;
     return cur_unique_id++;
   }
 
- protected:
+  mutable int64_t id_ = 0;
   int64_t unique_id_;
-  int64_t debug_id_;
   TraceInfoPtr trace_info_;
   LocationPtr location_;
   std::string name_;
 };
 
+/// \brief NodeDebugInfo defines debug information for a node.
 class MS_CORE_API NodeDebugInfo : public DebugInfo {
  public:
-  NodeDebugInfo() {
-    if (TraceManager::CurrentContextInfo() != nullptr) {
-      auto context_info = TraceManager::CurrentContextInfo();
-      py_func_belonged_ = context_info->func_name();
+  /// \brief Construct a default NodeDebugInfo.
+  NodeDebugInfo() : DebugInfo() {
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      py_func_belonged_ = top->func_name();
     }
   }
+
+  /// \brief Construct NodeDebugInfo with a given name.
+  ///
+  /// \param[in] name the name of the NodeDebugInfo.
   explicit NodeDebugInfo(const std::string &name) : DebugInfo(name) {
-    if (TraceManager::CurrentContextInfo() != nullptr) {
-      auto context_info = TraceManager::CurrentContextInfo();
-      py_func_belonged_ = context_info->func_name();
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      py_func_belonged_ = top->func_name();
     }
   }
+
+  /// \brief Construct NodeDebugInfo with the given trace info.
+  ///
+  /// \param[in] trace_info The trace info for NodeDebugInfo.
+  explicit NodeDebugInfo(TraceInfoPtr &&trace_info) : DebugInfo(std::move(trace_info)) {}
+
+  /// \brief Destructor of the NodeDebugInfo.
   ~NodeDebugInfo() override = default;
 
   std::string debug_name() override;
-  void set_node(const std::shared_ptr<AnfNode> &node) { node_ = AnfNodeWeakPtr(node); }
-  std::shared_ptr<AnfNode> get_node() const { return node_.lock(); }
+
+  /// \brief Set the node.
+  ///
+  /// \param[in] node The node to be set.
+  void set_node(const AnfNodePtr &node) { node_ = AnfNodeWeakPtr(node); }
+
+  /// \brief Get the node.
+  ///
+  /// \return The node.
+  AnfNodePtr get_node() const { return node_.lock(); }
+
+  /// \brief Set python function name that this NodeDebugInfo belongs to.
+  ///
+  /// \param[in] name The python function name to be set.
   void set_py_func_belonged(const std::string &name) { py_func_belonged_ = name; }
+
   std::string get_python_func_belonged() override { return py_func_belonged_; }
 
  private:
   AnfNodeWeakPtr node_;
   std::string py_func_belonged_;
 };
+
 using NodeDebugInfoPtr = std::shared_ptr<NodeDebugInfo>;
 
 class GraphDebugInfo : public DebugInfo {
  public:
-  GraphDebugInfo() {
-    if (TraceManager::CurrentContextInfo() != nullptr) {
-      auto context_info = TraceManager::CurrentContextInfo();
-      py_func_name_ = context_info->func_name();
-      deco_loc_ = nullptr;
+  GraphDebugInfo() : DebugInfo() {
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      py_func_name_ = top->func_name();
     }
   }
 
   explicit GraphDebugInfo(const std::string &name) : DebugInfo(name) {
-    if (TraceManager::CurrentContextInfo() != nullptr) {
-      auto context_info = TraceManager::CurrentContextInfo();
-      py_func_name_ = context_info->func_name();
-      deco_loc_ = nullptr;
+    auto top = TraceManager::CurrentContextInfo();
+    if (top != nullptr) {
+      py_func_name_ = top->func_name();
     }
   }
+
+  explicit GraphDebugInfo(TraceInfoPtr &&trace_info) : DebugInfo(std::move(trace_info)) {}
+
   ~GraphDebugInfo() override = default;
+
   std::string debug_name() override;
-  LocationPtr location() override;
+  LocationPtr location() const override;
   LocationPtr deco_location() { return deco_loc_; }
   void set_graph(const FuncGraphPtr &func_graph) { func_graph_ = FuncGraphWeakPtr(func_graph); }
   FuncGraphPtr get_graph() const { return func_graph_.lock(); }
@@ -243,6 +355,44 @@ class GraphDebugInfo : public DebugInfo {
 };
 
 using GraphDebugInfoPtr = std::shared_ptr<GraphDebugInfo>;
+
+inline TraceContext::TraceContext(const LocationPtr &loc) : location_(loc) {
+  auto top = TraceManager::CurrentContextInfo();
+  if (top != nullptr) {
+    trace_info_ = top->trace_info();
+    func_name_ = top->func_name();
+  }
+}
+
+inline TraceContext::TraceContext(const std::string &func_name) : func_name_(func_name) {
+  auto top = TraceManager::CurrentContextInfo();
+  if (top != nullptr) {
+    location_ = top->location();
+    trace_info_ = top->trace_info();
+  }
+}
+
+inline TraceContext::TraceContext(const TraceInfoPtr &trace_info) : trace_info_(trace_info) {
+  auto top = TraceManager::CurrentContextInfo();
+  if (top != nullptr) {
+    location_ = top->location();
+    func_name_ = top->func_name();
+  }
+}
+
+inline TraceContext::TraceContext(const LocationPtr &loc, const std::string &func_name)
+    : location_(loc), func_name_(func_name) {
+  auto top = TraceManager::CurrentContextInfo();
+  if (top != nullptr) {
+    trace_info_ = top->trace_info();
+  }
+}
+
+struct DebugInfoCompare {
+  bool operator()(const DebugInfoPtr &left, const DebugInfoPtr &right) const;
+};
+
+void UpdateDebugInfo(const FuncGraphPtr &func_graph, const ScopePtr &scope, const DebugInfoPtr &debug_info);
 }  // namespace mindspore
 
 #endif  // MINDSPORE_CORE_UTILS_INFO_H_

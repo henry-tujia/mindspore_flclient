@@ -137,19 +137,14 @@ int ElementLogicalOr(const float *in0, const float *in1, float *out, int size) {
   uint32x4_t mask = vmovq_n_u32(((uint32_t)(1u << 31) - 1));
   uint32x4_t zeros = vdupq_n_u32(0);
   for (; index <= size - 4; index += C4NUM) {
-#ifndef SUPPORT_NNIE
-    uint32x4_t vin0 = vandq_u32(vreinterpretq_s32_f32(vld1q_f32(in0 + index)), mask);
-    uint32x4_t vin1 = vandq_u32(vreinterpretq_s32_f32(vld1q_f32(in1 + index)), mask);
-#else
     uint32x4_t vin0 = vandq_u32(vreinterpretq_u32_f32(vld1q_f32(in0 + index)), mask);
     uint32x4_t vin1 = vandq_u32(vreinterpretq_u32_f32(vld1q_f32(in1 + index)), mask);
-#endif
     float32x4_t vout = vbslq_f32(vceqq_u32(vorrq_u32(vin0, vin1), zeros), vfalse, vtrue);
     vst1q_f32(out + index, vout);
   }
 #endif
   for (; index < size; index++) {
-    out[index] = (float)((unsigned int)(in0[index]) | (unsigned int)(in1[index]));
+    out[index] = (float)((bool)(in0[index]) | (bool)(in1[index]));
   }
   return NNACL_OK;
 }
@@ -157,7 +152,7 @@ int ElementLogicalOr(const float *in0, const float *in1, float *out, int size) {
 int ElementLogicalOrBool(const bool *in0, const bool *in1, bool *out, int size) {
   int index = 0;
   for (; index < size; index++) {
-    out[index] = (bool)((unsigned int)(in0[index]) | (unsigned int)(in1[index]));
+    out[index] = (bool)(in0[index] | in1[index]);
   }
   return NNACL_OK;
 }

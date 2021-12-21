@@ -145,7 +145,7 @@ void Merge(LiteKernel *a, LiteKernel *b, bool remove_a) {
 
     // update b in_tensors: b.in_tensors.replace(a.out_tensors[0], a.in_tensors)
     auto b_in_tensors = b->in_tensors();
-    for (int i = 0; i < b_in_tensors.size(); ++i) {
+    for (size_t i = 0; i < b_in_tensors.size(); ++i) {
       if (b_in_tensors[i] == a->out_tensors().front()) {
         // reshape: 2nd input tensor is removed
         if (a->type() == schema::PrimitiveType_Reshape) {
@@ -162,7 +162,7 @@ void Merge(LiteKernel *a, LiteKernel *b, bool remove_a) {
 
     // update b in_kernels: b.in_kernels.replace(a, a.in_kernels)
     auto b_in_kernels = b->in_kernels();
-    for (int i = 0; i < b_in_kernels.size(); ++i) {
+    for (size_t i = 0; i < b_in_kernels.size(); ++i) {
       if (a == b_in_kernels[i]) {
         b_in_kernels.erase(b_in_kernels.begin() + i);
         b_in_kernels.insert(b_in_kernels.begin() + i, a->in_kernels().begin(), a->in_kernels().end());
@@ -428,7 +428,7 @@ int TryFusionConvScaleWeight(LiteKernel *conv_kernel, LiteKernel *scale_kernel) 
   MS_ASSERT(conv_kernel);
   MS_ASSERT(scale_kernel);
   auto *scale_param =
-    reinterpret_cast<ScaleParameter *>(reinterpret_cast<OpenCLKernel *>(scale_kernel)->GetParameter());
+    reinterpret_cast<ScaleParameter *>(reinterpret_cast<OpenCLKernel *>(scale_kernel->kernel())->GetParameter());
   MS_ASSERT(scale_param);
   MS_ASSERT(conv_kernel->in_tensors().size() >= INPUT_TENSOR_SIZE_2);
   auto *filter = conv_kernel->in_tensors().at(1);

@@ -40,7 +40,7 @@ AbstractBasePtr ExpandDimsInfer(const abstract::AnalysisEnginePtr &, const Primi
   auto x_shape = CheckAndConvertUtils::ConvertShapePtrToShapeMap(input_args[0]->BuildShape())[kShape];
   auto dim_val = GetValue<int64_t>(input_args[1]->BuildValue());
   auto rank = x_shape.size();
-  CheckAndConvertUtils::CheckInRange<int64_t>("axis", dim_val, kIncludeBoth, {-rank - 1, rank}, prim_name);
+  (void)CheckAndConvertUtils::CheckInRange<int64_t>("axis", dim_val, kIncludeBoth, {-rank - 1, rank}, prim_name);
   if (dim_val < 0) {
     dim_val += SizeToLong(x_shape.size()) + 1;
   }
@@ -48,8 +48,8 @@ AbstractBasePtr ExpandDimsInfer(const abstract::AnalysisEnginePtr &, const Primi
   (void)out_shape.insert(out_shape.begin() + dim_val, 1, 1);
 
   // Infer type
-  const int64_t x_index = 0;
-  auto x_type = CheckAndConvertUtils::GetInputTensorType(input_args, x_index, prim_name);
+  const size_t x_index = 0;
+  auto x_type = CheckAndConvertUtils::GetTensorInputType(prim_name, input_args, x_index);
   std::set<TypePtr> valid_x_type = {kTensorType};
   (void)CheckAndConvertUtils::CheckSubClass("x_type", x_type, valid_x_type, prim_name);
   return std::make_shared<abstract::AbstractTensor>(x_type, out_shape);

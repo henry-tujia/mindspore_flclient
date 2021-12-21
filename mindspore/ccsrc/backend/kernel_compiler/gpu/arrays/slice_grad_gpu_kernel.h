@@ -30,7 +30,13 @@ namespace kernel {
 template <typename T>
 class SliceGradGpuKernel : public GpuKernel {
  public:
-  SliceGradGpuKernel() : is_strided_slice_(false), input_size_(0), output_size_(0), workspace_size_(0) {}
+  SliceGradGpuKernel()
+      : is_strided_slice_(false),
+        is_null_input_(false),
+        input_size_(0),
+        output_size_(0),
+        workspace_size_(0),
+        kernel_name_("SliceGrad") {}
   ~SliceGradGpuKernel() override = default;
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
   const std::vector<size_t> &GetOutputSizeList() const override { return output_size_list_; }
@@ -38,6 +44,9 @@ class SliceGradGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *dy = GetDeviceAddress<T>(inputs, 0);
     T *dx = GetDeviceAddress<T>(outputs, 0);
     FillDeviceArray(outputs[0]->size / sizeof(T), dx, 0.f, reinterpret_cast<cudaStream_t>(stream_ptr));
@@ -48,9 +57,8 @@ class SliceGradGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
-    if (!CheckParam(kernel_node)) {
-      return false;
-    }
+    kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
+    (void)CheckParam(kernel_node);
     auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     auto data_format = AnfAlgo::GetInputFormat(kernel_node, 0);
     if (kernel_name == "StridedSliceGrad") {
@@ -69,10 +77,20 @@ class SliceGradGpuKernel : public GpuKernel {
       size_ = GetAttr<std::vector<int64_t>>(kernel_node, "end");
     } else {
       auto input_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 1);
+      is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name_, "input");
+      if (is_null_input_) {
+        InitSizeLists();
+        return true;
+      }
       ShapeNdTo4d(input_shape, &input_shape_);
       size_ = GetAttr<std::vector<int64_t>>(kernel_node, "size");
     }
     auto dy_shape = AnfAlgo::GetInputDeviceShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(dy_shape, kernel_name_, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     ShapeNdTo4d(dy_shape, &dy_shape_);
     begin_ = GetAttr<std::vector<int64_t>>(kernel_node, "begin");
     CalcBeginAndSize(data_format);
@@ -117,22 +135,16 @@ class SliceGradGpuKernel : public GpuKernel {
   }
 
  private:
-  bool CheckParam(const CNodePtr &kernel_node) {
+  void CheckParam(const CNodePtr &kernel_node) {
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but SliceGradGpuKernel needs 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the number of outputs should be 1, but got " << output_num;
     }
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     if (input_shape.size() > 4) {
-      MS_LOG(ERROR) << "Input dims is " << input_shape.size() << ", but SliceGradGpuKernel only support 4d or lower.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the dimension of input cannot be greater than 4, but got "
+                        << input_shape.size();
     }
-    if (input_shape.size() == 0) {
-      MS_LOG(ERROR) << "Input dims is " << input_shape.size() << ", scalar is not supported.";
-      return false;
-    }
-    return true;
   }
 
   std::vector<int64_t> begin_;
@@ -145,9 +157,11 @@ class SliceGradGpuKernel : public GpuKernel {
   std::vector<size_t> workspace_size_list_;
 
   bool is_strided_slice_;
+  bool is_null_input_;
   size_t input_size_;
   size_t output_size_;
   size_t workspace_size_;
+  std::string kernel_name_;
 };  // namespace kernel
 }  // namespace kernel
 }  // namespace mindspore

@@ -29,10 +29,10 @@
 namespace mindspore {
 namespace dataset {
 
-class FilterOp : public ParallelOp {
- public:
-  enum filterCtrl : int8_t { kFilterEmpty = 0, kFilterPartial = 1, kFilterFull = 2, kFilterEoe = 3, kFilterEof = 4 };
+enum filterCtrl : int8_t { kFilterEmpty = 0, kFilterPartial = 1, kFilterFull = 2, kFilterEoe = 3, kFilterEof = 4 };
 
+class FilterOp : public ParallelOp<TensorRow, TensorRow> {
+ public:
   // Constructor of FilterOp
   // @note The builder class should be used to call it.
   // @param in_col_names A list of input column names,when it is empty the predicate will be
@@ -69,19 +69,12 @@ class FilterOp : public ParallelOp {
   // @return Name of the current Op
   std::string Name() const override { return kFilterOp; }
 
-  int32_t num_consumers() const override;
-
  private:
   // predicate_func python callable which returns a boolean value.
   std::shared_ptr<TensorOp> predicate_func_;
 
   // Variable to store the column name that will feed to predicate function.
   std::vector<std::string> in_columns_;
-
-  // Internal queue for filter.
-  QueueList<std::pair<TensorRow, filterCtrl>> filter_queues_;
-
-  QueueList<TensorRow> worker_queues_;  // internal queue for syncing worker
 
   std::unique_ptr<ChildIterator> child_iterator_;
 
@@ -98,10 +91,6 @@ class FilterOp : public ParallelOp {
   // @return Status The status code returned
   Status WorkerCompute(const TensorRow &in_row, bool *out_predicate);
 
-  // Collector TensorRows.
-  // @return Status The status code returned
-  Status Collector();
-
   // @param input tensor vector.
   // @return Status The status code returned.
   Status CheckInput(const TensorRow &input) const;
@@ -117,10 +106,6 @@ class FilterOp : public ParallelOp {
   // @param input_columns The vector of input column names used in the current thread.
   // @return Status The status code returned
   Status ValidateInColumns(const std::vector<std::string> &input_columns);
-
-  // Do the initialization of all queues then start all worker threads
-  // @return Status The status code returned
-  Status LaunchThreadsAndInitOp();
 };
 
 }  // namespace dataset

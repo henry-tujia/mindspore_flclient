@@ -246,7 +246,7 @@ int RelativePositionAttentionCPUKernel::PrepareParam() {
     return RET_ERROR;
   }
   if (param_->d_model_ % param_->num_heads_ != 0) {
-    MS_LOG(ERROR) << "D_model should be a integer multiple of num_heads.";
+    MS_LOG(ERROR) << "D_model should be an integer multiple of num_heads.";
     return RET_ERROR;
   }
   return RET_OK;
@@ -686,7 +686,7 @@ void RelativePositionAttentionCPUKernel::FreeAllPackData() {
   FreePackedBiases();
 }
 
-int RelativePositionAttentionCPUKernel::Init() {
+int RelativePositionAttentionCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), DIMENSION_11D);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   auto ret = CheckWeights();

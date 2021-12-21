@@ -55,7 +55,8 @@ void ProcessDefault(const std::string &func_name, size_t actual_param_number, co
     for (size_t i = actual_param_number; i < sig_size; ++i) {
       auto default_value = signature[i].default_value;
       if (default_value == nullptr) {
-        MS_LOG(EXCEPTION) << "Function " << func_name << "'s input length is not equal to Signature length.";
+        MS_LOG(EXCEPTION) << "The size of input in the operator should be " << sig_size << ", but got "
+                          << actual_param_number << ". Please check inputs of the operator.";
       } else {
         (*op_inputs).push_back(NewValueNode(default_value));
       }
@@ -91,7 +92,29 @@ bool GetTensorOrScalarTypeInfo(const TypePtr &arg_type_origin, TypeId *arg_type_
   return false;
 }
 
-TypeId GetMaxTypeId(const std::vector<TypePtr> &input_types, std::vector<size_t> indices) {
+TypeId GetMaxTypeIdForNumber(TypeId max_type_id, bool has_int8, bool has_scalar_int64, bool has_scalar_float32) {
+  if (max_type_id == kNumberTypeUInt8 && has_int8) {
+    max_type_id = kNumberTypeInt16;
+  }
+  // if bool is the max type, see if there is scalar input
+  // if so, it means that max is bool tensor, use scalar type instead.
+  // for example: Tensor([True, True]) * 2, expect result is Tensor([2, 2])
+  if (max_type_id == kNumberTypeBool) {
+    if (has_scalar_int64) {
+      max_type_id = kNumberTypeInt64;
+    }
+    if (has_scalar_float32) {
+      max_type_id = kNumberTypeFloat32;
+    }
+  }
+  if (max_type_id != kNumberTypeFloat16 && max_type_id != kNumberTypeFloat32 && max_type_id != kNumberTypeFloat64 &&
+      max_type_id != kTypeUnknown && has_scalar_float32) {
+    max_type_id = kNumberTypeFloat32;
+  }
+  return max_type_id;
+}
+
+TypeId GetMaxTypeId(const std::vector<TypePtr> &input_types, const std::vector<size_t> &indices) {
   TypeId max_type_id = kTypeUnknown;
   size_t max_type_number = 0;
   bool has_int8 = false;
@@ -126,26 +149,7 @@ TypeId GetMaxTypeId(const std::vector<TypePtr> &input_types, std::vector<size_t>
       SetMaxType(&max_type_id, &max_type_number, arg_type_id, it->second);
     }
   }
-
-  if (max_type_id == kNumberTypeUInt8 && has_int8) {
-    max_type_id = kNumberTypeInt16;
-  }
-  // if bool is the max type, see if there is scalar input
-  // if so, it means that max is bool tensor, use scalar type instead.
-  // for example: Tensor([True, True]) * 2, expect result is Tensor([2, 2])
-  if (max_type_id == kNumberTypeBool) {
-    if (has_scalar_int64) {
-      max_type_id = kNumberTypeInt64;
-    }
-    if (has_scalar_float32) {
-      max_type_id = kNumberTypeFloat32;
-    }
-  }
-  if (max_type_id != kNumberTypeFloat16 && max_type_id != kNumberTypeFloat32 && max_type_id != kNumberTypeFloat64 &&
-      max_type_id != kTypeUnknown && has_scalar_float32) {
-    max_type_id = kNumberTypeFloat32;
-  }
-  return max_type_id;
+  return GetMaxTypeIdForNumber(max_type_id, has_int8, has_scalar_int64, has_scalar_float32);
 }
 
 // Get the largest type of index in the same SignatureEnumDType of arguments.
@@ -237,8 +241,8 @@ void DoAutoCast(const std::string &func_name, const std::vector<Signature> &sign
     if ((arg_value->isa<TensorType>()) && arg_type_id == it->second) {
       continue;
     }
-    MS_LOG(DEBUG) << "do cast for inputs " << i << " " << (*op_inputs)[i + 1]->ToString() << " " << arg_type_id
-                  << " to " << it->second;
+    MS_LOG(DEBUG) << "Do cast for inputs " << i << " " << (*op_inputs)[i + 1]->ToString() << " " << arg_type_id
+                  << " to " << it->second << ".";
     (*op_inputs)[i + 1] = DoCast((*op_inputs)[i + 1], it->second, graph);
   }
 }
@@ -255,6 +259,18 @@ void CheckSigSize(const size_t &sig_size, const bool &has_var, const AbstractBas
       MS_LOG(EXCEPTION) << "Function " << func_name << "'s input length is not equal to Signature length.";
     }
   }
+}
+
+SignatureEnumRW GetSignatureEnumRW(size_t index, const std::vector<Signature> &signature, bool has_var) {
+  SignatureEnumRW sig = SignatureEnumRW::kRWDefault;
+  // If sig_size is 0 use default.
+  std::size_t sig_size = signature.size();
+  if (index < sig_size) {
+    sig = signature[index].rw;
+  } else if (has_var && index >= sig_size) {
+    sig = signature[sig_size - 1].rw;
+  }
+  return sig;
 }
 
 AnfNodePtr BuildNewCNode(const FuncGraphPtr &func_graph, const std::string &func_name, const ValuePtr &function,
@@ -277,14 +293,8 @@ AnfNodePtr BuildNewCNode(const FuncGraphPtr &func_graph, const std::string &func
       op_inputs.push_back(param);
       continue;
     }
-    SignatureEnumRW sig = SignatureEnumRW::kRWDefault;
-    // If sig_size is 0 use default.
-    if (sig_size > 0 && i < sig_size) {
-      sig = signature[i].rw;
-    } else if (has_var && i >= sig_size) {
-      sig = signature[sig_size - 1].rw;
-    }
 
+    SignatureEnumRW sig = GetSignatureEnumRW(i, signature, has_var);
     TypePtr type = args_spec_list[i]->BuildType();
     if (type && type->isa<RefType>()) {
       if (sig == SignatureEnumRW::kRWRead) {
@@ -306,7 +316,7 @@ AnfNodePtr BuildNewCNode(const FuncGraphPtr &func_graph, const std::string &func
       RaiseExceptionForCheckParameter(func_name, i, type->ToString());
     }
     MS_LOG(DEBUG) << "Function " << func_name << "'s input " << i << " " << param->DebugString(2) << " abs "
-                  << args_spec_list[i]->ToString() << " type " << type->ToString();
+                  << args_spec_list[i]->ToString() << " type " << type->ToString() << ".";
     input_types.push_back(type);
     op_inputs.push_back(param);
   }
@@ -337,9 +347,9 @@ FuncGraphPtr DoSignatureMetaFuncGraph::GenerateFuncGraph(const AbstractBasePtrLi
 
 void RaiseExceptionForConvertRefDtype(const std::string &func_name, const std::string &ref_type,
                                       const std::string &target_type) {
-  MS_LOG(EXCEPTION) << "In op '" << func_name << "', \n"
+  MS_LOG(EXCEPTION) << "For '" << func_name << "' operator, "
                     << "the type of writable argument is '" << ref_type << "', "
-                    << "but the largest type in the same SignatureEumDtype is '" << target_type
+                    << "but the largest type in the same SignatureEnumDType is '" << target_type
                     << "'. The writable arg type is not equal to the largest type, "
                     << "so can not cast automatically.";
 }

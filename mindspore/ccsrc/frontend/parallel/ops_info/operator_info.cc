@@ -56,6 +56,14 @@ std::string StrategyToString(const Strategys &strategy) {
   return strategy_str;
 }
 
+Status OperatorInfo::CheckOutputStrategy(const StrategyPtr &out_strategy) {
+  if (out_strategy) {
+    MS_LOG(ERROR) << name_ << ": It does not support to set output strategy now, please modify the shard set";
+    return FAILED;
+  }
+  return SUCCESS;
+}
+
 Status OperatorInfo::CheckStrategyValue(const StrategyPtr &strategy, const Shapes &inputs_shape) {
   if (strategy == nullptr) {
     MS_LOG(ERROR) << name_ << ": The strategy is null.";
@@ -339,6 +347,15 @@ Operator CreateReduceScatterOp(const std::string &reduce_op, const std::string &
   return op;
 }
 
+Operator CreateCastOp(TypePtr type) {
+  Param param_type = std::make_pair(std::make_pair(DTYPE, type), 2);
+  OperatorAttrs attrs;
+  OperatorParams params = {param_type};
+  OperatorArgs args = std::make_pair(attrs, params);
+  Operator op_cast = std::make_pair(CAST, args);
+  return op_cast;
+}
+
 void AddCommOpFusionType(const CNodePtr &comm_node, const AnfNodePtr &param_node) {
   MS_EXCEPTION_IF_NULL(comm_node);
   MS_EXCEPTION_IF_NULL(param_node);
@@ -377,6 +394,24 @@ void AddCommOpMeanFlag(const CNodePtr &comm_node) {
   MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
   bool mean_flag = ParallelContext::GetInstance()->gradients_mean();
   attrs[MEAN_FLAG] = MakeValue<bool>(mean_flag);
+  prim->SetAttrs(attrs);
+}
+
+void AddCommOpMirrorFlag(const CNodePtr &comm_node, bool do_mirror) {
+  MS_EXCEPTION_IF_NULL(comm_node);
+  auto prim = GetValueNode<PrimitivePtr>(comm_node->input(0));
+  auto attrs = prim->attrs();
+  MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
+  attrs[DO_MIRROR] = MakeValue<bool>(do_mirror);
+  prim->SetAttrs(attrs);
+}
+
+void AddCommOpAddAccuFlag(const CNodePtr &comm_node, bool add_accu) {
+  MS_EXCEPTION_IF_NULL(comm_node);
+  auto prim = GetValueNode<PrimitivePtr>(comm_node->input(0));
+  auto attrs = prim->attrs();
+  MS_EXCEPTION_IF_NULL(ParallelContext::GetInstance());
+  attrs[ADD_ACCU] = MakeValue<bool>(add_accu);
   prim->SetAttrs(attrs);
 }
 
@@ -437,7 +472,6 @@ Operator CreateMiniStepAllGatherOp(const std::string &group) {
 
 Operator CreateMicroStepAllGatherOp(const std::string &group) {
   bool mean_flag = ParallelContext::GetInstance()->gradients_mean();
-
   OperatorName operator_name = MICRO_STEP_ALL_GATHER;
   ValuePtr attr0_value = MakeValue(group);  // group
   Attr attr0 = std::make_pair(GROUP, attr0_value);
@@ -710,9 +744,30 @@ Status OperatorInfo::InferSliceShape(const Strategys &inputs_strategy, const Str
   return SUCCESS;
 }
 
-// method0: auto insert repeated_calculation_num for dev_matrix_shape when repeated_calculation_num > 1
-Status OperatorInfo::InitForCostModelWithAutoRepeatCalc(const StrategyPtr &strategy) {
-  if (strategy == nullptr) {
+Status OperatorInfo::Init(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
+  if (InitWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
+    MS_LOG(ERROR) << name_ << " : Init failed.";
+    return FAILED;
+  }
+
+  MS_LOG(INFO) << name_ << " : Init success.";
+  return SUCCESS;
+}
+
+Status OperatorInfo::InitForCostModel(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
+  if (InitForCostModelWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
+    MS_LOG(ERROR) << name_ << " : Init for cost model failed.";
+    return FAILED;
+  }
+
+  MS_LOG(INFO) << name_ << " : Init for cost model success.";
+  return SUCCESS;
+}
+
+// auto insert repeated_calculation_num for dev_matrix_shape when repeated_calculation_num > 1
+Status OperatorInfo::InitForCostModelWithAutoRepeatCalc(const StrategyPtr &in_strategy,
+                                                        const StrategyPtr &out_strategy) {
+  if (in_strategy == nullptr) {
     MS_LOG(ERROR) << name_ << ": The strategy is null.";
     return FAILED;
   }
@@ -723,7 +778,7 @@ Status OperatorInfo::InitForCostModelWithAutoRepeatCalc(const StrategyPtr &strat
   }
 
   // must be after InferAttrs()
-  if (CheckStrategy(strategy) != SUCCESS) {
+  if (CheckStrategy(in_strategy) != SUCCESS) {
     if (is_auto_parallel_) {
       MS_LOG(DEBUG) << name_ << ": CheckStrategy failed.";
     } else {
@@ -731,12 +786,17 @@ Status OperatorInfo::InitForCostModelWithAutoRepeatCalc(const StrategyPtr &strat
     }
     return FAILED;
   }
+  strategy_ = in_strategy;
+
+  if (out_strategy && CheckOutputStrategy(out_strategy) != SUCCESS) {
+    MS_LOG(ERROR) << name_ << ": The output strategy is invalid";
+    return FAILED;
+  }
+  out_strategy_ = out_strategy;
 
   // need to clear queues before Init(),
   // because Init() may be called multiple times by cost model
   ResetQueueMember();
-
-  strategy_ = strategy;
 
   if (InferDevMatrixShape() != SUCCESS) {
     MS_LOG(ERROR) << name_ << ": InferDevMatrixShape failed.";
@@ -770,61 +830,13 @@ Status OperatorInfo::InitForCostModelWithAutoRepeatCalc(const StrategyPtr &strat
   return SUCCESS;
 }
 
-// method1: manually insert repeated_calculation_num for dev_matrix_shape in InferDevMatrixShape
-Status OperatorInfo::InitForCostModelWithManualRepeatCalc(const StrategyPtr &strategy) {
-  if (strategy == nullptr) {
-    MS_LOG(ERROR) << name_ << ": The strategy is null.";
+Status OperatorInfo::InitWithAutoRepeatCalc(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) {
+  if (in_strategy == nullptr) {
+    MS_LOG(ERROR) << name_ << ": The input strategy is null.";
     return FAILED;
   }
 
-  if (InferAttrs() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferAttrs failed.";
-    return FAILED;
-  }
-
-  // must be after InferAttrs()
-  if (CheckStrategy(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": CheckStrategy failed.";
-    return FAILED;
-  }
-
-  // need to clear queues before Init(),
-  // because Init() may be called multiple times by cost model
-  ResetQueueMember();
-
-  strategy_ = strategy;
-
-  if (InferDevMatrixShape() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferDevMatrixShape failed.";
-    return FAILED;
-  }
-
-  // must be after InferDevMatrixShape
-  if (InferRepeatedCalcInfo() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferRepeatedCalcInfo failed.";
-    return FAILED;
-  }
-
-  if (InferTensorMap() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferTensorMap failed.";
-    return FAILED;
-  }
-
-  if (InferTensorInfo() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferTensorInfo failed.";
-    return FAILED;
-  }
-
-  return SUCCESS;
-}
-
-Status OperatorInfo::InitWithAutoRepeatCalc(const StrategyPtr &strategy) {
-  if (strategy == nullptr) {
-    MS_LOG(ERROR) << name_ << ": The strategy is null.";
-    return FAILED;
-  }
-
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
+  if (InitForCostModelWithAutoRepeatCalc(in_strategy, out_strategy) != SUCCESS) {
     return FAILED;
   }
 
@@ -843,34 +855,7 @@ Status OperatorInfo::InitWithAutoRepeatCalc(const StrategyPtr &strategy) {
     return FAILED;
   }
 
-  return SUCCESS;
-}
-
-Status OperatorInfo::InitWithManualRepeatCalc(const StrategyPtr &strategy) {
-  if (strategy == nullptr) {
-    MS_LOG(ERROR) << name_ << ": The strategy is null.";
-    return FAILED;
-  }
-
-  if (InitForCostModelWithManualRepeatCalc(strategy) != SUCCESS) {
-    return FAILED;
-  }
-
-  if (InferForwardCommunication() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferForwardCommunication failed.";
-    return FAILED;
-  }
-
-  if (InferMirrorOps() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferMirrorOps failed.";
-    return FAILED;
-  }
-
-  if (InferVirtualDivOps() != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": InferVirtualDivOps failed.";
-    return FAILED;
-  }
-
+  InferReplaceOps();
   return SUCCESS;
 }
 
@@ -1368,7 +1353,7 @@ Status GenerateStrategiesWithBroadcast(int64_t stage_id, const Shapes &inputs_sh
 }
 
 Status OperatorInfo::SetCostUnderStrategyBase(const StrategyPtr &strategy) {
-  if (InitForCostModel(strategy) == FAILED) {
+  if (InitForCostModel(strategy, nullptr) == FAILED) {
     if (is_auto_parallel_) {
       MS_LOG(DEBUG) << name_ << ": Initialization under the strategy failed.";
     } else {
@@ -1399,6 +1384,64 @@ Status OperatorInfo::SetCostUnderStrategyBase(const StrategyPtr &strategy) {
   strategy_cost_.emplace_back(swc);
 
   return SUCCESS;
+}
+
+TensorLayout OperatorInfo::GetInputLayoutFromSWCByStrategy(StrategyPtr stra, size_t input_index) {
+  auto is_target = [&](std::shared_ptr<StrategyWithCost> swc) { return swc->strategy_ptr->IsEqual(stra); };
+  auto it = std::find_if(strategy_cost_.begin(), strategy_cost_.end(), is_target);
+  if (it != strategy_cost_.end()) {
+    const auto &input_info = (*it)->inputs_ptr[input_index];
+    return std::move(input_info.tensor_layout());
+  }
+  TensorLayout empty;
+  return empty;
+}
+
+TensorLayout OperatorInfo::GetOutputLayoutFromSWCByStrategy(StrategyPtr stra, size_t output_index) {
+  auto is_target = [&](std::shared_ptr<StrategyWithCost> swc) { return swc->strategy_ptr->IsEqual(stra); };
+  auto it = std::find_if(strategy_cost_.begin(), strategy_cost_.end(), is_target);
+  if (it != strategy_cost_.end()) {
+    const auto &output_info = (*it)->outputs_ptr[output_index];
+    return std::move(output_info.tensor_layout());
+  }
+  TensorLayout empty;
+  return empty;
+}
+
+StrategyPtr OperatorInfo::GetStrategyFromSWCByInputLayout(TensorLayout input_layout, size_t input_index) {
+  auto is_target = [&](std::shared_ptr<StrategyWithCost> swc) {
+    return swc->inputs_ptr[input_index].tensor_layout() == input_layout;
+  };
+  auto it = std::find_if(strategy_cost_.begin(), strategy_cost_.end(), is_target);
+  if (it != strategy_cost_.end()) {
+    return (*it)->strategy_ptr;
+  }
+  return nullptr;
+}
+
+StrategyPtr OperatorInfo::GetStrategyFromSWCByOutputLayout(TensorLayout output_layout, size_t output_index) {
+  auto is_target = [&](std::shared_ptr<StrategyWithCost> swc) {
+    return swc->outputs_ptr[output_index].tensor_layout() == output_layout;
+  };
+  auto it = std::find_if(strategy_cost_.begin(), strategy_cost_.end(), is_target);
+  if (it != strategy_cost_.end()) {
+    return (*it)->strategy_ptr;
+  }
+  return nullptr;
+}
+
+bool OperatorInfo::IsReshape() {
+  if (name_.find(RESHAPEINFO) != std::string::npos) {
+    return true;
+  }
+  return false;
+}
+
+bool OperatorInfo::IsTmpIdentity() {
+  if (name_.find(IDENTITY_INFO) != std::string::npos) {
+    return true;
+  }
+  return false;
 }
 
 // Keep at most (1.0 / epsilon) number of available strategies for each operator.
@@ -1721,6 +1764,12 @@ void OperatorInfo::SetSelectedStrategy(const StrategyPtr &s_strategy, size_t cur
   selected_strategy_depth_ = SizeToLong(curr_depth);
 }
 
+void OperatorInfo::set_swc_index(int64_t swc, int64_t depth) {
+  MS_LOG(INFO) << "Set SWC index: " << swc << " for: " << name();
+  selected_strategy_depth_ = depth;
+  swc_index_ = swc;
+}
+
 CNodePtr OperatorInfo::cnode() {
   MS_EXCEPTION_IF_NULL(cnode_);
   return cnode_;
@@ -1835,7 +1884,7 @@ float OperatorInfo::GetFloatAttr(const std::string &attr_name) {
   return attr_iter->second->cast<FP32ImmPtr>()->value();
 }
 
-std::vector<ValuePtr> GetValueSequeue(const ValuePtr &sequeue) {
+std::vector<ValuePtr> GetValueSequence(const ValuePtr &sequeue) {
   MS_EXCEPTION_IF_NULL(sequeue);
   std::vector<ValuePtr> ret;
   if (!sequeue->isa<ValueTuple>() && !sequeue->isa<ValueList>()) {
@@ -1849,6 +1898,25 @@ std::vector<ValuePtr> GetValueSequeue(const ValuePtr &sequeue) {
   }
   auto val = sequeue->cast<ValueListPtr>();
   return val->value();
+}
+
+ValuePtr MakeListValue(const std::vector<int64_t> &v) {
+  std::vector<ValuePtr> list;
+  (void)std::transform(v.begin(), v.end(), std::back_inserter(list), [](int64_t ele) { return MakeValue(ele); });
+  return std::make_shared<ValueSequence>(list);
+}
+
+ValuePtr MakeTupleListValue(const Shapes &v) {
+  std::vector<ValuePtr> tuple;
+  (void)std::transform(v.begin(), v.end(), std::back_inserter(tuple),
+                       [](const std::vector<int64_t> &list) { return MakeListValue(list); });
+  return std::make_shared<ValueTuple>(tuple);
+}
+
+AnfNodePtr CreateValueTupleAnfNodePtr(const std::vector<int64_t> &value_tuple) {
+  auto value_ptr = MakeValue(value_tuple)->cast<ValueTuplePtr>();
+  auto value_node = NewValueNode(value_ptr);
+  return value_node->cast<AnfNodePtr>();
 }
 }  // namespace parallel
 }  // namespace mindspore

@@ -47,10 +47,10 @@ namespace dataset {
   static_cast<int16_t>(::std::min(::std::max(static_cast<int>(X + (X >= 0.f ? 0.5f : -0.5f)), -32768), 32767));
 
 enum PaddBorderType {
-  PADD_BORDER_CONSTANT = 0,
-  PADD_BORDER_REPLICATE = 1,
-  PADD_BORDER_REFLECT_101 = 4,
-  PADD_BORDER_DEFAULT = PADD_BORDER_REFLECT_101
+  PADD_BORDER_CONSTANT = 0,                     /**< Fills the border with constant values. */
+  PADD_BORDER_REPLICATE = 1,                    /**< Fills the border with replicate mode. */
+  PADD_BORDER_REFLECT_101 = 4,                  /**< Fills the border with reflect 101 mode. */
+  PADD_BORDER_DEFAULT = PADD_BORDER_REFLECT_101 /**< Default pad mode, use reflect 101 mode. */
 };
 
 struct BoxesConfig {
@@ -280,7 +280,7 @@ bool Sobel(const LiteMat &src, LiteMat &dst, int flag_x, int flag_y, int ksize =
 /// \param[in] w The width of output image.
 /// \param[in] h The height of output image.
 /// \param[in] mat Output image data.
-bool ConvertRgbToBgr(const LiteMat &src, LDataType data_type, int w, int h, LiteMat &mat);
+bool ConvertRgbToBgr(const LiteMat &src, const LDataType &data_type, int w, int h, LiteMat &mat);
 
 /// \brief Convert RGB image or color image to grayscale image.
 /// \param[in] src Input image data.

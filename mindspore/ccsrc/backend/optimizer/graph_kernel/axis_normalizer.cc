@@ -15,12 +15,13 @@
  */
 #include "backend/optimizer/graph_kernel/axis_normalizer.h"
 
+#include <algorithm>
+#include <vector>
 #include "ir/scalar.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_helper.h"
 #include "backend/session/anf_runtime_algorithm.h"
 
-namespace mindspore {
-namespace opt {
+namespace mindspore::graphkernel {
 int64_t AxisNormalizer::NormAxis(int64_t x, size_t rank) const { return x >= 0 ? x : x + static_cast<int64_t>(rank); }
 
 bool AxisNormalizer::IsReduce(const AnfNodePtr &node) const {
@@ -51,8 +52,8 @@ bool AxisNormalizer::Process(const FuncGraphPtr &func_graph) const {
         auto v2 = NormAxis(v1, rank);
         axis_vec.push_back(v2);
         diff = true;
-      } else if (axis->isa<ValueSequeue>()) {
-        auto vec = axis->cast<ValueSequeuePtr>()->value();
+      } else if (axis->isa<ValueSequence>()) {
+        auto vec = axis->cast<ValueSequencePtr>()->value();
         if (vec.empty()) {
           diff = true;
           for (size_t i = 0; i < rank; i++) {
@@ -89,5 +90,4 @@ bool AxisNormalizer::Run(const FuncGraphPtr &func_graph) {
   }
   return changed;
 }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

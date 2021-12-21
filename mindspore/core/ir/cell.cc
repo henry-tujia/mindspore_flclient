@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <algorithm>
 
 #include "abstract/abstract_value.h"
+#include "utils/ms_utils.h"
 
 namespace mindspore {
 using mindspore::abstract::AbstractFunction;
@@ -40,21 +41,7 @@ bool Cell::operator==(const Cell &other) const {
   if (name() != other.name()) {
     return false;
   }
-  if (attrs_.size() != other.attrs_.size()) {
-    return false;
-  }
-  auto all = std::all_of(attrs_.begin(), attrs_.end(), [&other](const std::pair<std::string, ValuePtr> &item) -> bool {
-    if (item.second == nullptr) {
-      return false;
-    }
-    auto iter = other.attrs_.find(item.first);
-    if (iter == other.attrs_.end()) {
-      return false;
-    }
-    MS_EXCEPTION_IF_NULL(iter->second);
-    return *item.second == *iter->second;
-  });
-  return all;
+  return common::IsAttrsEqual(attrs_, other.attrs_);
 }
 
 std::string Cell::GetAttrString() const {

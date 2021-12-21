@@ -25,17 +25,23 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameHashtableLookup = "HashtableLookup";
+/// \brief HashtableLookup defined HashtableLookup operator prototype.
 class MS_CORE_API HashtableLookup : public PrimitiveC {
  public:
+  /// \brief Constructor.
   HashtableLookup() : PrimitiveC(kNameHashtableLookup) {}
+
+  /// \brief Destructor.
   ~HashtableLookup() = default;
+
   MS_DECLARE_PARENT(HashtableLookup, PrimitiveC);
+
+  /// \brief Method to init the op's attributes.
   void Init() {}
 };
 
 AbstractBasePtr HashtableLookupInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                      const std::vector<AbstractBasePtr> &input_args);
-using PrimHashtableLookupPtr = std::shared_ptr<HashtableLookup>;
 }  // namespace ops
 }  // namespace mindspore
 

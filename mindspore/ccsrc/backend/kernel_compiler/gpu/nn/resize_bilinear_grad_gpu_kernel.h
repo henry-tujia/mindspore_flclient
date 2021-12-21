@@ -36,6 +36,9 @@ class ResizeBilinearGradGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     T *dy = GetDeviceAddress<T>(inputs, 0);
     float *interim = GetDeviceAddress<float>(workspace, 0);
     T *dx = GetDeviceAddress<T>(outputs, 0);
@@ -53,27 +56,36 @@ class ResizeBilinearGradGpuKernel : public GpuKernel {
   }
 
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     kernel_node_ = kernel_node;
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 2) {
-      MS_LOG(ERROR) << "Input number is " << input_num << ", but ResizeBilinearGrad needs 1 input.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 2, but got " << input_num;
     }
     size_t output_num = AnfAlgo::GetOutputTensorNum(kernel_node);
     if (output_num != 1) {
-      MS_LOG(ERROR) << "Output number is " << output_num << ", but ResizeBilinearGrad has 1 output.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of outputs should be 1, but got " << output_num;
     }
     std::vector<size_t> dy_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
     std::vector<size_t> x_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 1);
     std::vector<size_t> dx_shape = AnfAlgo::GetOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(dy_shape, kernel_name, "dy") || CHECK_SHAPE_NULL(x_shape, kernel_name, "x") ||
+                     CHECK_SHAPE_NULL(dx_shape, kernel_name, "dx");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     if (dy_shape.size() != 4) {
-      MS_LOG(ERROR) << "Input is " << dy_shape.size() << "-D, but ResizeBilinearGrad supports only 4-D inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of dy should be equal to 4, but got "
+                        << dy_shape.size();
     }
     if (x_shape.size() != 4) {
-      MS_LOG(ERROR) << "Input is " << x_shape.size() << "-D, but ResizeBilinearGrad supports only 4-D inputs.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of x should be equal to 4, but got "
+                        << x_shape.size();
+    }
+    if (dx_shape.size() != 4) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the dimension of dx should be equal to 4, but got "
+                        << dx_shape.size();
     }
     n_ = SizeToInt(dy_shape[0]);
     c_ = SizeToInt(dy_shape[1]);
@@ -97,6 +109,7 @@ class ResizeBilinearGradGpuKernel : public GpuKernel {
 
   void ResetResource() noexcept override {
     align_corners_ = false;
+    is_null_input_ = false;
     n_ = 0;
     c_ = 0;
     dy_h_ = 0;
@@ -125,6 +138,7 @@ class ResizeBilinearGradGpuKernel : public GpuKernel {
   }
 
   bool align_corners_;
+  bool is_null_input_;
   int n_;
   int c_;
   int dy_h_;

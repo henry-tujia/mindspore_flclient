@@ -24,12 +24,12 @@ namespace mindspore {
 namespace opt {
 namespace {
 constexpr size_t kDiagInputNum = 1;
+constexpr size_t kDiagInputMaxDim = 4;
 
 template <typename T>
-void SetAssistTensorData(void *data, T value, size_t dims_size) {
+void SetAssistTensorData(void *data, const T &value, size_t dims_size) {
   MS_EXCEPTION_IF_NULL(data);
   auto tensor_data = reinterpret_cast<T *>(data);
-  MS_EXCEPTION_IF_NULL(tensor_data);
   for (size_t i = 0; i < dims_size; ++i) {
     tensor_data[(1 + dims_size) * i] = value;
   }
@@ -45,7 +45,7 @@ ValueNodePtr DiagFission::CreateAssistNode(const FuncGraphPtr &func_graph, const
   for (size_t i = 0; i < ori_shape.size(); i++) {
     dims = dims * ori_shape[i];
   }
-  output_shape.insert(output_shape.end(), ori_shape.begin(), ori_shape.end());
+  (void)output_shape.insert(output_shape.end(), ori_shape.begin(), ori_shape.end());
   auto type = AnfAlgo::GetOutputInferDataType(node, 0);
   std::vector<int64_t> assist_shape;
   std::transform(output_shape.begin(), output_shape.end(), std::back_inserter(assist_shape), SizeToLong);
@@ -53,13 +53,16 @@ ValueNodePtr DiagFission::CreateAssistNode(const FuncGraphPtr &func_graph, const
   AbstractBasePtr x_abstract;
   if (type == kNumberTypeInt32) {
     SetAssistTensorData<int32_t>(tensor->data_c(), 1, dims);
-    x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat16, assist_shape);
+    x_abstract = std::make_shared<abstract::AbstractTensor>(kInt32, assist_shape);
   } else if (type == kNumberTypeFloat16) {
     SetAssistTensorData<float16>(tensor->data_c(), float16(static_cast<float>(1)), dims);
-    x_abstract = std::make_shared<abstract::AbstractTensor>(kInt32, assist_shape);
-  } else {
+    x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat16, assist_shape);
+  } else if (type == kNumberTypeFloat32) {
     SetAssistTensorData<float>(tensor->data_c(), static_cast<float>(1), dims);
     x_abstract = std::make_shared<abstract::AbstractTensor>(kFloat, assist_shape);
+  } else {
+    MS_EXCEPTION(TypeError) << "The type of node [" << node->DebugString()
+                            << "] should be int32, float16 or float32, but got" << node->Type()->ToString();
   }
   auto kernel_graph = func_graph->cast<KernelGraphPtr>();
   MS_EXCEPTION_IF_NULL(kernel_graph);
@@ -86,11 +89,14 @@ const AnfNodePtr DiagFission::Process(const FuncGraphPtr &graph, const AnfNodePt
     return nullptr;
   }
   auto input_shape = AnfAlgo::GetOutputInferShape(diag_cnode->inputs()[kIndex1], 0);
+  if (input_shape.size() > kDiagInputMaxDim) {
+    MS_EXCEPTION(ValueError) << "For Diag, rank of input should be less than 5, but got: " << input_shape.size();
+  }
   std::vector<AnfNodePtr> new_inputs{NewValueNode(std::make_shared<Primitive>(prim::kPrimDiag->name()))};
   auto assist_const = CreateAssistNode(graph, diag_cnode, input_shape);
-  new_inputs.insert(new_inputs.end(), diag_cnode->inputs().begin() + 1, diag_cnode->inputs().end());
+  (void)new_inputs.insert(new_inputs.end(), diag_cnode->inputs().begin() + 1, diag_cnode->inputs().end());
   new_inputs.push_back(assist_const);
-  CNodePtr new_cnode = graph->NewCNode(new_inputs);
+  CNodePtr new_cnode = NewCNode(new_inputs, graph);
   MS_EXCEPTION_IF_NULL(new_cnode);
   new_cnode->set_abstract(diag_cnode->abstract());
   new_cnode->set_scope(diag_cnode->scope());

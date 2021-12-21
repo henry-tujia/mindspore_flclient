@@ -126,6 +126,10 @@ class CsvOp : public NonMappableLeafOp {
 
     int CatchException(int c);
 
+    void InitSDL();
+
+    void InitSD();
+
     int32_t worker_id_;
     JaggedConnector *rows_connector_;
     const char csv_field_delim_;
@@ -183,7 +187,7 @@ class CsvOp : public NonMappableLeafOp {
   // \return DatasetName of the current Op
   virtual std::string DatasetName(bool upper = false) const { return upper ? "CSV" : "csv"; }
 
- private:
+ protected:
   // Parses a single row and puts the data into a tensor table.
   // @param line - the content of the row.
   // @param tensor_table - the tensor table to put the parsed data in.

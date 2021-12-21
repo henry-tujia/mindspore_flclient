@@ -1,7 +1,7 @@
 /**
  * This is the C++ adaptation and derivative work of Myia (https://github.com/mila-iqia/myia/).
  *
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
  */
 
 #include "pipeline/jit/parse/data_converter.h"
-#include <unordered_map>
 #include <utility>
 #include <string>
 #include <memory>
 #include <vector>
+#include "utils/hash_map.h"
 #include "pipeline/jit/parse/resolve.h"
 #include "pipeline/jit/parse/python_adapter.h"
 #include "frontend/operator/ops.h"
@@ -30,6 +30,7 @@
 #include "ir/cell.h"
 #include "utils/symbolic.h"
 #include "utils/ms_context.h"
+#include "utils/utils.h"
 
 namespace mindspore {
 namespace parse {
@@ -37,6 +38,8 @@ using Tensor = mindspore::tensor::Tensor;
 using TensorPtr = mindspore::tensor::TensorPtr;
 using MetaTensor = mindspore::tensor::MetaTensor;
 using MetaTensorPtr = mindspore::tensor::MetaTensorPtr;
+using CSRTensor = mindspore::tensor::CSRTensor;
+using CSRTensorPtr = mindspore::tensor::CSRTensorPtr;
 
 using InstanceCheckFunc = std::function<bool(const py::object &)>;
 using InstanceConvertFunc = std::function<ValuePtr(const py::object &, bool, const TypePtr &)>;
@@ -44,11 +47,15 @@ static constexpr int kBit8 = 8;
 static constexpr int kBit16 = 16;
 static constexpr int kBit32 = 32;
 static constexpr int kBit64 = 64;
+
 class DataConverter {
  public:
   explicit DataConverter(InstanceConvertFunc convert_func) : convert_func_(std::move(convert_func)) {}
+
   virtual ~DataConverter() = default;
+
   virtual bool Matched(const py::object &obj) = 0;
+
   virtual ValuePtr ConvertPyObject(const py::object &obj, bool use_sig, const TypePtr &dtype) {
     if (convert_func_ == nullptr) {
       MS_LOG(EXCEPTION) << "convert func is null";
@@ -59,6 +66,7 @@ class DataConverter {
  private:
   InstanceConvertFunc convert_func_ = nullptr;
 };
+
 using DataConverterPtr = std::shared_ptr<DataConverter>;
 
 using ArgsObjConvertFunc = std::function<ValuePtr(const py::object &)>;
@@ -71,24 +79,29 @@ class ByTypeDataConverter : public DataConverter {
  public:
   explicit ByTypeDataConverter(const InstanceConvertFunc &convert_func)
       : DataConverter(convert_func), check_func_(py::isinstance<T>) {}
+
   explicit ByTypeDataConverter(const ValuePtr &converted_type)
       : DataConverter(
           [converted_type](const py::object &, bool, const TypePtr &) -> ValuePtr { return converted_type; }),
         check_func_(py::isinstance<T>) {}
+
   explicit ByTypeDataConverter(const ArgsObjConvertFunc &convert_func)
       : DataConverter(
           [convert_func](const py::object &obj, bool, const TypePtr &) -> ValuePtr { return convert_func(obj); }),
         check_func_(py::isinstance<T>) {}
+
   explicit ByTypeDataConverter(const ArgsObjSigConvertFunc &convert_func)
       : DataConverter([convert_func](const py::object &obj, bool use_sig, const TypePtr &) -> ValuePtr {
           return convert_func(obj, use_sig);
         }),
         check_func_(py::isinstance<T>) {}
+
   explicit ByTypeDataConverter(const ArgsOjbTypeConvertFunc &convert_func)
       : DataConverter([convert_func](const py::object &obj, bool, const TypePtr &dtype) -> ValuePtr {
           return convert_func(obj, dtype);
         }),
         check_func_(py::isinstance<T>) {}
+
   ~ByTypeDataConverter() override = default;
 
   bool Matched(const py::object &obj) override { return check_func_ != nullptr ? check_func_(obj) : false; }
@@ -104,12 +117,15 @@ class ByAttrDataConverter : public DataConverter {
       : DataConverter(
           [convert_func](const py::object &obj, bool, const TypePtr &) -> ValuePtr { return convert_func(obj); }),
         attr_name_(attr_name) {}
+
   ByAttrDataConverter(const char *attr_name, const ArgsObjSigConvertFunc &convert_func)
       : DataConverter([convert_func](const py::object &obj, bool use_sig, const TypePtr &) -> ValuePtr {
           return convert_func(obj, use_sig);
         }),
         attr_name_(attr_name) {}
+
   ~ByAttrDataConverter() override = default;
+
   bool Matched(const py::object &obj) override { return py::hasattr(obj, attr_name_); }
 
  private:
@@ -142,7 +158,7 @@ FuncGraphPtr ConvertToBpropCut(const py::object &obj) {
   outputs.push_back(p1);
   outputs.push_back(p2);
 
-  bprop_graph->set_output(bprop_graph->NewCNode(outputs));
+  bprop_graph->set_output(bprop_graph->NewCNode(std::move(outputs)));
   data_converter::SetObjGraphValue(obj_key, bprop_graph);
   return bprop_graph;
 }
@@ -241,7 +257,7 @@ ValuePtr ConvertPrimitive(const py::object &obj, bool use_signature = false) {
   auto obj_type = data_converter::GetObjType(obj);
   if (obj_type == RESOLVE_TYPE_CLASS_TYPE) {
     auto desc = py::cast<std::string>(python_adapter::CallPyObjMethod(obj, PYTHON_GET_OBJ_DESC, obj));
-    // desc has format "<class xxxx>", strip the '<' and '>' by offset 1;
+    // desc has format "<class xxxx>", strip the '<' and '>' by offset 1.
     return std::make_shared<ClassType>(obj, std::string(desc.begin() + 1, desc.end() - 1));
   }
   py::object adapter_obj = obj;
@@ -302,12 +318,15 @@ ValuePtr ConvertSlice(const py::object &obj) {
       auto value = py::cast<int64_t>(py_attr);
       return MakeValue(value);
     }
-    MS_LOG(EXCEPTION) << "Attribute '" << attr << "' of " << py::str(obj) << " should be int but got "
-                      << py::str(py_attr);
+    if (py::isinstance<Tensor>(py_attr)) {
+      return py::cast<TensorPtr>(py_attr);
+    }
+    MS_LOG(EXCEPTION) << "Attribute '" << attr << "' of " << py::str(obj)
+                      << " should be int or Tensor with Int type but got " << py::str(py_attr);
   };
-  ValuePtr start = convert_func("start");
-  ValuePtr stop = convert_func("stop");
-  ValuePtr step = convert_func("step");
+  ValuePtr start = convert_func(kSliceStart);
+  ValuePtr stop = convert_func(kSliceStop);
+  ValuePtr step = convert_func(kSliceStep);
   return std::make_shared<ValueSlice>(start, stop, step);
 }
 
@@ -323,8 +342,8 @@ ValuePtr ConvertCellObjToFuncGraph(const py::object &obj) {
     FuncGraphPtr bprop_graph =
       enable_bprop_debug ? ConvertToBpropCut(obj) : ConvertToFuncGraph(obj, PYTHON_MOD_GET_BPROP_METHOD);
     if (bprop_graph != nullptr) {
-      (void)func_graph->transforms().insert(std::make_pair(CUSTOM_BPROP_NAME, FuncGraphTransform(bprop_graph)));
-      (void)bprop_graph->transforms().insert(std::make_pair("primal", FuncGraphTransform(func_graph)));
+      (void)func_graph->transforms().emplace(CUSTOM_BPROP_NAME, FuncGraphTransform(bprop_graph));
+      (void)bprop_graph->transforms().emplace("primal", FuncGraphTransform(func_graph));
       func_graph->set_flag(FUNC_GRAPH_FLAG_DEFER_INLINE, true);
     }
   }
@@ -341,7 +360,7 @@ ValuePtr ConvertOtherObj(const py::object &obj) {
   if (obj_type == RESOLVE_TYPE_CLASS_TYPE) {
     MS_LOG(DEBUG) << "Resolve the class type, need create class instance.";
     std::string desc = py::str(obj);
-    // desc has format "<class xxxx>", strip the '<' and '>' by offset 1;
+    // desc has format "<class xxxx>", strip the '<' and '>' by offset 1.
     return std::make_shared<ClassType>(obj, std::string(desc.begin() + 1, desc.end() - 1));
   }
   if (obj_type == RESOLVE_TYPE_FUNCTION || obj_type == RESOLVE_TYPE_METHOD) {
@@ -362,7 +381,17 @@ ValuePtr ConvertOtherObj(const py::object &obj) {
     MS_LOG(DEBUG) << "name_space: " << res->ToString();
     return res;
   }
-  MS_LOG(ERROR) << "Resolve type is invalid " << ((std::string)py::str(obj));
+  // Start RESOLVE_TYPE_INVALID...
+  // The fallback feature is enabled in default.
+  // Not support change the flag during the process is alive.
+  static const auto support_fallback = common::GetEnv("MS_DEV_ENABLE_FALLBACK");
+  static const auto use_fallback = (support_fallback != "0");
+  if (use_fallback) {
+    auto res = std::make_shared<InterpretedObject>(obj, py::str(obj));
+    MS_LOG(DEBUG) << "Get interpreted object: " << res->ToString();
+    return res;
+  }
+  MS_LOG(ERROR) << "Resolve type is invalid, obj: " << py::str(obj);
   return nullptr;
 }
 
@@ -457,15 +486,20 @@ ValuePtr ObjCast(const py::object &obj) {
 std::vector<DataConverterPtr> GetDataConverters() {
   static std::vector<DataConverterPtr> data_converters = {
     // Convert data by python object type.
-    std::make_shared<ByTypeDataConverter<py::none>>(kNone),
+    std::make_shared<ByTypeDataConverter<Tensor>>(ObjCast<TensorPtr>),
+    std::make_shared<ByTypeDataConverter<MetaTensor>>(ObjCast<MetaTensorPtr>),
+    std::make_shared<ByTypeDataConverter<CSRTensor>>(ObjCast<CSRTensorPtr>),
+    std::make_shared<ByTypeDataConverter<py::tuple>>(ConvertTuple),
+    std::make_shared<ByTypeDataConverter<py::list>>(ConvertList),
     std::make_shared<ByTypeDataConverter<py::bool_>>(PyCast<BoolImm, bool>),
+    std::make_shared<ByTypeDataConverter<py::int_>>(ConvertIntegerWithType),
+    std::make_shared<ByTypeDataConverter<py::float_>>(ConvertFloatWithType),
     std::make_shared<ByTypeDataConverter<py::str>>(PyCast<StringImm, string>),
+    std::make_shared<ByTypeDataConverter<py::none>>(kNone),
     std::make_shared<ByTypeDataConverter<py::ellipsis>>(kEllipsis),
     std::make_shared<ByTypeDataConverter<py::module>>(ConvertModuleNameSpace),
     std::make_shared<ByAttrDataConverter>(PYTHON_DATACLASS_FIELDS, ConvertDataClass),
     std::make_shared<ByTypeDataConverter<Type>>(ObjCast<TypePtr>),
-    std::make_shared<ByTypeDataConverter<Tensor>>(ObjCast<TensorPtr>),
-    std::make_shared<ByTypeDataConverter<MetaTensor>>(ObjCast<MetaTensorPtr>),
     std::make_shared<ByTypeDataConverter<UMonad>>(ObjCast<UMonadPtr>),
     std::make_shared<ByTypeDataConverter<IOMonad>>(ObjCast<IOMonadPtr>),
     std::make_shared<ByTypeDataConverter<EnvInstance>>(ObjCast<std::shared_ptr<EnvInstance>>),
@@ -476,14 +510,10 @@ std::vector<DataConverterPtr> GetDataConverters() {
                                             MS_LOG(DEBUG) << "name_space: " << res->ToString();
                                             return res;
                                           }),
-    std::make_shared<ByTypeDataConverter<py::int_>>(ConvertIntegerWithType),
-    std::make_shared<ByTypeDataConverter<py::float_>>(ConvertFloatWithType),
     std::make_shared<ByTypeDataConverter<py::dict>>(ConvertDict),
     std::make_shared<ByTypeDataConverter<py::slice>>(ConvertSlice),
-    std::make_shared<ByTypeDataConverter<py::tuple>>(ConvertTuple),
     std::make_shared<ByAttrDataConverter>(PYTHON_CELL_AS_LIST, ConvertCellList),
     std::make_shared<ByTypeDataConverter<Cell>>(ConvertCellObjToFuncGraph),
-    std::make_shared<ByTypeDataConverter<py::list>>(ConvertList),
     std::make_shared<ByAttrDataConverter>(PYTHON_PRIMITIVE_FLAG, ConvertPrimitive),
     std::make_shared<ByTypeDataConverter<MetaFuncGraph>>(ConvertMetaFuncGraph),
     std::make_shared<ByTypeDataConverter<FuncGraph>>(ConvertFuncGraph),
@@ -495,7 +525,7 @@ std::vector<DataConverterPtr> GetDataConverters() {
 bool ConvertData(const py::object &obj, ValuePtr *const data, bool use_signature, const TypePtr &dtype) {
   // Check parameter valid
   if (data == nullptr) {
-    MS_LOG(ERROR) << "Data is null pointer";
+    MS_LOG(ERROR) << "The value pointer should not be null.";
     return false;
   }
   ValuePtr converted = nullptr;
@@ -524,7 +554,7 @@ FuncGraphPtr ConvertToFuncGraph(const py::object &obj, const std::string &python
   ValuePtr value = nullptr;
   bool is_cache = data_converter::GetObjectValue(obj_id, &value);
   if (is_cache && value != nullptr && value->isa<FuncGraph>()) {
-    MS_LOG(DEBUG) << "Get the cache data, obj = " << obj_id;
+    MS_LOG(DEBUG) << "Get the cache data, obj: " << obj_id;
     func_graph = value->cast<FuncGraphPtr>();
     if (!func_graph->dropped()) {
       return func_graph;
@@ -540,28 +570,30 @@ FuncGraphPtr ConvertToFuncGraph(const py::object &obj, const std::string &python
   data_converter::MakeProperNameToFuncGraph(func_graph, obj_id);
   data_converter::CacheObjectValue(obj_id, func_graph);
   if (!obj_key.empty()) {
-    MS_LOG(DEBUG) << "Add graph:" << obj_key << ", func_graph:" << func_graph->ToString();
+    MS_LOG(DEBUG) << "Add graph: " << obj_key << ", func_graph: " << func_graph->ToString();
     data_converter::SetObjGraphValue(obj_key, func_graph);
   }
 
   return func_graph;
 }
-namespace data_converter {
-static std::unordered_map<std::string, ValuePtr> object_map_;
 
-static std::unordered_map<std::string, std::vector<FuncGraphPtr>> object_graphs_map_;
+namespace data_converter {
+static mindspore::HashMap<std::string, ValuePtr> object_map_;
+
+static mindspore::HashMap<std::string, std::vector<FuncGraphPtr>> object_graphs_map_;
 
 void SetObjGraphValue(const std::string &obj_key, const FuncGraphPtr &data) {
   object_graphs_map_[obj_key].push_back(data);
-  MS_LOG(DEBUG) << "Set func graph size:" << object_graphs_map_.size();
+  MS_LOG(DEBUG) << "Set func graph size: " << object_graphs_map_.size();
 }
 
-const std::unordered_map<std::string, std::vector<FuncGraphPtr>> &GetObjGraphs() {
-  MS_LOG(DEBUG) << "Obj size:" << object_graphs_map_.size();
+const mindspore::HashMap<std::string, std::vector<FuncGraphPtr>> &GetObjGraphs() {
+  MS_LOG(DEBUG) << "Obj graphs size: " << object_graphs_map_.size();
   return object_graphs_map_;
 }
 
 void CacheObjectValue(const std::string &obj_key, const ValuePtr &data) { object_map_[obj_key] = data; }
+
 bool GetObjectValue(const std::string &obj_key, ValuePtr *const data) {
   if (object_map_.count(obj_key)) {
     *data = object_map_[obj_key];
@@ -569,11 +601,12 @@ bool GetObjectValue(const std::string &obj_key, ValuePtr *const data) {
   }
   return false;
 }
+
 std::vector<std::string> GetObjKey(const py::object &obj) {
   py::module mod = python_adapter::GetPyModule(PYTHON_MOD_PARSE_MODULE);
   py::tuple obj_tuple = python_adapter::CallPyModFn(mod, PYTHON_MOD_RESOLVE_GET_OBJ_KEY, obj);
   if (obj_tuple.size() != 2) {
-    MS_LOG(EXCEPTION) << "Get_obj_key must return 2 elements";
+    MS_LOG(EXCEPTION) << "The function of \'get_obj_key()\' must return 2 elements";
   }
   return {py::cast<std::string>(obj_tuple[0]), py::cast<std::string>(obj_tuple[1])};
 }
@@ -586,10 +619,10 @@ ResolveTypeDef GetObjType(const py::object &obj) {
       ResolveTypeDef(python_adapter::CallPyModFn(mod, PYTHON_MOD_RESOLVE_GET_OBJ_TYPE, obj).cast<int32_t>());
     return obj_type;
   } catch (const py::error_already_set &ex) {
-    MS_LOG(ERROR) << "Meet a exception from Python when get the type of `" << py::str(obj) << "`.\n" << ex.what();
+    MS_LOG(ERROR) << "Meet a exception from Python when get the type of \'" << py::str(obj) << "\'.\n" << ex.what();
     std::rethrow_exception(std::current_exception());
   } catch (const py::type_error &ex) {
-    MS_LOG(ERROR) << "Meet a exception when get the type of `" << py::str(obj) << "`.\n" << ex.what();
+    MS_LOG(ERROR) << "Meet a exception when get the type of \'" << py::str(obj) << "\'.\n" << ex.what();
     std::rethrow_exception(std::current_exception());
   }
 }
@@ -605,8 +638,8 @@ ClassInstanceTypeDef GetClassInstanceType(const py::object &obj) {
 // Check the object is Cell Instance.
 bool IsCellInstance(const py::object &obj) {
   auto class_type = GetClassInstanceType(obj);
-  bool isCell = (class_type == CLASS_INSTANCE_TYPE_CELL);
-  return isCell;
+  bool is_cell = (class_type == CLASS_INSTANCE_TYPE_CELL);
+  return is_cell;
 }
 
 // Create the python class instance.
@@ -657,7 +690,7 @@ void ClearObjectCache() {
 }
 }  // namespace data_converter
 
-static std::unordered_map<std::string, ClassPtr> g_dataClassToClass = {};
+static mindspore::HashMap<std::string, ClassPtr> g_dataClassToClass = {};
 
 // Parse dataclass to mindspore Class type
 ClassPtr ParseDataClass(const py::object &cls_obj) {
@@ -679,7 +712,7 @@ ClassPtr ParseDataClass(const py::object &cls_obj) {
     attributes.push_back(std::make_pair(py::cast<std::string>(item.first), type_value));
   }
 
-  std::unordered_map<std::string, ValuePtr> methods_map;
+  mindspore::HashMap<std::string, ValuePtr> methods_map;
   py::dict methods = python_adapter::CallPyModFn(mod, PYTHON_MOD_GET_DATACLASS_METHODS, cls_obj);
   for (auto &item : methods) {
     auto fun_name = item.first.cast<std::string>();

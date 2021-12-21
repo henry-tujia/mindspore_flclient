@@ -15,12 +15,6 @@
  */
 
 #include "backend/optimizer/ascend/enhancer/add_attr_for_3d_graph.h"
-#include <memory>
-#include "backend/session/anf_runtime_algorithm.h"
-#include "utils/utils.h"
-#include "base/core_ops.h"
-#include "runtime/device/kernel_info.h"
-#include "backend/optimizer/common/helper.h"
 
 namespace mindspore {
 namespace opt {
@@ -34,7 +28,7 @@ const AnfNodePtr AddIoFormatAttrFor3DGraph::Process(const FuncGraphPtr &func_gra
                                                     const EquivPtr &) const {
   MS_EXCEPTION_IF_NULL(node);
   MS_EXCEPTION_IF_NULL(func_graph);
-  if (AnfAlgo::IsRealKernel(node)) {
+  if (AnfUtils::IsRealKernel(node)) {
     AnfAlgo::SetNodeAttr(kAttrVisited, MakeValue(true), node);
     auto formats = AnfAlgo::GetAllOutputFormats(node);
     if (std::any_of(formats.begin(), formats.end(),

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "utils/hash_map.h"
 #include "frontend/parallel/ops_info/operator_info.h"
 #include "frontend/parallel/strategy.h"
 
@@ -43,7 +43,7 @@ class ReshapeInfo : public OperatorInfo {
         input_layout_set_flag_(false),
         output_layout_set_flag_(false) {}
   ~ReshapeInfo() override = default;
-  Status Init(const StrategyPtr &strategy) override;
+  Status Init(const StrategyPtr &in_strategy, const StrategyPtr &out_strategy) override;
   void SetInputLayout(const TensorLayout &input_layout) {
     input_layout_ = input_layout;
     input_layout_set_flag_ = true;
@@ -58,10 +58,9 @@ class ReshapeInfo : public OperatorInfo {
   void set_next_operator_name(const std::string &next_name) { next_operator_name_ = next_name; }
   void set_pre_operator_index(int64_t pre_index) { pre_operator_index_ = pre_index; }
   void set_next_operator_index(int64_t next_index) { next_operator_index_ = next_index; }
-  Status GenetateStrategyCosts(const std::vector<std::shared_ptr<StrategyWithCost>> &pre_stra_costs,
+  Status GenerateStrategyCosts(const std::vector<std::shared_ptr<StrategyWithCost>> &pre_stra_costs,
                                const std::vector<std::shared_ptr<StrategyWithCost>> &next_stra_costs, int64_t out_index,
                                int64_t in_index, bool is_prev_param, bool is_next_reshape);
-  Status InitForCostModel(const StrategyPtr &strategy) override;
   Status GenerateStrategies(int64_t stage_id) override;
   std::vector<StrategyPtr> GenerateOpStrategies(int64_t stage_id) override;
   Status SetCostUnderStrategy(const StrategyPtr &strategy) override;
@@ -69,6 +68,16 @@ class ReshapeInfo : public OperatorInfo {
   std::string next_operator_name() const { return next_operator_name_; }
   int64_t pre_operator_index() const { return pre_operator_index_; }
   int64_t next_operator_index() const { return next_operator_index_; }
+
+  int64_t GetSWCIndexByOutputLayoutWithZeroComm(const TensorLayout &);
+  int64_t GetSWCIndexByOutputLayoutWithMiniComm(const TensorLayout &);
+  int64_t GetSWCIndexByInputLayoutWithZeroComm(const TensorLayout &);
+  int64_t GetSWCIndexByInputLayoutWithMiniComm(const TensorLayout &);
+  bool CheckStrategyConsistencyByOutputLayout(int64_t, const TensorLayout &);
+  bool CheckStrategyConsistencyByInputLayout(int64_t, const TensorLayout &);
+
+  TensorLayout GetInputLayoutBySWCIndex(int64_t);
+  TensorLayout GetOutputLayoutBySWCIndex(int64_t);
 
  protected:
   Status CheckStrategy(const StrategyPtr &strategy) override;

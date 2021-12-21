@@ -62,6 +62,7 @@ int ConvolutionDepthwiseSWInt8CPUKernel::InitWeightBias() {
   if (in_tensors_.size() == kInputSize2) {
     auto bias_tensor = in_tensors_.at(kBiasIndex);
     auto ori_bias = reinterpret_cast<int32_t *>(bias_tensor->MutableData());
+    MS_CHECK_GT(bias_tensor->ElementsNum(), 0, RET_ERROR);
     memcpy(bias_data_, ori_bias, static_cast<size_t>(bias_tensor->ElementsNum()) * sizeof(int32_t));
   }
 
@@ -251,7 +252,7 @@ int ConvolutionDepthwiseSWInt8CPUKernel::ReinitQuantParam() {
   return RET_OK;
 }
 
-int ConvolutionDepthwiseSWInt8CPUKernel::Init() {
+int ConvolutionDepthwiseSWInt8CPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 2);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
   sliding_ = new (std::nothrow) SlidingWindowParam;
@@ -281,7 +282,7 @@ int ConvolutionDepthwiseSWInt8CPUKernel::Init() {
 }
 
 int ConvolutionDepthwiseSWInt8CPUKernel::ReSize() {
-  auto ret = ConvolutionBaseCPUKernel::Init();
+  auto ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }

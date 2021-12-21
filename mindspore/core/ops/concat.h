@@ -27,18 +27,26 @@
 namespace mindspore {
 namespace ops {
 constexpr auto kNameConcat = "Concat";
+/// \brief Connect tensor in the specified axis.
+/// Refer to Python API @ref mindspore.ops.Concat for more details.
 class MS_CORE_API Concat : public PrimitiveC {
  public:
+  /// \brief Constructor.
   Concat() : PrimitiveC(kNameConcat) {}
+  /// \brief Destructor.
   ~Concat() = default;
   MS_DECLARE_PARENT(Concat, PrimitiveC);
+  /// \brief Init. Refer to the parameters of Python API @ref mindspore.ops.Concat for the inputs.
   void Init(const int64_t axis = 0);
+  /// \brief Set axis.
   void set_axis(const int64_t axis);
+  /// \brief Get axis.
+  ///
+  /// \return axis.
   int64_t get_axis() const;
 };
 AbstractBasePtr ConcatInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
                             const std::vector<AbstractBasePtr> &input_args);
-using PrimConcatPtr = std::shared_ptr<Concat>;
 }  // namespace ops
 }  // namespace mindspore
 #endif  // MINDSPORE_CORE_OPS_CONCAT_H_

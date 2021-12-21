@@ -23,6 +23,7 @@
 #include "minddata/dataset/include/dataset/transforms.h"
 #include "minddata/dataset/kernels/ir/vision/adjust_gamma_ir.h"
 #include "minddata/dataset/kernels/ir/vision/affine_ir.h"
+#include "minddata/dataset/kernels/ir/vision/auto_augment_ir.h"
 #include "minddata/dataset/kernels/ir/vision/auto_contrast_ir.h"
 #include "minddata/dataset/kernels/ir/vision/bounding_box_augment_ir.h"
 #include "minddata/dataset/kernels/ir/vision/center_crop_ir.h"
@@ -40,19 +41,24 @@
 #include "minddata/dataset/kernels/ir/vision/normalize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/normalize_pad_ir.h"
 #include "minddata/dataset/kernels/ir/vision/pad_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_adjust_sharpness_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_affine_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_auto_contrast_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_color_adjust_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_color_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_decode_resize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_crop_with_bbox_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_equalize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_horizontal_flip_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_horizontal_flip_with_bbox_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_invert_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_lighting_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_posterize_ir.h"
-#include "minddata/dataset/kernels/ir/vision/random_resized_crop_ir.h"
-#include "minddata/dataset/kernels/ir/vision/random_resized_crop_with_bbox_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_resize_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_resize_with_bbox_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_resized_crop_ir.h"
+#include "minddata/dataset/kernels/ir/vision/random_resized_crop_with_bbox_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_rotation_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_select_subpolicy_ir.h"
 #include "minddata/dataset/kernels/ir/vision/random_sharpness_ir.h"
@@ -133,6 +139,23 @@ std::shared_ptr<TensorOperation> AdjustGamma::Parse() {
   return std::make_shared<AdjustGammaOperation>(data_->gamma_, data_->gain_);
 }
 
+// AutoAugment Transform Operation.
+struct AutoAugment::Data {
+  Data(AutoAugmentPolicy policy, InterpolationMode interpolation, const std::vector<uint8_t> &fill_value)
+      : policy_(policy), interpolation_(interpolation), fill_value_(fill_value) {}
+  AutoAugmentPolicy policy_;
+  InterpolationMode interpolation_;
+  std::vector<uint8_t> fill_value_;
+};
+
+AutoAugment::AutoAugment(AutoAugmentPolicy policy, InterpolationMode interpolation,
+                         const std::vector<uint8_t> &fill_value)
+    : data_(std::make_shared<Data>(policy, interpolation, fill_value)) {}
+
+std::shared_ptr<TensorOperation> AutoAugment::Parse() {
+  return std::make_shared<AutoAugmentOperation>(data_->policy_, data_->interpolation_, data_->fill_value_);
+}
+
 // AutoContrast Transform Operation.
 struct AutoContrast::Data {
   Data(float cutoff, const std::vector<uint32_t> &ignore) : cutoff_(cutoff), ignore_(ignore) {}
@@ -194,8 +217,11 @@ std::shared_ptr<TensorOperation> CenterCrop::Parse(const MapTargetDevice &env) {
                    [](int32_t i) { return (uint32_t)i; });
     return std::make_shared<DvppCropJpegOperation>(usize_);
 #endif  // ENABLE_ACL
+  } else if (env == MapTargetDevice::kCpu) {
+    return std::make_shared<CenterCropOperation>(data_->size_);
   }
-  return std::make_shared<CenterCropOperation>(data_->size_);
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kCpu and kAscend310.";
+  return nullptr;
 }
 
 #ifndef ENABLE_ANDROID
@@ -273,8 +299,11 @@ std::shared_ptr<TensorOperation> Decode::Parse(const MapTargetDevice &env) {
 #ifdef ENABLE_ACL
     return std::make_shared<DvppDecodeJpegOperation>();
 #endif  // ENABLE_ACL
+  } else if (env == MapTargetDevice::kCpu) {
+    return std::make_shared<DecodeOperation>(data_->rgb_);
   }
-  return std::make_shared<DecodeOperation>(data_->rgb_);
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kCpu and kAscend310.";
+  return nullptr;
 }
 
 #ifdef ENABLE_ACL
@@ -291,7 +320,11 @@ std::shared_ptr<TensorOperation> DvppDecodeResizeJpeg::Parse() {
 }
 
 std::shared_ptr<TensorOperation> DvppDecodeResizeJpeg::Parse(const MapTargetDevice &env) {
-  return std::make_shared<DvppDecodeResizeOperation>(data_->resize_);
+  if (env == MapTargetDevice::kAscend310) {
+    return std::make_shared<DvppDecodeResizeOperation>(data_->resize_);
+  }
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kAscend310.";
+  return nullptr;
 }
 
 // DvppDecodeResizeCrop Transform Operation.
@@ -309,7 +342,11 @@ std::shared_ptr<TensorOperation> DvppDecodeResizeCropJpeg::Parse() {
 }
 
 std::shared_ptr<TensorOperation> DvppDecodeResizeCropJpeg::Parse(const MapTargetDevice &env) {
-  return std::make_shared<DvppDecodeResizeCropOperation>(data_->crop_, data_->resize_);
+  if (env == MapTargetDevice::kAscend310) {
+    return std::make_shared<DvppDecodeResizeCropOperation>(data_->crop_, data_->resize_);
+  }
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kAscend310.";
+  return nullptr;
 }
 
 // DvppDecodePng Transform Operation.
@@ -318,7 +355,11 @@ DvppDecodePng::DvppDecodePng() {}
 std::shared_ptr<TensorOperation> DvppDecodePng::Parse() { return std::make_shared<DvppDecodePngOperation>(); }
 
 std::shared_ptr<TensorOperation> DvppDecodePng::Parse(const MapTargetDevice &env) {
-  return std::make_shared<DvppDecodePngOperation>();
+  if (env == MapTargetDevice::kAscend310) {
+    return std::make_shared<DvppDecodePngOperation>();
+  }
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kAscend310.";
+  return nullptr;
 }
 #endif  // ENABLE_ACL
 
@@ -389,8 +430,11 @@ std::shared_ptr<TensorOperation> Normalize::Parse(const MapTargetDevice &env) {
 #ifdef ENABLE_ACL
     return std::make_shared<DvppNormalizeOperation>(data_->mean_, data_->std_);
 #endif  // ENABLE_ACL
+  } else if (env == MapTargetDevice::kCpu) {
+    return std::make_shared<NormalizeOperation>(data_->mean_, data_->std_);
   }
-  return std::make_shared<NormalizeOperation>(data_->mean_, data_->std_);
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kCpu and kAscend310.";
+  return nullptr;
 }
 
 #ifndef ENABLE_ANDROID
@@ -426,6 +470,19 @@ Pad::Pad(std::vector<int32_t> padding, std::vector<uint8_t> fill_value, BorderTy
 std::shared_ptr<TensorOperation> Pad::Parse() {
   return std::make_shared<PadOperation>(data_->padding_, data_->fill_value_, data_->padding_mode_);
 }
+
+// RandomAdjustSharpness Transform Operation.
+struct RandomAdjustSharpness::Data {
+  Data(float degree, float prob) : degree_(degree), probability_(prob) {}
+  float degree_;
+  float probability_;
+};
+
+RandomAdjustSharpness::RandomAdjustSharpness(float degree, float prob) : data_(std::make_shared<Data>(degree, prob)) {}
+
+std::shared_ptr<TensorOperation> RandomAdjustSharpness::Parse() {
+  return std::make_shared<RandomAdjustSharpnessOperation>(data_->degree_, data_->probability_);
+}
 #endif  // not ENABLE_ANDROID
 
 // RandomAffine Transform Operation.
@@ -458,6 +515,22 @@ std::shared_ptr<TensorOperation> RandomAffine::Parse() {
 }
 
 #ifndef ENABLE_ANDROID
+// RandomAutoContrast Transform Operation.
+struct RandomAutoContrast::Data {
+  Data(float cutoff, const std::vector<uint32_t> &ignore, float prob)
+      : cutoff_(cutoff), ignore_(ignore), probability_(prob) {}
+  float cutoff_;
+  std::vector<uint32_t> ignore_;
+  float probability_;
+};
+
+RandomAutoContrast::RandomAutoContrast(float cutoff, std::vector<uint32_t> ignore, float prob)
+    : data_(std::make_shared<Data>(cutoff, ignore, prob)) {}
+
+std::shared_ptr<TensorOperation> RandomAutoContrast::Parse() {
+  return std::make_shared<RandomAutoContrastOperation>(data_->cutoff_, data_->ignore_, data_->probability_);
+}
+
 // RandomColor Transform Operation.
 struct RandomColor::Data {
   Data(float t_lb, float t_ub) : t_lb_(t_lb), t_ub_(t_ub) {}
@@ -563,6 +636,18 @@ std::shared_ptr<TensorOperation> RandomCropWithBBox::Parse() {
                                                        data_->fill_value_, data_->padding_mode_);
 }
 
+// RandomEqualize Transform Operation.
+struct RandomEqualize::Data {
+  explicit Data(float prob) : probability_(prob) {}
+  float probability_;
+};
+
+RandomEqualize::RandomEqualize(float prob) : data_(std::make_shared<Data>(prob)) {}
+
+std::shared_ptr<TensorOperation> RandomEqualize::Parse() {
+  return std::make_shared<RandomEqualizeOperation>(data_->probability_);
+}
+
 // RandomHorizontalFlip.
 struct RandomHorizontalFlip::Data {
   explicit Data(float prob) : probability_(prob) {}
@@ -585,6 +670,30 @@ RandomHorizontalFlipWithBBox::RandomHorizontalFlipWithBBox(float prob) : data_(s
 
 std::shared_ptr<TensorOperation> RandomHorizontalFlipWithBBox::Parse() {
   return std::make_shared<RandomHorizontalFlipWithBBoxOperation>(data_->probability_);
+}
+
+// RandomInvert Operation.
+struct RandomInvert::Data {
+  explicit Data(float prob) : probability_(prob) {}
+  float probability_;
+};
+
+RandomInvert::RandomInvert(float prob) : data_(std::make_shared<Data>(prob)) {}
+
+std::shared_ptr<TensorOperation> RandomInvert::Parse() {
+  return std::make_shared<RandomInvertOperation>(data_->probability_);
+}
+
+// RandomLighting Transform Operation.
+struct RandomLighting::Data {
+  explicit Data(float alpha) : alpha_(alpha) {}
+  float alpha_;
+};
+
+RandomLighting::RandomLighting(float alpha) : data_(std::make_shared<Data>(alpha)) {}
+
+std::shared_ptr<TensorOperation> RandomLighting::Parse() {
+  return std::make_shared<RandomLightingOperation>(data_->alpha_);
 }
 
 // RandomPosterize Transform Operation.
@@ -828,8 +937,11 @@ std::shared_ptr<TensorOperation> Resize::Parse(const MapTargetDevice &env) {
                    [](int32_t i) { return (uint32_t)i; });
     return std::make_shared<DvppResizeJpegOperation>(usize_);
 #endif  // ENABLE_ACL
+  } else if (env == MapTargetDevice::kCpu) {
+    return std::make_shared<ResizeOperation>(data_->size_, data_->interpolation_);
   }
-  return std::make_shared<ResizeOperation>(data_->size_, data_->interpolation_);
+  MS_LOG(ERROR) << "Unsupported MapTargetDevice, only supported kCpu and kAscend310.";
+  return nullptr;
 }
 
 // ResizePreserveAR Transform Operation.

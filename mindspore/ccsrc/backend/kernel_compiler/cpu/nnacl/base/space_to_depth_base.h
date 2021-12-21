@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,13 @@
 #define MINDSPORE_LITE_SRC_BACKEND_ARM_NNACL_BASE_SPACE_TO_DEPTH_BASE_H_
 
 #include "nnacl/op_base.h"
+#include "nnacl/space_to_depth_parameter.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 int SpaceToDepthForNHWC(const void *input, void *output, const int *in_shape, const int *out_shape, int shape_size,
-                        int block_size, int h_start, int h_end, int data_size);
+                        SpaceToDepthParameter *param, int task_id);
 #ifdef __cplusplus
 }
 #endif

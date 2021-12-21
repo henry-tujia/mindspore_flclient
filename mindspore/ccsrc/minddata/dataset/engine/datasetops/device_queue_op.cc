@@ -27,13 +27,12 @@
 
 namespace mindspore {
 namespace dataset {
-DeviceQueueOp::DeviceQueueOp(std::string channel_name, DeviceType device_type, int32_t device_id, int32_t prefetch_size,
-                             bool send_epoch_end, int32_t total_batch, bool create_data_info_queue)
+DeviceQueueOp::DeviceQueueOp(std::string channel_name, DeviceType device_type, int32_t device_id, bool send_epoch_end,
+                             int32_t total_batch, bool create_data_info_queue)
     : PipelineOp(1),
       channel_name_(channel_name),
       device_type_(device_type),
       device_id_(device_id),
-      prefetch_size_(prefetch_size),
       send_epoch_end_(send_epoch_end),
       stop_send_(false),
       send_finished_(false),
@@ -119,8 +118,8 @@ Status DeviceQueueOp::FilterMetadata(TensorRow *row) {
 Status DeviceQueueOp::CheckExceptions(const TensorRow &row) const {
   // this method checks if the row meets the conditions to be sent to TDT
   for (const auto &item : row) {
-    CHECK_FAIL_RETURN_UNEXPECTED(item->type().IsNumeric(), "Invalid data, cannot send string tensor to device.");
-    CHECK_FAIL_RETURN_UNEXPECTED(item->HasData(), "Invalid data, cannot send tensor with no data to device.");
+    CHECK_FAIL_RETURN_UNEXPECTED(item->type().IsNumeric(), "Invalid datatype, cannot send string data to device.");
+    CHECK_FAIL_RETURN_UNEXPECTED(item->HasData(), "Invalid data, the data send to device is null.");
   }
   return Status::OK();
 }
@@ -152,7 +151,8 @@ Status DeviceQueueOp::operator()() {
       }
     }
     if (tdtInstancePtr->acl_handle_ == nullptr) {
-      RETURN_STATUS_UNEXPECTED("Create channel for sending data failed, please check DEVICE ID setting.");
+      RETURN_STATUS_UNEXPECTED(
+        "[Internal ERROR] Create channel for sending data failed, please check DEVICE ID setting.");
     }
     RETURN_IF_NOT_OK(SendDataToAscend());
 #endif
@@ -171,8 +171,10 @@ Status DeviceQueueOp::operator()() {
 Status DeviceQueueOp::SendDataToAscend() {
   MS_LOG(INFO) << "Device queue, sending data to Ascend.";
 #ifndef ENABLE_SECURITY
-  uint64_t batch_start_time, end_time;
-  uint64_t batch_record_start, batch_record_end;
+  uint64_t batch_start_time = 0;
+  uint64_t end_time = 0;
+  uint64_t batch_record_start = 0;
+  uint64_t batch_record_end = 0;
 #endif
   int64_t send_batch = 0;
   int32_t tdt_cost = 0;
@@ -187,16 +189,16 @@ Status DeviceQueueOp::SendDataToAscend() {
 
 #ifndef ENABLE_SECURITY
   std::shared_ptr<DeviceQueueTracing> profiling_node;
-  bool isProfilingEnable = tree_->GetProfilingManager()->IsProfilingEnable();
-  if (isProfilingEnable) {
+  bool is_profiling_enable = GlobalContext::profiling_manager()->IsProfilingEnable(tree_);
+  if (is_profiling_enable) {
     std::shared_ptr<Tracing> node;
-    RETURN_IF_NOT_OK(tree_->GetProfilingManager()->GetTracingNode(kDeviceQueueTracingName, &node));
+    RETURN_IF_NOT_OK(GlobalContext::profiling_manager()->GetTracingNode(kDeviceQueueTracingName, &node));
     profiling_node = std::dynamic_pointer_cast<DeviceQueueTracing>(node);
     batch_start_time = ProfilingTime::GetCurMilliSecond();
     connector_capacity = ChildOpConnectorCapacity();
   }
 #else
-  bool isProfilingEnable = false;
+  bool is_profiling_enable = false;
 #endif
 #ifdef ENABLE_DUMP_IR
   md_channel_info_->RecordBatchQueue(ChildOpConnectorSize());
@@ -218,15 +220,16 @@ Status DeviceQueueOp::SendDataToAscend() {
       md_channel_info_->RecordPreprocessBatch(send_batch);
       md_channel_info_->RecordPushStartTime();
 #endif
-      RETURN_IF_NOT_OK(SendRowToTdt(curr_row, isProfilingEnable, &tdt_cost));
-      if (first_push_flag_ != true) {
-        MS_LOG(INFO) << "Loading dataset and push first batch into device successful.";
-        first_push_flag_ = true;
-      }
 #ifndef ENABLE_SECURITY
       DetectPerBatchTime(&batch_record_start, &batch_record_end);
-      ProfilingRecorder(isProfilingEnable, profiling_node, send_batch, tdt_cost, &batch_start_time, &end_time,
+#endif
+      PrintBeginInfoWhenFirstBatch(first_push_flag_);
+      RETURN_IF_NOT_OK(SendRowToTdt(curr_row, is_profiling_enable, &tdt_cost));
+      PrintEndInfoWhenFirstBatch(&first_push_flag_);
+#ifndef ENABLE_SECURITY
+      ProfilingRecorder(is_profiling_enable, profiling_node, send_batch, tdt_cost, &batch_start_time, &end_time,
                         connector_capacity, connector_size);
+      batch_record_start = ProfilingTime::GetCurMilliSecond();
 #endif
       send_batch++;
 #ifdef ENABLE_DUMP_IR
@@ -244,7 +247,7 @@ Status DeviceQueueOp::SendDataToAscend() {
       LimitSendingBatches(send_batch, &sending_num, cfg);
 
 #ifndef ENABLE_SECURITY
-      if (isProfilingEnable) {
+      if (is_profiling_enable) {
         connector_size = ChildOpConnectorSize();
         connector_capacity = ChildOpConnectorCapacity();
       }
@@ -252,8 +255,8 @@ Status DeviceQueueOp::SendDataToAscend() {
       RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&curr_row));
     }
     if (curr_row.eoe() && send_epoch_end_) {
-      TensorRow currRow;
-      auto status = tdtInstancePtr->hostPush(currRow, true, channel_name_, isProfilingEnable, tdt_cost,
+      TensorRow dummy_row;
+      auto status = tdtInstancePtr->hostPush(dummy_row, true, channel_name_, is_profiling_enable, tdt_cost,
                                              ACL_TENSOR_DATA_END_OF_SEQUENCE);
       if (status != Status::OK()) {
         if (stop_send_) {
@@ -273,10 +276,11 @@ Status DeviceQueueOp::SendDataToAscend() {
       stop_send_ = true;
     }
 #ifndef ENABLE_SECURITY
-    if (isProfilingEnable) {
+    if (is_profiling_enable) {
       connector_size = ChildOpConnectorSize();
       connector_capacity = ChildOpConnectorCapacity();
       tree_->SetEpochEnd();
+      GlobalContext::profiling_manager()->RecordEndOfEpoch(send_batch);
     }
 #endif
     RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&curr_row));
@@ -311,8 +315,8 @@ void DeviceQueueOp::LimitSendingBatches(int64_t send_batch, int64_t *sending_num
   }
 }
 
-Status DeviceQueueOp::SendRowToTdt(TensorRow currRow, bool isProfilingEnable, int32_t *tdt_cost) {
-  auto status = tdtInstancePtr->hostPush(currRow, true, channel_name_, isProfilingEnable, *tdt_cost);
+Status DeviceQueueOp::SendRowToTdt(TensorRow curr_row, bool is_profiling_enable, int32_t *tdt_cost) {
+  auto status = tdtInstancePtr->hostPush(curr_row, true, channel_name_, is_profiling_enable, *tdt_cost);
   if (status != Status::OK()) {
     if (stop_send_) {
       MS_LOG(INFO) << "stop_send received";
@@ -328,7 +332,7 @@ Status DeviceQueueOp::SendRowToTdt(TensorRow currRow, bool isProfilingEnable, in
   }
   if (create_data_info_queue_) {
     DATA_INFO data_info;
-    (void)std::transform(currRow.begin(), currRow.end(), std::back_inserter(data_info),
+    (void)std::transform(curr_row.begin(), curr_row.end(), std::back_inserter(data_info),
                          [](const std::shared_ptr<Tensor> &ts) { return std::make_pair(ts->type(), ts->shape()); });
     RETURN_IF_NOT_OK(data_info_queue_ptr_->Add(data_info));
   }
@@ -339,7 +343,8 @@ Status DeviceQueueOp::SendRowToTdt(TensorRow currRow, bool isProfilingEnable, in
 #ifdef ENABLE_TDTQUE
 Status DeviceQueueOp::GetDataInfo(DATA_INFO *data_info) {
   if (!create_data_info_queue_) {
-    return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "DataInfo queue is not created.");
+    return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
+                  "[Internal ERROR] DataInfo queue is not created.");
   }
   // This place has a race condition with operator(), so the first one
   // arrive here will do the initialize work.
@@ -355,7 +360,7 @@ Status DeviceQueueOp::GetDataInfo(DATA_INFO *data_info) {
 }
 #else
 Status DeviceQueueOp::GetDataInfo(DATA_INFO *data_info) {
-  return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "GetDataInfo is not supported yet.");
+  return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "'GetDataInfo' only supported on Ascend.");
 }
 #endif
 
@@ -376,6 +381,7 @@ Status DeviceQueueOp::SetThreadDevice() {
 }
 
 Status DeviceQueueOp::LaunchParallelCopyThread() {
+  RETURN_UNEXPECTED_IF_NULL(tree_);
   // Every thread use cuda api should SetThreadDevice
   RETURN_IF_NOT_OK(SetThreadDevice());
   // CircularPool may not safe under multi-threads scenario, so one worker with one pool
@@ -384,7 +390,7 @@ Status DeviceQueueOp::LaunchParallelCopyThread() {
     RETURN_IF_NOT_OK(CircularPool::CreateCircularPool(&pool, -1, kDeviceQueGpuThreadMemory, false, true));
     pool_.push_back(pool);
   }
-  gpu_item_connector_ = std::make_unique<GpuItemConnector>(num_workers_, 1, queue_capacity_);
+  gpu_connector_ = std::make_unique<GpuConnector>(num_workers_, 1, queue_capacity_);
   receive_queues_.Init(num_workers_, queue_capacity_);
   RETURN_IF_NOT_OK(receive_queues_.Register(tree_->AllTasks()));
   RETURN_IF_NOT_OK(
@@ -396,90 +402,79 @@ Status DeviceQueueOp::LaunchParallelCopyThread() {
 }
 
 Status DeviceQueueOp::PushDataToGPU() {
+  RETURN_UNEXPECTED_IF_NULL(tree_);
   // Every thread use cuda api should SetThreadDevice
   RETURN_IF_NOT_OK(SetThreadDevice());
   TaskManager::FindMe()->Post();
+#ifndef ENABLE_SECURITY
   uint64_t batch_start_time = 0;
-  int32_t push_cost = 0;
-#ifndef ENABLE_SECURITY
-  int32_t connector_size = 0;
-  int32_t connector_capacity = 0;
-#endif
-#ifndef ENABLE_SECURITY
+  uint64_t end_time = 0;
+  uint64_t push_cost = 0;
   std::shared_ptr<DeviceQueueTracing> profiling_node;
-  bool isProfilingEnable = tree_->GetProfilingManager()->IsProfilingEnable();
-  if (isProfilingEnable) {
+  bool is_profiling_enable = GlobalContext::profiling_manager()->IsProfilingEnable(tree_);
+  if (is_profiling_enable) {
     std::shared_ptr<Tracing> node;
-    RETURN_IF_NOT_OK(tree_->GetProfilingManager()->GetTracingNode(kDeviceQueueTracingName, &node));
+    RETURN_IF_NOT_OK(GlobalContext::profiling_manager()->GetTracingNode(kDeviceQueueTracingName, &node));
     profiling_node = std::dynamic_pointer_cast<DeviceQueueTracing>(node);
     batch_start_time = ProfilingTime::GetCurMilliSecond();
-    connector_capacity = gpu_item_connector_->capacity();
   }
 #endif
 #ifdef ENABLE_DUMP_IR
-  md_channel_info_->RecordBatchQueue(gpu_item_connector_->size());
+  md_channel_info_->RecordBatchQueue(gpu_connector_->size());
   md_channel_info_->RecordPreprocessBatch(0);
 #endif
-  std::vector<device::DataItemGpu> items;
-  RETURN_IF_NOT_OK(gpu_item_connector_->Pop(0, &items));
+  GpuConnectorItem item;
+  RETURN_IF_NOT_OK(gpu_connector_->Pop(0, &item));
+  auto items = std::move(item.data_item);
+  bool eoe_flag = item.eoe_flag;
   int64_t send_batch = 0;
-  bool is_open = false;
   uint32_t handle = INVALID_HANDLE;
   auto release_function = std::bind(&DeviceQueueOp::ReleaseData, this, std::placeholders::_1, std::placeholders::_2);
-  while (!items.empty() && !GpuBufferMgr::GetInstance().IsClosed()) {
-#ifdef ENABLE_DUMP_IR
-    md_channel_info_->RecordBatchQueue(gpu_item_connector_->size());
-    md_channel_info_->RecordPreprocessBatch(send_batch);
-    md_channel_info_->RecordPushStartTime();
-#endif
-    if (!is_open) {
-      std::vector<size_t> data_size;
-      for (int32_t index = 0; index < items.size(); index++) {
-        data_size.push_back(items[index].data_len_);
-      }
-      handle = GpuBufferMgr::GetInstance().Open(0, channel_name_, data_size, release_function);
-      if (handle == INVALID_HANDLE) {
-        return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
-                      "[Internal ERROR] Failed to open channel for sending data.");
-      }
-      is_open = true;
-    }
+  handle = GpuBufferMgr::GetInstance().Open(0, channel_name_, {}, release_function);
+  if (handle == INVALID_HANDLE) {
+    return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
+                  "[Internal ERROR] Failed to open channel for sending data.");
+  }
 
-    // Data prefetch only when PS mode enables cache.
-    if (!ps::PsDataPrefetch::GetInstance().PrefetchData(channel_name_, items[0].data_ptr_, items[0].data_len_,
-                                                        items[0].data_type_)) {
-      return Status(StatusCode::kMDTimeOut, __LINE__, __FILE__,
-                    "Failed to prefetch data in current PS mode(cache data when sending).");
-    }
-    RETURN_IF_NOT_OK(RetryPushData(handle, items));
-    send_batch++;
-#ifndef ENABLE_SECURITY
-    if (isProfilingEnable) {
-      uint64_t end_time = ProfilingTime::GetCurMilliSecond();
-      // record push data time
-      profiling_node->Record(TIME, TDT_PUSH_TIME, send_batch, push_cost, end_time);
-      int32_t batch_cost = (int32_t)(end_time - batch_start_time);
-      // record batch time
-      profiling_node->Record(TIME, BATCH_TIME, send_batch, batch_cost, end_time);
-      // record pipeline time
-      profiling_node->Record(TIME, PIPELINE_TIME, send_batch, batch_cost - push_cost, end_time);
-      batch_start_time = end_time;
-      // record connector depth
-      profiling_node->Record(CONNECTOR_DEPTH, connector_capacity, send_batch, connector_size, end_time);
-      connector_size = gpu_item_connector_->size();
-      connector_capacity = gpu_item_connector_->capacity();
-    }
-#endif
+  while (!(items.empty() && !eoe_flag) && !GpuBufferMgr::GetInstance().IsClosed()) {
+    if (!eoe_flag) {
 #ifdef ENABLE_DUMP_IR
-    md_channel_info_->RecordBatchQueue(gpu_item_connector_->size());
-    md_channel_info_->RecordPreprocessBatch(send_batch);
-    md_channel_info_->RecordPushEndTime();
+      md_channel_info_->RecordBatchQueue(gpu_connector_->size());
+      md_channel_info_->RecordPreprocessBatch(send_batch);
+      md_channel_info_->RecordPushStartTime();
 #endif
-    if (total_batch_ > 0 && send_batch >= total_batch_) {
-      break;
+      // Data prefetch only when PS mode enables cache.
+      if (!ps::PsDataPrefetch::GetInstance().PrefetchData(channel_name_, items[0].data_ptr_, items[0].data_len_,
+                                                          items[0].data_type_)) {
+        return Status(StatusCode::kMDTimeOut, __LINE__, __FILE__,
+                      "[Internal ERROR] Failed to prefetch data in current PS mode(cache data when sending).");
+      }
+      RETURN_IF_NOT_OK(RetryPushData(handle, items, is_profiling_enable, &push_cost));
+#ifndef ENABLE_SECURITY
+      ProfilingRecorder(is_profiling_enable, profiling_node, send_batch, push_cost, &batch_start_time, &end_time,
+                        gpu_connector_->capacity(), gpu_connector_->size());
+#endif
+      send_batch++;
+#ifdef ENABLE_DUMP_IR
+      md_channel_info_->RecordBatchQueue(gpu_connector_->size());
+      md_channel_info_->RecordPreprocessBatch(send_batch);
+      md_channel_info_->RecordPushEndTime();
+#endif
+      if (total_batch_ > 0 && send_batch >= total_batch_) {
+        break;
+      }
+    } else {
+#ifndef ENABLE_SECURITY
+      if (is_profiling_enable) {
+        tree_->SetEpochEnd();
+        GlobalContext::profiling_manager()->RecordEndOfEpoch(send_batch);
+      }
+#endif
     }
     if (!TaskManager::FindMe()->Interrupted() && !GpuBufferMgr::GetInstance().IsClosed()) {
-      auto rc = gpu_item_connector_->Pop(0, &items);
+      auto rc = gpu_connector_->Pop(0, &item);
+      items = std::move(item.data_item);
+      eoe_flag = item.eoe_flag;
       // If the batches send by dataset are more than gpu calculate, gpu will core for no signal notify.
       if (rc.IsError()) {
         GpuBufferMgr::GetInstance().Close(handle);
@@ -503,19 +498,28 @@ Status DeviceQueueOp::PushDataToGPU() {
   return Status::OK();
 }
 
-Status DeviceQueueOp::RetryPushData(unsigned int handle, const std::vector<DataItemGpu> &items) {
-  bool flagLog = false;
+Status DeviceQueueOp::RetryPushData(unsigned int handle, const std::vector<DataItemGpu> &items, const bool profiling,
+                                    uint64_t *push_time) {
+  bool flag_log = false;
+#ifndef ENABLE_SECURITY
+  uint64_t start_time = 0;
+  if (profiling) {
+    start_time = ProfilingTime::GetCurMilliSecond();
+  }
+#endif
   while (!GpuBufferMgr::GetInstance().IsClosed() && !TaskManager::FindMe()->Interrupted()) {
     BlockQueueStatus_T ret = GpuBufferMgr::GetInstance().Push(handle, items, WAIT_TIME);
     if (ret) {
       if (ret == BlockQueueStatus_T::ERROR_INPUT) {
-        return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
-                      "Invalid data, check the output of dataset with creating iterator and print data item.");
+        return Status(
+          StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
+          "Invalid data, the types or shapes of current row is different with previous row(i.e. do batch operation but "
+          "drop_reminder is False, or without resize image into the same size, these will cause shapes differs).");
       } else {
         if (!stop_send_) {
-          if (!flagLog) {
+          if (!flag_log) {
             MS_LOG(DEBUG) << "Retry pushing data...";
-            flagLog = true;
+            flag_log = true;
           }
           continue;
         }
@@ -525,6 +529,11 @@ Status DeviceQueueOp::RetryPushData(unsigned int handle, const std::vector<DataI
       break;
     }
   }
+#ifndef ENABLE_SECURITY
+  if (profiling) {
+    *push_time = ProfilingTime::GetCurMilliSecond() - start_time;
+  }
+#endif
   return Status::OK();
 }
 
@@ -537,25 +546,30 @@ Status DeviceQueueOp::WorkerEntry(int32_t worker_id) {
   uint32_t batch_num = 0;
   RETURN_IF_NOT_OK(receive_queues_[worker_id]->PopFront(&current_row));
   while (!current_row.quit() && !GpuBufferMgr::GetInstance().IsClosed()) {
-    std::vector<device::DataItemGpu> items;
-    for (int i = 0; i < current_row.size(); i++) {
-      device::DataItemGpu data_item;
-      data_item.data_len_ = static_cast<size_t>(current_row[i]->SizeInBytes());
-      data_item.data_ptr_ = nullptr;
-      data_item.worker_id_ = worker_id;
-      items.push_back(data_item);
+    GpuConnectorItem connector_item = {{}, current_row.eoe()};
+    if (!connector_item.eoe_flag) {
+      std::vector<device::DataItemGpu> items;
+      for (auto &i : current_row) {
+        device::DataItemGpu data_item;
+        data_item.data_len_ = static_cast<size_t>(i->SizeInBytes());
+        data_item.data_ptr_ = nullptr;
+        data_item.worker_id_ = worker_id;
+        items.push_back(data_item);
+      }
+      RETURN_IF_NOT_OK(MallocForGPUData(&items, current_row, worker_id));
+      connector_item.data_item = std::move(items);
+      batch_num++;
+    } else {
+      MS_LOG(INFO) << "EOE Detected";
     }
-    RETURN_IF_NOT_OK(MallocForGPUData(&items, current_row, worker_id));
-    RETURN_IF_NOT_OK(gpu_item_connector_->Add(worker_id, std::move(items)));
-    batch_num++;
-
+    RETURN_IF_NOT_OK(gpu_connector_->Add(worker_id, std::move(connector_item)));
     RETURN_IF_NOT_OK(receive_queues_[worker_id]->PopFront(&current_row));
   }
 
   MS_LOG(INFO) << "Device queue worker id " << worker_id << "proc " << batch_num << "batch.";
-  // Add empty vector as quit flag.
-  std::vector<device::DataItemGpu> items;
-  RETURN_IF_NOT_OK(gpu_item_connector_->Add(worker_id, std::move(items)));
+  // Add empty data_item vector with eoe_flag=false as quit flag.
+  GpuConnectorItem connector_item = {{}, false};
+  RETURN_IF_NOT_OK(gpu_connector_->Add(worker_id, std::move(connector_item)));
   return Status::OK();
 }
 
@@ -571,23 +585,32 @@ Status DeviceQueueOp::SendDataToGPU() {
   first_fetch_flag_ = true;
   int64_t num_buf = 0;
   bool is_break_loop = false;
+  uint32_t batch_num = 0;
   while (!current_row.eof() && !is_break_loop && !GpuBufferMgr::GetInstance().IsClosed()) {
     while (!current_row.eoe() && !is_break_loop && !GpuBufferMgr::GetInstance().IsClosed()) {
+      batch_num++;
       RETURN_IF_NOT_OK(FilterMetadata(&current_row));
       RETURN_IF_NOT_OK(CheckExceptions(current_row));
-      RETURN_IF_NOT_OK(receive_queues_[num_buf++ % num_workers_]->Add(std::move(current_row)));
-      if (first_push_flag_ != true) {
-        MS_LOG(INFO) << "Loading dataset and push first batch into device successful.";
-        first_push_flag_ = true;
-      }
 #ifndef ENABLE_SECURITY
       DetectPerBatchTime(&batch_record_start, &batch_record_end);
+#endif
+      PrintBeginInfoWhenFirstBatch(first_push_flag_);
+      RETURN_IF_NOT_OK(receive_queues_[num_buf++ % num_workers_]->Add(std::move(current_row)));
+      PrintEndInfoWhenFirstBatch(&first_push_flag_);
+#ifndef ENABLE_SECURITY
+      batch_record_start = ProfilingTime::GetCurMilliSecond();
 #endif
       if (!TaskManager::FindMe()->Interrupted() && !GpuBufferMgr::GetInstance().IsClosed()) {
         RETURN_IF_NOT_OK(child_iterator_->FetchNextTensorRow(&current_row));
       } else {
         is_break_loop = true;
       }
+    }
+
+    if (current_row.eoe()) {
+      MS_LOG(INFO) << "EOE Detected";
+      TensorRow eoe_flag(TensorRow::kFlagEOE);
+      RETURN_IF_NOT_OK(receive_queues_[num_buf++ % num_workers_]->Add(std::move(eoe_flag)));
     }
 
     if (!TaskManager::FindMe()->Interrupted() && !GpuBufferMgr::GetInstance().IsClosed()) {
@@ -598,6 +621,7 @@ Status DeviceQueueOp::SendDataToGPU() {
   }
 
   for (uint32_t index = 0; index < num_workers_; index++) {
+    MS_LOG(INFO) << "Adding quit flag to Workers";
     TensorRow quit_flag(TensorRow::kFlagQuit);
     RETURN_IF_NOT_OK(receive_queues_[num_buf++ % num_workers_]->Add(std::move(quit_flag)));
   }
@@ -612,18 +636,19 @@ Status DeviceQueueOp::MallocForGPUData(std::vector<device::DataItemGpu> *items, 
   for (auto &sub_item : *items) {
     auto rc = pool_[worker_id]->Allocate(sub_item.data_len_, &sub_item.data_ptr_);
     if (rc.IsError() || sub_item.data_ptr_ == nullptr) {
-      return Status(StatusCode::kMDOutOfMemory, __LINE__, __FILE__, "Memory malloc failed.");
+      return Status(StatusCode::kMDOutOfMemory, __LINE__, __FILE__, "Memory malloc failed, check memory usage.");
     }
     if (curr_row[i] == nullptr) {
-      MS_LOG(ERROR) << "The pointer curr_row[" << i << "] is null";
-      return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "TensorRow 'curr_row' contains nullptr.");
+      MS_LOG(ERROR) << "[Internal ERROR] The pointer curr_row[" << i << "] is null";
+      return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__,
+                    "[Internal ERROR] TensorRow 'curr_row' contains nullptr.");
     }
     sub_item.data_type_ = curr_row[i]->type().ToString();
     const unsigned char *column_data = curr_row[i]->GetBuffer();
     if (memcpy_s(sub_item.data_ptr_, sub_item.data_len_, column_data,
                  static_cast<uint32_t>(curr_row[i++]->SizeInBytes())) != 0) {
-      MS_LOG(ERROR) << "memcpy_s failed!";
-      return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "memcpy failed when using memcpy_s do copy.");
+      MS_LOG(ERROR) << "[Internal ERROR] memcpy_s failed.";
+      return Status(StatusCode::kMDUnexpectedError, __LINE__, __FILE__, "[Internal ERROR] memcpy_s failed.");
     }
   }
 
@@ -666,16 +691,16 @@ void DeviceQueueOp::Print(std::ostream &out, bool show_all) const {
     // Call the super class for displaying any common detailed info
     PipelineOp::Print(out, show_all);
     // Then show any custom derived-internal stuff
-    out << "\nChannel name: " << channel_name_ << "\nPrefetch size: " << prefetch_size_ << "\n\n";
+    out << "\nChannel name: " << channel_name_ << "\n\n";
   }
 }
 
 #ifndef ENABLE_SECURITY
-void DeviceQueueOp::ProfilingRecorder(bool isProfilingEnable, std::shared_ptr<DeviceQueueTracing> profiling_node,
+void DeviceQueueOp::ProfilingRecorder(bool is_profiling_enable, std::shared_ptr<DeviceQueueTracing> profiling_node,
                                       int64_t send_batch, int32_t tdt_cost, uint64_t *batch_start_time,
                                       uint64_t *end_time, int32_t connector_capacity, int32_t connector_size) {
   // Record the pipeline profiling info
-  if (isProfilingEnable) {
+  if (is_profiling_enable) {
     *end_time = ProfilingTime::GetCurMilliSecond();
     // record push tdt time
     profiling_node->Record(TIME, TDT_PUSH_TIME, send_batch + 1, tdt_cost, *end_time);
@@ -705,21 +730,38 @@ Status DeviceQueueOp::DetectFirstBatch() {
       count_num++;
       MS_LOG(WARNING) << "Bad performance attention, it waits more than 25 seconds and unable to fetch first Batch of "
                          "data from dataset pipeline, which might result `GetNext` timeout problem. You may test "
-                         "dataset processing performance and optimize it. Notes: shuffle operation is turn on for "
-                         "loading Dataset in default, which may effect first batch loading time.";
+                         "dataset processing performance (with creating dataset iterator) and optimize it. Notes: "
+                         "shuffle operation is turn on for loading Dataset in default, which may effect first batch "
+                         "loading time.";
     }
   }
   return Status::OK();
 }
 
-void DeviceQueueOp::DetectPerBatchTime(uint64_t *start_time, uint64_t *end_time) {
+void DeviceQueueOp::DetectPerBatchTime(const uint64_t *start_time, uint64_t *end_time) {
   *end_time = ProfilingTime::GetCurMilliSecond();
   if (*end_time - *start_time > kTimeOutMilliSeconds) {
-    MS_LOG(WARNING) << "Bad performance attention, it takes more than 25 seconds to fetch and send a batch of data"
-                       " into device, which might result `GetNext` timeout problem. You may test dataset processing"
-                       " performance and optimize it or check whether sending data part is blocked as queue is full.";
+    MS_LOG(WARNING) << "Bad performance attention, it takes more than 25 seconds to fetch a batch of data from dataset "
+                       "pipeline, which might result `GetNext` timeout problem. You may test dataset processing"
+                       " performance(with creating dataset iterator) and optimize it.";
   }
-  *start_time = *end_time;
+}
+
+void DeviceQueueOp::PrintBeginInfoWhenFirstBatch(const bool &first_push_flag) {
+  if (first_push_flag != true) {
+    MS_LOG(INFO) << "Loading dataset and begin to push first batch into device ...";
+  }
+}
+
+void DeviceQueueOp::PrintEndInfoWhenFirstBatch(bool *first_push_flag) {
+  if (!first_push_flag) {
+    MS_LOG(WARNING) << "First batch flag: first_push_flag is nullptr";
+    return;
+  }
+  if (*first_push_flag != true) {
+    MS_LOG(INFO) << "Loading dataset and push first batch into device successful.";
+    *first_push_flag = true;
+  }
 }
 #endif
 }  // namespace dataset

@@ -36,7 +36,7 @@ Status BroadcastToInfo::GetAttrs() {
     MS_EXCEPTION_IF_NULL(shape_iter->second);
     auto var = shape_iter->second->cast<ValueTuplePtr>();
     if (var == nullptr) {
-      MS_LOG(ERROR) << name_ << ": shape format is wrong! Need ValueSequeue";
+      MS_LOG(ERROR) << name_ << ": shape format is wrong! Need ValueSequence";
       return FAILED;
     }
     for (auto &ele : var->value()) {
@@ -175,25 +175,6 @@ ReplaceGraphPtr BroadcastToInfo::replace_graph(const CNodePtr &cnode) {
     MS_LOG(EXCEPTION) << name_ << ": ComputeReplaceGraph failed.";
   }
   return replace_graph_;
-}
-
-Status BroadcastToInfo::Init(const StrategyPtr &strategy) {
-  if (InitWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init failed.";
-    return FAILED;
-  }
-  MS_LOG(INFO) << name_ << ": Init success.";
-  return SUCCESS;
-}
-
-Status BroadcastToInfo::InitForCostModel(const StrategyPtr &strategy) {
-  if (InitForCostModelWithAutoRepeatCalc(strategy) != SUCCESS) {
-    MS_LOG(ERROR) << name_ << ": Init for cost model failed.";
-    return FAILED;
-  }
-
-  MS_LOG(INFO) << name_ << ": Init for cost model success.";
-  return SUCCESS;
 }
 }  // namespace parallel
 }  // namespace mindspore

@@ -25,7 +25,7 @@
 #include "backend/optimizer/graph_kernel/add_atomic_clean.h"
 #include "backend/optimizer/graph_kernel/add_stitch_atomic_clean_gpu.h"
 #include "backend/optimizer/graph_kernel/arithmetic_simplify.h"
-#include "backend/optimizer/graph_kernel/graph_kernel_cluster.h"
+#include "backend/optimizer/graph_kernel/core/graph_kernel_cluster.h"
 #include "backend/optimizer/graph_kernel/eliminate_redundant_output.h"
 #include "backend/optimizer/graph_kernel/insert_pad.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_splitter.h"
@@ -49,14 +49,16 @@
 #include "backend/optimizer/graph_kernel/graph_kernel_pass_manager.h"
 #include "backend/optimizer/graph_kernel/transform_op_optimizer.h"
 #include "backend/optimizer/graph_kernel/rewrite_output_shape.h"
+#include "backend/optimizer/graph_kernel/graph_kernel_recompute.h"
+#include "backend/optimizer/graph_kernel/reduce_fake_out_mem.h"
 
-namespace mindspore {
-namespace opt {
-using context::OptLevel_1;
-using context::OptLevel_2;
-using context::OptLevel_3;
-using context::OptLevel_MAX;
+namespace mindspore::graphkernel {
+using opt::CommonSubexpressionElimination;
+using opt::GetitemTuple;
+using opt::GraphOptimizer;
+
 namespace {
+auto constexpr PARALLEL_OPS_LIMIT = 7;
 inline unsigned int GetPassLevelByFlag(bool flag) { return flag ? OptLevel_1 : OptLevel_MAX; }
 }  // namespace
 
@@ -85,7 +87,7 @@ PassManagerPtr GraphKernelOptimizer::Cluster() const {
   pm->AddPass(std::make_shared<GraphKernelComplexExpander>(), OptLevel_1, is_gpu);
 
   // Expand complex basic kernels to composite kernels
-  pm->AddPass(std::make_shared<GraphKernelExpander>(), OptLevel_1);
+  pm->AddPass(std::make_shared<GraphKernelExpanderWithPy>(), OptLevel_1);
 
   // Cluster basic kernels and composite kernels
   pm->AddPass(std::make_shared<GraphKernelCluster>(), OptLevel_1);
@@ -118,13 +120,13 @@ PassManagerPtr GraphKernelOptimizer::HighLevelOpt1() const {
   pm->AddPass(std::make_shared<InsertPadOps>(), OptLevel_1, is_gpu);
 
   // Universal arithmetic simplify
-  pm->AddPass(std::make_shared<ArithmeticSimplify>(), OptLevel_2, is_gpu);
+  pm->AddPass(std::make_shared<ArithmeticSimplify>(), OptLevel_2, is_gpu || is_cpu);
 
   // Common subexpression elimination
   pm->AddPass(std::make_shared<GraphKernelCSE>(), OptLevel_2);
 
   // Eliminate unnecessary transform ops
-  auto level = GetPassLevelByFlag(context::GraphKernelFlags::GetInstance().enable_trans_op_optimize);
+  auto level = GetPassLevelByFlag(GraphKernelFlags::GetInstance().enable_trans_op_optimize);
   pm->AddPass(std::make_shared<TransformOpOptimizer>(), level, is_gpu);
   return pm;
 }
@@ -154,21 +156,29 @@ PassManagerPtr GraphKernelOptimizer::Split() const {
 
 PassManagerPtr GraphKernelOptimizer::HighLevelOpt2() const {
   auto pm = std::make_shared<GraphKernelPassManager>(4, "highlevelopt2");
+
+  auto &flags = GraphKernelFlags::GetInstance();
+  // Auto recompute according to local memory burst.
+  auto recompute_lv = GetPassLevelByFlag(flags.recompute_increment_threshold > 0 || flags.recompute_peak_threshold > 0);
+  pm->AddPass(std::make_shared<GraphKernelRecompute>(), recompute_lv);
+  pm->AddPass(std::make_shared<ExtendOutputForUpdateState>(), recompute_lv);
+  pm->AddPass(std::make_shared<MergeOutputForUpdateState>(), recompute_lv);
+
   // Enable atomic add
-  pm->AddPass(std::make_shared<AtomicCleanInsertter>(), OptLevel_2);
+  pm->AddPass(std::make_shared<AtomicCleanInsertter>(), OptLevel_2, is_gpu || is_ascend);
 
   // Enable atomic add for stitch nodes.
-  auto level = GetPassLevelByFlag(context::GraphKernelFlags::GetInstance().enable_stitch_fusion);
+  auto level = GetPassLevelByFlag(GraphKernelFlags::GetInstance().enable_stitch_fusion);
   pm->AddPass(std::make_shared<StitchAtomicCleanInsertter>(), level, is_gpu);
 
   // Enable low precision
-  auto level_low_precision = GetPassLevelByFlag(context::GraphKernelFlags::GetInstance().enable_low_precision);
+  auto level_low_precision = GetPassLevelByFlag(GraphKernelFlags::GetInstance().enable_low_precision);
   pm->AddPass(std::make_shared<DecreaseTransferPrecision>(), level_low_precision);
   pm->AddPass(std::make_shared<DecreaseComputePrecision>(), level_low_precision, is_ascend);
 
   // Enable tsa and uss
-  pm->AddPass(std::make_shared<TsaAtomicAddToFirstTensor>(), OptLevel_1);
-  pm->AddPass(std::make_shared<UssAtomicAdd>(), OptLevel_1);
+  pm->AddPass(std::make_shared<TsaAtomicAddToFirstTensor>(), OptLevel_1, is_gpu);
+  pm->AddPass(std::make_shared<UssAtomicAdd>(), OptLevel_1, is_gpu);
 
   return pm;
 }
@@ -176,8 +186,14 @@ PassManagerPtr GraphKernelOptimizer::HighLevelOpt2() const {
 PassManagerPtr GraphKernelOptimizer::Combine() const {
   auto pm = std::make_shared<GraphKernelPassManager>(5, "combine");
   // Enable parallel fusion for gpu device
-  auto level = GetPassLevelByFlag(context::GraphKernelFlags::GetInstance().enable_parallel_fusion);
-  pm->AddPass(std::make_shared<ParallelOpFusion>(kGPUDevice, ParallelConfig(7)), level, is_gpu);
+  auto context_ptr = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context_ptr);
+  auto target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  auto level = GetPassLevelByFlag(GraphKernelFlags::GetInstance().enable_parallel_fusion);
+  // Atomic-add GraphKernel node may be linked directly to UpdateState, it should be spread before parallel fusion!
+  pm->AddPass(std::make_shared<SpreadUpdateState>(), level);
+  pm->AddPass(std::make_shared<ParallelOpFusion>(target, ParallelConfig(PARALLEL_OPS_LIMIT)), level,
+              is_gpu || is_ascend);
 
   return pm;
 }
@@ -191,6 +207,9 @@ PassManagerPtr GraphKernelOptimizer::PostProcess() const {
   pm->AddPass(std::make_shared<GetitemTuple>(), OptLevel_1);
   pm->AddPass(std::make_shared<RewriteOutputShape>(), OptLevel_1);
 
+  // Reduce fake output memory.
+  pm->AddPass(std::make_shared<ReduceFakeOutMem>(), OptLevel_1);
+
   // Add the new tensors to the kernel_graph
   pm->AddPass(std::make_shared<BindValueToGraph>(), OptLevel_1);
   return pm;
@@ -201,6 +220,7 @@ void GraphKernelOptimizer::Run(const KernelGraphPtr &kernel_graph) {
   MS_EXCEPTION_IF_NULL(context_ptr);
   is_gpu = (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kGPUDevice);
   is_ascend = (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice);
+  is_cpu = (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kCPUDevice);
 
   auto optimizer = std::make_shared<GraphOptimizer>("graph_kernel_optimizer");
   optimizer->AddPassManager(PreProcess());
@@ -220,5 +240,4 @@ void GraphKernelOptimizer::Run(const KernelGraphPtr &kernel_graph) {
 }
 
 void GraphKernelOptimize(const KernelGraphPtr &kernel_graph) { GraphKernelOptimizer().Run(kernel_graph); }
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel

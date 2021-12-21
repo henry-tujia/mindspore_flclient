@@ -28,7 +28,7 @@ using mindspore::lite::RET_NULL_PTR;
 using mindspore::lite::RET_OK;
 
 namespace mindspore::kernel {
-int ConvolutionSWCPUKernel::Init() {
+int ConvolutionSWCPUKernel::Prepare() {
   oc_tile_ = C8NUM;
   oc_res_ = conv_param_->output_channel_ % oc_tile_;
   if (conv_param_->kernel_h_ == 1 && conv_param_->kernel_w_ == 1) {
@@ -75,9 +75,9 @@ int ConvolutionSWCPUKernel::ReSize() {
     slidingWindow_param_ = nullptr;
   }
 
-  ret = ConvolutionBaseCPUKernel::Init();
+  ret = ConvolutionBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
-    MS_LOG(ERROR) << "ConvolutionBase init failed.";
+    MS_LOG(ERROR) << "ConvolutionBase prepare failed.";
     return RET_ERROR;
   }
   // init sliding window param
@@ -153,11 +153,6 @@ int ConvolutionSWCPUKernel::InitTmpBuffer() {
 }
 
 int ConvolutionSWCPUKernel::Run() {
-  auto prepare_ret = Prepare();
-  if (prepare_ret != RET_OK) {
-    MS_LOG(ERROR) << "Prepare fail!ret: " << prepare_ret;
-    return prepare_ret;
-  }
   auto ret = InitTmpBuffer();
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "InitTmpBuffer error!";
@@ -204,12 +199,14 @@ int ConvolutionSWCPUKernel::MallocWeightBiasData() {
   auto output_channel = filter_tensor->Batch();
   int kernel_h = filter_tensor->Height();
   int kernel_w = filter_tensor->Width();
+  MS_CHECK_TRUE_RET(input_channel > 0 && output_channel > 0 && kernel_h > 0 && kernel_w > 0, RET_ERROR);
   conv_param_->input_channel_ = input_channel;
   conv_param_->output_channel_ = output_channel;
   int kernel_plane = kernel_h * kernel_w;
   int oc_block_num = UP_DIV(output_channel, oc_tile_);
   int pack_weight_size = oc_block_num * oc_tile_ * input_channel * kernel_plane;
   if (!op_parameter_->is_train_session_) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, pack_weight_size * sizeof(float));
     packed_weight_ = malloc(pack_weight_size * sizeof(float));
     if (packed_weight_ == nullptr) {
       MS_LOG(ERROR) << "malloc packed weight failed.";
@@ -219,6 +216,7 @@ int ConvolutionSWCPUKernel::MallocWeightBiasData() {
   }
 
   if (in_tensors_.size() == kInputSize2) {
+    CHECK_LESS_RETURN(MAX_MALLOC_SIZE, oc_block_num * oc_tile_ * sizeof(float));
     bias_data_ = malloc(oc_block_num * oc_tile_ * sizeof(float));
     if (bias_data_ == nullptr) {
       MS_LOG(ERROR) << "malloc bias failed.";

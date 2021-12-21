@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,8 +32,9 @@ class MS_CORE_API Erf : public PrimitiveC {
   MS_DECLARE_PARENT(Erf, PrimitiveC);
 };
 
-using PrimErfPtr = std::shared_ptr<Erf>;
+AbstractBasePtr ErfInfer(const abstract::AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                         const std::vector<AbstractBasePtr> &input_args);
+using PrimErf = std::shared_ptr<Erf>;
 }  // namespace ops
 }  // namespace mindspore
-
 #endif  // MINDSPORE_CORE_OPS_ERF_H_

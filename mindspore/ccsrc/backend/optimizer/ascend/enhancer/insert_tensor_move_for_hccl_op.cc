@@ -41,14 +41,25 @@ bool IsParameterOrValueNode(const AnfNodePtr &node) {
 }
 
 // NodeUsersMap, for node B input i use node A, it will be one item in map with key: A, and value: (B, i)
-bool IsNodeOutPutUsedByOtherRealKernel(const AnfNodeIndexSet &node_users) {
-  if (node_users.size() == 1) {
+bool IsNodeOutPutUsedByOtherRealKernel(const FuncGraphPtr &graph, const AnfNodePtr &input, size_t input_idx,
+                                       const CNodePtr &cur_node) {
+  auto manager = graph->manager();
+  MS_EXCEPTION_IF_NULL(manager);
+  auto &node_users = manager->node_users();
+  auto iter = node_users.find(input);
+  if (iter == node_users.end()) {
+    MS_LOG(EXCEPTION) << "node has no output in manager." << trace::DumpSourceLines(input);
+  }
+  auto user_items = iter->second;
+  if (user_items.size() == 1) {
     MS_LOG(INFO) << "This node only used once, no need to insert tensormove node.";
     return false;
   }
-  for (const auto &node_pair : node_users) {
+  for (const auto &node_pair : user_items) {
     auto node = node_pair.first;
-    if (AnfAlgo::IsRealKernel(node) && !AnfAlgo::IsCommunicationOp(node)) {
+    auto idx = node_pair.second;
+    MS_EXCEPTION_IF_NULL(node);
+    if (AnfUtils::IsRealKernel(node) && node != cur_node && idx != SizeToInt(input_idx)) {
       MS_LOG(INFO) << "This node only used other real kernel: " << node->fullname_with_scope();
       return true;
     }
@@ -59,44 +70,43 @@ bool IsNodeOutPutUsedByOtherRealKernel(const AnfNodeIndexSet &node_users) {
 }  // namespace
 
 bool InsertTensorMoveForHcclOp::NeedInsertTensorMove(const FuncGraphPtr &graph, const AnfNodePtr &input,
-                                                     const CNodePtr &cur_node) const {
+                                                     size_t input_idx, const CNodePtr &cur_node) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(input);
   MS_EXCEPTION_IF_NULL(cur_node);
   if (IsPrimitiveCNode(cur_node, prim::kPrimReceive)) {
     return false;
   }
-
+  // visited nop node if exist.
+  auto kernel_with_index = AnfAlgo::VisitKernelWithReturnType(input, 0, false);
+  auto real_input = kernel_with_index.first;
   // when input is a parameter or is a value node
-  if (IsParameterOrValueNode(input)) {
+  if (IsParameterOrValueNode(real_input)) {
     return true;
   }
-
-  if (input->isa<CNode>()) {
-    auto manager = graph->manager();
-    MS_EXCEPTION_IF_NULL(manager);
-    auto &node_users = manager->node_users();
-
-    // when input is a Ref cnode
-    if (kernel_query_->IsTbeRef(input)) {
-      return true;
-    }
-    auto kernel_with_index = AnfAlgo::VisitKernelWithReturnType(input, 0, true);
-    auto real_node = kernel_with_index.first;
-    // when input is some special cnodes
-    if (kNeedInsertTensorMoveOpSet.find(AnfAlgo::GetCNodeName(real_node)) != kNeedInsertTensorMoveOpSet.end()) {
-      return true;
-    }
-
-    // when input is used by others
-    auto iter = node_users.find(input);
-    if (iter == node_users.end()) {
-      MS_LOG(EXCEPTION) << "node has no output in manager"
-                        << " trace: " << trace::DumpSourceLines(input);
-    }
-    if (IsNodeOutPutUsedByOtherRealKernel(iter->second)) {
-      return true;
-    }
+  // when input is a Ref cnode
+  if (kernel_query_->IsTbeRef(real_input)) {
+    return true;
+  }
+  // when input is some special cnodes: kLambNextMVOpName, kLambNextMVWithDecayOpName, kLambUpdateWithLROpName,
+  // kGetNextOpName
+  if (kNeedInsertTensorMoveOpSet.find(AnfAlgo::GetCNodeName(real_input)) != kNeedInsertTensorMoveOpSet.end()) {
+    return true;
+  }
+  // example1: NodeA --> Allreduce
+  //           NodeA --> other RealNode(!Allreude)
+  // example2: NodeA --> NopNode --> Allreduce
+  //           NodeA --> other RealNode(!Allreude)
+  // example3: NodeA --> NopNode --> Allreduce
+  //                             --> other RealNode(!Allreude)
+  // when input is used by others
+  if (IsNodeOutPutUsedByOtherRealKernel(graph, input, input_idx, cur_node)) {
+    return true;
+  }
+  if (opt::IsNopNode(real_input)) {
+    auto cnode = real_input->cast<CNodePtr>();
+    MS_EXCEPTION_IF_NULL(cnode);
+    return NeedInsertTensorMove(graph, cnode->input(1), input_idx, cur_node);
   }
   return false;
 }
@@ -108,7 +118,7 @@ void InsertTensorMoveForHcclOp::InsertTensorMove(const FuncGraphPtr &graph, cons
   std::vector<AnfNodePtr> new_inputs = {hccl_node->input(0)};
   for (size_t i = 1; i < hccl_node->size(); ++i) {
     auto input = hccl_node->input(i);
-    if (NeedInsertTensorMove(graph, input, hccl_node)) {
+    if (NeedInsertTensorMove(graph, input, i, hccl_node)) {
       auto tensor_move = CreateTensorMoveOp(graph, input);
       if (tensor_move == nullptr) {
         MS_LOG(EXCEPTION) << "Create tensor_move op failed.";

@@ -74,6 +74,16 @@ class Strategy {
     return true;
   }
 
+  int64_t PartitionNum() {
+    int64_t divergence = 1;
+    for (size_t i = 0; i < inputs_.size(); ++i) {
+      for (size_t j = 0; j < inputs_[i].size(); ++j) {
+        divergence *= inputs_[i][j];
+      }
+    }
+    return divergence;
+  }
+
   // Include 'another_stra' into this strategy
   void CoverStrategy(const StrategyPtr &another_stra) {
     internal_stragies_.push_back(another_stra);
@@ -83,7 +93,7 @@ class Strategy {
  private:
   const int64_t stage_;
 
-  // The size of Dimensions must equal to inputs_ tensor dimension.
+  // The size of Dimensions must be equal to inputs_ tensor dimension.
   Strategys inputs_;
   size_t internal_size_ = 0;
   std::vector<StrategyPtr> internal_stragies_;

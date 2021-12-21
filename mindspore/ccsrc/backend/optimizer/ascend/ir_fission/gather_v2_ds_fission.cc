@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "ir/primitive.h"
 #include "utils/utils.h"
+#include "utils/trace_base.h"
 
 namespace mindspore {
 namespace opt {
@@ -28,28 +29,55 @@ constexpr size_t kOriginPaddingSize = 2;
 constexpr size_t kGatherInputNum = 4;
 constexpr size_t kGatherInputIndicesIndex = 2;
 constexpr size_t kGatherInputAxisIndex = 3;
+
+bool CheckInputs(const CNodePtr &origin_node) {
+  MS_EXCEPTION_IF_NULL(origin_node);
+  if (AnfAlgo::GetInputTensorNum(origin_node) != kGatherV2DynInputTensorNum) {
+    MS_LOG(DEBUG) << "GatherV2 in dynamic shape has wrong inputs num, not equal " << kGatherV2DynInputTensorNum
+                  << ". CNode= " << origin_node->DebugString();
+    return false;
+  }
+  auto param_shape = AnfAlgo::GetPrevNodeOutputInferShape(origin_node, 0);
+  auto indice_shape = AnfAlgo::GetPrevNodeOutputInferShape(origin_node, 1);
+  // this optimizer only support embedding_table has dynamic shape
+  if (param_shape.empty() || indice_shape.empty() || AnfAlgo::IsDynamicShape(origin_node->input(kDim2))) {
+    return false;
+  }
+  if (param_shape[param_shape.size() - 1] != 1) {
+    MS_LOG(DEBUG) << "GatherV2 in dynamic shape is not need fission. The last value of input0's shape is "
+                  << param_shape[param_shape.size() - 1];
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
 // only pad operator can run in dynamic shape.
-CNodePtr CreatePad(const FuncGraphPtr &graph, const CNodePtr &origin_node, const size_t &pad_dim_size) {
+CNodePtr GatherV2DsFission::CreatePad(const FuncGraphPtr &graph, const CNodePtr &origin_node,
+                                      const size_t &pad_dim_size) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(origin_node);
   std::vector<AnfNodePtr> pad_inputs = {NewValueNode(std::make_shared<Primitive>(kPadOpName)), origin_node->input(1)};
-  auto pad = graph->NewCNode(pad_inputs);
+  auto pad = NewCNode(pad_inputs, graph);
   MS_EXCEPTION_IF_NULL(pad);
   pad->set_scope(origin_node->scope());
 
   auto param_abstract_shape = origin_node->input(1)->Shape();
   MS_EXCEPTION_IF_NULL(param_abstract_shape);
   if (!param_abstract_shape->isa<abstract::Shape>()) {
-    MS_LOG(EXCEPTION) << "The node [" << origin_node->DebugString() << "]'s first input has wrong shape type.";
+    MS_LOG(EXCEPTION) << "The node [" << origin_node->DebugString() << "]'s first input has wrong shape type."
+                      << trace::DumpSourceLines(origin_node);
   }
   auto param_dyn_shape = param_abstract_shape->cast<abstract::ShapePtr>();
   ShapeVector shape(param_dyn_shape->shape());
   if (shape.empty()) {
-    MS_LOG(EXCEPTION) << "The shape of node [" << origin_node->DebugString() << "]'s first input is empty.";
+    MS_LOG(EXCEPTION) << "The shape of node [" << origin_node->DebugString() << "]'s first input is empty."
+                      << trace::DumpSourceLines(origin_node);
   }
   if (shape[shape.size() - 1] == -1) {
     MS_LOG(EXCEPTION) << "The node [" << origin_node->DebugString()
-                      << "]'s first input should not be dynamic, shape:" << shape;
+                      << "]'s first input should not be dynamic, but got shape:" << shape
+                      << trace::DumpSourceLines(origin_node);
   }
   shape[shape.size() - 1] = SizeToLong(pad_dim_size);
   auto type_id = AnfAlgo::GetPrevNodeOutputInferDataType(origin_node, 0);
@@ -83,18 +111,19 @@ CNodePtr CreatePad(const FuncGraphPtr &graph, const CNodePtr &origin_node, const
   return pad;
 }
 
-CNodePtr CreateGatherV2Ds(const FuncGraphPtr &graph, const CNodePtr &origin_node, const CNodePtr &pad,
-                          const size_t &pad_dim_size) {
+CNodePtr GatherV2DsFission::CreateGatherV2Ds(const FuncGraphPtr &graph, const CNodePtr &origin_node,
+                                             const CNodePtr &pad, const size_t &pad_dim_size) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(origin_node);
   MS_EXCEPTION_IF_NULL(pad);
   if (origin_node->size() != kGatherInputNum) {
-    MS_LOG(EXCEPTION) << "In dynamic shape scene, gatherv2 should have 3 inputs";
+    MS_LOG(EXCEPTION) << "In dynamic shape scene, gatherv2 should have 3 inputs, but got " << origin_node->size()
+                      << trace::DumpSourceLines(origin_node);
   }
   std::vector<AnfNodePtr> gatherv2_inputs = {NewValueNode(std::make_shared<Primitive>(prim::kPrimGather->name())), pad,
                                              origin_node->input(kGatherInputIndicesIndex),
                                              origin_node->input(kGatherInputAxisIndex)};
-  auto gather_v2 = graph->NewCNode(gatherv2_inputs);
+  auto gather_v2 = NewCNode(gatherv2_inputs, graph);
   MS_EXCEPTION_IF_NULL(gather_v2);
   gather_v2->set_scope(origin_node->scope());
 
@@ -110,12 +139,13 @@ CNodePtr CreateGatherV2Ds(const FuncGraphPtr &graph, const CNodePtr &origin_node
   return gather_v2;
 }
 
-CNodePtr CreateSlice(const FuncGraphPtr &graph, const CNodePtr &gather_v2, const CNodePtr &gather_v2_padding_8) {
+CNodePtr GatherV2DsFission::CreateSlice(const FuncGraphPtr &graph, const CNodePtr &gather_v2,
+                                        const CNodePtr &gather_v2_padding_8) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_EXCEPTION_IF_NULL(gather_v2);
   MS_EXCEPTION_IF_NULL(gather_v2_padding_8);
   std::vector<AnfNodePtr> slice_inputs = {NewValueNode(std::make_shared<Primitive>(kSliceOpName)), gather_v2_padding_8};
-  auto slice = graph->NewCNode(slice_inputs);
+  auto slice = NewCNode(slice_inputs, graph);
   MS_EXCEPTION_IF_NULL(slice);
   slice->set_scope(gather_v2->scope());
   slice->set_abstract(gather_v2->abstract());
@@ -125,28 +155,6 @@ CNodePtr CreateSlice(const FuncGraphPtr &graph, const CNodePtr &gather_v2, const
   AnfAlgo::SetNodeAttr(kAttrSize, MakeValue(Convert2Long(gather_v2_shape)), slice);
   return slice;
 }
-
-bool CheckInputs(const CNodePtr &origin_node) {
-  MS_EXCEPTION_IF_NULL(origin_node);
-  if (AnfAlgo::GetInputTensorNum(origin_node) != kGatherV2DynInputTensorNum) {
-    MS_LOG(DEBUG) << "GatherV2 in dynamic shape has wrong inputs num, not equal " << kGatherV2DynInputTensorNum
-                  << ". CNode= " << origin_node->DebugString();
-    return false;
-  }
-  auto param_shape = AnfAlgo::GetPrevNodeOutputInferShape(origin_node, 0);
-  auto indice_shape = AnfAlgo::GetPrevNodeOutputInferShape(origin_node, 1);
-  // this optimizer only support embedding_table has dynamic shape
-  if (param_shape.empty() || indice_shape.empty() || AnfAlgo::IsDynamicShape(origin_node->input(kDim2))) {
-    return false;
-  }
-  if (param_shape[param_shape.size() - 1] != 1) {
-    MS_LOG(DEBUG) << "GatherV2 in dynamic shape is not need fission. The last value of input0's shape is "
-                  << param_shape[param_shape.size() - 1];
-    return false;
-  }
-  return true;
-}
-}  // namespace
 
 const BaseRef GatherV2DsFission::DefinePattern() const {
   VarPtr Xs = std::make_shared<SeqVar>();

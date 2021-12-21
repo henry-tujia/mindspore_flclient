@@ -47,7 +47,7 @@ void QuantProcess(float *input, int len, float min, float max, float *scale, int
 }
 
 lite::Tensor *MakeQuantTensor(int8_t *data, int len, std::vector<int> *shape, float scale, int zp) {
-  auto tensor = new lite::Tensor(kNumberTypeInt8, *shape, mindspore::NHWC, lite::Tensor::Category::CONST_TENSOR);
+  auto tensor = new lite::Tensor(kNumberTypeInt8, *shape, mindspore::NHWC, lite::Category::CONST_TENSOR);
   tensor->MallocData();
   if (data) {
     auto tensor_ptr = reinterpret_cast<int8_t *>(tensor->MutableData());
@@ -128,7 +128,7 @@ TEST_F(TestMatmulInt8, mmtest1) {
   kernel::MatmulInt8CPUKernel *mm =
     new kernel::MatmulInt8CPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs, outputs, ctx);
 
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float out_scale;
   int out_zp;
@@ -246,7 +246,7 @@ TEST_F(TestMatmulInt8, mmtest2) {
   kernel::MatmulInt8CPUKernel *mm =
     new kernel::MatmulInt8CPUKernel(reinterpret_cast<OpParameter *>(matmul_param), inputs, outputs, ctx);
 
-  mm->Init();
+  mm->Prepare();
   mm->Run();
   float out_scale;
   int out_zp;

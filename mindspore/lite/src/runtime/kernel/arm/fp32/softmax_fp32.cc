@@ -29,10 +29,10 @@ using mindspore::lite::RET_OK;
 using mindspore::schema::PrimitiveType_Softmax;
 
 namespace mindspore::kernel {
-int SoftmaxCPUKernel::Init() {
+int SoftmaxCPUKernel::Prepare() {
   CHECK_LESS_RETURN(in_tensors_.size(), 1);
   CHECK_LESS_RETURN(out_tensors_.size(), 1);
-  auto ret = SoftmaxBaseCPUKernel::Init();
+  auto ret = SoftmaxBaseCPUKernel::Prepare();
   if (ret != RET_OK) {
     return ret;
   }
@@ -52,6 +52,7 @@ int SoftmaxCPUKernel::ReSize() {
   auto axis = softmax_param_->axis_;
   auto in_shape = in_tensors_.front()->shape();
   int out_plane_size = 1;
+  MS_CHECK_TRUE_RET(axis > 0 && static_cast<size_t>(axis) < in_shape.size(), RET_ERROR);
   for (int i = 0; i < axis; ++i) {
     out_plane_size *= in_shape.at(i);
   }

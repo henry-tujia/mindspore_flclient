@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 #include "backend/kernel_compiler/cpu/rolling_cpu_kernel.h"
-#include <cmath>
-#include <algorithm>
+#include <math.h>
 #include <map>
 #include <limits>
-#include <functional>
+#include <algorithm>
+#include <type_traits>
 #include "common/thread_pool.h"
 
 namespace mindspore {
@@ -27,6 +27,7 @@ using rolling::Method;
 template <typename T, typename S>
 void RollingCpuKernel<T, S>::InitKernel(const CNodePtr &kernel_node) {
   MS_EXCEPTION_IF_NULL(kernel_node);
+  kernel_name_ = AnfAlgo::GetCNodeName(kernel_node);
   auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
 
   static const std::map<std::string, Method> kValidMethods = {
@@ -35,24 +36,27 @@ void RollingCpuKernel<T, S>::InitKernel(const CNodePtr &kernel_node) {
   };
   auto method = AnfAlgo::GetNodeAttr<std::string>(kernel_node, METHOD);
   if (kValidMethods.find(method) == kValidMethods.end()) {
-    MS_LOG(EXCEPTION) << "[" << method << "] not supported";
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                      << "', the 'method' should be in (max, min, sum, mean, std, var), but got " << method;
   }
   method_ = kValidMethods.at(method);
-  window_ = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, WINDOW);
-  if (window_ <= 0) {
-    MS_LOG(EXCEPTION) << "window size should not less than 0, but got " << window_;
+  auto window = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, WINDOW);
+  if (window <= 0) {
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'window' should be greater than 0, but got " << window;
   }
+  window_ = LongToInt(window);
   min_periods_ = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, MIN_PERIODS);
   if (min_periods_ <= 0) {
-    MS_LOG(EXCEPTION) << "min_periods should not less than 0, but got " << min_periods_;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'min_periods' should be greater than 0, but got "
+                      << min_periods_;
   }
   center_ = AnfAlgo::GetNodeAttr<bool>(kernel_node, CENTER);
   auto axis = AnfAlgo::GetNodeAttr<int64_t>(kernel_node, AXIS);
   size_t axis_t = axis < 0 ? LongToSize(axis + SizeToLong(input_shape.size())) : LongToSize(axis);
   closed_ = AnfAlgo::GetNodeAttr<std::string>(kernel_node, CLOSED);
   if (axis_t >= input_shape.size()) {
-    MS_LOG(EXCEPTION) << "axis should be smaller than the dimension of input tensor " << input_shape.size()
-                      << "D, but got " << axis_t;
+    MS_LOG(EXCEPTION) << "For '" << kernel_name_ << "', the 'axis' should be less than the dimension of input tensor "
+                      << input_shape.size() << "D, but got " << axis_t;
   }
   axisIterator_.Init(input_shape, axis_t);
   RollingBoundsCalculate();
@@ -86,12 +90,12 @@ void RollingCpuKernel<T, S>::RollingBoundsCalculate() {
   } else if (closed_ == "neither") {
     end_offset -= 1;
   }
-  int axis_size = axisIterator_.AxisSize();
-  for (size_t i = 0; i < axisIterator_.AxisSize(); ++i) {
+  int axis_size = SizeToInt(axisIterator_.AxisSize());
+  for (int i = 0; i < axis_size; ++i) {
     int end = offset + i + end_offset;
     int start = offset + i - window_ + start_offset;
-    ends_[i] = std::max(0, std::min(end, axis_size));
-    starts_[i] = std::max(0, std::min(start, axis_size));
+    ends_[i] = IntToSize(std::max(0, std::min(end, axis_size)));
+    starts_[i] = IntToSize(std::max(0, std::min(start, axis_size)));
   }
 }
 
@@ -135,47 +139,22 @@ void RollingCpuKernel<T, S>::MethodSwitch() {
         for (size_t x = start; x < end; ++x) {
           sum += input_addr[ids[x]];
         }
-        return sum * 1.0 / (end - start);
+        return sum / SizeToFloat(end - start);
       };
       break;
     case Method::Var:
-      reduceMethod_ = [](const T *input_addr, const size_t *ids, size_t start, size_t end) {
-        // float for division
-        float n = end - start;
-        T sum1 = 0;
-        for (size_t x = start; x < end; ++x) {
-          sum1 += input_addr[ids[x]];
-        }
-        double mean = sum1 / n;
-        double sum2 = 0;
-        for (size_t x = start; x < end; ++x) {
-          double diff = input_addr[ids[x]] - mean;
-          sum2 += diff * diff;
-        }
-        // ddof = 1
-        return sum2 / (n - 1);
+      reduceMethod_ = [this](const T *input_addr, const size_t *ids, size_t start, size_t end) {
+        return Var(input_addr, ids, start, end);
       };
       break;
     case Method::Std:
-      reduceMethod_ = [](const T *input_addr, const size_t *ids, size_t start, size_t end) {
-        // float for division
-        float n = end - start;
-        T sum1 = 0;
-        for (size_t x = start; x < end; ++x) {
-          sum1 += input_addr[ids[x]];
-        }
-        double mean = sum1 / n;
-        double sum2 = 0;
-        for (size_t x = start; x < end; ++x) {
-          double diff = input_addr[ids[x]] - mean;
-          sum2 += diff * diff;
-        }
-        // ddof = 1
-        return std::sqrt(sum2 / (n - 1));
+      reduceMethod_ = [this](const T *input_addr, const size_t *ids, size_t start, size_t end) {
+        return std::sqrt(Var(input_addr, ids, start, end));
       };
       break;
     default:
-      MS_LOG(EXCEPTION) << "reduce method is not yet supported: " << method_;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name_
+                        << "', the 'method' should be in (max, min, sum, mean, std, var), but got " << method_;
   }
 }
 

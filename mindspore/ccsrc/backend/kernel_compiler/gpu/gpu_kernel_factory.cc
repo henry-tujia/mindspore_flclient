@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@ GpuKernelFactory &GpuKernelFactory::GetInstance() {
 }
 
 void GpuKernelFactory::Register(const std::string &kernel_name, const KernelAttr &kernel_attr,
-                                GpuKernelCreater &&creater) {
-  map_kernel_name_to_creater_[kernel_name].emplace_back(kernel_attr, creater);
+                                GpuKernelCreater &&creator) {
+  map_kernel_name_to_creater_[kernel_name].emplace_back(kernel_attr, creator);
 }
 
 bool GpuKernelFactory::CheckIOParam(const std::string &kernel_name, const KernelBuildInfo *kernel_info,
@@ -59,15 +59,15 @@ std::string GpuKernelFactory::SupportedTypeList(const std::string &kernel_name) 
     return type_lists;
   }
   for (size_t attr_index = 0; attr_index < (iter->second).size(); ++attr_index) {
-    std::string type_list = "in[";
+    std::string type_list = "input[";
     auto attr = (iter->second)[attr_index].first;
     for (size_t input_index = 0; input_index < attr.GetInputSize(); ++input_index) {
-      type_list = type_list + TypeId2String(attr.GetInputAttr(input_index).first) +
+      type_list = type_list + TypeIdToString(attr.GetInputAttr(input_index).first) +
                   ((input_index == (attr.GetInputSize() - 1)) ? "" : " ");
     }
-    type_list = type_list + "], out[";
+    type_list = type_list + "], output[";
     for (size_t input_index = 0; input_index < attr.GetOutputSize(); ++input_index) {
-      type_list = type_list + TypeId2String(attr.GetOutputAttr(input_index).first) +
+      type_list = type_list + TypeIdToString(attr.GetOutputAttr(input_index).first) +
                   ((input_index == (attr.GetOutputSize() - 1)) ? "" : " ");
     }
     type_lists = type_lists + type_list + "]; ";
@@ -77,7 +77,9 @@ std::string GpuKernelFactory::SupportedTypeList(const std::string &kernel_name) 
 
 bool GpuKernelFactory::ReducePrecision(
   const std::string &kernel_name, std::shared_ptr<mindspore::kernel::KernelBuildInfo::KernelBuildInfoBuilder> builder) {
+  MS_EXCEPTION_IF_NULL(builder);
   auto kernel_info = builder->Build();
+  MS_EXCEPTION_IF_NULL(kernel_info);
   auto iter = map_kernel_name_to_creater_.find(kernel_name);
   if (map_kernel_name_to_creater_.end() == iter) {
     MS_LOG(INFO) << "Not registered GPU kernel: op[" << kernel_name << "]!";
@@ -138,6 +140,9 @@ std::pair<bool, size_t> GpuKernelFactory::GpuKernelAttrCheck(const std::string &
     }
     bool flag = true;
     auto attr_size = (&(iter->second))->at(attr_index).first.GetInputSize();
+    if (kernel_info->GetInputNum() > 0) {
+      MS_EXCEPTION_IF_ZERO("attr size", attr_size);
+    }
     // data type matching check of all input parameters of kernel
     for (size_t input_index = 0; input_index < kernel_info->GetInputNum(); input_index++) {
       GpuKernelFactory::CheckSM(kernel_info, input_index);
@@ -151,6 +156,9 @@ std::pair<bool, size_t> GpuKernelFactory::GpuKernelAttrCheck(const std::string &
       continue;
     }
     attr_size = (&(iter->second))->at(attr_index).first.GetOutputSize();
+    if (kernel_info->GetOutputNum() > 0) {
+      MS_EXCEPTION_IF_ZERO("attr size", attr_size);
+    }
     // data type matching check of all output parameters of kernel
     for (size_t output_index = 0; output_index < kernel_info->GetOutputNum(); output_index++) {
       if (kernel_info->GetOutputDeviceType(output_index) !=
@@ -160,7 +168,7 @@ std::pair<bool, size_t> GpuKernelFactory::GpuKernelAttrCheck(const std::string &
       }
     }
     // finish data type matching check and return a pair maintain the whether matching is success,
-    // if first is true, second is index of matching KernelAttr and creater pair in vector;
+    // if first is true, second is index of matching KernelAttr and creator pair in vector;
     if (flag) {
       size_t match_index = attr_index;
       return std::make_pair(true, match_index);

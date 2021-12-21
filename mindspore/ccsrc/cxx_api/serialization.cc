@@ -182,19 +182,19 @@ Status Serialization::Load(const std::vector<char> &file, ModelType model_type, 
       err_msg << "Load model failed. The file may be encrypted, please pass in correct key.";
       MS_LOG(ERROR) << err_msg.str();
       return Status(kMEInvalidInput, err_msg.str());
-    } else {
-      anf_graph =
-        LoadMindIR(file_path, false, dec_key.len == 0 ? nullptr : dec_key.key, dec_key.len, CharToString(dec_mode));
     }
+    MindIRLoader mindir_loader(false, dec_key.len == 0 ? nullptr : dec_key.key, dec_key.len, CharToString(dec_mode),
+                               false);
+    anf_graph = mindir_loader.LoadMindIR(file_path);
     if (anf_graph == nullptr) {
-      err_msg << "Load model failed. Please check the valid of dec_key and dec_mode";
+      err_msg << "Load model failed.";
       MS_LOG(ERROR) << err_msg.str();
       return Status(kMEInvalidInput, err_msg.str());
     }
     auto graph_data = std::make_shared<Graph::GraphData>(anf_graph, kMindIR);
 #if !defined(_WIN32) && !defined(_WIN64)
     // Config preprocessor, temporary way to let mindspore.so depends on _c_dataengine
-    std::string preprocessor = LoadPreprocess(file_path);
+    std::vector<std::string> preprocessor = mindir_loader.LoadPreprocess(file_path);
     if (!preprocessor.empty()) {
       std::string dataengine_so_path;
       Status dlret = DLSoPath(&dataengine_so_path);
@@ -204,13 +204,12 @@ Status Serialization::Load(const std::vector<char> &file, ModelType model_type, 
       void *function = nullptr;
       dlret = DLSoOpen(dataengine_so_path, "ParseMindIRPreprocess_C", &handle, &function);
       CHECK_FAIL_AND_RELEASE(dlret, handle, "Parse ParseMindIRPreprocess_C failed: " + dlret.GetErrDescription());
-
       auto ParseMindIRPreprocessFun =
-        (void (*)(const std::string &, const std::string &, std::vector<std::shared_ptr<mindspore::dataset::Execute>> *,
+        (void (*)(const std::vector<std::string> &, std::vector<std::shared_ptr<mindspore::dataset::Execute>> *,
                   Status *))(function);
 
       std::vector<std::shared_ptr<dataset::Execute>> data_graph;
-      ParseMindIRPreprocessFun(preprocessor, "image", &data_graph, &dlret);
+      ParseMindIRPreprocessFun(preprocessor, &data_graph, &dlret);
       CHECK_FAIL_AND_RELEASE(dlret, handle, "Load preprocess failed: " + dlret.GetErrDescription());
       DLSoClose(handle);
       if (!data_graph.empty()) {
@@ -268,8 +267,9 @@ Status Serialization::Load(const std::vector<std::vector<char>> &files, ModelTyp
       MS_LOG(ERROR) << err_msg.str();
       return Status(kMEInvalidInput, err_msg.str());
     }
-    auto anf_graphs =
-      LoadMindIRs(files_path, false, dec_key.len == 0 ? nullptr : dec_key.key, dec_key.len, CharToString(dec_mode));
+    MindIRLoader mindir_loader(false, dec_key.len == 0 ? nullptr : dec_key.key, dec_key.len, CharToString(dec_mode),
+                               true);
+    auto anf_graphs = mindir_loader.LoadMindIRs(files_path);
     if (anf_graphs.size() != files_path.size()) {
       err_msg << "Load model failed, " << files_path.size() << " files got " << anf_graphs.size() << " graphs.";
       MS_LOG(ERROR) << err_msg.str();
@@ -287,7 +287,7 @@ Status Serialization::Load(const std::vector<std::vector<char>> &files, ModelTyp
     CHECK_FAIL_AND_RELEASE(dlret, handle, "Parse ParseMindIRPreprocess_C failed: " + dlret.GetErrDescription());
 
     auto ParseMindIRPreprocessFun =
-      (void (*)(const std::string &, const std::string &, std::vector<std::shared_ptr<mindspore::dataset::Execute>> *,
+      (void (*)(const std::vector<std::string> &, std::vector<std::shared_ptr<mindspore::dataset::Execute>> *,
                 Status *))(function);
 #endif
     std::vector<Graph> results;
@@ -302,13 +302,12 @@ Status Serialization::Load(const std::vector<std::vector<char>> &files, ModelTyp
         return Status(kMEInvalidInput, err_msg.str());
       }
       auto graph_data = std::make_shared<Graph::GraphData>(anf_graphs[i], kMindIR);
-
 #if !defined(_WIN32) && !defined(_WIN64)
       // Config preprocessor, temporary way to let mindspore.so depends on _c_dataengine
-      std::string preprocessor = LoadPreprocess(files_path[i]);
+      std::vector<std::string> preprocessor = mindir_loader.LoadPreprocess(files_path[i]);
       if (!preprocessor.empty()) {
         std::vector<std::shared_ptr<dataset::Execute>> data_graph;
-        ParseMindIRPreprocessFun(preprocessor, "image", &data_graph, &dlret);
+        ParseMindIRPreprocessFun(preprocessor, &data_graph, &dlret);
         CHECK_FAIL_AND_RELEASE(dlret, handle, "Load preprocess failed: " + dlret.GetErrDescription());
         if (!data_graph.empty()) {
           graph_data->SetPreprocess(data_graph);
@@ -340,8 +339,8 @@ Status Serialization::ExportModel(const Model &, ModelType, Buffer *) {
   return kMEFailed;
 }
 
-Status Serialization::ExportModel(const Model &, ModelType, const std::string &, QuantizationType, bool,
-                                  std::vector<std::string> output_tensor_name) {
+Status Serialization::ExportModel(const Model &, ModelType, const std::vector<char> &, QuantizationType, bool,
+                                  const std::vector<std::vector<char>> &output_tensor_name) {
   MS_LOG(ERROR) << "Unsupported feature.";
   return kMEFailed;
 }

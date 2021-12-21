@@ -27,7 +27,7 @@ const size_t kKBToByte = 1024;
 const size_t kLineMaxSize = 1024;
 
 size_t GetSystemMemorySize(const std::string &key) {
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) || defined(_WIN64) || defined(__APPLE__)
   return SIZE_MAX;
 #else
   FILE *file = fopen("/proc/meminfo", "r");
@@ -58,9 +58,6 @@ size_t GetSystemMemorySize(const std::string &key) {
   }
   (void)fclose(file);
 
-  if (mem_size == 0) {
-    MS_LOG(EXCEPTION) << "Get system meminfo failed: " << key;
-  }
   MS_LOG(INFO) << "Get system memory(" << key << "): " << mem_size << " kB";
   return mem_size * kKBToByte;
 #endif
@@ -90,8 +87,6 @@ bool CPUMemoryPool::FreeDeviceMem(const DeviceMemPtr &addr) {
 }
 
 size_t CPUMemoryPool::free_mem_size() { return GetSystemMemorySize("MemAvailable"); }
-
-size_t CPUMemoryPool::total_mem_size() { return GetSystemMemorySize("MemTotal"); }
 }  // namespace cpu
 }  // namespace device
 }  // namespace mindspore

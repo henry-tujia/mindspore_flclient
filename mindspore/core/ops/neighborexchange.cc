@@ -48,22 +48,28 @@ void CheckAttr(const PrimitivePtr &primitive, const std::string &shape_attr_name
   ValuePtrList attr_shapes;
   try {
     auto attr = primitive->GetAttr(shape_attr_name);
+    if (attr->cast<ValueTuplePtr>() == nullptr) {
+      MS_EXCEPTION(TypeError);
+    }
     attr_shapes = GetValue<ValuePtrList>(attr);
   } catch (const std::exception &) {
-    MS_EXCEPTION(TypeError) << "Attr " << shape_attr_name << " should be a tuple(list, list, ...).";
+    MS_EXCEPTION(TypeError) << "Attr " << shape_attr_name << " must be a tuple(list, list, ...).";
   }
   if (!attr_shapes.empty()) {
-    auto ele = attr_shapes[0]->cast<ValueSequeuePtr>();
+    auto ele = attr_shapes[0]->cast<ValueSequencePtr>();
     if (ele == nullptr) {
-      MS_EXCEPTION(TypeError) << "Attr " << shape_attr_name << " must be a tuple.";
+      MS_EXCEPTION(TypeError) << "Attr " << shape_attr_name << " must be a tuple(list, list, ...).";
     }
   }
   std::vector<int64_t> attr_rank_ids;
   try {
     auto attr = primitive->GetAttr(rank_ids_attr_name);
+    if (attr->cast<ValueTuplePtr>() != nullptr) {
+      MS_EXCEPTION(TypeError);
+    }
     attr_rank_ids = GetValue<std::vector<int64_t>>(attr);
   } catch (const std::exception &) {
-    MS_EXCEPTION(TypeError) << "Attr " << rank_ids_attr_name << " should be a list[int, int, ...].";
+    MS_EXCEPTION(TypeError) << "Attr " << rank_ids_attr_name << " must be a list[int, int, ...].";
   }
   if (attr_shapes.size() != attr_rank_ids.size()) {
     MS_EXCEPTION(ValueError) << "Invalid " << primitive->name() << " attr " << shape_attr_name << " size "
@@ -93,13 +99,17 @@ void Check(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &in
   }
   // check empty input
   auto send_rank_ids = GetValue<std::vector<int64_t>>(primitive->GetAttr(kSendRankIds));
+  const int64_t input_num = 0;
   if (send_rank_ids.empty()) {
-    (void)CheckAndConvertUtils::CheckInteger("input_numbers", input_args.size(), kEqual, 0, prim_name);
+    (void)CheckAndConvertUtils::CheckInteger("input_numbers", SizeToLong(input_args.size()), kEqual, input_num,
+                                             prim_name);
     return;
   }
   // check input shape & attr send shape
-  (void)CheckAndConvertUtils::CheckInteger("input_numbers", input_args.size(), kEqual, 1, prim_name);
-  (void)CheckAndConvertUtils::CheckArgs<abstract::AbstractTuple>(prim_name, input_args, 0);
+  const int64_t input_num_ = 1;
+  (void)CheckAndConvertUtils::CheckInteger("input_numbers", SizeToLong(input_args.size()), kEqual, input_num_,
+                                           prim_name);
+  (void)CheckAndConvertUtils::CheckArgs<abstract::AbstractTuple>(prim_name, input_args, input_num);
   auto abstract_tuple = input_args[0]->cast<abstract::AbstractTuplePtr>();
   MS_EXCEPTION_IF_NULL(abstract_tuple);
   auto abstract_element = abstract_tuple->elements();
@@ -111,7 +121,7 @@ void Check(const PrimitivePtr &primitive, const std::vector<AbstractBasePtr> &in
   for (size_t i = 0; i < abstract_element.size(); ++i) {
     // get attr shape
     MS_EXCEPTION_IF_NULL(send_shapes[i]);
-    auto send_shape_value = send_shapes[i]->cast<ValueSequeuePtr>();
+    auto send_shape_value = send_shapes[i]->cast<ValueSequencePtr>();
     MS_EXCEPTION_IF_NULL(send_shape_value);
     std::vector<int64_t> send_shape = GetValue<std::vector<int64_t>>(send_shape_value);
     // get input tensor shape
@@ -135,12 +145,12 @@ abstract::BaseShapePtr InferShape(const PrimitivePtr &primitive) {
   MS_EXCEPTION_IF_NULL(primitive);
   auto recv_shapes = primitive->GetAttr(kRecvShapes);
   MS_EXCEPTION_IF_NULL(recv_shapes);
-  auto shapes_seq = recv_shapes->cast<ValueSequeuePtr>();
+  auto shapes_seq = recv_shapes->cast<ValueSequencePtr>();
   MS_EXCEPTION_IF_NULL(shapes_seq);
   auto shapes_value = shapes_seq->value();
   abstract::BaseShapePtrList base_shape_list;
   for (auto &value : shapes_value) {
-    auto each_shape_value = value->cast<ValueSequeuePtr>();
+    auto each_shape_value = value->cast<ValueSequencePtr>();
     MS_EXCEPTION_IF_NULL(each_shape_value);
     std::vector<int64_t> each_shape = GetValue<std::vector<int64_t>>(each_shape_value);
     BaseShapePtr base_shape = std::make_shared<abstract::Shape>(each_shape);
@@ -157,7 +167,7 @@ TypePtr InferType(const PrimitivePtr &primitive) {
   MS_EXCEPTION_IF_NULL(primitive);
   auto recv_shapes = primitive->GetAttr(kRecvShapes);
   MS_EXCEPTION_IF_NULL(recv_shapes);
-  auto shapes_seq = recv_shapes->cast<ValueSequeuePtr>();
+  auto shapes_seq = recv_shapes->cast<ValueSequencePtr>();
   MS_EXCEPTION_IF_NULL(shapes_seq);
   auto shapes_value = shapes_seq->value();
   auto out_num = shapes_value.size();

@@ -19,16 +19,14 @@
 #include <memory>
 #include <vector>
 #include <list>
-#include <unordered_map>
-#include <unordered_set>
 #include <stack>
 #include <string>
+#include "utils/hash_map.h"
+#include "utils/hash_set.h"
 #include "backend/optimizer/graph_kernel/model/node.h"
 #include "backend/optimizer/graph_kernel/model/op_node.h"
 
-namespace mindspore {
-namespace opt {
-namespace graphkernel {
+namespace mindspore::graphkernel::inner {
 class LiteGraph {
  public:
   class GraphBuilder;
@@ -86,7 +84,5 @@ class LiteGraph::GraphBuilder {
 
   LiteGraphPtr graph_;
 };
-}  // namespace graphkernel
-}  // namespace opt
-}  // namespace mindspore
+}  // namespace mindspore::graphkernel::inner
 #endif

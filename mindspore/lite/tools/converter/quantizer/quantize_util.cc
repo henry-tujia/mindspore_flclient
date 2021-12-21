@@ -17,16 +17,11 @@
 #include "mindspore/lite/tools/converter/quantizer/quantize_util.h"
 #include <cmath>
 #include <string>
-#include <map>
-#include <fstream>
-#include <algorithm>
 #include <memory>
 #include <vector>
 #include <set>
 #include <functional>
 #include "include/version.h"
-#include "ops/fusion/conv2d_fusion.h"
-#include "ops/fusion/conv2d_transpose_fusion.h"
 #include "ops/fusion/full_connection.h"
 #include "ops/mat_mul.h"
 #include "tools/converter/ops/ops_def.h"
@@ -43,203 +38,12 @@ using std::string;
 using std::vector;
 
 namespace mindspore::lite::quant {
-const std::vector<std::string> QuantStrategy::conv_types_ = {ops::kNameConv2DFusion, ops::kNameConv2dTransposeFusion};
-const std::vector<std::string> QuantStrategy::mul_types_ = {ops::kNameMatMul, ops::kNameFullConnection};
-constexpr int kDim2 = 2;
-constexpr int kDim4 = 4;
-
 const int kLstmInputWeightIndex = 1;
 const int kLstmStateWeightIndex = 2;
 const int kLstmWeightShapeSize = 3;
 const int kSingleDirBiasTensorSize = 4;
 const int kLstmBiasShapeSize = 2;
 const int kLstmBiasIndex = 3;
-
-QuantStrategy::QuantStrategy(size_t weight_size, size_t conv_weight_quant_channel_threshold)
-    : m_weight_size_(weight_size), m_conv_weight_quant_channel_threshold_(conv_weight_quant_channel_threshold) {}
-
-bool QuantStrategy::CanConvOpQuantized(const CNodePtr &node) const {
-  MS_CHECK_TRUE_RET(node != nullptr, false);
-  auto primitive_c = GetValueNode<std::shared_ptr<ops::PrimitiveC>>(node->input(0));
-  if (primitive_c == nullptr) {
-    MS_LOG(ERROR) << "primitive_c is nullptr";
-    return false;
-  }
-  if (!IsContain(conv_types_, primitive_c->name())) {
-    return false;
-  }
-  if (node->size() < 3) {
-    return false;
-  }
-  auto inputNode = node->input(2);
-  if (!inputNode->isa<Parameter>()) {
-    return false;
-  }
-  auto paramNode = inputNode->cast<ParameterPtr>();
-  MS_ASSERT(paramNode != nullptr);
-  auto abstract_base = paramNode->abstract();
-  if (abstract_base == nullptr) {
-    return false;
-  }
-  if (!utils::isa<abstract::ShapePtr>(abstract_base->GetShapeTrack())) {
-    MS_LOG(INFO) << "Shape of Abstract of parameter should be ShapePtr " << paramNode->name();
-    return false;
-  }
-  auto weight_shape = utils::cast<abstract::ShapePtr>(abstract_base->GetShapeTrack())->shape();
-  size_t shapeSize = std::accumulate(weight_shape.begin(), weight_shape.end(), 1, std::multiplies<int>());
-  if (shapeSize < m_weight_size_) {
-    MS_LOG(INFO) << "shapeSize Invalid!" << shapeSize;
-    return false;
-  }
-  if (weight_shape[0] <= static_cast<int>(m_conv_weight_quant_channel_threshold_)) {
-    MS_LOG(INFO) << "channel less m_conv_weight_quant_channel_threshold_!" << weight_shape[0];
-    return false;
-  }
-  return true;
-}
-
-bool QuantStrategy::CanOpFullQuantized(const AnfNodePtr &node) {
-  MS_CHECK_TRUE_RET(node != nullptr, false);
-  if (!node->isa<mindspore::CNode>()) {
-    return false;
-  }
-  const auto cnode = std::dynamic_pointer_cast<mindspore::CNode>(node);
-  MS_ASSERT(cnode != nullptr);
-  auto type = NodePrimitiveType(cnode);
-  static const std::set<PrimitivePtr> support_int8_ops = {prim::kPrimAddFusion,      prim::kPrimActivation,
-                                                          prim::kPrimAvgPoolFusion,  prim::kPrimConcat,
-                                                          prim::kPrimConv2DFusion,   prim::kPrimConv2dTransposeFusion,
-                                                          prim::kPrimCrop,           prim::kPrimFullConnection,
-                                                          prim::kPrimGather,         prim::kPrimLayerNormFusion,
-                                                          prim::kPrimMatMul,         prim::kPrimMaxPoolFusion,
-                                                          prim::kPrimMulFusion,      prim::kPrimReshape,
-                                                          prim::kPrimSplit,          prim::kPrimTranspose,
-                                                          prim::kPrimReduceFusion,   prim::kPrimDivFusion,
-                                                          prim::kPrimSqrt,           prim::kPrimPowFusion,
-                                                          prim::kPrimSubFusion,      prim::kPrimUnsqueeze,
-                                                          prim::kPrimLayerNormFusion};
-  // The return node does not need to be quantified.
-  if (opt::CheckPrimitiveType(cnode, prim::kPrimReturn) || opt::CheckPrimitiveType(cnode, prim::kPrimMakeTuple)) {
-    return false;
-  }
-  // These operators do not need to check the data type.
-  if (opt::CheckPrimitiveType(cnode, prim::kPrimShape) || opt::CheckPrimitiveType(cnode, prim::kPrimTupleGetItem)) {
-    return true;
-  }
-  auto is_support_node = CheckNodeInSet(cnode, support_int8_ops);
-  if (!is_support_node && type != "Eltwise") {
-    MS_LOG(WARNING) << "node:" << cnode->fullname_with_scope() << " type:" << type << " is not support quantization.";
-    return false;
-  }
-  TypeId type_id;
-  auto ret = opt::GetDataTypeFromAnfNode(cnode, &type_id);
-  if (ret != RET_OK) {
-    MS_LOG(ERROR) << "Fetch DataType from cnode failed.";
-    return ret;
-  }
-
-  bool is_data_type_fp32 = type_id == kNumberTypeFloat32;
-  if (!is_data_type_fp32) {
-    MS_LOG(INFO) << cnode->fullname_with_scope() << "  type_id is " << type_id << " , and is not float32.";
-  }
-  return is_data_type_fp32;
-}
-
-bool QuantStrategy::CanMulOpQuantized(const CNodePtr &node) const {
-  MS_CHECK_TRUE_RET(node != nullptr, false);
-  auto primitive_c = GetValueNode<std::shared_ptr<ops::PrimitiveC>>(node->input(0));
-  if (primitive_c == nullptr) {
-    MS_LOG(ERROR) << "primitive_c is nullptr";
-    return false;
-  }
-
-  if (!IsContain(mul_types_, primitive_c->name())) {
-    return false;
-  }
-
-  if (node->size() < 3) {
-    MS_LOG(INFO) << node->fullname_with_scope() << " input size less!";
-    return false;
-  }
-
-  auto inputNode1 = node->input(1);
-  auto inputNode2 = node->input(2);
-  if (inputNode1 == nullptr || inputNode2 == nullptr) {
-    MS_LOG(INFO) << node->fullname_with_scope() << " mul input is nullptr!";
-    return false;
-  }
-
-  ParameterPtr paramNode = nullptr;
-  if (inputNode1->isa<Parameter>()) {
-    paramNode = inputNode1->cast<ParameterPtr>();
-  } else if (inputNode2->isa<Parameter>()) {
-    paramNode = inputNode2->cast<ParameterPtr>();
-  }
-  if (paramNode == nullptr) {
-    MS_LOG(INFO) << node->fullname_with_scope() << " invalid paramNode!";
-    return false;
-  }
-
-  auto abstract_base = paramNode->abstract();
-  if (abstract_base == nullptr) {
-    MS_LOG(INFO) << "abstract is nullptr";
-    return false;
-  }
-
-  if (!utils::isa<abstract::ShapePtr>(abstract_base->GetShapeTrack())) {
-    MS_LOG(INFO) << "Shape of Abstract of parameter should be ShapePtr " << paramNode->name();
-    return false;
-  }
-  auto weight_shape = utils::cast<abstract::ShapePtr>(abstract_base->GetShapeTrack())->shape();
-  size_t shapeSize = std::accumulate(weight_shape.begin(), weight_shape.end(), 1, std::multiplies<int>());
-  if (shapeSize < m_weight_size_) {
-    MS_LOG(INFO) << "shapeSize Invalid!" << shapeSize;
-    return false;
-  }
-  return true;
-}
-
-bool QuantStrategy::CanTensorQuantized(const AnfNodePtr &inputNode) const {
-  if (inputNode == nullptr) {
-    MS_LOG(INFO) << "CanTensorQuantized input is nullptr!";
-    return false;
-  }
-  ParameterPtr paramNode = nullptr;
-  if (inputNode->isa<Parameter>()) {
-    paramNode = inputNode->cast<ParameterPtr>();
-  }
-  if (paramNode == nullptr) {
-    MS_LOG(INFO) << "CanTensorQuantized invalid paramNode!";
-    return false;
-  }
-  auto abstract_base = paramNode->abstract();
-  if (abstract_base == nullptr) {
-    MS_LOG(INFO) << "abstract is nullptr";
-    return false;
-  }
-  if (!utils::isa<abstract::ShapePtr>(abstract_base->GetShapeTrack())) {
-    MS_LOG(INFO) << "Shape of Abstract of parameter should be ShapePtr " << paramNode->name();
-    return false;
-  }
-  auto weight_shape = utils::cast<abstract::ShapePtr>(abstract_base->GetShapeTrack())->shape();
-  MS_ASSERT(weight_shape != nullptr);
-  if (weight_shape.size() < kDim2) {  // do not quant single dim tensors
-    return false;
-  }
-  size_t shapeSize = std::accumulate(weight_shape.begin(), weight_shape.end(), 1, std::multiplies<int>());
-  if (shapeSize < m_weight_size_) {
-    MS_LOG(INFO) << "shapeSize Invalid!" << shapeSize;
-    return false;
-  }
-  if (weight_shape.size() == kDim4) {  // assume Convolution
-    if (weight_shape[0] <= static_cast<int>(m_conv_weight_quant_channel_threshold_)) {
-      MS_LOG(INFO) << "channel less m_conv_weight_quant_channel_threshold_!" << weight_shape[0];
-      return false;
-    }
-  }
-
-  return true;
-}
 
 QuantParamHolderPtr GetCNodeQuantHolder(const PrimitivePtr &primitive) {
   MS_CHECK_TRUE_RET(primitive != nullptr, nullptr);
@@ -271,79 +75,6 @@ bool TensorQuantParamsInited(const schema::TensorT &tensor) {
     }
   }
   return true;
-}
-
-STATUS CalQuantizationParams(schema::QuantParamT *quantParam, double mMin, double mMax, bool narrowRange, int numBits) {
-  MS_ASSERT(quantParam != nullptr);
-  if (mMin > 0.0f) {
-    MS_LOG(DEBUG) << "min " << mMin << " is bigger then 0, set to 0, this may course low precision";
-    mMin = 0.0f;
-  }
-  if (mMax < 0.0f) {
-    MS_LOG(DEBUG) << "mMax " << mMax << " is smaller than 0, set to 0, this may course low precision";
-    mMax = 0.0f;
-  }
-  if (mMin > mMax) {
-    MS_LOG(ERROR) << "cal error while min" << mMin << ">" << mMax;
-    return RET_PARAM_INVALID;
-  }
-  if (mMin == mMax) {
-    if (mMin != 0.0f) {
-      MS_LOG(ERROR) << "min and max should both be zero if they are equal to each other";
-      return RET_ERROR;
-    }
-    quantParam->inited = true;
-    quantParam->min = mMin;
-    quantParam->max = mMax;
-    quantParam->scale = 0.0f;
-    quantParam->zeroPoint = 0;
-    quantParam->narrowRange = narrowRange;
-    quantParam->numBits = numBits;
-    return RET_OK;
-  }
-
-  const int8_t quantMax = (1 << (unsigned int)(numBits - 1)) - 1;
-  const int8_t quantMin = -1 * (1 << (unsigned int)(numBits - 1)) + (narrowRange ? 1 : 0);
-  auto quantMinFloat = static_cast<double>(quantMin);
-  auto quantMaxFloat = static_cast<double>(quantMax);
-  if (fabs(quantMaxFloat - quantMinFloat) <= 0.0f) {
-    MS_LOG(ERROR) << "divisor cannot be 0";
-    return RET_ERROR;
-  }
-  double scale = (mMax - mMin) / (quantMaxFloat - quantMinFloat);
-  if (fabs(scale) <= 0.0f) {
-    MS_LOG(ERROR) << "divisor 'scale' cannot be 0";
-    return RET_ERROR;
-  }
-  const double zeroPointFromMin = quantMinFloat - mMin / scale;
-  const double zeroPointFromMax = quantMaxFloat - mMax / scale;
-  const double zpFromMinError = std::abs(quantMinFloat) + std::abs(mMin / scale);
-  const double zpFromMaxError = std::abs(quantMaxFloat) + std::abs(mMax / scale);
-  const double zpDouble = zpFromMinError < zpFromMaxError ? zeroPointFromMin : zeroPointFromMax;
-  int zeroPoint;
-  if (zpDouble < quantMinFloat) {
-    zeroPoint = quantMin;
-  } else if (zpDouble > quantMaxFloat) {
-    zeroPoint = quantMax;
-  } else {
-    zeroPoint = static_cast<int32_t>(std::round(zpDouble));
-  }
-  if (std::abs(mMin) == std::abs(mMax)) {
-    zeroPoint = 0;
-  }
-  // The zero point should always be in the range of quantized value,
-  // [qmin, qmax].
-  MS_ASSERT(zeroPoint >= quantMin);
-  MS_ASSERT(zeroPoint <= quantMax);
-  quantParam->inited = true;
-  quantParam->min = mMin;
-  quantParam->max = mMax;
-  quantParam->scale = scale;
-  quantParam->zeroPoint = zeroPoint;
-  quantParam->narrowRange = narrowRange;
-  quantParam->numBits = numBits;
-
-  return RET_OK;
 }
 
 static bool SearchLowerBound(const std::vector<float> &data, const size_t &index, const float &max_tmp, float *min_tmp,
@@ -522,7 +253,8 @@ std::string NodePrimitiveType(const CNodePtr &cnode) {
   return primitive_c->name();
 }
 
-SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const converter::Flags &flags, int thread_num) {
+SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const converter::Flags &flags, int thread_num,
+                                      int *size) {
   SessionModel sm;
   auto meta_graph = Export(func_graph, true, true);
   if (meta_graph == nullptr) {
@@ -544,24 +276,27 @@ SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const conv
   auto offset = schema::MetaGraph::Pack(builder, meta_graph);
   builder.Finish(offset);
   schema::FinishMetaGraphBuffer(builder, offset);
-  auto size = builder.GetSize();
+  *size = builder.GetSize();
   auto *content = reinterpret_cast<const char *>(builder.GetBufferPointer());
   if (content == nullptr) {
     MS_LOG(ERROR) << "GetBufferPointer return null";
     return sm;
   }
-  auto model = lite::Model::Import(content, size);
+  auto model = lite::Model::Import(content, *size);
   if (model == nullptr) {
     MS_LOG(ERROR) << "Import model failed";
     return sm;
   }
   Context ctx;
   ctx.thread_num_ = thread_num;
+  MS_ASSERT(!ctx.device_list_.empty());
+  ctx.device_list_.front().device_info_.cpu_device_info_.cpu_bind_mode_ = HIGHER_CPU;
   auto session = session::LiteSession::CreateSession(&ctx);
   if (session == nullptr) {
     MS_LOG(ERROR) << "create session failed.";
     model->Free();
     delete meta_graph;
+    delete model;
     return sm;
   }
 
@@ -571,61 +306,18 @@ SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const conv
     model->Free();
     delete meta_graph;
     delete session;
+    delete model;
     return sm;
   }
-  model->Free();
   delete meta_graph;
   sm.session = session;
   sm.model = model;
   return sm;
 }
 
-FuncGraphPtr CopyFuncGraph(const FuncGraphPtr &func_graph) {
-  MS_CHECK_TRUE_RET(func_graph != nullptr, nullptr);
-  Cloner cloner({func_graph}, true, true, true, std::make_shared<TraceCopy>(), nullptr);
-  auto new_func_graph = cloner[func_graph];
-
-  std::map<std::string, CNodePtr> old_cnode_map;
-  for (const auto &cnode : func_graph->GetOrderedCnodes()) {
-    old_cnode_map[cnode->fullname_with_scope()] = cnode;
-  }
-
-  for (auto &cnode : new_func_graph->GetOrderedCnodes()) {
-    auto cnode_name = cnode->fullname_with_scope();
-    auto old_cnode_iter = old_cnode_map.find(cnode_name);
-    if (old_cnode_iter == old_cnode_map.end()) {
-      MS_LOG(ERROR) << "can not find node: " << cnode_name;
-      return nullptr;
-    }
-    auto old_cnode = old_cnode_iter->second;
-    auto inputs = cnode->inputs();
-    for (const auto &input_node : inputs) {
-      if (input_node->isa<Parameter>()) {
-        auto param_node = input_node->cast<ParameterPtr>();
-        if (!param_node->has_default()) {
-          MS_LOG(ERROR) << "Param node has no default parameter: " << cnode_name;
-          return nullptr;
-        }
-        auto old_tensor_info = std::static_pointer_cast<tensor::Tensor>(param_node->default_param());
-        if (old_tensor_info == nullptr) {
-          MS_LOG(ERROR) << "Default param of param node is not a tensor info:" << cnode_name;
-          return nullptr;
-        }
-        auto new_tensor_info = lite::CreateTensorInfo(old_tensor_info->data().data(), old_tensor_info->data().nbytes(),
-                                                      old_tensor_info->shape(), old_tensor_info->data_type());
-        if (new_tensor_info == nullptr) {
-          MS_LOG(ERROR) << "Create tensor info failed";
-          return nullptr;
-        }
-        auto status = lite::InitParameterFromTensorInfo(param_node, new_tensor_info);
-        if (status != RET_OK) {
-          MS_LOG(ERROR) << "init parameter from tensor info failed";
-          return nullptr;
-        }
-      }
-    }  // end inputs loop
-  }    // end cnodes loop
-  return new_func_graph;
+SessionModel CreateSessionByFuncGraph(const FuncGraphPtr &func_graph, const converter::Flags &flags, int thread_num) {
+  int size = 0;
+  return CreateSessionByFuncGraph(func_graph, flags, thread_num, &size);
 }
 
 void GetLiteParameter(const AnfNodePtr &node, ParameterPtr *param_node, tensor::TensorPtr *tensor_info) {
@@ -652,7 +344,8 @@ void GetLiteParameter(const AnfNodePtr &node, ParameterPtr *param_node, tensor::
   }
 }
 
-STATUS UpdateTensorDataAndSize(const tensor::TensorPtr &weight, void *quant_datas, int new_size, TypeId new_data_type) {
+int UpdateTensorDataAndSize(const AnfNodePtr &node, const tensor::TensorPtr &weight, void *quant_datas, int new_size,
+                            TypeId new_data_type) {
   MS_CHECK_TRUE_RET(weight != nullptr, RET_NULL_PTR);
   MS_CHECK_TRUE_RET(new_size > 0, RET_NULL_PTR);
   weight->set_data_type(new_data_type);
@@ -664,10 +357,48 @@ STATUS UpdateTensorDataAndSize(const tensor::TensorPtr &weight, void *quant_data
     MS_LOG(ERROR) << "memcpy data failed.";
     return RET_ERROR;
   }
+  // set dtype
+  auto abstract_base = node->abstract();
+  if (abstract_base == nullptr) {
+    MS_LOG(ERROR) << "Abstract of node is nullptr, " << node->fullname_with_scope();
+    return RET_NULL_PTR;
+  }
+  if (!utils::isa<abstract::AbstractTensorPtr>(abstract_base)) {
+    MS_LOG(ERROR) << "Abstract of node should be anstract tensor, " << node->fullname_with_scope();
+    return RET_ERROR;
+  }
+  auto abstract_tensor = utils::cast<abstract::AbstractTensorPtr>(abstract_base);
+  CHECK_NULL_RETURN(abstract_tensor);
+  CHECK_NULL_RETURN(abstract_tensor->element());
+  abstract_tensor->element()->set_type(TypeIdToType(new_data_type));
   return RET_OK;
 }
 
-int CalChannels(const ShapeVector &dims, int channel_cnt, bool *channel_at_first) {
+int GetMatMulPreferredDim(const PrimitivePtr &primitive, int input_index, const std::vector<int> &dims) {
+  size_t last_first_index = dims.size() - 1;
+  size_t last_second_index = dims.size() - 2;
+  auto matmul_prim = primitive->cast<std::shared_ptr<ops::MatMul>>();
+  MS_ASSERT(matmul_prim != nullptr);
+  // For MatMul A
+  if (input_index == 0) {
+    if (matmul_prim->GetAttr(ops::kTransposeA) != nullptr && matmul_prim->get_transpose_a()) {
+      return last_first_index;
+    } else {
+      return last_second_index;
+    }
+  }
+  // For MatMul B
+  if (input_index == 1) {
+    if (matmul_prim->GetAttr(ops::kTransposeB) != nullptr && matmul_prim->get_transpose_b()) {
+      return last_second_index;
+    } else {
+      return last_first_index;
+    }
+  }
+  return 0;
+}
+
+int CalChannels(const std::vector<int> &dims, int channel_cnt, bool *channel_at_first) {
   auto channels = dims[0];
   if (!(*channel_at_first)) {
     if (dims.size() != 2) {
@@ -682,38 +413,25 @@ int CalChannels(const ShapeVector &dims, int channel_cnt, bool *channel_at_first
   return channels;
 }
 
-void CalQuantAssitInfo(const PrimitivePtr &primitive, const ShapeVector &shapes, int index, bool *channel_at_first,
-                       int *channel_cnt) {
-  MS_ASSERT(primitive != nullptr);
-  if (shapes.empty()) {
-    MS_LOG(ERROR) << " shape vector is empty.";
-    return;
+int GetPreferredDim(const PrimitivePtr &primitive, int input_index, const std::vector<int> &dims) {
+  if (primitive->name() == ops::kNameMatMul) {
+    return GetMatMulPreferredDim(primitive, input_index, dims);
   }
-  if (primitive->name() == ops::kNameMatMul && static_cast<int>(shapes.size()) == 2) {
-    auto matmul_prim = primitive->cast<std::shared_ptr<ops::MatMul>>();
-    MS_ASSERT(matmul_prim != nullptr);
-    *channel_at_first =
-      index != 1 || (matmul_prim->GetAttr(ops::kTransposeB) != nullptr && matmul_prim->get_transpose_b());
-  } else if (primitive->name() == ops::kNameLSTM) {
-    if (index == kLstmInputWeightIndex || index == kLstmStateWeightIndex) {
-      if (shapes.size() != kLstmWeightShapeSize) {
-        MS_LOG(WARNING) << "unexpected lstm shape size: " << shapes.size();
-      } else {
-        *channel_cnt = shapes[0] * shapes[1];
-      }
-    } else if (index == kLstmBiasIndex) {
-      if (shapes.size() != kLstmBiasShapeSize) {
-        MS_LOG(WARNING) << "unexpected lstm shape size: " << shapes.size();
-      } else {
-        auto tensor_elem_cnt = shapes[0] * shapes[1];
-        if (tensor_elem_cnt % kSingleDirBiasTensorSize == 0) {
-          *channel_cnt = kSingleDirBiasTensorSize;
-        }
-      }
+  // The first index.
+  return 0;
+}
+
+std::vector<int> ConvertShapeVectorToInt32(const ShapeVector &dims) {
+  std::vector<int> shape;
+  for (auto dim : dims) {
+    if (dim > INT32_MAX || dim < INT32_MIN) {
+      MS_LOG(ERROR) << dim << " over int32 range.";
+      shape.push_back(-1);
     } else {
-      MS_LOG(WARNING) << "unexpected index of lstm: " << index;
+      shape.push_back(dim);
     }
   }
+  return shape;
 }
 
 void CalQuantAssitInfo(const schema::PrimitiveT &primitive, const std::vector<int> &shapes, int index,
@@ -723,7 +441,7 @@ void CalQuantAssitInfo(const schema::PrimitiveT &primitive, const std::vector<in
     MS_LOG(ERROR) << " shape vector is empty.";
     return;
   }
-  if (primitive.value.type == schema::PrimitiveType_MatMul && static_cast<int>(shapes.size()) == kDim2) {
+  if (primitive.value.type == schema::PrimitiveType_MatMul && static_cast<int>(shapes.size()) == DIMENSION_2D) {
     auto matmul_prim = primitive.value.AsMatMul();
     MS_ASSERT(matmul_prim != nullptr);
     *channel_at_first = index != 1 || matmul_prim->transpose_b;
@@ -749,8 +467,9 @@ void CalQuantAssitInfo(const schema::PrimitiveT &primitive, const std::vector<in
   }
 }
 
-STATUS MixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &primitive, QuantType quant_type,
-                           WeightQuantType weight_quant_type, TypeId quant_data_type, double init_scale, int index) {
+int MixedBitQuantFilter(const AnfNodePtr &node, const tensor::TensorPtr &weight, const PrimitivePtr &primitive,
+                        QuantType quant_type, WeightQuantType weight_quant_type, TypeId quant_data_type,
+                        double init_scale, int index) {
   MS_CHECK_TRUE_RET(primitive != nullptr, RET_NULL_PTR);
   MS_CHECK_TRUE_RET(weight != nullptr, RET_NULL_PTR);
   auto dims = weight->shape();
@@ -769,15 +488,28 @@ STATUS MixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
   }
 
   std::vector<int16_t> quant_data(elem_count);
-  int ret = RET_OK;
-  if (weight_quant_type == MIXED_BIT_PER_LAYER) {
-    MixedBitWeightQuantizer quantizer(init_scale);
-    quantizer.DoQuantization(static_cast<float *>(weight->data_c()), weight->shape_c(), 0, &quant_params, &quant_data);
-  } else {
+  if (weight_quant_type != MIXED_BIT_PER_LAYER) {
     MS_LOG(ERROR) << "Unsupported weight quant type:" << weight_quant_type;
+    return RET_ERROR;
   }
+  MixedBitWeightQuantizer quantizer(init_scale);
+  auto ret =
+    quantizer.DoQuantization(static_cast<float *>(weight->data_c()), weight->shape_c(), 0, &quant_params, &quant_data);
+  if (ret == RET_NO_CHANGE) {
+    const int quant_min = QuantMin(k8Bit, false, false);  // -128
+    const int quant_max = QuantMax(k8Bit);                // 127
+    MS_LOG(WARNING)
+      << node->fullname_with_scope()
+      << " mixed bit quantization search failed, the current layer rolls back to 8 bit fixed quantization.";
+    return FixedBitQuantFilter<int8_t>(node, weight, primitive, QuantType_QUANT_WEIGHT, quant_max, quant_min, k8Bit,
+                                       FIXED_BIT_PER_CHANNEL, kNumberTypeInt8, index);
+  }
+  if (ret != RET_OK) {
+    return ret;
+  }
+
   auto status =
-    UpdateTensorDataAndSize(weight, quant_data.data(), quant_data.size() * sizeof(int16_t), quant_data_type);
+    UpdateTensorDataAndSize(node, weight, quant_data.data(), quant_data.size() * sizeof(int16_t), quant_data_type);
   if (status != RET_OK) {
     MS_LOG(ERROR) << "UpdateTensorDataAndSize error";
     return RET_ERROR;
@@ -789,8 +521,10 @@ STATUS MixedBitQuantFilter(const tensor::TensorPtr &weight, const PrimitivePtr &
   }
   auto quant_param_holder = GetCNodeQuantHolder(primitive);
   quant_param_holder->set_input_quant_param(index, quant_params);
+  quant_param_holder->set_quant_type(quant_type);
   return ret;
 }
+
 bool CheckNodeInSet(const CNodePtr &cnode, const std::set<PrimitivePtr> &support_primitive_types) {
   for (const auto &type : support_primitive_types) {
     if (opt::CheckPrimitiveType(cnode, type)) {

@@ -22,6 +22,7 @@
 #include <utility>
 #include <unordered_map>
 #include "fl/server/common.h"
+#include "fl/server/cert_verify.h"
 #include "fl/server/kernel/round/round_kernel.h"
 
 namespace mindspore {

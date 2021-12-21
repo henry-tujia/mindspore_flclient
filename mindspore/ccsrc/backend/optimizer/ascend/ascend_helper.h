@@ -25,6 +25,7 @@
 #include "backend/kernel_compiler/oplib/oplib.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/kernel_compiler/tbe/tbe_dynaminc_shape_util.h"
+#include "backend/kernel_compiler/tbe/tbe_kernel_select/tbe_kernel_select.h"
 
 namespace mindspore {
 namespace opt {
@@ -73,6 +74,17 @@ class KernelQuery {
 };
 using KernelQueryPtr = std::shared_ptr<KernelQuery>;
 
+class TbeKernelQuery {
+ public:
+  TbeKernelQuery() = default;
+  virtual ~TbeKernelQuery() = default;
+  virtual void GetTbeKernelMetaInfo(const CNodePtr &kernel_node,
+                                    std::vector<std::shared_ptr<kernel::KernelBuildInfo>> *kernel_info_list) {
+    kernel::TbeMetadataInfo(kernel_node, kernel_info_list);
+  }
+};
+using TbeKernelQueryPtr = std::shared_ptr<TbeKernelQuery>;
+
 class OpFinder {
  public:
   OpFinder() = default;
@@ -88,15 +100,15 @@ class OpFinder {
 using OpFinderPtr = std::shared_ptr<OpFinder>;
 
 void RefreshKernelBuildInfo(const std::string &input_format, const std::string &output_format,
-                            const AnfNodePtr &trans_data, const std::string &reshape_type = {""},
+                            const AnfNodePtr &trans_node, const std::string &reshape_type = {""},
                             const TypeId &type_id = kTypeUnknown);
 
-CNodePtr NewTransOpNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const KernelSelectPtr &kernel_select,
-                        const bool need_padding, const std::string &op_name,
+CNodePtr NewTransOpNode(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const AnfNodePtr &orig_node,
+                        const KernelSelectPtr &kernel_select, const bool need_padding, const std::string &op_name,
                         const std::vector<int64_t> &perm = std::vector<int64_t>{});
 
-CNodePtr AddCastOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const std::string &format,
-                              const TypeId &input_type, const TypeId &output_type,
+CNodePtr AddCastOpNodeToGraph(const FuncGraphPtr &func_graph, const AnfNodePtr &input, const AnfNodePtr &orig_node,
+                              const std::string &format, const TypeId &input_type, const TypeId &output_type,
                               const abstract::BaseShapePtr &origin_shape, const TypeId &origin_type,
                               const std::string &reshape_type = std::string{});
 

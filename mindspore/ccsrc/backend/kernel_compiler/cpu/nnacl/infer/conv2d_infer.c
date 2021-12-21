@@ -66,6 +66,31 @@ int ConvInferShape(int input_h, int input_w, int *output_h, int *output_w, ConvP
   return NNACL_OK;
 }
 
+int CheckConvAttr(const int input_c, const TensorC *weight_tensor, const ConvParameter *param) {
+  // common conv: input_c == weight_tensor->shape_[3]
+  // conv depthwise: input_c == 1
+  // group conv: input_c / group == weight_tensor->shape_[3]
+  MS_CHECK_FALSE(param->group_ == 0, NNACL_PARAM_INVALID);
+  if (input_c != weight_tensor->shape_[3] && input_c != 1 && (input_c / param->group_) != weight_tensor->shape_[3]) {
+    return NNACL_PARAM_INVALID;
+  }
+
+  // common conv: group == 1
+  // conv depthwise: group == input_c == output_c
+  // group conv: group == input_c / weight_tensor->shape_[3]
+  MS_CHECK_FALSE(weight_tensor->shape_[3] == 0, NNACL_PARAM_INVALID);
+  if (param->group_ != 1 && param->group_ != input_c && param->group_ != (input_c / weight_tensor->shape_[3])) {
+    return NNACL_PARAM_INVALID;
+  }
+  if (param->stride_h_ <= 0 || param->stride_w_ <= 0) {
+    return NNACL_PARAM_INVALID;
+  }
+
+  MS_CHECK_TRUE_RET(param->kernel_h_ == weight_tensor->shape_[1], NNACL_PARAM_INVALID);
+  MS_CHECK_TRUE_RET(param->kernel_w_ == weight_tensor->shape_[2], NNACL_PARAM_INVALID);
+  return NNACL_OK;
+}
+
 int Conv2dInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC **outputs, size_t outputs_size,
                      OpParameter *parameter) {
   int check_ret = CheckAugmentNullSizeInputTwo(inputs, inputs_size, outputs, outputs_size, parameter, 2, 3, 1);
@@ -79,8 +104,9 @@ int Conv2dInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC *
   }
   const TensorC *weight_tensor = inputs[1];
   TensorC *out_tensor = outputs[0];
-
-  out_tensor->format_ = input_tensor->format_;
+  if (out_tensor->format_ != Format_NC4HW4) {
+    out_tensor->format_ = input_tensor->format_;
+  }
   out_tensor->data_type_ = input_tensor->data_type_;
   ConvParameter *param = (ConvParameter *)parameter;
   if (param->group_ == 0) {
@@ -90,21 +116,24 @@ int Conv2dInferShape(const TensorC *const *inputs, size_t inputs_size, TensorC *
   if (!InferFlag(inputs, inputs_size)) {
     return NNACL_INFER_INVALID;
   }
+  param->kernel_h_ = param->kernel_h_ != -1 ? param->kernel_h_ : weight_tensor->shape_[1];
+  param->kernel_w_ = param->kernel_w_ != -1 ? param->kernel_w_ : weight_tensor->shape_[2];
+
   const int *in_shape = input_tensor->shape_;
   if (input_tensor->shape_size_ == 0) {
     return NNACL_INFER_INVALID;
   }
   int input_h = in_shape[1];
   int input_w = in_shape[2];
+  int input_c = in_shape[3];
   int output_w = 0, output_h = 0;
 
-  if (param->stride_h_ == 0 || param->stride_w_ == 0) {
-    return NNACL_PARAM_INVALID;
+  int ret = CheckConvAttr(input_c, weight_tensor, param);
+  if (ret != NNACL_OK) {
+    return ret;
   }
 
-  param->kernel_h_ = param->kernel_h_ != -1 ? param->kernel_h_ : weight_tensor->shape_[1];
-  param->kernel_w_ = param->kernel_w_ != -1 ? param->kernel_w_ : weight_tensor->shape_[2];
-  int ret = ConvInferShape(input_h, input_w, &output_h, &output_w, param);
+  ret = ConvInferShape(input_h, input_w, &output_h, &output_w, param);
   if (ret != NNACL_OK) {
     return ret;
   }

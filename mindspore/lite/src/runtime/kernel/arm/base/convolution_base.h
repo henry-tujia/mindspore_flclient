@@ -50,7 +50,7 @@ class ConvolutionBaseCPUKernel : public InnerKernel {
   }
   ~ConvolutionBaseCPUKernel() override;
 
-  int Init() override;
+  int Prepare() override;
   int ReSize() override { return 0; }
   int Run() override { return 0; }
   int SetIfPerChannel();
@@ -65,6 +65,7 @@ class ConvolutionBaseCPUKernel : public InnerKernel {
   void FreeQuantParam();
   void *MallocAlignedData(size_t alignment, size_t size);
   void FreeAlignedData(void **ptr);
+  bool CheckInputsValid() const override;
 
  protected:
   int InitConvWeightBias();

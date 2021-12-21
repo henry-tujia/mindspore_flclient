@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ namespace kernel {
 template <typename T>
 class LayerNormGradGpuKernel : public GpuKernel {
  public:
-  LayerNormGradGpuKernel() : input_row_(1), input_col_(1), param_dim_(1) {}
+  LayerNormGradGpuKernel() : input_row_(1), input_col_(1), param_dim_(1), is_null_input_(false) {}
   ~LayerNormGradGpuKernel() override = default;
 
   const std::vector<size_t> &GetInputSizeList() const override { return input_size_list_; }
@@ -36,6 +36,9 @@ class LayerNormGradGpuKernel : public GpuKernel {
 
   bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &,
               const std::vector<AddressPtr> &outputs, void *stream_ptr) override {
+    if (is_null_input_) {
+      return true;
+    }
     auto x = GetDeviceAddress<T>(inputs, 0);
     auto dy = GetDeviceAddress<T>(inputs, 1);
     auto var = GetDeviceAddress<T>(inputs, 2);
@@ -51,10 +54,16 @@ class LayerNormGradGpuKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     int begin_norm_axis = static_cast<int>(GetAttr<int64_t>(kernel_node, "begin_norm_axis"));
     int begin_params_axis = static_cast<int>(GetAttr<int64_t>(kernel_node, "begin_params_axis"));
 
     auto input_shape = AnfAlgo::GetPrevNodeOutputInferShape(kernel_node, 0);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
+    if (is_null_input_) {
+      InitSizeLists();
+      return true;
+    }
     if (begin_norm_axis < 0) {
       begin_norm_axis += input_shape.size();
     }
@@ -63,6 +72,11 @@ class LayerNormGradGpuKernel : public GpuKernel {
       begin_params_axis += input_shape.size();
     }
 
+    if (IntToSize(begin_norm_axis) > input_shape.size()) {
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the value of 'begin_norm_axis' should be less than or equal "
+                        << "to the dimension of input, but got begin_norm_axis: " << IntToSize(begin_norm_axis)
+                        << ", the dimension of input: " << input_shape.size();
+    }
     for (size_t i = 0; i < IntToSize(begin_norm_axis); i++) {
       input_row_ *= input_shape[i];
     }
@@ -90,7 +104,6 @@ class LayerNormGradGpuKernel : public GpuKernel {
     output_size_list_.push_back(input_row_ * input_col_ * sizeof(T));
     output_size_list_.push_back(param_dim_ * sizeof(T));
     output_size_list_.push_back(param_dim_ * sizeof(T));
-    return;
   }
 
  private:
@@ -101,6 +114,7 @@ class LayerNormGradGpuKernel : public GpuKernel {
   int input_row_;
   int input_col_;
   int param_dim_;
+  bool is_null_input_;
 };
 }  // namespace kernel
 }  // namespace mindspore

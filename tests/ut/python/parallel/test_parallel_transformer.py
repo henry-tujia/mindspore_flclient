@@ -18,6 +18,7 @@ import mindspore.common.dtype as mstype
 import mindspore.nn as nn
 from mindspore import Tensor
 from mindspore.context import set_auto_parallel_context, ParallelMode
+from mindspore import context
 from mindspore.ops import composite as C
 from mindspore.ops import functional as F
 import mindspore.ops as P
@@ -56,8 +57,30 @@ class Dataset(MindData):
         self.index = 0
 
 
+class TransformerNet(nn.Cell):
+    def __init__(self, en_layer, de_layer, parallel_config):
+        super(TransformerNet, self).__init__()
+        self.embedding = VocabEmbedding(vocab_size=240, embedding_size=20,
+                                        parallel_config=config.embedding_dp_mp_config)
+        self.network = Transformer(encoder_layers=en_layer,
+                                   decoder_layers=de_layer,
+                                   batch_size=2,
+                                   src_seq_length=20,
+                                   tgt_seq_length=10,
+                                   hidden_size=64,
+                                   num_heads=8,
+                                   ffn_hidden_size=64,
+                                   parallel_config=parallel_config)
+        self.head = Linear(in_channels=64, out_channels=200)
+        self.loss = CrossEntropyLoss(parallel_config=config.dp_mp_config)
+
+    def construct(self, x1, x2, x3, x4, x5, y, mask):
+        predict, _, _ = self.network(x1, x2, x3, x4, x5)
+        predict = P.Reshape()(predict, (-1, F.shape(predict)[-1]))
+        return self.loss(predict, y, mask)
+
 config = TransformerOpParallelConfig(data_parallel=1, model_parallel=8, vocab_emb_dp=False)
-pipeline_config = TransformerOpParallelConfig(data_parallel=1, model_parallel=8, pipeline_stage=4,
+pipeline_config = TransformerOpParallelConfig(data_parallel=2, model_parallel=8, pipeline_stage=4,
                                               micro_batch_num=4, vocab_emb_dp=False)
 
 
@@ -84,28 +107,6 @@ def run_total_transformer_model_head(e_layer,
                                   full_batch=True,
                                   global_rank=0, parallel_mode=mode)
 
-    class Net(nn.Cell):
-        def __init__(self, en_layer, de_layer, parallel_config):
-            super(Net, self).__init__()
-            self.embedding = VocabEmbedding(vocab_size=240, embedding_size=20,
-                                            parallel_config=config.embedding_dp_mp_config)
-            self.network = Transformer(encoder_layers=en_layer,
-                                       decoder_layers=de_layer,
-                                       batch_size=2,
-                                       src_seq_length=20,
-                                       tgt_seq_length=10,
-                                       hidden_size=64,
-                                       num_heads=8,
-                                       ffn_hidden_size=64,
-                                       parallel_config=parallel_config)
-            self.head = Linear(in_channels=64, out_channels=200)
-            self.loss = CrossEntropyLoss(parallel_config=config.dp_mp_config)
-
-        def construct(self, x1, x2, x3, x4, x5, y, mask):
-            predict, _, _ = self.network(x1, x2, x3, x4, x5)
-            predict = P.Reshape()(predict, (-1, F.shape(predict)[-1]))
-            return self.loss(predict, y, mask)
-
     encoder_input_value = Tensor(np.ones((2, 20, 64)), mstype.float32)
     encoder_input_mask = Tensor(np.ones((2, 20, 20)), mstype.float16)
     decoder_input_value = Tensor(np.ones((2, 10, 64)), mstype.float32)
@@ -116,7 +117,8 @@ def run_total_transformer_model_head(e_layer,
         seq = 10
     label = Tensor(np.ones((2 * seq,)), mstype.int32)
     input_mask = Tensor(np.ones((2 * seq,)), mstype.float32)
-    net = Net(en_layer=e_layer, de_layer=d_layer, parallel_config=arg_parallel_config)
+    net = TransformerNet(en_layer=e_layer, de_layer=d_layer, parallel_config=arg_parallel_config)
+    net = _VirtualDatasetCell(net)
     params = net.trainable_params()
     optimizer = AdamWeightDecay(params)
     dataset = Dataset(encoder_input_value, encoder_input_mask, decoder_input_value, decoder_input_mask,
@@ -147,6 +149,38 @@ def test_transformer_model():
     decoder_input_mask = Tensor(np.ones((2, 10, 10)), mstype.float16)
     memory_mask = Tensor(np.ones((2, 10, 20)), mstype.float16)
     net = NetWithLossFiveInputs(net)
+    net = _VirtualDatasetCell(net)
+    params = net.trainable_params()
+    optimizer = AdamWeightDecay(params)
+    dataset = Dataset(encoder_input_value, encoder_input_mask, decoder_input_value, decoder_input_mask,
+                      memory_mask)
+    net_with_grad = TrainOneStepCell(net, optimizer=optimizer)
+    model = Model(net_with_grad)
+
+    model.train(1, dataset, dataset_sink_mode=False)
+
+
+def test_transformer_model_2d_inputs():
+    set_auto_parallel_context(device_num=8, global_rank=0,
+                              full_batch=True,
+                              parallel_mode=ParallelMode.SEMI_AUTO_PARALLEL)
+    net = Transformer(encoder_layers=1,
+                      decoder_layers=2,
+                      batch_size=2,
+                      src_seq_length=20,
+                      tgt_seq_length=10,
+                      hidden_size=64,
+                      num_heads=8,
+                      ffn_hidden_size=64,
+                      parallel_config=config)
+
+    encoder_input_value = Tensor(np.ones((40, 64)), mstype.float32)
+    encoder_input_mask = Tensor(np.ones((2, 20, 20)), mstype.float16)
+    decoder_input_value = Tensor(np.ones((20, 64)), mstype.float32)
+    decoder_input_mask = Tensor(np.ones((2, 10, 10)), mstype.float16)
+    memory_mask = Tensor(np.ones((2, 10, 20)), mstype.float16)
+    net = NetWithLossFiveInputs(net)
+    net = _VirtualDatasetCell(net)
     params = net.trainable_params()
     optimizer = AdamWeightDecay(params)
     dataset = Dataset(encoder_input_value, encoder_input_mask, decoder_input_value, decoder_input_mask,
@@ -177,6 +211,7 @@ def test_transformer_model_int64_inputs():
     decoder_input_mask = Tensor(np.ones((2, 10, 10)), mstype.float16)
     memory_mask = Tensor(np.ones((2, 10, 20)), mstype.float16)
     net = NetWithLossFiveInputs(net)
+    net = _VirtualDatasetCell(net)
     params = net.trainable_params()
     optimizer = AdamWeightDecay(params)
     dataset = Dataset(encoder_input_value, encoder_input_mask, decoder_input_value, decoder_input_mask,
@@ -216,13 +251,20 @@ def test_transformer_model_auto_parallel_no_support():
                                          mode=ParallelMode.AUTO_PARALLEL)
 
 
-def test_pipeline_single_transformer():
-    set_auto_parallel_context(device_num=32,
+def pipeline_single_transformer(grad_accumulation_shard=False):
+    """
+    Feature: Gradient Accumulation Shard for Pipeline and Gradient Accumulation
+    Description: Test a single transformer model with pipeline parallel with grad_accumulation_shard False
+    Expectation: The compile passed
+    """
+    set_auto_parallel_context(device_num=64,
                               full_batch=True,
                               pipeline_stages=pipeline_config.pipeline_stage, global_rank=0,
                               parallel_mode=ParallelMode.SEMI_AUTO_PARALLEL)
+    context.set_auto_parallel_context(parallel_optimizer_config=
+                                      {"gradient_accumulation_shard": grad_accumulation_shard})
 
-    net = Transformer(batch_size=4 // pipeline_config.micro_batch_num,
+    net = Transformer(batch_size=8 // pipeline_config.micro_batch_num,
                       src_seq_length=20,
                       tgt_seq_length=10,
                       encoder_layers=2,
@@ -232,11 +274,11 @@ def test_pipeline_single_transformer():
                       ffn_hidden_size=64,
                       parallel_config=pipeline_config)
 
-    encoder_input_value = Tensor(np.ones((4, 20, 64)), mstype.float32)
-    encoder_input_mask = Tensor(np.ones((4, 20, 20)), mstype.float16)
-    decoder_input_value = Tensor(np.ones((4, 10, 64)), mstype.float32)
-    decoder_input_mask = Tensor(np.ones((4, 10, 10)), mstype.float16)
-    memory_mask = Tensor(np.ones((4, 10, 20)), mstype.float16)
+    encoder_input_value = Tensor(np.ones((8, 20, 64)), mstype.float32)
+    encoder_input_mask = Tensor(np.ones((8, 20, 20)), mstype.float16)
+    decoder_input_value = Tensor(np.ones((8, 10, 64)), mstype.float32)
+    decoder_input_mask = Tensor(np.ones((8, 10, 10)), mstype.float16)
+    memory_mask = Tensor(np.ones((8, 10, 20)), mstype.float16)
     net = NetWithLossFiveInputs(net)
     net = PipelineCell(net, pipeline_config.micro_batch_num)
     net = _VirtualDatasetCell(net)
@@ -252,8 +294,26 @@ def test_pipeline_single_transformer():
     model.train(1, dataset, dataset_sink_mode=False)
 
 
+def test_pipeline_transformer_gradient_shard_true():
+    """
+    Feature: Gradient Accumulation Shard for Pipeline and Gradient Accumulation
+    Description: Test a single transformer model with pipeline parallel with grad_accumulation_shard True
+    Expectation: The compile passed
+    """
+    pipeline_single_transformer(grad_accumulation_shard=True)
+
+
+def test_pipeline_transformer_gradient_shard_false():
+    """
+    Feature: Gradient Accumulation Shard for Pipeline and Gradient Accumulation
+    Description: Test a single transformer model with pipeline parallel with grad_accumulation_shard False
+    Expectation: The compile passed
+    """
+    pipeline_single_transformer(grad_accumulation_shard=False)
+
+
 def test_transformer_wrong_head():
-    set_auto_parallel_context(device_num=32,
+    set_auto_parallel_context(device_num=64,
                               full_batch=True,
                               pipeline_stages=pipeline_config.pipeline_stage, global_rank=0,
                               parallel_mode=ParallelMode.SEMI_AUTO_PARALLEL)
@@ -283,7 +343,7 @@ def test_transformer_wrong_head():
 
 
 def test_transformer_wrong_dp_no_error():
-    set_auto_parallel_context(device_num=32, full_batch=False, parallel_mode=ParallelMode.DATA_PARALLEL,
+    set_auto_parallel_context(device_num=64, full_batch=False, parallel_mode=ParallelMode.DATA_PARALLEL,
                               pipeline_stages=pipeline_config.pipeline_stage, global_rank=0)
     check_config = TransformerOpParallelConfig(data_parallel=8, model_parallel=1, vocab_emb_dp=False)
     net = Transformer(batch_size=4, src_seq_length=20, tgt_seq_length=10, encoder_layers=2,
@@ -293,7 +353,7 @@ def test_transformer_wrong_dp_no_error():
 
 
 def test_transformer_wrong_semi_auto_dp_error():
-    set_auto_parallel_context(device_num=32, full_batch=False, parallel_mode=ParallelMode.SEMI_AUTO_PARALLEL,
+    set_auto_parallel_context(device_num=64, full_batch=False, parallel_mode=ParallelMode.SEMI_AUTO_PARALLEL,
                               pipeline_stages=pipeline_config.pipeline_stage, global_rank=0)
     check_config = TransformerOpParallelConfig(data_parallel=16, model_parallel=1, vocab_emb_dp=False)
     with pytest.raises(ValueError):
@@ -329,6 +389,8 @@ def test_encoder():
     encoder_input_mask = Tensor(np.ones((2, 16, 16)), mstype.float16)
 
     net = NetWithLoss(net)
+
+    net = _VirtualDatasetCell(net)
 
     dataset = Dataset(encoder_input_value, encoder_input_mask)
 
@@ -367,6 +429,8 @@ def test_decoder():
 
     net = NetWithLoss(net)
 
+    net = _VirtualDatasetCell(net)
+
     dataset = Dataset(decoder_input_value, decoder_input_mask, encoder_input_value, memory_mask)
 
     model = Model(net)
@@ -388,6 +452,7 @@ def test_vocabembedding_dp_true():
 
     net = VocabEmbedding(vocab_size=160, embedding_size=16, parallel_config=config.embedding_dp_mp_config)
     net = NetWithLoss(net)
+    net = _VirtualDatasetCell(net)
     encoder_input_value = Tensor(np.ones((2, 64)), mstype.int32)
     dataset = Dataset(encoder_input_value)
 
@@ -410,6 +475,7 @@ def test_vocabembedding_dp_false():
 
     net = VocabEmbedding(vocab_size=160, embedding_size=16, parallel_config=config.embedding_dp_mp_config)
     net = NetWithLoss(net)
+    net = _VirtualDatasetCell(net)
     encoder_input_value = Tensor(np.ones((2, 64)), mstype.int32)
     dataset = Dataset(encoder_input_value)
 
@@ -484,6 +550,7 @@ def test_sparse_attention_parallel_dp():
                                num_heads=8,
                                block_size=64,
                                parallel_config=sparse_attention_config)
+    net = _VirtualDatasetCell(net)
     q = Tensor(np.ones((2, 1024, 512)), mstype.float16)
     k = Tensor(np.ones((2, 1024, 512)), mstype.float16)
     v = Tensor(np.ones((2, 1024, 512)), mstype.float16)
@@ -509,6 +576,7 @@ def test_parallel_cross_entroy_loss_semi_auto_parallel():
 
     net = VocabEmbedding(vocab_size=160, embedding_size=16, parallel_config=config.embedding_dp_mp_config)
     net = NetWithLoss(net, config.dp_mp_config)
+    net = _VirtualDatasetCell(net)
     embed_ids = Tensor(np.ones((2, 64)), mstype.int32)
     labels = Tensor(np.ones((2 * 64,)), mstype.int32)
     input_mask = Tensor(np.ones((2 * 64,)), mstype.float32)
@@ -584,9 +652,9 @@ def test_transformer_parallel_config():
     with pytest.raises(TypeError):
         parallel_test_config.recompute = 1
 
-    parallel_test_config.recompute = False
+    parallel_test_config.recompute.recompute = False
 
-    assert not parallel_test_config.recompute
+    assert not parallel_test_config.recompute.recompute
 
 
 def test_parallel_config():

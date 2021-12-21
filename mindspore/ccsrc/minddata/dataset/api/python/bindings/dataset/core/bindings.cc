@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,11 @@
 
 namespace mindspore {
 namespace dataset {
-
 PYBIND_REGISTER(GlobalContext, 0, ([](const py::module *m) {
                   (void)py::class_<GlobalContext>(*m, "GlobalContext")
-                    .def_static("config_manager", &GlobalContext::config_manager, py::return_value_policy::reference);
+                    .def_static("config_manager", &GlobalContext::config_manager, py::return_value_policy::reference)
+                    .def_static("profiling_manager", &GlobalContext::profiling_manager,
+                                py::return_value_policy::reference);
                 }));
 
 PYBIND_REGISTER(ConfigManager, 0, ([](const py::module *m) {
@@ -48,8 +49,6 @@ PYBIND_REGISTER(ConfigManager, 0, ([](const py::module *m) {
                     .def("set_auto_worker_config", &ConfigManager::set_auto_worker_config_)
                     .def("set_callback_timeout", &ConfigManager::set_callback_timeout)
                     .def("set_monitor_sampling_interval", &ConfigManager::set_monitor_sampling_interval)
-                    .def("stop_dataset_profiler", &ConfigManager::stop_dataset_profiler)
-                    .def("get_profiler_file_status", &ConfigManager::get_profiler_file_status)
                     .def("set_num_parallel_workers",
                          [](ConfigManager &c, int32_t num) { THROW_IF_ERROR(c.set_num_parallel_workers(num)); })
                     .def("set_op_connector_size", &ConfigManager::set_op_connector_size)
@@ -58,6 +57,12 @@ PYBIND_REGISTER(ConfigManager, 0, ([](const py::module *m) {
                     .def("set_worker_connector_size", &ConfigManager::set_worker_connector_size)
                     .def("set_enable_shared_mem", &ConfigManager::set_enable_shared_mem)
                     .def("get_enable_shared_mem", &ConfigManager::enable_shared_mem)
+                    .def("set_auto_offload", &ConfigManager::set_auto_offload)
+                    .def("get_auto_offload", &ConfigManager::get_auto_offload)
+                    .def("set_enable_autotune", &ConfigManager::set_enable_autotune)
+                    .def("get_enable_autotune", &ConfigManager::enable_autotune)
+                    .def("set_autotune_interval", &ConfigManager::set_autotune_interval)
+                    .def("get_autotune_interval", &ConfigManager::autotune_interval)
                     .def("load", [](ConfigManager &c, std::string s) { THROW_IF_ERROR(c.LoadFile(s)); });
                 }));
 
@@ -103,6 +108,14 @@ PYBIND_REGISTER(DataType, 0, ([](const py::module *m) {
                     .def(py::self == py::self)
                     .def("__str__", &DataType::ToString)
                     .def("__deepcopy__", [](py::object &t, py::dict memo) { return t; });
+                }));
+
+PYBIND_REGISTER(AutoAugmentPolicy, 0, ([](const py::module *m) {
+                  (void)py::enum_<AutoAugmentPolicy>(*m, "AutoAugmentPolicy", py::arithmetic())
+                    .value("DE_AUTO_AUGMENT_POLICY_IMAGENET", AutoAugmentPolicy::kImageNet)
+                    .value("DE_AUTO_AUGMENT_POLICY_CIFAR10", AutoAugmentPolicy::kCifar10)
+                    .value("DE_AUTO_AUGMENT_POLICY_SVHN", AutoAugmentPolicy::kSVHN)
+                    .export_values();
                 }));
 
 PYBIND_REGISTER(BorderType, 0, ([](const py::module *m) {
@@ -162,6 +175,5 @@ PYBIND_REGISTER(ConvertMode, 0, ([](const py::module *m) {
                     .value("DE_COLOR_RGBA2GRAY", ConvertMode::COLOR_RGBA2GRAY)
                     .export_values();
                 }));
-
 }  // namespace dataset
 }  // namespace mindspore

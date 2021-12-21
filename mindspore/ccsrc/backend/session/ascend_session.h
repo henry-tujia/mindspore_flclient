@@ -1,5 +1,5 @@
 /**
- * Copyright 2019 Huawei Technologies Co., Ltd
+ * Copyright 2019-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 #ifndef MINDSPORE_CCSRC_BACKEND_SESSION_ASCEND_SESSION_H
 #define MINDSPORE_CCSRC_BACKEND_SESSION_ASCEND_SESSION_H
 
-#include <unordered_map>
 #include <string>
 #include <memory>
 #include <vector>
@@ -26,6 +25,7 @@
 #include <map>
 #include <tuple>
 #include <set>
+#include "utils/hash_map.h"
 #include "backend/session/session_basic.h"
 #include "backend/session/kernel_graph.h"
 #include "backend/kernel_compiler/kernel.h"
@@ -89,10 +89,11 @@ class AscendSession : public SessionBasic {
  private:
   // compile child graph when session have multiple child graphs
   void CompileChildGraph(const KernelGraphPtr &child_graph);
+#ifndef ENABLE_SECURITY
   void RecurseSetSummaryNodes(KernelGraph *graph, std::map<std::string, std::pair<AnfNodePtr, int>> *summary);
   void SetSummaryNodes(KernelGraph *graph) override;
+#endif
   void InitRuntimeResource();
-  void SelectKernel(const KernelGraph &kernel_graph) const;
   void HardwareOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) const;
   void GraphKernelOptimize(const std::shared_ptr<KernelGraph> &kernel_graph) const;
   void AdjustKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const;
@@ -102,10 +103,11 @@ class AscendSession : public SessionBasic {
   static void BuildKernel(const std::vector<CNodePtr> &kernels);
   void BuildDynamicKernel(const std::shared_ptr<KernelGraph> &kernel_graph) const;
   void MemoryAlloc(KernelGraph *kernel_graph) const;
-  void RunOpMemoryAlloc(const std::vector<tensor::TensorPtr> &input_tensors, KernelGraph *kernel_graph) const;
+  void RunOpMemoryAlloc(const std::vector<tensor::TensorPtr> &input_tensors, KernelGraph *kernel_graph,
+                        bool is_gradient_out) const;
   void RunOpMemoryAllocNew(const std::vector<tensor::TensorPtr> &input_tensors,
                            const std::map<tensor::TensorPtr, session::KernelWithIndex> &tensor_to_node,
-                           KernelGraph *kernel_graph) const;
+                           const KernelGraph &kernel_graph) const;
   void RunOpMemoryClear(const KernelGraph *kernel_graph) const;
   void RunOpGenKernelEvent(const KernelGraph *graph) const;
   void Load(const std::shared_ptr<KernelGraph> &kernel_graph) const;
@@ -128,12 +130,11 @@ class AscendSession : public SessionBasic {
   const std::vector<GraphType> &GetGraphOrderType(GraphId final_graph_id) const;
   // sync initial tensors' data to device
   void SyncInitialTenosrToDevice();
+#ifndef ENABLE_SECURITY
   void SetFinalGraphSummaryFlag(const std::shared_ptr<KernelGraph> &kernel_graph);
+#endif
   // create parameter to receive data from multiple branch output
   void CreateMultiBranchOutput(NotNull<KernelGraphPtr> graph, NotNull<std::set<KernelGraphPtr> *> memo);
-  void SelectKernel(NotNull<KernelGraphPtr> root_graph);
-  void RecurseSelectKernelInfo(NotNull<KernelGraphPtr> graph, NotNull<std::set<KernelGraphPtr> *> const memo,
-                               size_t *const raise_precision_count, size_t *const reduce_precision_count) const;
   void IrFusionPass(const NotNull<KernelGraphPtr> graph, NotNull<std::set<KernelGraphPtr> *> memo);
   void HardwareOptimize(const NotNull<KernelGraphPtr> graph, NotNull<std::set<KernelGraphPtr> *> memo) const;
 #ifdef ENABLE_DEBUGGER
@@ -153,17 +154,20 @@ class AscendSession : public SessionBasic {
                               VectorRef *outputs) const;
   std::shared_ptr<device::Bucket> CreateBucket(uint32_t bucket_id, uint32_t bucket_size) override;
 
-  void LaunchFunc(const KernelGraphPtr &graph, const std::vector<int64_t> &tensors_mask,
+  void LaunchFunc(const KernelGraphPtr &graph,
                   const std::map<tensor::TensorPtr, session::KernelWithIndex> &tensor_to_node, bool is_dynamic_shape,
                   const std::vector<tensor::TensorPtr> &input_tensors);
   KernelGraphPtr CreateKernelGraph(const GraphInfo &graph_info, OpRunInfo *op_run_info,
                                    std::vector<tensor::TensorPtr> *input_tensors,
                                    const std::vector<int64_t> &tensors_mask, bool cache_miss);
   static bool DisableLazyBuild(const OpRunInfo &op_run_info);
+  void SelectKernel(const KernelGraphPtr &graph) const;
+  void SetOperatorInfo(const std::vector<CNodePtr> &nodes) const;
+  void RecurseSelectKernelInfo(const KernelGraphPtr &graph, std::set<KernelGraphPtr> *memo) const;
   // key is final_graph_id,value is child graph execute order of final graph
-  std::unordered_map<GraphId, std::vector<GraphId>> graph_execute_orders_;
+  mindspore::HashMap<GraphId, std::vector<GraphId>> graph_execute_orders_;
   // key is final_graph_id,value is the graph types of child graphs
-  std::unordered_map<GraphId, std::vector<GraphType>> graph_order_types_;
+  mindspore::HashMap<GraphId, std::vector<GraphType>> graph_order_types_;
   // initial tensors, these tensor will sync data to device before run graph
   std::map<std::pair<GraphId, size_t>, tensor::TensorPtr> initial_tenosrs_;
   // final_graph_id is used in every root graph has it's own session situation
@@ -172,6 +176,9 @@ class AscendSession : public SessionBasic {
   std::set<GraphId> built_graph_id_;
   // tensor with new device addr map
   std::map<tensor::TensorPtr, DeviceAddressPtr> tensor_device_addr_map_;
+  // Number of operators whose precision changes after select kernel
+  mutable size_t raise_precision_count_{0};
+  mutable size_t reduce_precision_count_{0};
 };
 MS_REG_SESSION(kAscendDevice, AscendSession);
 }  // namespace session

@@ -1,5 +1,5 @@
 /**
- * Copyright 2020 Huawei Technologies Co., Ltd
+ * Copyright 2020-2021 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,16 +48,16 @@ class ReLUGpuFwdKernel : public GpuKernel {
     return true;
   }
   bool Init(const CNodePtr &kernel_node) override {
+    auto kernel_name = AnfAlgo::GetCNodeName(kernel_node);
     size_t input_num = AnfAlgo::GetInputTensorNum(kernel_node);
     if (input_num != 1) {
-      MS_LOG(ERROR) << "Argument number is " << input_num << ", but ReLUGpuFwdKernel needs 1.";
-      return false;
+      MS_LOG(EXCEPTION) << "For '" << kernel_name << "', the number of inputs should be 1, but got " << input_num;
     }
     auto input_shape = AnfAlgo::GetInputRealDeviceShapeIfExist(kernel_node, 0);
-    is_null_input_ = CHECK_NULL_INPUT(input_shape);
+    is_null_input_ = CHECK_SHAPE_NULL(input_shape, kernel_name, "input");
     if (is_null_input_) {
-      MS_LOG(ERROR) << "ReLUGpuFwdKernel input is null.";
-      return false;
+      InitSizeLists();
+      return true;
     }
     size_t size = 1;
     for (size_t i = 0; i < input_shape.size(); i++) {
