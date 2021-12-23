@@ -17,19 +17,8 @@
 package com.mindspore.flclient;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
 import com.mindspore.flclient.model.RunType;
 
->>>>>>> upstream/master
-=======
-import com.mindspore.flclient.model.RunType;
-
-=======
->>>>>>> 18a112429b (ascy update)
->>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -82,13 +71,9 @@ public class FLParameter {
     private int sleepTime;
     private boolean ifUseElb = false;
     private int serverNum = 1;
-<<<<<<< HEAD
-<<<<<<< HEAD
     private String taskInner;
     private ArrayList<String> taskInners = new ArrayList<String>(Arrays.asList("mul","ascy"));
-=======
-=======
->>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
+
     private boolean ifPkiVerify = false;
     private String equipCrlPath = "null";
     private long validIterInterval = 3600000L;
@@ -99,15 +84,8 @@ public class FLParameter {
     private List<String> inferWeightName = new ArrayList<>();
     private Map<RunType, List<String>> dataMap = new HashMap<>();
     private ServerMod serverMod;
+
     private int batchSize;
-<<<<<<< HEAD
->>>>>>> upstream/master
-=======
-=======
-    private String taskInner;
-    private ArrayList<String> taskInners = new ArrayList<String>(Arrays.asList("mul","ascy"));
->>>>>>> 18a112429b (ascy update)
->>>>>>> 8a06131b41a2884a864aec1898be1021a24762e5
 
     private FLParameter() {
         clientID = UUID.randomUUID().toString();
