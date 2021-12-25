@@ -1,5 +1,12 @@
 package com.mindspore.flclient;
-
+import com.mindspore.flclient.model.AlTrainBert;
+import com.mindspore.flclient.model.Client;
+import com.mindspore.flclient.model.ClientManager;
+import com.mindspore.flclient.model.CommonUtils;
+import com.mindspore.flclient.model.SessionUtil;
+import com.mindspore.flclient.model.Status;
+import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.lite.MSTensor;
 import java.util.Date;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -21,6 +28,7 @@ public class UpdateAndCalMutualInformation {
 
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private FLClientStatus status;
+    private int retCode = ResponseCode.RequestError;
 
     private UpdateAndCalMutualInformation() {
     }
@@ -46,6 +54,11 @@ public class UpdateAndCalMutualInformation {
     public FLClientStatus getStatus() {
         return status;
     }
+
+    public int getRetCode() {
+        return retCode;
+    }
+
 
     
 

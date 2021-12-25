@@ -40,6 +40,7 @@ import java.util.logging.Logger;
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private FLClientStatus status;
+    private int retCode = ResponseCode.RequestError;
 
     protected String trainningTIme;
     private static double[] predictParameters;
@@ -71,6 +72,10 @@ import java.util.logging.Logger;
 
     public FLClientStatus getStatus() {
         return status;
+    }
+
+    public int getRetCode() {
+        return retCode;
     }
 
     /**
