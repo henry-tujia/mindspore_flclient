@@ -17,6 +17,7 @@
 package com.mindspore.flclient;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
+
 import com.mindspore.flclient.model.RunType;
 
 import java.util.ArrayList;
@@ -76,7 +77,7 @@ public class FLParameter {
 
     private boolean ifPkiVerify = false;
     private String equipCrlPath = "null";
-    private long validIterInterval = 3600000L;
+    private long validIterInterval = 600000L;
     private int threadNum = 1;
     private BindMode cpuBindMode = BindMode.NOT_BINDING_CORE;
 
@@ -143,6 +144,8 @@ public class FLParameter {
             throw new IllegalArgumentException();
         }
         this.domainName = domainName;
+        Common.setIsHttps(domainName.split("//")[0].split(":")[0]);
+
     }
 
     public String getClientID() {
