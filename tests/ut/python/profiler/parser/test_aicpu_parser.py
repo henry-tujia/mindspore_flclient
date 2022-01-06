@@ -17,36 +17,12 @@ import os
 import tempfile
 import shutil
 
-from unittest import TestCase
-
 from mindspore.profiler.parser.aicpu_data_parser import DataPreProcessParser
 
 
-def get_result(file_path):
-    """
-    Get result from the aicpu file.
-
-    Args:
-        file_path (str): The aicpu file path.
-
-    Returns:
-        list[list], the parsed aicpu information.
-    """
-    result = []
-    file = None
-    try:
-        file = open(file_path, 'r')
-        result.append(file.read())
-        return result
-    finally:
-        if file:
-            file.close()
-
-
-class TestAicpuParser(TestCase):
+class TestAicpuParser:
     """Test the class of Aicpu Parser."""
-
-    def setUp(self) -> None:
+    def setup_class(self):
         """Initialization before test case execution."""
         self.profiling_dir = os.path.realpath(os.path.join(os.path.dirname(__file__),
                                                            '../../../data/profiler_data/'
@@ -57,19 +33,24 @@ class TestAicpuParser(TestCase):
         self.output_path = tempfile.mkdtemp(prefix='output_data_preprocess_aicpu_')
         self.output_file = os.path.join(self.output_path, 'output_data_preprocess_aicpu_0.txt')
         self.expect_file = os.path.join(self.expect_dir, 'output_data_preprocess_aicpu_0.txt')
+        self.op_task_dict = {
+            "22_2": "Default/network-_VirtualDatasetCell/_backbone-WithLossCell/_backbone-AlexNet/dropout-Dropout/"
+                    "DropoutGenMask-op281",
+            "22_4": "Default/network-_VirtualDatasetCell/_backbone-WithLossCell/_backbone-AlexNet/dropout-Dropout/"
+                    "DropoutGenMask-op280"
+        }
+
+    def teardown_method(self) -> None:
+        """Clear output file."""
+        if os.path.exists(self.output_path):
+            shutil.rmtree(self.output_path)
 
     def test_aicpu_parser(self):
         """Test the class of Aicpu Parser."""
-        data = DataPreProcessParser(self.profiling_dir, self.output_file)
+        data = DataPreProcessParser(self.profiling_dir, self.output_file, self.op_task_dict)
         data.execute()
-        expect_result = get_result(self.expect_file)
-        result = get_result(self.output_file)
-        shutil.rmtree(self.output_path)
+        with open(self.expect_file, 'r') as fp:
+            expect_result = fp.read()
+        with open(self.output_file, 'r') as fp:
+            result = fp.read()
         assert expect_result == result
-
-    def test_aicpu_parser_file_not_exist(self):
-        """Test the class of Aicpu Parser."""
-        profiling_dir = os.path.realpath(os.path.join(self.profiling_dir, 'data'))
-        data = DataPreProcessParser(profiling_dir, self.output_file)
-        data.execute()
-        shutil.rmtree(self.output_path)

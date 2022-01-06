@@ -11,6 +11,7 @@ set(MSLITE_GPU_BACKEND "" CACHE STRING "enable gpu backend, \
     opencl only support arm64 and x86_64 , tensorrt only support x86_64, opencl/cuda/tensorrt/off")
 set(MSLITE_REGISTRY_DEVICE "off" CACHE STRING "Compile Mindspore Lite that supports specific devices, \
     currently supported devices: Hi3516D/Hi3519A/Hi3559A/SD3403")
+set(MSLITE_MINDDATA_IMPLEMENT "lite_cv" CACHE STRING "off, lite_cv, cloud, or full")
 option(MSLITE_ENABLE_NPU "enable npu, only arm64 or arm32 support" off)
 option(MSLITE_ENABLE_TRAIN "enable train" on)
 option(MSLITE_ENABLE_SSE "enable SSE instruction set, only x86_64 support" off)
@@ -42,7 +43,6 @@ option(MSLITE_ENABLE_SHARING_MEM_WITH_OPENGL "enable sharing memory with OpenGL"
 #Option that can be configured through manually
 option(ENABLE_VERBOSE "" off)
 option(ENABLE_MODEL_OBF "if support model obfuscation" off)
-set(BUILD_MINDDATA "lite_cv" CACHE STRING "off, lite, lite_cv, wrapper or full")
 if(MACHINE_LINUX_ARM64)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.2-a+fp16")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16")
@@ -120,6 +120,9 @@ endif()
 if(DEFINED ENV{MSLITE_ENABLE_ACL})
     set(MSLITE_ENABLE_ACL $ENV{MSLITE_ENABLE_ACL})
 endif()
+if(DEFINED ENV{MSLITE_MINDDATA_IMPLEMENT})
+    set(MSLITE_MINDDATA_IMPLEMENT $ENV{MSLITE_MINDDATA_IMPLEMENT})
+endif()
 if(DEFINED ENV{MSLITE_ENABLE_MODEL_ENCRYPTION})
     set(MSLITE_ENABLE_MODEL_ENCRYPTION $ENV{MSLITE_ENABLE_MODEL_ENCRYPTION})
 endif()
@@ -164,6 +167,8 @@ endif()
 
 if(NOT MSLITE_ENABLE_ACL)
     set(ENABLE_GLIBCXX ON)
+else()
+    set(MSLITE_ENABLE_TRAIN off)
 endif()
 
 if(PLATFORM_ARM64)
@@ -212,8 +217,18 @@ else()
     set(MSLITE_ENABLE_NPU off)
 endif()
 
-if(MSLITE_ENABLE_SSE OR MSLITE_ENABLE_AVX OR MSLITE_ENABLE_AVX512 OR WIN32 OR MSLITE_ENABLE_ACL)
+if(MSLITE_ENABLE_SSE OR MSLITE_ENABLE_AVX OR MSLITE_ENABLE_AVX512 OR WIN32)
     set(MSLITE_ENABLE_RUNTIME_CONVERT off)
+endif()
+
+if(MSLITE_ENABLE_TRAIN AND NOT MSLITE_ENABLE_WEIGHT_DECODE)
+    message(FATAL_ERROR "If MSLITE_ENABLE_WEIGHT_DECODE use if configured as off, "
+            "MSLITE_ENABLE_TRAIN must also be configured as off")
+endif()
+
+if(MSLITE_ENABLE_CONTROLFLOW AND NOT MSLITE_ENABLE_MINDRT)
+    message(FATAL_ERROR "If MSLITE_ENABLE_MINDRT use if configured as off, "
+            "MSLITE_ENABLE_CONTROLFLOW must also be configured as off")
 endif()
 
 if(MSLITE_ENABLE_RUNTIME_CONVERT)
@@ -223,7 +238,7 @@ endif()
 
 if(MSLITE_ENABLE_TRAIN)
     set(SUPPORT_TRAIN on)
-    set(BUILD_MINDDATA full)
+    set(MSLITE_MINDDATA_IMPLEMENT full)
 endif()
 
 if(MSLITE_ENABLE_NPU)
@@ -266,7 +281,7 @@ message(STATUS "\tMSLITE_ENABLE_WEIGHT_DECODE       = \t${MSLITE_ENABLE_WEIGHT_D
 message(STATUS "\tMSLITE_ENABLE_CUSTOM_KERNEL       = \t${MSLITE_ENABLE_CUSTOM_KERNEL}")
 message(STATUS "\tMSLITE_ENABLE_MINDRT              = \t${MSLITE_ENABLE_MINDRT}")
 message(STATUS "\tMSLITE_ENABLE_V0                  = \t${MSLITE_ENABLE_V0}")
-message(STATUS "\tBUILD_MINDDATA                    = \t${BUILD_MINDDATA}")
+message(STATUS "\tMSLITE_MINDDATA_IMPLEMENT         = \t${MSLITE_MINDDATA_IMPLEMENT}")
 message(STATUS "\tMSLITE_ENABLE_DELEGATE            = \t${MSLITE_ENABLE_DELEGATE}")
 message(STATUS "\tMSLITE_ENABLE_ACL                 = \t${MSLITE_ENABLE_ACL}")
 message(STATUS "\tMSLITE_ENABLE_FP16                = \t${MSLITE_ENABLE_FP16}")
@@ -399,8 +414,8 @@ if(MSLITE_GPU_BACKEND STREQUAL opencl)
     include(${TOP_DIR}/cmake/external_libs/opencl.cmake)
 endif()
 
-if(MSLITE_ENABLE_CONVERTER OR BUILD_MINDDATA STREQUAL "full" OR BUILD_MINDDATA STREQUAL "wrapper" OR
-    MSLITE_ENABLE_TOOLS)
+if(MSLITE_ENABLE_CONVERTER OR MSLITE_MINDDATA_IMPLEMENT STREQUAL "full" OR MSLITE_MINDDATA_IMPLEMENT STREQUAL "wrapper"
+    OR MSLITE_ENABLE_TOOLS)
     include(${TOP_DIR}/cmake/external_libs/json.cmake)
 endif()
 
@@ -546,7 +561,8 @@ if(NOT PLATFORM_ARM)
     endif()
 endif()
 
-if(BUILD_MINDDATA STREQUAL "lite" OR BUILD_MINDDATA STREQUAL "full" OR BUILD_MINDDATA STREQUAL "wrapper")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "lite" OR MSLITE_MINDDATA_IMPLEMENT STREQUAL "full"
+    OR MSLITE_MINDDATA_IMPLEMENT STREQUAL "wrapper")
     add_compile_definitions(ENABLE_ANDROID)
     if(NOT PLATFORM_ARM32 AND NOT PLATFORM_ARM64)
         add_compile_definitions(ENABLE_MD_LITE_X86_64)
@@ -554,7 +570,7 @@ if(BUILD_MINDDATA STREQUAL "lite" OR BUILD_MINDDATA STREQUAL "full" OR BUILD_MIN
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/minddata)
 endif()
 
-if(BUILD_MINDDATA STREQUAL "lite_cv")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "lite_cv")
     add_compile_definitions(ENABLE_ANDROID)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/minddata)
 endif()

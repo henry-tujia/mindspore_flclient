@@ -39,7 +39,7 @@ void EntranceActor::RunOpControl(AID *const input_control, OpContext<DeviceTenso
   }
 }
 
-void EntranceActor::RunOpRealParameterWithBranchID(OpRealParameterWithBranchID real_parameter_with_branch_id,
+void EntranceActor::RunOpRealParameterWithBranchID(const OpRealParameterWithBranchID &real_parameter_with_branch_id,
                                                    OpContext<DeviceTensor> *const context) {
   MS_EXCEPTION_IF_NULL(context);
   auto &sequential_num = context->sequential_num_;
@@ -246,14 +246,14 @@ void EntranceActor::SendMemoryFreeReq(OpContext<DeviceTensor> *const context) {
       SET_OPCONTEXT_FAIL_RET_WITH_ERROR((*context), "The real parameter with branch id is empty.");
     }
     auto &real_parameters_with_branch_id = iter->second.front();
-    auto partial_device_tensors = GetAllDeviceTensors(real_parameters_with_branch_id);
+    const auto &partial_device_tensors = GetAllDeviceTensors(real_parameters_with_branch_id);
     (void)std::copy(partial_device_tensors.begin(), partial_device_tensors.end(), std::back_inserter(memory_free_list));
   }
 
   if (memory_free_list.size() > 0) {
-    memory_free_lists_.emplace_back(memory_free_list);
+    memory_free_lists_.push(memory_free_list);
     ActorDispatcher::Send(memory_manager_aid_, &MemoryManagerActor::FreeMemory, &(memory_free_lists_.back()),
-                          device_contexts_[0], context);
+                          device_contexts_[0], context, GetAID());
   }
 }
 }  // namespace runtime

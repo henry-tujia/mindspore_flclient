@@ -38,8 +38,8 @@ int MatMulTensorRT::IsSupport(const mindspore::schema::Primitive *primitive,
 }
 
 int MatMulTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
-  if (type_ == schema::PrimitiveType_MatMul) {
-    auto primitive = this->GetPrimitive()->value_as_MatMul();
+  if (type_ == schema::PrimitiveType_MatMulFusion) {
+    auto primitive = this->GetPrimitive()->value_as_MatMulFusion();
     transpose_a_ = primitive->transpose_a() ? nvinfer1::MatrixOperation::kTRANSPOSE : nvinfer1::MatrixOperation::kNONE;
     transpose_b_ = primitive->transpose_b() ? nvinfer1::MatrixOperation::kTRANSPOSE : nvinfer1::MatrixOperation::kNONE;
   } else if (type_ == schema::PrimitiveType_FullConnection) {
@@ -74,8 +74,8 @@ int MatMulTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     return RET_ERROR;
   }
 
-  MS_LOG(DEBUG) << "matmul input a " << GetTensorFormat(matmul_input, Format::NHWC);
-  MS_LOG(DEBUG) << "matmul input b " << GetTensorFormat(weight, Format::NHWC);
+  MS_LOG(DEBUG) << "matmul input a " << GetTensorFormat(matmul_input);
+  MS_LOG(DEBUG) << "matmul input b " << GetTensorFormat(weight);
 
   auto matmul_layer = network->addMatrixMultiply(*matmul_input, transpose_a_, *weight, transpose_b_);
   matmul_layer->setName(op_name_.c_str());
@@ -102,8 +102,8 @@ int MatMulTensorRT::AddInnerOp(nvinfer1::INetworkDefinition *network) {
     out_tensor = bias_layer->getOutput(0);
   }
   out_tensor->setName((op_name_ + "_output").c_str());
-  MS_LOG(DEBUG) << "output " << GetTensorFormat(out_tensor, Format::NHWC);
-  this->AddInnerOutTensors(ITensorHelper{out_tensor, Format::NHWC, true});
+  MS_LOG(DEBUG) << "output " << GetTensorFormat(out_tensor);
+  this->AddInnerOutTensors(ITensorHelper{out_tensor});
   return RET_OK;
 }
 }  // namespace mindspore::lite

@@ -15,6 +15,9 @@
  */
 
 #include "src/lite_session.h"
+#ifndef RUNTIME_PASS_CLIP
+#include "src/runtime/runtime_pass.h"
+#endif
 #if defined(MACHINE_LINUX_ARM64)
 #include <malloc.h>
 #endif
@@ -265,19 +268,9 @@ int LiteSession::ConvertTensors(const lite::Model *model) {
     }
     ConvertTensorsQuantParam(src_tensor, dst_tensor);
     if (IsContain(model_input_indices, i)) {
-      if (dst_tensor->data() != nullptr) {
-        MS_LOG(ERROR) << "Graph input shouldn't have data";
-        delete dst_tensor;
-        return RET_ERROR;
-      }
       dst_tensor->set_category(Category::GRAPH_INPUT);
     }
     if (IsContain(model_output_indices, i)) {
-      if (dst_tensor->data() != nullptr) {
-        MS_LOG(ERROR) << "Graph output shouldn't have data";
-        delete dst_tensor;
-        return RET_ERROR;
-      }
       // a tensor is as both input and output, would be treated as an input.
       if (!dst_tensor->IsGraphInput()) {
         dst_tensor->set_category(Category::GRAPH_OUTPUT);
@@ -1151,6 +1144,13 @@ int LiteSession::Resize(const std::vector<mindspore::tensor::MSTensor *> &inputs
     is_running_.store(false);
     return RET_ERROR;
   }
+#ifndef RUNTIME_PASS_CLIP
+  auto status = GraphOptimizePass(&kernels_);
+  if (status != RET_OK) {
+    MS_LOG(ERROR) << "GraphOptimizePass failed.";
+    return RET_ERROR;
+  }
+#endif
 
   is_running_.store(false);
 #if defined(MACHINE_LINUX_ARM64)
@@ -1532,6 +1532,7 @@ mindspore::ModelType lite::LiteSession::LoadModelByBuff(const char *model_buf, c
     *lite_buf = const_cast<char *>(model_buf);
     return mindspore::ModelType::kMindIR_Opt;
   }
+  MS_LOG(WARNING) << "Invalid mslite model.";
 
 #ifdef RUNTIME_CONVERT
   *lite_buf = RuntimeConvert(model_buf, buf_size, size);

@@ -36,7 +36,7 @@ class Tensor(Tensor_):
     Tensor is a data structure that stores an n-dimensional array.
 
     Args:
-        input_data (Union[Tensor, float, int, bool, tuple, list, numpy.ndarray]): The data to be stroed. It can be
+        input_data (Union[Tensor, float, int, bool, tuple, list, numpy.ndarray]): The data to be stored. It can be
             another Tensor, Python number or NumPy ndarray. Default: None.
         dtype (:class:`mindspore.dtype`): Used to indicate the data type of the output Tensor. The argument should
             be defined in `mindspore.dtype`. If it is None, the data type of the output Tensor will be the same
@@ -447,7 +447,7 @@ class Tensor(Tensor_):
             IndexError: If only one argument is provided, and the original Tensor is not scalar.
 
         Supported Platforms:
-            ``Ascend`` ``GPU``
+            ``Ascend`` ``GPU`` ``CPU``
 
         Examples:
             >>> import numpy as np
@@ -506,8 +506,9 @@ class Tensor(Tensor_):
         Check all tensor elements along a given axis evaluate to True.
 
         Args:
-            axis (Union[None, int, tuple(int)]): Dimensions of reduction,
-                when the axis is None or empty tuple, reduce all dimensions. Default: ().
+            axis (Union[None, int, tuple(int)]): Dimensions of reduction.
+                When the axis is None or empty tuple, reduce all dimensions. When the axis is int or
+                tuple(int), if the dimension of Tensor is dim, the value range is [-dim, dim). Default: ().
             keep_dims (bool): Whether to keep the reduced dimensions. Default: False.
 
         Returns:
@@ -538,8 +539,9 @@ class Tensor(Tensor_):
         Check any tensor element along a given axis evaluate to True.
 
         Args:
-            axis (Union[None, int, tuple(int)]): Dimensions of reduction,
-                when the axis is None or empty tuple, reduce all dimensions. Default: ().
+            axis (Union[None, int, tuple(int)]): Dimensions of reduction.
+                When the axis is None or empty tuple, reduce all dimensions. When the axis is int or
+                tuple(int), if the dimension of Tensor is dim, the value range is [-dim, dim). Default: ().
             keep_dims (bool): Whether to keep the reduced dimensions. Default: False.
 
         Returns:
@@ -624,7 +626,7 @@ class Tensor(Tensor_):
         Return absolute value element-wisely.
 
         Returns:
-            Tensor, with absolute value element-wisely.
+            Tensor.
 
         Supported Platforms:
             ``Ascend`` ``GPU`` ``CPU``
@@ -644,8 +646,9 @@ class Tensor(Tensor_):
         Reduce a dimension of a tensor by averaging all elements in the dimension.
 
         Args:
-            axis (Union[None, int, tuple(int), list(int)]): Dimensions of reduction,
-                when the axis is None or empty tuple, reduce all dimensions. Default: ().
+            axis (Union[None, int, tuple(int), list(int)]): Dimensions of reduction.
+                When the axis is None or empty tuple, reduce all dimensions. When the axis is int, tuple(int) or
+                list(int), if the dimension of Tensor is dim, the value range is [-dim, dim). Default: ().
             keep_dims (bool): Whether to keep the reduced dimensions. Default: False.
 
         Returns:
@@ -815,6 +818,44 @@ class Tensor(Tensor_):
 
         perm = tuple(range(self.ndim-1, -1, -1))
         return reshape_op(trans_op(self, perm), (-1,))
+
+    def narrow(self, axis, start, length):
+        """
+        Returns a narrowed tensor from input tensor.
+        The dimension axis is input from start to start + length.
+
+        Args:
+            axis (int): the axis along which to narrow.
+            start (int): the starting dimension.
+            length (int): the distance to the ending dimension.
+
+        Returns:
+            Tensor.
+
+            - output (Tensors) - The narrowed tensor.
+
+        Raises:
+            TypeError: If the input is not a tensor or tuple or list of tensors.
+
+        Supported Platforms:
+            ``Ascend`` ``GPU`` ``CPU``
+
+        Examples:
+            >>> import mindspore
+            >>> from mindspore import Tensor
+            >>> x = Tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]], mindspore.int32)
+            >>> output = x.narrow(0, 0, 2)
+            >>> print(output)
+            [[ 1,  2,  3],
+             [ 4,  5,  6]]
+            >>> output = x.narrow(1, 1, 2)
+            >>> print(output)
+            [[ 2,  3],
+             [ 5,  6],
+             [ 8,  9]]
+        """
+        self._init_check()
+        return tensor_operator_registry.get('narrow')()(self, axis, start, length)
 
     def swapaxes(self, axis1, axis2):
         """
@@ -2130,9 +2171,16 @@ class RowTensor:
     The dense tensor dense represented by an RowTensor slices has
     `dense[slices.indices[i], :, :, :, ...] = slices.values[i, :, :, :, ...]`.
 
+    For example, if indices is [0], values is [[1, 2]], dense_shape is
+    (3, 2), then the dense representation of the row tensor will be:
+    [[1, 2],
+     [0, 0],
+     [0, 0]]
+
     RowTensor can only be used in the `Cell`'s construct method.
 
-    It is not supported in pynative mode at the moment.
+    Note:
+        RowTensor is not supported in pynative mode.
 
     Args:
         indices (Tensor): A 1-D integer Tensor of shape [D0].
@@ -2191,10 +2239,17 @@ class SparseTensor:
 
     SparseTensor can only be used in the `Cell`'s construct method.
 
-    Pynative mode not supported at the moment.
-
     For a tensor dense, its SparseTensor(indices, values, dense_shape) has
     `dense[indices[i]] = values[i]`.
+
+    For example, if indices is [[0, 1], [1, 2]], values is [1, 2], dense_shape is
+    (3, 4), then the dense representation of the sparse tensor will be:
+    [[0, 1, 0, 0],
+     [0, 0, 2, 0],
+     [0, 0, 0, 0]]
+
+    Note:
+        SparseTensor is not supported in Pynative mode at the moment.
 
     Args:
         indices (Tensor): A 2-D integer Tensor of shape `[N, ndims]`,
@@ -2249,6 +2304,7 @@ class SparseTensor:
     @property
     def dense_shape(self):
         return self.__dense_shape
+
 
 class CSRTensor(CSRTensor_):
     """
@@ -2345,6 +2401,7 @@ class CSRTensor(CSRTensor_):
 
     def to_tuple(self):
         return self.indptr, self.indices, self.values, self.shape
+
 
 def _vm_compare(*args):
     """Implement `vm_compare` for tensor."""

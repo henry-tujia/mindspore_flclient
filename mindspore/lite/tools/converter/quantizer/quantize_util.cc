@@ -23,7 +23,7 @@
 #include <functional>
 #include "include/version.h"
 #include "ops/fusion/full_connection.h"
-#include "ops/mat_mul.h"
+#include "ops/fusion/mat_mul_fusion.h"
 #include "tools/converter/ops/ops_def.h"
 #include "tools/anf_exporter/anf_exporter.h"
 #include "tools/converter/quantizer/bitpacking.h"
@@ -38,13 +38,15 @@ using std::string;
 using std::vector;
 
 namespace mindspore::lite::quant {
-const int kLstmInputWeightIndex = 1;
-const int kLstmStateWeightIndex = 2;
-const int kLstmWeightShapeSize = 3;
-const int kSingleDirBiasTensorSize = 4;
-const int kLstmBiasShapeSize = 2;
-const int kLstmBiasIndex = 3;
-
+namespace {
+constexpr int kLstmInputWeightIndex = 1;
+constexpr int kLstmStateWeightIndex = 2;
+constexpr int kLstmWeightShapeSize = 3;
+constexpr int kSingleDirBiasTensorSize = 4;
+constexpr int kLstmBiasShapeSize = 2;
+constexpr int kLstmBiasIndex = 3;
+constexpr size_t kBitNumPerByte = 8;
+}  // namespace
 QuantParamHolderPtr GetCNodeQuantHolder(const PrimitivePtr &primitive) {
   MS_CHECK_TRUE_RET(primitive != nullptr, nullptr);
   QuantParamHolderPtr quant_params_holder = nullptr;
@@ -75,97 +77,6 @@ bool TensorQuantParamsInited(const schema::TensorT &tensor) {
     }
   }
   return true;
-}
-
-static bool SearchLowerBound(const std::vector<float> &data, const size_t &index, const float &max_tmp, float *min_tmp,
-                             size_t *min_idx) {
-  MS_ASSERT(!data.empty());
-  size_t length = data.size();
-  if (max_tmp - data.at(index) < delta) {
-    return false;
-  }
-  if (fabs(max_tmp - *min_tmp) <= 0.0f || fabs(length - *min_idx) <= 0.0f) {
-    MS_LOG(INFO) << "divisor cannot be 0";
-    return false;
-  }
-  float range_ratio = (data.at(index) - *min_tmp) / (max_tmp - *min_tmp);
-  float index_ratio = static_cast<float>(index - *min_idx) / (length - *min_idx);
-  if (fabs(index_ratio) <= 0.0f) {
-    MS_LOG(INFO) << "divisor cannot be 0";
-    return false;
-  }
-  if (index_ratio > 0 && range_ratio / index_ratio > ratio) {
-    *min_idx = index;
-    *min_tmp = data.at(index);
-  }
-  return true;
-}
-
-static bool SearchUpperBound(const std::vector<float> &data, const size_t &index, float *max_tmp, const float &min_tmp,
-                             size_t *max_idx) {
-  MS_ASSERT(!data.empty());
-  size_t length = data.size();
-  if (data.at(index) - min_tmp < delta) {
-    return false;
-  }
-  if (fabs(*max_tmp - min_tmp) <= 0.0f || fabs(length - *max_idx) <= 0.0f) {
-    MS_LOG(INFO) << "divisor cannot be 0";
-    return false;
-  }
-  float range_ratio = (*max_tmp - data.at(index)) / (*max_tmp - min_tmp);
-  float index_ratio = static_cast<float>(index - *max_idx) / (length - *max_idx);
-  if (fabs(index_ratio) <= 0.0f) {
-    MS_LOG(INFO) << "divisor cannot be 0";
-    return false;
-  }
-  if (index_ratio > 0 && range_ratio / index_ratio > ratio) {
-    *max_idx = index;
-    *max_tmp = data.at(index);
-  }
-  return true;
-}
-
-static float CalPercentile(const std::vector<float> &data, const int &outlier_percent) {
-  MS_ASSERT(!data.empty());
-  const int size = data.size();
-  float val = outlier_percent / kPercentBase * size;
-  int index = std::ceil(val);
-  float result;
-  if (index - val > 0) {
-    MS_ASSERT(index - 1 >= 0);
-    result = data.at(index - 1);
-  } else {
-    MS_ASSERT(index - 1 >= 0);
-    result = (data.at(index - 1) + data.at(index)) / 2;
-  }
-  return result;
-}
-
-std::pair<float, float> OutlierMethod(std::vector<float> min_datas, std::vector<float> max_datas) {
-  MS_ASSERT(!min_datas.empty());
-  MS_ASSERT(!max_datas.empty());
-  std::sort(max_datas.begin(), max_datas.end());
-  std::sort(min_datas.begin(), min_datas.end());
-  float min_val = CalPercentile(min_datas, percent);
-  float max_val = CalPercentile(max_datas, kPercentBase - percent);
-  std::reverse(max_datas.begin(), max_datas.end());
-  MS_ASSERT(min_val < max_val);
-  MS_ASSERT(min_datas.size() == max_datas.size());
-  float min_tmp = min_val;
-  float max_tmp = max_val;
-  size_t min_idx = 0;
-  size_t max_idx = 0;
-  size_t length = min_datas.size();
-  for (size_t i = 0; i < length; i++) {
-    if (!SearchLowerBound(min_datas, i, max_tmp, &min_tmp, &min_idx)) {
-      break;
-    }
-    if (!SearchUpperBound(min_datas, i, &max_tmp, min_tmp, &max_idx)) {
-      break;
-    }
-  }
-  std::pair<float, float> result{min_tmp, max_tmp};
-  return result;
 }
 
 static std::vector<float> InitClusters(float *data, size_t elem_count, size_t k) {
@@ -377,7 +288,7 @@ int UpdateTensorDataAndSize(const AnfNodePtr &node, const tensor::TensorPtr &wei
 int GetMatMulPreferredDim(const PrimitivePtr &primitive, int input_index, const std::vector<int> &dims) {
   size_t last_first_index = dims.size() - 1;
   size_t last_second_index = dims.size() - 2;
-  auto matmul_prim = primitive->cast<std::shared_ptr<ops::MatMul>>();
+  auto matmul_prim = primitive->cast<std::shared_ptr<ops::MatMulFusion>>();
   MS_ASSERT(matmul_prim != nullptr);
   // For MatMul A
   if (input_index == 0) {
@@ -414,7 +325,7 @@ int CalChannels(const std::vector<int> &dims, int channel_cnt, bool *channel_at_
 }
 
 int GetPreferredDim(const PrimitivePtr &primitive, int input_index, const std::vector<int> &dims) {
-  if (primitive->name() == ops::kNameMatMul) {
+  if (primitive->name() == ops::kNameMatMulFusion) {
     return GetMatMulPreferredDim(primitive, input_index, dims);
   }
   // The first index.
@@ -441,8 +352,8 @@ void CalQuantAssitInfo(const schema::PrimitiveT &primitive, const std::vector<in
     MS_LOG(ERROR) << " shape vector is empty.";
     return;
   }
-  if (primitive.value.type == schema::PrimitiveType_MatMul && static_cast<int>(shapes.size()) == DIMENSION_2D) {
-    auto matmul_prim = primitive.value.AsMatMul();
+  if (primitive.value.type == schema::PrimitiveType_MatMulFusion && static_cast<int>(shapes.size()) == DIMENSION_2D) {
+    auto matmul_prim = primitive.value.AsMatMulFusion();
     MS_ASSERT(matmul_prim != nullptr);
     *channel_at_first = index != 1 || matmul_prim->transpose_b;
   } else if (primitive.value.type == schema::PrimitiveType_LSTM) {
@@ -532,5 +443,20 @@ bool CheckNodeInSet(const CNodePtr &cnode, const std::set<PrimitivePtr> &support
     }
   }
   return false;
+}
+
+std::string BoolVectorToString(const std::vector<bool> &bool_vec) {
+  size_t size_in_byte = ceil(bool_vec.size() / kBitNumPerByte);
+  std::string str(size_in_byte, '\0');
+  auto iter = str.begin();
+  size_t shift = kBitNumPerByte;
+  for (bool bit : bool_vec) {
+    *iter |= bit << (shift - 1);
+    if (--shift == 0) {
+      iter++;
+      shift = kBitNumPerByte;
+    }
+  }
+  return str;
 }
 }  // namespace mindspore::lite::quant

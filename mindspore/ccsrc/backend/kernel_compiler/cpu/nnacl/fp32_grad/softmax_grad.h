@@ -17,26 +17,12 @@
 #ifndef MINDSPORE_NNACL_FP32_GRAD_SOFTMAX_GRAD_H_
 #define MINDSPORE_NNACL_FP32_GRAD_SOFTMAX_GRAD_H_
 
-#include "nnacl/op_base.h"
 #include "nnacl/fp32/softmax_fp32.h"
+#include "nnacl/fp32_grad/softmax_crossentropy_parameter.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct SoftmaxCrossEntropyParameter {
-  // primitive parameter
-  OpParameter op_parameter_;
-  int n_dim_;
-
-  // shape correlative
-  int input_shape_[5];
-
-  // other parameter
-  int32_t batch_size_;
-  unsigned int number_of_classes_;
-  bool is_grad_;
-} SoftmaxCrossEntropyParameter;
 
 void SoftmaxGrad(const float *input_ptr, const float *yt_ptr, float *output_ptr, float *sum_data, float *sum_mul,
                  const SoftmaxParameter *parameter);

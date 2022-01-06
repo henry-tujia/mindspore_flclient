@@ -52,8 +52,7 @@ class AscendDeviceAddress : public DeviceAddress {
                         const std::string &format = "DefaultFormat") const override;
   bool AsyncDeviceToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *src_ptr,
                            const std::string &format) const override;
-  bool SyncDeviceToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *src_ptr,
-                          const std::string &format) const override;
+  bool SyncDeviceToDevice(const DeviceSync *src_device_addr) const override;
   void ClearDeviceMemory() override;
   DeviceAddressType DeviceType() const override { return DeviceAddressType::kAscend; }
 #ifndef ENABLE_SECURITY
@@ -71,6 +70,9 @@ class AscendDeviceAddress : public DeviceAddress {
   bool ConvertFormatAndSyncHostToDevice(const ShapeVector &shape, size_t size, TypeId type, const void *host_ptr) const;
   bool SyncDeviceToHostAndConvertFormatBasedOnTransData(const std::vector<size_t> &host_shape, size_t size,
                                                         mindspore::TypeId type, void *host_ptr) const;
+  bool SyncDeviceToDeviceWithSameFormatType(const ShapeVector &shape, size_t size, TypeId type, const void *src_ptr,
+                                            const std::string &format) const;
+  bool SyncDeviceToDeviceWithDiffFormatType(const DeviceSync *src_device_addr) const;
   void SyncStream() const;
   std::vector<size_t> GetDeviceShape(std::vector<size_t> *host_shape) const;
   std::shared_ptr<LaunchKernel> CreateLaunchTransData(const std::vector<size_t> &host_shape,

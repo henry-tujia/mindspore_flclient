@@ -47,6 +47,7 @@
 #include "tools/optimizer/fusion/glu_fusion.h"
 #include "tools/optimizer/fusion/tflite_rel_pos_multi_head_attention_fusion.h"
 #include "tools/optimizer/fusion/matmul_add_fusion.h"
+#include "tools/optimizer/fusion/matmul_mul_fusion.h"
 #include "tools/optimizer/fusion/mul_add_fusion.h"
 #include "tools/optimizer/fusion/tf_gelu_fusion.h"
 #include "tools/optimizer/fusion/onnx_gelu_fusion.h"
@@ -56,6 +57,7 @@
 #include "tools/optimizer/fusion/scale_activation_fusion.h"
 #include "tools/optimizer/fusion/scale_scale_fusion.h"
 #include "tools/optimizer/fusion/fullconnected_fusion.h"
+#include "tools/optimizer/fusion/add_concat_activation_fusion.h"
 #include "tools/optimizer/graph/add_tensor_array.h"
 #include "tools/optimizer/graph/redundant_op_remove_pass.h"
 #include "tools/optimizer/graph/clip_convert_activation_pass.h"
@@ -82,7 +84,7 @@
 #include "tools/optimizer/fusion/transpose_fusion.h"
 #include "tools/optimizer/format/to_nchw_format.h"
 #include "tools/optimizer/format/to_nhwc_format.h"
-#include "tools/converter/adapter/acl_pass.h"
+#include "tools/converter/adapter/acl/acl_pass.h"
 #include "tools/converter/quantizer/parameter_tunner.h"
 #include "tools/converter/quantizer/debug_info_manager.h"
 
@@ -178,6 +180,7 @@ int AnfTransform::RunFusionPass(const FuncGraphPtr &old_graph, const converter::
 
   // The training model only does the fusion of the inference part
   // remove quantdtype when awaretraining
+  fusion_pm->AddPass(std::make_shared<opt::AddConcatActivationFusion>());
   fusion_pm->AddPass(std::make_shared<opt::SqueezeFusion>());
   fusion_pm->AddPass(std::make_shared<opt::TransposeFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ReshapeReshapeFusion>());
@@ -206,6 +209,7 @@ int AnfTransform::RunFusionPass(const FuncGraphPtr &old_graph, const converter::
   fusion_pm->AddPass(std::make_shared<opt::ConvConvFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ConvPadFusion>());
   fusion_pm->AddPass(std::make_shared<opt::MatMulAddFusion>());
+  fusion_pm->AddPass(std::make_shared<opt::MatMulMulFusion>());
   fusion_pm->AddPass(std::make_shared<opt::TransposeMatMulFusion>());
   fusion_pm->AddPass(std::make_shared<opt::MulAddFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ScaleActivationFusion>());

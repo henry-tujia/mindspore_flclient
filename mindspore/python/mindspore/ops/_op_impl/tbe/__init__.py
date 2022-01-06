@@ -35,6 +35,8 @@ from .apply_centered_rms_prop import _apply_centered_rms_prop_tbe
 from .apply_centered_rms_prop_ds import _apply_centered_rms_prop_ds_tbe
 from .add_n import _add_n_tbe
 from .add_n_ds import _add_n_ds_tbe
+from .addcdiv import _addcdiv_tbe
+from .addcmul import _addcmul_tbe
 from .accumulate_n_v2 import _accumulate_n_v2_tbe
 from .accumulate_n_v2_ds import _accumulate_n_v2_ds_tbe
 from .apply_ftrl import _apply_ftrl_tbe
@@ -62,6 +64,7 @@ from .apply_proximal_gradient_descent import _apply_proximal_gradient_descent_tb
 from .sparse_apply_ftrl_v2 import _sparse_apply_ftrl_v2_tbe
 from .sparse_apply_adagrad_v2 import _sparse_apply_adagrad_v2_tbe
 from .approximate_equal import _approximate_equal_tbe
+from .approximate_equal_ds import _approximate_equal_ds_tbe
 from .adam_apply_one import _adam_apply_one_tbe
 from .assign import _assign_tbe
 from .assign_ds import _assign_ds_tbe
@@ -89,6 +92,8 @@ from .conv2d_backprop_input_ds import _conv2d_backprop_input_ds_tbe
 from .confusion_mul_grad import _confusion_mul_grad_tbe
 from .dropout_do_mask import _dropout_do_mask_tbe
 from .dropout_do_mask_ds import _dropout_do_mask_ds_tbe
+from .dropout_do_mask_v3 import _dropout_do_mask_v3_tbe
+from .softmax_v2_with_dropout_do_mask_v3 import _softmax_v2_with_dropout_do_mask_v3_tbe
 from .gelu import _gelu_tbe
 from .gelu_ds import _gelu_ds_tbe
 from .gelu_grad import _gelu_grad_tbe
@@ -125,6 +130,7 @@ from .sigmoid_cross_entropy_with_logits import _sigmoid_cross_entropy_with_logit
 from .sigmoid_cross_entropy_with_logits_ds import _sigmoid_cross_entropy_with_logits_ds_tbe
 from .sigmoid_cross_entropy_with_logits_grad import _sigmoid_cross_entropy_with_logits_grad_tbe
 from .sparse_apply_adadelta import _sparse_apply_adadelta_tbe
+from .sigmoid_cross_entropy_with_logits_grad_ds import _sigmoid_cross_entropy_with_logits_grad_ds_tbe
 from .tensor_add import _tensor_add_tbe
 from .tensor_add_ds import _tensor_add_ds_tbe
 from .trans_data import _trans_data_tbe
@@ -217,6 +223,7 @@ from .softmax_grad_ext import _softmax_grad_ext_tbe
 from .square import _square_tbe
 from .square_ds import _square_ds_tbe
 from .squared_difference import _squared_difference_tbe
+from .squared_difference_ds import _squared_difference_ds_tbe
 from .sqrt import _sqrt_tbe
 from .sqrt_ds import _sqrt_ds_tbe
 from .sparse_apply_ftrl_d import _sparse_apply_ftrl_d
@@ -383,6 +390,7 @@ from .space_to_batch_nd import _space_to_batch_nd_tbe
 from .batch_to_space_nd_ds import _batch_to_space_nd_ds_tbe
 from .bitwise_and import _bitwise_and_tbe
 from .bitwise_or import _bitwise_or_tbe
+from .bitwise_or_ds import _bitwise_or_ds_tbe
 from .bitwise_xor import _bitwise_xor_tbe
 from .reduce_all import _reduce_all_tbe
 from .reduce_any import _reduce_any_tbe
@@ -510,3 +518,4 @@ from .extract_volume_patches import _extract_volume_patches_tbe
 from .round_ds import _round_ds_tbe
 from .is_close import _is_close_tbe
 from .apply_adam_with_amsgrad import _apply_adam_with_amsgrad_tbe
+from .expm1_ds import _expm1_ds_tbe

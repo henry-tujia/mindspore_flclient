@@ -172,6 +172,7 @@ constexpr auto kSendOpName = "StreamSend";
 constexpr auto kRecvOpName = "StreamRecv";
 constexpr auto kReluV2OpName = "ReLUV2";
 constexpr auto kReluGradV2OpName = "ReluGradV2";
+constexpr auto kAddOpName = "Add";
 constexpr auto kAddNOpName = "AddN";
 constexpr auto kResizeNearestNeighborV2OpName = "ResizeNearestNeighborV2";
 constexpr auto kResizeNearestNeighborV2GradOpName = "ResizeNearestNeighborV2Grad";
@@ -307,7 +308,10 @@ constexpr auto kFusedAddReluGradV2Name = "FusedAddReluGradV2";
 constexpr auto kDropoutOpName = "Dropout";
 constexpr auto kDropoutGradOpName = "DropoutGrad";
 constexpr auto kDropoutGenMaskOpName = "DropoutGenMask";
+constexpr auto kDropoutGenMaskV3OpName = "DropoutGenMaskV3";
 constexpr auto kDropoutDoMaskOpName = "DropoutDoMask";
+constexpr auto kDropoutDoMaskV3OpName = "DropoutDoMaskV3";
+constexpr auto kSoftmaxV2WithDropoutDoMaskV3OpName = "SoftmaxV2WithDropoutDoMaskV3";
 constexpr auto kGammaOpName = "Gamma";
 constexpr auto kPoissonOpName = "Poisson";
 constexpr auto kStandardLaplaceOpName = "StandardLaplace";
@@ -504,7 +508,7 @@ constexpr auto kAttrInputToAttrIdx = "input_to_attr_idx";
 constexpr auto kAttrInputToAttrName = "input_to_attr_name";
 constexpr auto kAttrFuncType = "func_type";
 constexpr auto kAttrCustAicpu = "cust_aicpu";
-constexpr auto kAttrIsInternalOutput = "is_internal_output";
+constexpr auto kAttrIsInternalOutputNopNode = "is_internal_output_nop_node";
 
 // custom operator func type
 constexpr auto kCustomTypeAOT = "aot";

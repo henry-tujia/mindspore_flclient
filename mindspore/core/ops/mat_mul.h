@@ -18,7 +18,7 @@
 #define MINDSPORE_CORE_OPS_MAT_MUL_H_
 #include <vector>
 #include <memory>
-
+#include <string>
 #include "ops/primitive_c.h"
 #include "ops/op_utils.h"
 #include "abstract/abstract_value.h"
@@ -33,6 +33,7 @@ class MS_CORE_API MatMul : public PrimitiveC {
  public:
   /// \brief Constructor.
   MatMul() : PrimitiveC(kNameMatMul) { InitIOName({"x1", "x2"}, {"output"}); }
+  explicit MatMul(const std::string k_name) : PrimitiveC(k_name) { InitIOName({"x", "x2"}, {"output"}); }
   /// \brief Destructor.
   ~MatMul() = default;
   MS_DECLARE_PARENT(MatMul, PrimitiveC);

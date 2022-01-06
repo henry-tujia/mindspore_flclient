@@ -34,6 +34,8 @@ inline const mindspore::HashMap<std::string, ValuePtr> kSideEffectPropagate = {
 
 constexpr auto kGetNext = "GetNext";
 constexpr auto kGather = "Gather";
+constexpr auto kAddcdiv = "Addcdiv";
+constexpr auto kAddcmul = "Addcmul";
 constexpr auto kCdist = "Cdist";
 constexpr auto kCdistGrad = "CdistGrad";
 // Arithmetic
@@ -110,6 +112,7 @@ constexpr auto kLayerNorm = "LayerNorm";
 constexpr auto kLayerNormGrad = "LayerNormGrad";
 constexpr auto kDropoutGenMask = "DropoutGenMask";
 constexpr auto kDropoutDoMask = "DropoutDoMask";
+constexpr auto kDropoutDoMaskV3 = "DropoutDoMaskV3";
 constexpr auto kDropout = "Dropout";
 constexpr auto kDropoutGrad = "DropoutGrad";
 constexpr auto kConv2DTranspose = "Conv2DTranspose";
@@ -161,6 +164,7 @@ inline const PrimitivePtr kPrimLogicalAnd = std::make_shared<Primitive>("Logical
 inline const PrimitivePtr kPrimLogicalOr = std::make_shared<Primitive>("LogicalOr");
 inline const PrimitivePtr kPrimLogicalNot = std::make_shared<Primitive>("LogicalNot");
 inline const PrimitivePtr kPrimEqualCount = std::make_shared<Primitive>("EqualCount");
+inline const PrimitivePtr kPrimApproximateEqual = std::make_shared<Primitive>("ApproximateEqual");
 
 inline const PrimitivePtr kPrimDistribute = std::make_shared<Primitive>("distribute");
 inline const PrimitivePtr kPrimIm2Col = std::make_shared<Primitive>("im2col");
@@ -296,6 +300,8 @@ inline const PrimitivePtr kPrimCrop = std::make_shared<Primitive>("Crop");
 inline const PrimitivePtr kPrimFlattenGrad = std::make_shared<Primitive>("FlattenGrad");
 inline const PrimitivePtr kPrimSoftmax = std::make_shared<Primitive>("Softmax");
 inline const PrimitivePtr kPrimSparseSoftmaxCrossEntropy = std::make_shared<Primitive>("SparseSoftmaxCrossEntropy");
+inline const PrimitivePtr kPrimSoftmaxV2WithDropoutDoMaskV3 =
+  std::make_shared<Primitive>("SoftmaxV2WithDropoutDoMaskV3");
 inline const PrimitivePtr kPrimLogSoftmax = std::make_shared<Primitive>("LogSoftmax");
 inline const PrimitivePtr kPrimLogSoftmaxGrad = std::make_shared<Primitive>("LogSoftmaxGrad");
 inline const PrimitivePtr kPrimLstm = std::make_shared<Primitive>("LSTM");
@@ -391,6 +397,7 @@ inline const PrimitivePtr kPrimLayerNormBetaGammaBackpropV2 =
 inline const PrimitivePtr kPrimLog1p = std::make_shared<Primitive>("Log1p");
 inline const PrimitivePtr kPrimDropoutGenMask = std::make_shared<Primitive>(kDropoutGenMask);
 inline const PrimitivePtr kPrimDropoutDoMask = std::make_shared<Primitive>(kDropoutDoMask);
+inline const PrimitivePtr kPrimDropoutDoMaskV3 = std::make_shared<Primitive>(kDropoutDoMaskV3);
 inline const PrimitivePtr kPrimDropoutGrad = std::make_shared<Primitive>(kDropoutGrad);
 inline const PrimitivePtr kPrimDropout = std::make_shared<Primitive>(kDropout);
 inline const PrimitivePtr kPrimUniformReal = std::make_shared<Primitive>("UniformReal");
@@ -521,10 +528,14 @@ inline const PrimitivePtr kPrimTensorListStack = std::make_shared<Primitive>("Te
 inline const PrimitivePtr kPrimTensorListSetItem = std::make_shared<Primitive>("TensorListSetItem");
 
 // Maths
+inline const PrimitivePtr kPrimBesselI0 = std::make_shared<Primitive>("BesselI0");
+inline const PrimitivePtr kPrimBesselI1 = std::make_shared<Primitive>("BesselI1");
 inline const PrimitivePtr kPrimGer = std::make_shared<Primitive>("Ger");
 inline const PrimitivePtr kPrimCeil = std::make_shared<Primitive>("Ceil");
 inline const PrimitivePtr kPrimTensorAdd = std::make_shared<Primitive>("TensorAdd");
 inline const PrimitivePtr kPrimAdd = std::make_shared<Primitive>(kAdd);
+inline const PrimitivePtr kPrimAddcdiv = std::make_shared<Primitive>(kAddcdiv);
+inline const PrimitivePtr kPrimAddcmul = std::make_shared<Primitive>(kAddcmul);
 inline const PrimitivePtr kPrimMatMul = std::make_shared<Primitive>("MatMul");
 inline const PrimitivePtr kPrimMatMulV2 = std::make_shared<Primitive>("MatMulV2");
 inline const PrimitivePtr kPrimMatrixDiag = std::make_shared<Primitive>("MatrixDiag");
@@ -603,6 +614,7 @@ inline const PrimitivePtr kPrimSquareSumAll = std::make_shared<Primitive>("Squar
 inline const PrimitivePtr kPrimComplex = std::make_shared<Primitive>("Complex");
 inline const PrimitivePtr kPrimXdivy = std::make_shared<Primitive>("Xdivy");
 inline const PrimitivePtr kPrimInv = std::make_shared<Primitive>("Inv");
+inline const PrimitivePtr kPrimBitwiseOr = std::make_shared<Primitive>("BitwiseOr");
 
 // Image
 inline const PrimitivePtr kPrimNonMaxSuppressionV3 = std::make_shared<Primitive>("NonMaxSuppressionV3");
@@ -762,6 +774,7 @@ inline const PrimitivePtr kPrimErfc = std::make_shared<Primitive>("Erfc");
 inline const PrimitivePtr kPrimSplice = std::make_shared<Primitive>("Splice");
 inline const PrimitivePtr kPrimAffine = std::make_shared<Primitive>("Affine");
 inline const PrimitivePtr kPrimEltwise = std::make_shared<Primitive>("Eltwise");
+inline const PrimitivePtr kPrimMatMulFusion = std::make_shared<Primitive>("MatMulFusion");
 
 // Type introspection
 inline const PrimitivePtr kPrimTypeOf = std::make_shared<Primitive>("typeof");

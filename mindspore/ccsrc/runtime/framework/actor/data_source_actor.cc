@@ -119,7 +119,7 @@ void DeviceQueueDataSourceActor::SendMemoryAllocReq(OpContext<DeviceTensor> *con
 void DeviceQueueDataSourceActor::SendMemoryFreeReq(OpContext<DeviceTensor> *const context) {
   auto &device_tensors = buffers_.front();
   ActorDispatcher::Send(memory_manager_aid_, &MemoryManagerActor::FreeMemory, &device_tensors, device_contexts_[0],
-                        context);
+                        context, GetAID());
 }
 
 void DeviceQueueDataSourceActor::OnMemoryAllocFinish(OpContext<DeviceTensor> *const context) {
@@ -205,10 +205,10 @@ void HostQueueDataSourceActor::SendMemoryFreeReq(OpContext<DeviceTensor> *const 
   auto &device_tensors = buffers_.front();
   if (IsSameDeviceType()) {
     ActorDispatcher::Send(memory_manager_aid_, &MemoryManagerActor::FreeMemory, &device_tensors, device_contexts_[0],
-                          context);
+                          context, GetAID());
   } else {
     ActorDispatcher::Send(memory_manager_aid_, &MemoryManagerActor::FreeBatchMemory, &device_tensors, &device_contexts_,
-                          context);
+                          context, GetAID());
   }
 }
 
@@ -242,15 +242,10 @@ void HostQueueDataSourceActor::OnMemoryAllocFinish(OpContext<DeviceTensor> *cons
       if (tensor_device_address.get() == device_tensor) {
         continue;
       }
-
-      if (NeedSyncByTensor(device_tensor, tensor_device_address.get())) {
-        host_tensor->data_sync(false);
-      } else {
-        if ((!Copy(device_tensor, tensor_device_address.get()))) {
-          SET_OPCONTEXT_FAIL_RET_WITH_ERROR((*context), "Copy data failed.");
-        }
-        continue;
+      if ((!Copy(device_tensor, tensor_device_address.get()))) {
+        SET_OPCONTEXT_FAIL_RET_WITH_ERROR((*context), "Copy data failed.");
       }
+      continue;
     }
 
     // Sync data from host_tensor to device_tensor.

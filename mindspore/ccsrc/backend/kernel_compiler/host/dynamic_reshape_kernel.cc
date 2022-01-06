@@ -97,13 +97,20 @@ void DynamicReshapeKernel::Execute() {
   size_t input_size_byte = LongToSize(arr_prod) * abstract::TypeIdSize(type_x);
   auto output_addr = AnfAlgo::GetOutputAddr(cnode, 0);
   MS_EXCEPTION_IF_NULL(output_addr);
-  if (!output_addr->SyncDeviceToDevice(output_shapes, input_size_byte, address_x->type_id(), address_x->GetPtr(),
-                                       address_x->format())) {
-    MS_LOG(EXCEPTION) << "Host Reshape sync device to device failed.";
+  if (address_x->DeviceType() == device::DeviceAddressType::kCPU) {
+    auto ret =
+      memcpy_s(const_cast<void *>(output_addr->GetPtr()), output_addr->GetSize(), address_x->GetPtr(), input_size_byte);
+    if (ret != EOK) {
+      MS_LOG(EXCEPTION) << "Execute DynamicReshapeKernel memcpy_s failed";
+    }
+  } else {
+    if (!output_addr->AsyncDeviceToDevice(output_shapes, input_size_byte, address_x->type_id(), address_x->GetPtr(),
+                                          address_x->format())) {
+      MS_LOG(EXCEPTION) << "Host Reshape sync device to device failed.";
+    }
+    MS_LOG(INFO) << "Execute host ReshapeKernel End";
   }
-  MS_LOG(INFO) << "Execute host ReshapeKernel End";
 }
-
 device::DynamicKernelPtr DynamicReshapeKernelMod::GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) {
   return std::make_shared<DynamicReshapeKernel>(stream_ptr, cnode_ptr);
 }

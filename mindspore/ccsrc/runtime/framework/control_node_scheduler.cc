@@ -371,7 +371,9 @@ void ControlNodeScheduler::BuildStackActorForControlNode(const GraphCompilerInfo
     for (size_t i = 0; i < control_actor->formal_parameters_.size(); ++i) {
       const auto &parameter = control_actor->formal_parameters_[i];
       auto device_context = control_actor->device_contexts_[i];
-      if (AnfAlgo::IsCallNode(parameter.first) && (parser->IsRecursionCallNode(parameter.first))) {
+      const auto &graph =
+        (parameter.first->isa<CNode>() ? parser->FetchKernelGraphByFrontNode(parameter.first) : nullptr);
+      if (parser->IsRecursionCallNode(parameter.first) || (graph != nullptr && parser->IsRecursionKernelGraph(graph))) {
         formal_parameters.emplace_back(parameter);
         device_contexts.emplace_back(device_context);
       } else if (parameter.first->isa<ValueNode>()) {
@@ -438,27 +440,27 @@ void ControlNodeScheduler::ClearActorData(const ControlActorSet *control_actor_s
 
   for (auto &switch_actor : control_actor_set->switch_actors_) {
     MS_EXCEPTION_IF_NULL(switch_actor);
-    switch_actor->memory_free_lists_.clear();
+    switch_actor->memory_free_lists_ = std::queue<std::vector<DeviceTensor *>>();
   }
 
   for (auto &gather_actor : control_actor_set->gather_actors_) {
     MS_EXCEPTION_IF_NULL(gather_actor);
-    gather_actor->memory_free_lists_.clear();
+    gather_actor->memory_free_lists_ = std::queue<std::vector<DeviceTensor *>>();
   }
 
   for (auto &entrance_actor : control_actor_set->entrance_actors_) {
     MS_EXCEPTION_IF_NULL(entrance_actor);
-    entrance_actor->memory_free_lists_.clear();
+    entrance_actor->memory_free_lists_ = std::queue<std::vector<DeviceTensor *>>();
   }
 
   for (auto &stack_actor : control_actor_set->stack_actors_) {
     MS_EXCEPTION_IF_NULL(stack_actor);
-    stack_actor->memory_free_lists_.clear();
+    stack_actor->memory_free_lists_ = std::queue<std::vector<DeviceTensor *>>();
   }
 
   for (auto &exit_actor : control_actor_set->exit_actors_) {
     MS_EXCEPTION_IF_NULL(exit_actor);
-    exit_actor->memory_free_lists_.clear();
+    exit_actor->memory_free_lists_ = std::queue<std::vector<DeviceTensor *>>();
     exit_actor->created_device_tensors_.clear();
   }
 }
@@ -990,6 +992,12 @@ void ControlNodeScheduler::LinkControlArrowByAutoMonad(ControlActor *to_actor, c
       }
       from_actor = FetchActor(parser->FetchGroupNameByKernelGraph(graph) + kExitActorNameSuffix);
       MS_EXCEPTION_IF_NULL(from_actor);
+      if (find(from_actor->output_control_arrows_.begin(), from_actor->output_control_arrows_.end(),
+               to_actor->GetAID()) != from_actor->output_control_arrows_.end()) {
+        MS_LOG(DEBUG) << "Link auto monad control from actor:" << from_actor->GetAID()
+                      << " to actor:" << to_actor->GetAID() << " is already exist.";
+        continue;
+      }
       from_actors.emplace_back(from_actor);
       LinkControlArrow(from_actor, to_actor);
     }

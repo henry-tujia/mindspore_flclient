@@ -16,6 +16,7 @@
 
 #include "runtime/framework/control_node_parser.h"
 #include "runtime/framework/actor/actor_common.h"
+#include "utils/func_graph_analyzer.h"
 #include "utils/convert_utils.h"
 #include "abstract/utils.h"
 #include "ir/tensor.h"
@@ -807,6 +808,8 @@ void ControlNodeParser::Parse(const std::vector<AnfNodePtr> &control_nodes, cons
 
   CreateBranchIDForCallNode(control_nodes);
 
+  ParseFrontNodeToKernelGraph(graphs);
+
   ParseCallNodeToFuncGraph(control_nodes);
 
   ParseUnRecursionCallNode();
@@ -814,8 +817,6 @@ void ControlNodeParser::Parse(const std::vector<AnfNodePtr> &control_nodes, cons
   ParseNeedStackKernelGraph(kernel_graph_to_device_contexts);
 
   ParseNeedStackControlNode(control_nodes);
-
-  FetchFrontNodeToKernelGraph(graphs);
 
   ParseFormalToRealParameter(control_nodes);
 
@@ -1202,7 +1203,7 @@ void ControlNodeParser::ParseDeviceContextForReturnNode(const DeviceContext *def
   }
 }
 
-void ControlNodeParser::FetchFrontNodeToKernelGraph(const std::vector<KernelGraphPtr> &graphs) {
+void ControlNodeParser::ParseFrontNodeToKernelGraph(const std::vector<KernelGraphPtr> &graphs) {
   for (const auto &graph : graphs) {
     MS_EXCEPTION_IF_NULL(graph);
     if (graph->execution_order().empty()) {
@@ -1541,21 +1542,18 @@ void ControlNodeParser::ParseFrontToBackendParameter(const std::vector<KernelGra
 }
 
 void ControlNodeParser::ParseCallNodeToFuncGraph(const std::vector<AnfNodePtr> &control_nodes) {
-  AnfNodePtr make_tuple;
+  auto func_graph_analyzer = std::make_shared<FuncGraphAnalyzer>(root_func_graph_);
+  func_graph_analyzer->Run();
+
   for (const auto &control_node : control_nodes) {
     MS_EXCEPTION_IF_NULL(control_node);
-    if (AnfAlgo::CheckPrimitiveType(control_node, prim::kPrimMakeTuple)) {
-      make_tuple = control_node;
-      break;
+    if (!AnfAlgo::IsCallNode(control_node)) {
+      continue;
     }
-  }
 
-  for (const auto &control_node : control_nodes) {
-    MS_EXCEPTION_IF_NULL(control_node);
-
-    if (AnfAlgo::IsCallNode(control_node)) {
-      std::stack<size_t> output_indexs;
-      call_node_to_func_graphs_[control_node] = GetFuncGraphbyCallNode(control_node, &output_indexs, make_tuple);
+    auto func_graphs = func_graph_analyzer->GetCallerFuncGraphs(control_node);
+    for (auto func_graph : func_graphs) {
+      call_node_to_func_graphs_[control_node].emplace(func_graph);
     }
   }
 }
@@ -1706,13 +1704,22 @@ void ControlNodeParser::ParseUnRecursionCallNode() {
 void ControlNodeParser::ParseNeedStackControlNode(const std::vector<AnfNodePtr> &control_nodes) {
   for (const auto &control_node : control_nodes) {
     MS_EXCEPTION_IF_NULL(control_node);
-    if (AnfAlgo::IsCallNode(control_node)) {
-      auto input_with_indexs = FetchInputNodeByCNode(control_node);
-      if (std::any_of(input_with_indexs.begin(), input_with_indexs.end(),
-                      [](const auto &input_with_index) { return AnfAlgo::IsCallNode(input_with_index.first); })) {
-        need_stack_control_nodes_.emplace(control_node);
-        MS_LOG(DEBUG) << "Add need stack control node:" << control_node->DebugString();
+    if (!AnfAlgo::IsCallNode(control_node)) {
+      continue;
+    }
+    auto input_with_indexs = FetchInputNodeByCNode(control_node);
+    for (const auto &input_with_index : input_with_indexs) {
+      MS_EXCEPTION_IF_NULL(input_with_index.first);
+      // If the call node has call or recursion graph input, a stack created for the call node is required.
+      if (!AnfAlgo::IsCallNode(input_with_index.first)) {
+        const auto &graph = FetchKernelGraphByFrontNode(input_with_index.first);
+        if (graph == nullptr || (!IsRecursionKernelGraph(graph))) {
+          continue;
+        }
       }
+      need_stack_control_nodes_.emplace(control_node);
+      MS_LOG(DEBUG) << "Add need stack control node:" << control_node->DebugString();
+      break;
     }
   }
 
@@ -1788,7 +1795,8 @@ void ControlNodeParser::ParseNeedStackKernelGraph(const KernelGraphToDeviceConte
 
         // Collect outputs in group.
         for (const auto &backend_to_front : kernel_graph->graph_output_map()) {
-          if (HasAbstractMonad(backend_to_front.second.first) || HasAbstractMonad(backend_to_front.first.first)) {
+          if (HasAbstractMonad(backend_to_front.second.first) || HasAbstractMonad(backend_to_front.first.first) ||
+              AnfAlgo::CheckPrimitiveType(backend_to_front.second.first, prim::kPrimPartial)) {
             continue;
           }
           MS_LOG(DEBUG) << "Kernel graph:" << kernel_graph->ToString()

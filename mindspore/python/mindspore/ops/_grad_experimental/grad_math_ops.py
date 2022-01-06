@@ -16,6 +16,7 @@
 """Define the grad rules of math related operations."""
 
 from mindspore.common import dtype as mstype
+import mindspore.numpy as mnp
 import numpy as np
 from .. import functional as F
 from .. import operations as P
@@ -81,6 +82,37 @@ def get_bprop_index_lerp(self):
     return bprop
 
 
+@bprop_getters.register(P.Addcdiv)
+def get_bprop_index_addcdiv(self):
+    """Generate bprop for Addcdiv"""
+    mul_op = P.Mul()
+    div_op = P.Div()
+    pow_op = P.Pow()
+    neg_op = P.Neg()
+
+    def bprop(input_data, x1, x2, value, out, dout):
+        dx1 = mul_op(dout, div_op(value, x2))
+        dx2 = neg_op(mul_op(mul_op(mul_op(x1, value), pow_op(x2, -2)), dout))
+        dvalue = mul_op(dout, div_op(x1, x2))
+        return dout, dx1, dx2, dvalue
+
+    return bprop
+
+
+@bprop_getters.register(P.Addcmul)
+def get_bprop_index_addcmul(self):
+    """Generate bprop for Addcmul"""
+    mul_op = P.Mul()
+
+    def bprop(input_data, x1, x2, value, out, dout):
+        dx1 = mul_op(dout, mul_op(value, x2))
+        dx2 = mul_op(dout, mul_op(value, x1))
+        dvalue = mul_op(dout, mul_op(x1, x2))
+        return dout, dx1, dx2, dvalue
+
+    return bprop
+
+
 @bprop_getters.register(P.LpNorm)
 def get_bprop_lp_norm(self):
     """Grad definition for `LpNorm` operation."""
@@ -131,6 +163,33 @@ def get_bprop_erfinv(self):
         dx = dout * root_pi_over_two * exp(dout_square)
         return (dx,)
 
+    return bprop
+
+
+@bprop_getters.register(P.BesselI0)
+def get_bprop_bessel_i0(self):
+    """Generate bprop for BesselI0"""
+    bessel_i1 = P.BesselI1()
+
+    def bprop(x, out, dout):
+        dx = dout * bessel_i1(x)
+        return (dx,)
+    return bprop
+
+
+@bprop_getters.register(P.BesselI1)
+def get_bprop_bessel_i1(self):
+    """Generate bprop for BesselI1"""
+    equal = P.Equal()
+    div = P.Div()
+    cast = P.Cast()
+    dtype = P.DType()
+    bessel_i0 = P.BesselI0()
+
+    def bprop(x, out, dout):
+        dout_dx = mnp.where(equal(x, 0.), cast(1., dtype(x)), bessel_i0(x) - div(out, x))
+        dx = dout * dout_dx
+        return (dx,)
     return bprop
 
 

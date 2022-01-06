@@ -240,6 +240,100 @@ class Add(_MathBinaryOp):
         return None
 
 
+class Addcdiv(Primitive):
+    """
+    Performs the element-wise division of tensor x1 by tensor x2,
+    multiply the result by the scalar value and add it to input_data.
+
+    .. math::
+        y[i] = input_data[i] + value[i] * (x1[i] / x2[i])
+
+    Inputs:
+        - **input_data**(Tensor) - The tensor to be added, with data type float16 and float32.
+        - **x1** (Tensor) - The numerator tensor, with data type float16 and float32.
+        - **x2** (Tensor) - The denominator tensor, with data type float16 and float32.
+        - **value** (Tensor) - The multiplier for tensor x1/x2, with data type float16, float32.
+
+    Outputs:
+        Tensor y, has the same shape and dtype as x1/x2.
+
+    Raises:
+        TypeError: If dtype of `x1`, `x2`, `value`, `input_data`is not tensor.
+        TypeError: If dtype of `input_data` is not one of: float32, float16.
+        TypeError: If dtype of `x1` or 'x2' is not one of: float32, float16.
+        TypeError: If dtype of `value` is not one of: float32, float16.
+        ValueError: If `x1` could not be broadcast to a tensor with shape of `x2`.
+        ValueError: If `value` could not be broadcast to tensors with shapes of `x1/x2`.
+        ValueError: If `input_data` could not be broadcast to tensors with shapes of `value*(x1/x2)`.
+
+    Supported Platforms:
+        ``Ascend``
+
+    Examples:
+        >>> input_data = Tensor(np.array([1, 1, 1, 1]), mindspore.float32)
+        >>> x1 = Tensor(np.array([1, 2, 3, 4]), mindspore.float32)
+        >>> x2 = Tensor(np.array([4, 3, 2, 1]), mindspore.float32)
+        >>> value = Tensor([1], mindspore.float32)
+        >>> addcdiv = ops.Addcdiv()
+        >>> y = addcdiv(input_data, x1, x2, value)
+        >>> print(y)
+        [1.25      1.6666667 2.5       5.       ]
+    """
+
+    @prim_attr_register
+    def __init__(self):
+        """Initialize Addcdiv """
+        self.init_prim_io_names(inputs=['input_data', 'x1', 'x2', 'value'], outputs=['y'])
+
+
+class Addcmul(Primitive):
+    """
+    Performs the element-wise product of tensor x1 and tensor x2,
+    multiply the result by the scalar value and add it to input_data.
+
+    .. math::
+        output[i] = input_data[i] + value[i] * (x1[i] * x2[i])
+
+    Inputs:
+        - **input_data**(Tensor) - The tensor to be added, with data type float16, float32 and int32.
+        - **x1** (Tensor) - The tensor to be multiplied, with data type float16, float32 and int32.
+        - **x2** (Tensor) - The tensor to be multiplied, with data type float16, float32 and int32.
+        - **value** (Tensor) - The multiplier for tensor x1*x2, with data type float16, float32 and int32.
+
+    Outputs:
+        Tensor, has the same shape and dtype as x1*x2.
+
+    Raises:
+        TypeError: If dtype of `x1`, `x2`, `value`, `input_data`is not tensor.
+        TypeError: If dtype of `input_data` is not one of: float32, float16, int32.
+        TypeError: If dtype of `x1` or 'x2' is not one of: float32, float16, int32.
+        TypeError: If dtype of `value` is not one of: float32, float16, int32.
+        ValueError: If `x1` could not be broadcast to a tensor with shape of `x2`.
+        ValueError: If `value` could not be broadcast to tensors with shapes of `x1` * `x2`.
+        ValueError: If `input_data` could not be broadcast to tensors with shapes of `value*(x1*x2)`.
+
+    Supported Platforms:
+        ``Ascend``
+
+    Examples:
+        >>> input_data = Tensor(np.array([1, 1, 1]), mindspore.float32)
+        >>> x1 = Tensor(np.array([[1], [2], [3]]), mindspore.float32)
+        >>> x2 = Tensor(np.array([[1, 2, 3]]), mindspore.float32)
+        >>> value = Tensor([1], mindspore.float32)
+        >>> addcmul = ops.Addcmul()
+        >>> y = addcmul(input_data, x1, x2, value)
+        >>> print(y)
+        [[ 2.  3.  4.]
+         [ 3.  5.  7.]
+         [ 4.  7. 10.]]
+    """
+
+    @prim_attr_register
+    def __init__(self):
+        """Initialize Addcmul """
+        self.init_prim_io_names(inputs=['input_data', 'x1', 'x2', 'value'], outputs=['y'])
+
+
 class TensorAdd(_MathBinaryOp):
     """
     Same as operator Add. TensorAdd will be deprecated in the future.
@@ -1872,10 +1966,6 @@ class SquaredDifference(_MathBinaryOp):
         [1. 4. 9.]
     """
 
-    def infer_dtype(self, x_dtype, y_dtype):
-        valid_type = [mstype.float16, mstype.float32, mstype.float64, mstype.int32]
-        return _MathBinaryOp.do_infer_dtype(x_dtype, y_dtype, valid_type, self.name)
-
 
 class Square(Primitive):
     """
@@ -2165,7 +2255,7 @@ class Exp(PrimitiveWithInfer):
         return None
 
 
-class Expm1(PrimitiveWithInfer):
+class Expm1(Primitive):
     r"""
     Returns exponential then minus 1 of a tensor element-wise.
 
@@ -2199,12 +2289,6 @@ class Expm1(PrimitiveWithInfer):
         """Initialize Expm1."""
         self.init_prim_io_names(inputs=['x'], outputs=['y'])
 
-    def infer_shape(self, x_shape):
-        return x_shape
-
-    def infer_dtype(self, x_type):
-        validator.check_tensor_dtype_valid("x", x_type, [mstype.float16, mstype.float32], self.name)
-        return x_type
 
 
 class HistogramFixedWidth(PrimitiveWithInfer):
@@ -3451,16 +3535,6 @@ class ApproximateEqual(_LogicBinaryOp):
         """Initialize ApproximateEqual"""
         validator.check_value_type("tolerance", tolerance, [float], self.name)
 
-    def infer_shape(self, x_shape, y_shape):
-        validator.check("x_shape", x_shape, "y_shape", y_shape, Rel.EQ, self.name)
-        return x_shape
-
-    def infer_dtype(self, x_dtype, y_dtype):
-        args_dtype = {"x": x_dtype, "y": y_dtype}
-        valid_type = [mstype.float32, mstype.float16]
-        validator.check_tensors_dtypes_same_and_valid(args_dtype, valid_type, prim_name=self.name)
-        return mstype.tensor_type(mstype.bool_)
-
 
 class EqualCount(PrimitiveWithInfer):
     """
@@ -4706,7 +4780,7 @@ class Atanh(Primitive):
     Inputs:
         - **x** (Tensor): The shape of tensor is
           :math:`(N,*)` where :math:`*` means, any number of additional dimensions.
-           The data type should be one of the following types: float16, float32.
+          The data type should be one of the following types: float16, float32.
 
     Outputs:
         A Tensor, has the same type as the input.
@@ -4939,6 +5013,68 @@ class BitwiseXor(_BitwiseBinaryOp):
         >>> print(output)
         [ 0  1  0  0 -2  3  2]
     """
+
+
+class BesselI0(Primitive):
+    """
+    Computes BesselI0 of input element-wise.
+
+    Inputs:
+        - **x** (Tensor) - The shape of tensor is
+          :math:`(N,*)` where :math:`*` means, any number of additional dimensions.
+          Data type must be float16, float32 or float64.
+
+    Outputs:
+        Tensor, has the same shape as `x`.
+
+    Raises:
+        TypeError: If `x` is not a Tensor of float16, float32.
+
+    Supported Platforms:
+        ``Ascend``
+
+    Examples:
+        >>> bessel_i0 = ops.BesselI0()
+        >>> x = Tensor(np.array([0.24, 0.83, 0.31, 0.09]), mindspore.float32)
+        >>> output = bessel_i0(x)
+        >>> print(output)
+        [1.014452  1.179784  1.0241697 1.0020261]
+    """
+
+    @prim_attr_register
+    def __init__(self):
+        """Initialize BesselI0"""
+
+
+class BesselI1(Primitive):
+    """
+    Computes BesselI1 of input element-wise.
+
+    Inputs:
+        - **x** (Tensor) - The shape of tensor is
+          :math:`(N,*)` where :math:`*` means, any number of additional dimensions.
+          Data type must be float16, float32 or float64.
+
+    Outputs:
+        Tensor, has the same shape as `x`.
+
+    Raises:
+        TypeError: If `x` is not a Tensor of float16, float32.
+
+    Supported Platforms:
+        ``Ascend``
+
+    Examples:
+        >>> bessel_i1 = ops.BesselI1()
+        >>> x = Tensor(np.array([0.24, 0.83, 0.31, 0.09]), mindspore.float32)
+        >>> output = bessel_i1(x)
+        >>> print(output)
+        [0.1208661  0.45177728 0.1568694  0.04504559]
+    """
+
+    @prim_attr_register
+    def __init__(self):
+        """Initialize BesselI1"""
 
 
 class BesselI0e(Primitive):

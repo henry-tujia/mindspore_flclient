@@ -28,6 +28,7 @@
 #include "backend/kernel_compiler/kernel_build_info.h"
 #include "runtime/device/kernel_runtime_manager.h"
 #include "backend/kernel_compiler/common_utils.h"
+#include "backend/optimizer/common/helper.h"
 
 namespace mindspore {
 namespace session {
@@ -138,11 +139,14 @@ std::string GetNodeGroup(const AnfNodePtr &node) {
 }
 
 void SetInternalOutputAttr(const AnfNodePtr &node) {
+  if (!opt::IsNopNode(node)) {
+    return;
+  }
   auto p = GetCNodePrimitive(node);
   if (p == nullptr) return;
   auto prim_node = NewValueNode(p->Clone());
   node->cast<CNodePtr>()->set_input(kAnfPrimitiveIndex, prim_node);
-  AnfAlgo::SetNodeAttr(kAttrIsInternalOutput, MakeValue(true), node);
+  AnfAlgo::SetNodeAttr(kAttrIsInternalOutputNopNode, MakeValue(true), node);
 }
 }  // namespace
 
@@ -254,12 +258,17 @@ void KernelGraph::SetExecOrderByDefault() {
       }
       // delay execute comm ops that need optimize
       bool is_fused_comm = AnfAlgo::IsFusedCommunicationOp(node);
+      bool is_comm = AnfAlgo::IsCommunicationOp(node);
       bool optimize_comm = false;
-      if (is_fused_comm && optimized_comm_group.empty()) {
+      if (is_fused_comm) {
         auto node_group = GetNodeGroup(node);
         if (node_group.find(kSyncBnGroup) == string::npos) {
-          optimized_comm_group = node_group;
-          optimize_comm = true;
+          if (optimized_comm_group.empty()) {
+            optimized_comm_group = node_group;
+            optimize_comm = true;
+          } else if (optimized_comm_group == node_group) {
+            optimize_comm = true;
+          }
         }
       }
       if (optimize_comm) {
@@ -268,7 +277,11 @@ void KernelGraph::SetExecOrderByDefault() {
           delay_comm_stack.pop();
         }
         delay_comm_stack.push(node);
-      } else if (is_fused_comm) {
+      } else if (is_comm) {
+        if (delay_comm_stack.size() > 1) {
+          EnqueueActiveNodes(delay_comm_stack.front(), &communication_descendants, &visited_nodes, false);
+          delay_comm_stack.pop();
+        }
         delay_comm_stack.push(node);
       } else if (is_communication_descendant) {
         EnqueueActiveNodes(node, &communication_descendants, &visited_nodes);

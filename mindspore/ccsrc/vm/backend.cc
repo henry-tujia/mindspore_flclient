@@ -345,7 +345,7 @@ MsBackend::MsBackend(const std::string &name, const std::string &target, uint32_
   convert_fn_ = std::bind(&MsBackend::MsConvert, this, std::placeholders::_1, std::placeholders::_2);
   target_sess_ = session::SessionFactory::Get().Create(target);
   if (target_sess_ == nullptr) {
-    MS_LOG(EXCEPTION) << "Session create failed!, please make sure target device:" << target << " is available.";
+    MS_LOG(EXCEPTION) << "Session create failed! Please make sure target device:" << target << " is available.";
   }
   target_sess_->Init(device_id);
 #ifndef ENABLE_SECURITY
@@ -360,7 +360,7 @@ void MsBackend::CreateOtherSession(const std::string &target) {
   }
   other_sess_ = session::SessionFactory::Get().Create(target);
   if (other_sess_ == nullptr) {
-    MS_LOG(EXCEPTION) << "Session create failed!, please make sure target device:" << target << " is available.";
+    MS_LOG(EXCEPTION) << "Session create failed! Please make sure target device:" << target << " is available.";
   }
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
@@ -541,9 +541,11 @@ void MindRTBackend::CompileGraph(const GraphSegmentPtr &segment, bool contain_mu
     MS_EXCEPTION_IF_NULL(cut_node);
     MS_LOG(INFO) << "Compile cut segment, the cut node: " << cut_node->DebugString();
     control_nodes_.push_back(cut_node);
-    const auto &func_graph = cut_node->func_graph();
-    MS_EXCEPTION_IF_NULL(func_graph);
-    func_graph_to_kernel_graph_ids_[func_graph].emplace_back(std::vector<GraphId>());
+    if (AnfAlgo::IsCallNode(cut_node)) {
+      const auto &func_graph = cut_node->func_graph();
+      MS_EXCEPTION_IF_NULL(func_graph);
+      func_graph_to_kernel_graph_ids_[func_graph].emplace_back(std::vector<GraphId>());
+    }
   }
 }
 
@@ -739,7 +741,7 @@ bool IsGraphOutputValueNodeOrParameter(const AnfNodePtr &graph_output, const Vec
 
     auto it = std::find(params.begin(), params.end(), graph_output);
     if (it == params.end()) {
-      MS_EXCEPTION(UnknownError) << "When graph output is Parameter,  it should be found in graph parameters";
+      MS_EXCEPTION(UnknownError) << "When graph output is Parameter, it should be found in graph parameters";
     }
     size_t index = it - params.cbegin();
     if (index >= args.size()) {
@@ -811,14 +813,14 @@ void MindRTBackend::RunGraphBySingleOp(const std::vector<KernelGraphPtr> &graphs
                                             &graph_output_info.output_indexes);
 
     std::map<KernelWithIndex, size_t> cnode_ref_count;
-    std::map<AnfNodePtr, size_t> forward_output_refcount;
     auto iter = cnode_ref_counts_.find(graph->graph_id());
     if (iter == cnode_ref_counts_.end()) {
-      graph_compiler_->CalculateRefCount(graph, &cnode_ref_count, &forward_output_refcount);
+      graph_compiler_->CalculateRefCount(graph, &cnode_ref_count);
       (void)cnode_ref_counts_.emplace(graph->graph_id(), cnode_ref_count);
     } else {
       cnode_ref_count = iter->second;
     }
+    graph_compiler_->CalculateForwardOpOutputCount(graph, &forward_op_output_ref_counts_);
 
     // Clear bucket resources every step
     if (graph->is_bprop()) {
@@ -846,8 +848,7 @@ void MindRTBackend::RunGraphBySingleOp(const std::vector<KernelGraphPtr> &graphs
         SyncLazyTasks();
       }
 
-      graph_compiler_->UpdateRefCount(input_tensor_info.input_kernel, &cnode_ref_count, &forward_output_refcount,
-                                      &op_output_map);
+      graph_compiler_->UpdateRefCount(input_tensor_info.input_kernel, &cnode_ref_count, &op_output_map);
 
       graph_output_info.graph_output_tensors.clear();
       graph_compiler_->RecoverGraphOutput(kernel, op_outputs, cnode_ref_count, &op_output_map, &graph_output_info);
@@ -1225,6 +1226,13 @@ void MindRTBackend::RunSingleOpGraph(const KernelGraphPtr &graph,
         kernel_mod->ReleaseResource();
       }
     }
+  }
+
+  // Update forward op output ref counts, release it
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  if (!ms_context->get_param<bool>(MS_CTX_ENABLE_PYNATIVE_INFER)) {
+    graph_compiler_->UpdateForwardOpOutputRefCount(input_tensors, &forward_op_output_ref_counts_);
   }
 }
 

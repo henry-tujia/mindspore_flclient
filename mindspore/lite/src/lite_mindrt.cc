@@ -27,6 +27,8 @@
 #endif
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
 #include "src/control_flow/actor/switch_actor.h"
+#include "src/control_flow/actor/entrance_actor.h"
+#include "src/control_flow/actor/exit_actor.h"
 #endif
 
 namespace mindspore::lite {
@@ -38,15 +40,10 @@ void LiteOpActor::RunOpData(OpData<lite::Tensor> *inputs, OpContext<lite::Tensor
     return;
   }
 
-  auto ret = InitInputData();
-  if (ret != RET_OK) {
-    input_op_datas_.erase(op_uuid);
-    context->SetFailed(ret);
-    return;
-  }
+  InitInputData();
 
-  ret = RunKernel(*(reinterpret_cast<const KernelCallBack *>(context->kernel_call_back_before_)),
-                  *(reinterpret_cast<const KernelCallBack *>(context->kernel_call_back_after_)));
+  auto ret = RunKernel(*(reinterpret_cast<const KernelCallBack *>(context->kernel_call_back_before_)),
+                       *(reinterpret_cast<const KernelCallBack *>(context->kernel_call_back_after_)));
   if (ret != RET_OK) {
     input_op_datas_.erase(op_uuid);
     context->SetFailed(ret);
@@ -54,9 +51,7 @@ void LiteOpActor::RunOpData(OpData<lite::Tensor> *inputs, OpContext<lite::Tensor
   }
   input_op_datas_.erase(op_uuid);
   AsyncOutput(context);
-
   SetOutputData(context);
-
   return;
 }
 
@@ -76,6 +71,12 @@ bool OfflineIsolated(const std::vector<kernel::LiteKernel *> &kernels, const ker
   }
   return true;
 }
+
+int LiteOpActor::PreInit(std::vector<std::shared_ptr<LiteOpActor>> *actors,
+                         std::unordered_map<Tensor *, Tensor *> *input_map) {
+  return IsolateInputData(actors, input_map);
+}
+int LiteOpActor::PostInit() { return PrepareOutputData(); }
 
 int LiteOpActor::IsolateInputData(std::vector<std::shared_ptr<LiteOpActor>> *actors,
                                   std::unordered_map<Tensor *, Tensor *> *input_map) {
@@ -468,12 +469,14 @@ std::set<void *> LiteOpActor::PartialSubgraphInputTensors(kernel::LiteKernel *pa
     return {};
   }
   std::set<void *> ret{};
-  auto partial_subgraph_kernel = partial_kernel->subgraph_kernel();
-  if (partial_subgraph_kernel == nullptr) {
-    MS_LOG(ERROR) << "partial's subgraph kernel is nullptr.";
+  auto partial_subgraph_kernels = partial_kernel->subgraph_kernels();
+  if (partial_subgraph_kernels.empty()) {
+    MS_LOG(ERROR) << "partial's subgraph kernel is empty.";
     return {};
   }
-  auto inputs = partial_subgraph_kernel->in_tensors();
+  // the first subgraph kernel is the input subgraph kernel
+  auto subgraph = partial_subgraph_kernels.front();
+  auto inputs = subgraph->in_tensors();
   for (auto &input : inputs) {
     ret.insert(input);
   }
@@ -509,7 +512,7 @@ void LiteOpActor::SetInputShape() {
   }
 }
 
-int LiteOpActor::InitInputData() {
+void LiteOpActor::InitInputData() {
   SetInputShape();
 
   for (size_t i = 0; i < inputs_data_.size(); ++i) {
@@ -533,7 +536,7 @@ int LiteOpActor::InitInputData() {
       MoveInputData(dst_tensor, src_tensor);
     }
   }
-  return RET_OK;
+  return;
 }
 
 void LiteOpActor::AsyncOutput(OpContext<Tensor> *context) {
@@ -569,7 +572,6 @@ int LiteOpActor::PrepareOutputData() {
 std::vector<std::shared_ptr<LiteOpActor>> CreateOpActor(const std::vector<kernel::LiteKernel *> &kernels,
                                                         lite::InnerContext *ctx) {
   std::vector<std::shared_ptr<LiteOpActor>> actors;
-  std::unordered_map<kernel::LiteKernel *, AID> subgraph_name_AID_map{};
   ActorThreadPool *thread_pool = reinterpret_cast<ActorThreadPool *>(ctx->thread_pool());
   if (thread_pool == nullptr) {
     MS_LOG(ERROR) << "thread pool is nullptr";
@@ -578,31 +580,27 @@ std::vector<std::shared_ptr<LiteOpActor>> CreateOpActor(const std::vector<kernel
   for (auto &kernel : kernels) {
     /* make subgraph name (actor name) unique */
     kernel->set_name(kernel->name() + "_" + to_string(actor_count++));
+    std::shared_ptr<LiteOpActor> actor = nullptr;
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
     if ((kernel::LiteKernelUtil::IsSwitchTypeCall(kernel))) {
-      auto switch_actor = std::make_shared<LiteSwitchOpActor>(kernel, ctx);
-      if (switch_actor == nullptr) {
-        MS_LOG(ERROR) << "create LiteSwitchOpActor failed: " << kernel->name();
-        actors.clear();
-        return actors;
-      }
-      switch_actor->set_thread_pool(thread_pool);
-      subgraph_name_AID_map[kernel] = switch_actor->GetAID();
-      actors.push_back(switch_actor);
+      actor = std::make_shared<LiteSwitchOpActor>(kernel, ctx);
+    } else if (kernel->subgraph_type() == kernel::kEntranceSubGraph) {
+      actor = std::make_shared<LiteEntranceOpActor>(kernel, ctx);
+    } else if (kernel->subgraph_type() == kernel::kExitSubGraph) {
+      actor = std::make_shared<LiteExitOpActor>(kernel, ctx);
     } else {
 #endif
-      auto actor = std::make_shared<LiteOpActor>(kernel, ctx);
-      if (actor == nullptr) {
-        MS_LOG(ERROR) << "create LiteOpActor failed: " << kernel->name();
-        actors.clear();
-        return actors;
-      }
-      actor->set_thread_pool(thread_pool);
-      subgraph_name_AID_map[kernel] = actor->GetAID();
-      actors.push_back(actor);
+      actor = std::make_shared<LiteOpActor>(kernel, ctx);
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
     }
 #endif
+    if (actor == nullptr) {
+      MS_LOG(ERROR) << "create LiteOpActor failed: " << kernel->name();
+      actors.clear();
+      return actors;
+    }
+    actor->set_thread_pool(thread_pool);
+    actors.push_back(actor);
   }
 
   for (auto &actor : actors) {

@@ -1,5 +1,16 @@
 package com.mindspore.flclient;
+<<<<<<< HEAD
 
+=======
+import com.mindspore.flclient.model.AlTrainBert;
+import com.mindspore.flclient.model.Client;
+import com.mindspore.flclient.model.ClientManager;
+import com.mindspore.flclient.model.CommonUtils;
+import com.mindspore.flclient.model.SessionUtil;
+import com.mindspore.flclient.model.Status;
+import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.lite.MSTensor;
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
 import java.util.Date;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -21,6 +32,10 @@ public class UpdateAndCalMutualInformation {
 
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private FLClientStatus status;
+<<<<<<< HEAD
+=======
+    private int retCode = ResponseCode.RequestError;
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
 
     private UpdateAndCalMutualInformation() {
     }
@@ -47,6 +62,14 @@ public class UpdateAndCalMutualInformation {
         return status;
     }
 
+<<<<<<< HEAD
+=======
+    public int getRetCode() {
+        return retCode;
+    }
+
+
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
     
 
     /**
@@ -56,7 +79,11 @@ public class UpdateAndCalMutualInformation {
      **/
     private double calMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
         
+<<<<<<< HEAD
         var res = MutualInformation.calculateMutualInformation(MapToArray(localModel), MapToArray(serverModel));
+=======
+        double res = MutualInformation.calculateMutualInformation(MapToArray(localModel), MapToArray(serverModel));
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
         
         return res;
 

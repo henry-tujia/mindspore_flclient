@@ -297,6 +297,7 @@ class AnfRuntimeAlgorithm {
   static std::vector<int64_t> GetOutputMaxShape(const AnfNodePtr &anf_node, size_t index);
   static std::vector<int64_t> GetOutputMinShape(const AnfNodePtr &anf_node, size_t index);
   static bool IsNodeDynamicShape(const AnfNodePtr &node);
+  static bool IsHostKernel(const CNodePtr &node);
   static void InferShape(const CNodePtr &node, std::map<uint32_t, tensor::TensorPtr> *depend_tensors = nullptr);
   static void AddArgList(AbstractBasePtrList *args_spec_list, const AnfNodePtr &cnode_input,
                          const AnfNodePtr &real_input, size_t index);
@@ -334,14 +335,10 @@ class AnfRuntimeAlgorithm {
   static void CacheAddrForGraph(const KernelGraphPtr &kernel_graph);
   static void CacheAddrForKernel(const AnfNodePtr &node, kernel::KernelMod *kernel_mod);
   static void CacheAddrForAtomicClean(const AnfNodePtr &node, kernel::KernelMod *kernel_mod);
-  // Check whether node is a call node, there are two types of call nodes:
-  // 1. First input of node is a cnode.
-  // 2. First input of node is a funcgraph value node.
+  // Check whether node is a call node, call nodes are those cnodes whose first input is not primitive node.
   static bool IsCallNode(const AnfNodePtr &node);
   // Get the output number according to abstract, when there is a tuple in abstract, it needs to get recursively.
   static size_t GetOutputNumByAbstract(const AbstractBasePtr &node_abstract);
-  // Fetch all outputs of call node.
-  static std::vector<KernelWithIndex> GetAllOutputByCallNode(const KernelWithIndex &output_with_index);
   // Get attr groups
   static int64_t GetAttrGroups(const AnfNodePtr &node, const size_t index);
 

@@ -17,23 +17,11 @@
 #ifndef MINDSPORE_NNACL_FP32_GRAD_RESIZE_GRAD_H_
 #define MINDSPORE_NNACL_FP32_GRAD_RESIZE_GRAD_H_
 
-#include "nnacl/op_base.h"
+#include "nnacl/fp32_grad/resize_grad_parameter.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct ResizeGradParameter {
-  OpParameter op_parameter_;
-  bool align_corners_;
-  int method;
-  size_t in_height_;
-  size_t in_width_;
-  size_t out_height_;
-  size_t out_width_;
-  float height_scale_;
-  float width_scale_;
-} ResizeGradParameter;
 
 int ResizeNearestNeighborGrad(const float *in_addr, float *out_addr, int batch_size, int channel, int format,
                               const ResizeGradParameter *param);

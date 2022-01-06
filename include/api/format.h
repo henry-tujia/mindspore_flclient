@@ -19,28 +19,10 @@
 #ifndef MINDSPORE_INCLUDE_API_FORMAT_H
 #define MINDSPORE_INCLUDE_API_FORMAT_H
 
-#include <cstdint>
+#if __has_include("include/mindapi/base/format.h")
+#include "include/mindapi/base/format.h"
+#else
+#include "mindapi/base/format.h"
+#endif
 
-namespace mindspore {
-enum Format : int64_t {
-  NCHW = 0,
-  NHWC = 1,
-  NHWC4 = 2,
-  HWKC = 3,
-  HWCK = 4,
-  KCHW = 5,
-  CKHW = 6,
-  KHWC = 7,
-  CHWK = 8,
-  HW = 9,
-  HW4 = 10,
-  NC = 11,
-  NC4 = 12,
-  NC4HW4 = 13,
-  NUM_OF_FORMAT = 14,
-  NCDHW = 15,
-  NWC = 16,
-  NCW = 17
-};
-}  // namespace mindspore
 #endif  // MINDSPORE_INCLUDE_API_FORMAT_H

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <set>
 #include <unordered_map>
+#include "acl/acl_rt.h"
 #include "backend/optimizer/ascend/ascend_backend_optimization.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_optimization.h"
 #include "utils/context/graph_kernel_flags.h"
@@ -258,8 +259,10 @@ void AscendDeviceContext::DumpAllGraphs(const std::vector<KernelGraphPtr> &all_g
     if (json_parser.e2e_dump_enabled() || json_parser.async_dump_enabled()) {
       std::string root_dir = json_parser.path() + "/rank_" + std::to_string(rank_id_);
       std::string target_dir = root_dir + "/graphs";
+      std::string cst_file_dir = GenerateDumpPath(graph->root_graph_id(), rank_id_, true);
       std::string ir_file_path = target_dir + "/" + "ms_output_" + final_graph + ".ir";
       DumpIRProtoWithSrcInfo(graph, final_graph, target_dir, kDebugWholeStack);
+      DumpConstantInfo(graph, cst_file_dir);
       DumpIR("trace_code_graph", graph, true, kWholeStack, ir_file_path);
       DumpGraphExeOrder("ms_execution_order_graph_" + std::to_string(graph->graph_id()) + ".csv", root_dir,
                         graph->execution_order());
@@ -453,8 +456,8 @@ void AscendDeviceContext::AssignOutputNopNodeDeviceAddress(const KernelGraphPtr 
     auto output_type = AnfAlgo::GetOutputDeviceDataType(output, 0);
     auto device_address = CreateDeviceAddress(const_cast<void *>(ptr), size, output_format, output_type);
     device_address->set_is_ptr_persisted(true);
+    device_address->set_host_shape(trans::GetRuntimePaddingShape(output, 0));
     AnfAlgo::SetOutputAddr(device_address, 0, output.get());
-
     AnfAlgo::SetNodeAttr(kAttrSkipNopOpAddr, MakeValue(false), output);
     MS_LOG(INFO) << "Assign device address to output nop node " << output->fullname_with_scope();
   }
@@ -631,8 +634,9 @@ void AscendDeviceContext::OptimizeSingleOpGraph(const KernelGraphPtr &graph) con
 void AscendDeviceContext::PreprocessBeforeRunSingleOpGraph(const KernelGraphPtr &graph) const {
   MS_EXCEPTION_IF_NULL(graph);
   const auto &nodes = graph->execution_order();
-  // Remove placeholder
+
   for (const auto &node : nodes) {
+    // Remove placeholder
     auto op_name = AnfAlgo::GetCNodeName(node);
     static const std::set<std::string> place_holder_nodes = {kDynamicRNNOpName, kDynamicGRUV2OpName};
     auto iter = place_holder_nodes.find(op_name);
@@ -649,6 +653,11 @@ void AscendDeviceContext::PreprocessBeforeRunSingleOpGraph(const KernelGraphPtr 
         }
       }
       node->set_inputs(new_inputs);
+    }
+
+    // Save the nop_op that needs to be memcpy
+    if (op_name == prim::kPrimTranspose->name() && AnfAlgo::HasNodeAttr("nop_op", node)) {
+      nop_op_to_memcpy_.insert(node);
     }
   }
 
@@ -675,7 +684,7 @@ std::shared_ptr<Bucket> AscendDeviceContext::CreateBucket(uint32_t bucket_id, ui
   return bucket;
 }
 
-bool AscendDeviceContext::SyncRuning() const {
+bool AscendDeviceContext::PySyncRuning() const {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   if ((ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) &&
@@ -683,6 +692,23 @@ bool AscendDeviceContext::SyncRuning() const {
     return false;
   }
   return true;
+}
+
+bool AscendDeviceContext::MemoryCopyAsync(const CNodePtr &node, const vector<AddressPtr> &inputs,
+                                          const vector<AddressPtr> &outputs) const {
+  if (inputs.size() != 1 || outputs.size() != 1) {
+    MS_LOG(ERROR) << "Kernel " << node->fullname_with_scope() << " input output size should be 1 but"
+                  << " input size is:" << inputs.size() << " output size is:" << outputs.size();
+    return false;
+  }
+
+  aclError status = aclrtMemcpyAsync(outputs[0]->addr, outputs[0]->size, inputs[0]->addr, inputs[0]->size,
+                                     ACL_MEMCPY_DEVICE_TO_DEVICE, compute_stream_);
+  if (status != ACL_ERROR_NONE) {
+    MS_LOG(ERROR) << "MemCpyAsync op aclrtMemcpyAsync failed, ret:" << status;
+    return false;
+  }
+  return PySyncRuning();
 }
 
 bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<AddressPtr> &inputs,
@@ -710,7 +736,7 @@ bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<Addr
     dynamic_kernel->UpdateArgs();
     dynamic_kernel->Execute();
     dynamic_kernel->PostExecute();
-    return SyncRuning();
+    return PySyncRuning();
   }
 
   std::vector<AddressPtr> real_inputs;
@@ -730,13 +756,16 @@ bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<Addr
   }
 
   std::lock_guard<std::mutex> locker(launch_mutex_);
+  if (nop_op_to_memcpy_.find(kernel) != nop_op_to_memcpy_.end()) {
+    return MemoryCopyAsync(kernel, real_inputs, outputs);
+  }
   auto ret = kernel_mod->Launch(real_inputs, workspace, outputs, compute_stream_);
   if (!ret) {
     MS_LOG(ERROR) << "Launch kernel failed, kernel full name: " << kernel->fullname_with_scope();
     return false;
   }
 
-  return SyncRuning();
+  return PySyncRuning();
 }
 
 void AscendDeviceContext::BindDeviceToCurrentThread() const {

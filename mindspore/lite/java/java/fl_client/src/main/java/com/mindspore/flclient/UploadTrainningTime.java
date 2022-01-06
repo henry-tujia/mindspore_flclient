@@ -40,6 +40,10 @@ import java.util.logging.Logger;
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private FLClientStatus status;
+<<<<<<< HEAD
+=======
+    private int retCode = ResponseCode.RequestError;
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
 
     protected String trainningTIme;
     private static double[] predictParameters;
@@ -73,6 +77,13 @@ import java.util.logging.Logger;
         return status;
     }
 
+<<<<<<< HEAD
+=======
+    public int getRetCode() {
+        return retCode;
+    }
+
+>>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
     /**
      * TODO
      * Get the prediction of trainning time.

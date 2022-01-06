@@ -69,12 +69,10 @@ file(GLOB CXX_API_SRCS
 file(GLOB C_API_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/c_api/*.cc
         )
-
-set(API_SRC
-        ${CORE_DIR}/utils/status.cc
-        ${CXX_API_SRCS}
-        ${C_API_SRCS}
-        )
+set(API_SRC ${CXX_API_SRCS} ${C_API_SRCS})
+if(NOT MSLITE_ENABLE_RUNTIME_CONVERT)
+    set(API_SRC ${API_SRC} ${CORE_DIR}/utils/status.cc)
+endif()
 
 file(GLOB CXX_API_TRAIN_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/cxx_api/train/*.cc
@@ -127,6 +125,13 @@ if(MSLITE_ENABLE_CONTROLFLOW)
             ${CMAKE_CURRENT_SOURCE_DIR}/control_flow/*.cc
             )
     set(LITE_SRC ${LITE_SRC} ${CONTROL_FLOW_SRC})
+endif()
+
+if(BUILD_EXPERIMENT)
+    file(GLOB EXPERIMENT_SRC
+            ${CMAKE_CURRENT_SOURCE_DIR}/../experiment/kernel/*.cc
+            )
+    set(LITE_SRC ${LITE_SRC} ${EXPERIMENT_SRC})
 endif()
 
 if(MSLITE_ENABLE_RUNTIME_GLOG)
@@ -283,7 +288,7 @@ add_dependencies(lite_src_mid fbs_src)
 
 if(MSLITE_ENABLE_ACL)
     include_directories(${TOP_DIR}/graphengine/inc/external)
-    add_subdirectory(runtime/kernel/ascend310)
+    add_subdirectory(runtime/kernel/ascend)
     link_directories(${ASCEND_RUNTIME_PATH} ${ASCEND_TOOLKIT_RUNTIME_PATH})
 endif()
 
@@ -305,7 +310,9 @@ if(APPLE)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../core/ir/dtype/type_id.h
             )
     set(MINDSPORE_LITE_PUB_HDRS_MINDAPI_HDRS
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../core/mindapi/base/format.h
             ${CMAKE_CURRENT_SOURCE_DIR}/../../core/mindapi/base/type_id.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../core/mindapi/base/types.h
             )
     add_library(mindspore-lite_static STATIC
             ${LITE_SRC}
@@ -379,7 +386,7 @@ if(PLATFORM_ARM32 OR PLATFORM_ARM64 AND NOT TARGET_HIMIX
     target_link_libraries(mindspore-lite log)
     target_link_libraries(mindspore-lite_static log)
 endif()
-if(BUILD_MINDDATA STREQUAL "lite")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "lite")
     target_link_libraries(mindspore-lite minddata_eager_mid minddata-lite)
     target_link_libraries(mindspore-lite_static minddata_eager_mid)
 endif()
@@ -415,13 +422,21 @@ if(MSLITE_ENABLE_RUNTIME_CONVERT)
     target_link_libraries(mindspore-lite
             quantizer_mid fusion_mid proto_mid graph_pass_mid preprocess_mid
             cpu_kernel_mid ccsrc_src_mid converter_src_mid anf_exporter_mid
-            config_parser_mid mslite_converter_plugin mindspore_core
+            config_parser_mid mslite_converter_plugin
+            -Wl,--whole-archive mindspore_core -Wl,--no-whole-archive
             mindspore::protobuf ${SECUREC_LIBRARY})
     target_link_libraries(mindspore-lite_static
             quantizer_mid fusion_mid proto_mid graph_pass_mid preprocess_mid
             cpu_kernel_mid ccsrc_src_mid converter_src_mid anf_exporter_mid
-            config_parser_mid mslite_converter_plugin mindspore_core
+            config_parser_mid mslite_converter_plugin
+            -Wl,--whole-archive mindspore_core -Wl,--no-whole-archive
             mindspore::protobuf ${SECUREC_LIBRARY})
+    if(MSLITE_ENABLE_ACL)
+        target_link_libraries(mindspore-lite lite_acl_mid
+                mindspore_shared_lib)
+        target_link_libraries(mindspore-lite_static lite_acl_mid
+                mindspore_shared_lib)
+    endif()
 endif()
 
 if(MSLITE_ENABLE_RUNTIME_GLOG)
@@ -459,6 +474,6 @@ if(ENABLE_MODEL_OBF)
 endif()
 
 if(MSLITE_ENABLE_ACL)
-    target_link_libraries(mindspore-lite ascend310_kernel_mid)
-    target_link_libraries(mindspore-lite_static ascend310_kernel_mid)
+    target_link_libraries(mindspore-lite ascend_kernel_mid)
+    target_link_libraries(mindspore-lite_static ascend_kernel_mid)
 endif()

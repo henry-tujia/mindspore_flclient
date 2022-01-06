@@ -54,6 +54,7 @@ constexpr size_t kPartialFuncGraphPos = 1;
 constexpr size_t kSwitchLayerBranchPos = 2;
 constexpr size_t kSwitchTrueBranchPos = 2;
 constexpr size_t kMakeTupleInputStartPos = 1;
+const std::set<std::string> kNodeTupleOutSet = {prim::kPrimMakeTuple->name(), prim::kPrimGetNext->name()};
 
 const PrimitiveSet follow_first_input_prims = {prim::kPrimDepend, prim::kPrimLoad};
 
@@ -395,39 +396,6 @@ size_t AnfRuntimeAlgorithm::GetOutputNumByAbstract(const AbstractBasePtr &node_a
     result += GetOutputNumByAbstract(sub_abstract);
   }
   return result;
-}
-
-std::vector<KernelWithIndex> AnfRuntimeAlgorithm::GetAllOutputByCallNode(const KernelWithIndex &output_with_index) {
-  MS_EXCEPTION_IF_NULL(output_with_index.first);
-  auto node_abstract = output_with_index.first->abstract();
-  MS_EXCEPTION_IF_NULL(node_abstract);
-  if (!node_abstract->isa<abstract::AbstractTuple>()) {
-    return {output_with_index};
-  }
-
-  auto tuple_abstract = node_abstract->cast<abstract::AbstractTuplePtr>();
-  MS_EXCEPTION_IF_NULL(tuple_abstract);
-  const auto &sub_abstracts = tuple_abstract->elements();
-  if (GetOutputNumByAbstract(tuple_abstract) <= output_with_index.second) {
-    MS_LOG(EXCEPTION) << "Invalid index:" << output_with_index.second
-                      << "for node:" << output_with_index.first->DebugString();
-  }
-
-  // There may be tuples in the output of the call node, these outputs will be all numbered, so it is necessary
-  // to count the number of outputs before the target in order to accurately obtain its number.
-  size_t pre_output_num = 0;
-  for (size_t i = 0; i < output_with_index.second; ++i) {
-    MS_EXCEPTION_IF_NULL(sub_abstracts[i]);
-    pre_output_num += GetOutputNumByAbstract(sub_abstracts[i]);
-  }
-
-  MS_EXCEPTION_IF_NULL(sub_abstracts[output_with_index.second]);
-  size_t output_num = GetOutputNumByAbstract(sub_abstracts[output_with_index.second]);
-  std::vector<KernelWithIndex> results;
-  for (size_t i = 0; i < output_num; ++i) {
-    results.emplace_back(output_with_index.first, pre_output_num + i);
-  }
-  return results;
 }
 
 std::vector<KernelWithIndex> AnfRuntimeAlgorithm::GetAllOutputWithIndex(const AnfNodePtr &node) {
@@ -1213,9 +1181,11 @@ void AnfRuntimeAlgorithm::SetOutputTypeAndDetailShape(const std::vector<TypeId> 
     MS_LOG(EXCEPTION) << "Types size " << types.size() << "should be same with shapes size " << shapes.size()
                       << " trace: " << trace::DumpSourceLines(node);
   }
-  if (shapes.empty() && node_name != prim::kPrimMakeTuple->name()) {
+
+  auto tuple_node = kNodeTupleOutSet.find(node_name);
+  if (shapes.empty() && tuple_node == kNodeTupleOutSet.end()) {
     node->set_abstract(std::make_shared<abstract::AbstractNone>());
-  } else if (shapes.size() == 1 && node_name != prim::kPrimMakeTuple->name()) {
+  } else if (shapes.size() == 1 && tuple_node == kNodeTupleOutSet.end()) {
     // single output handle
     auto abstract = std::make_shared<AbstractTensor>(TypeIdToType(types[0]), shapes[0]);
     node->set_abstract(abstract);
@@ -1246,9 +1216,11 @@ void AnfRuntimeAlgorithm::SetOutputInferTypeAndShape(const std::vector<TypeId> &
                       << " trace: " << trace::DumpSourceLines(node);
   }
   auto abstract_ptr = node_ptr->abstract();
-  if (shapes.empty() && node_name != prim::kPrimMakeTuple->name()) {
+
+  auto tuple_node = kNodeTupleOutSet.find(node_name);
+  if (shapes.empty() && tuple_node == kNodeTupleOutSet.end()) {
     node->set_abstract(std::make_shared<abstract::AbstractNone>());
-  } else if (shapes.size() == 1 && node_name != prim::kPrimMakeTuple->name()) {
+  } else if (shapes.size() == 1 && tuple_node == kNodeTupleOutSet.end()) {
     // single output handle
     ShapeVector shape_int;
     abstract::AbstractTensorPtr abstract = nullptr;
@@ -2228,6 +2200,39 @@ void AnfRuntimeAlgorithm::GetAllFatherRealNode(const AnfNodePtr &anf_node, std::
   }
 }
 
+bool AnfRuntimeAlgorithm::IsHostKernel(const CNodePtr &kernel_node) {
+  const std::set<std::string> host_kernel = {prim::kPrimDynamicShape->name(), prim::kPrimDynamicReshape->name(),
+                                             prim::kPrimDynamicBroadcastGradientArgs->name()};
+  auto op_name = AnfAlgo::GetCNodeName(kernel_node);
+  if (host_kernel.find(op_name) == host_kernel.end()) {
+    return false;
+  }
+  return true;
+}
+
+namespace {
+// Host kernel with inputs on host
+bool SkipDataSync(const CNodePtr &node, const std::map<uint32_t, tensor::TensorPtr> &depend_tensors) {
+  if (!AnfAlgo::IsHostKernel(node)) {
+    return false;
+  }
+  auto input_size = AnfAlgo::GetInputTensorNum(node);
+  for (size_t i = 0; i < input_size; ++i) {
+    auto input_with_index = AnfAlgo::GetPrevNodeOutput(node, i);
+    auto real_input = input_with_index.first;
+    auto iter_tensor = depend_tensors.find(i);
+    if (iter_tensor != depend_tensors.end()) {
+      auto output_addr = AnfAlgo::GetOutputAddr(real_input, 0);
+      MS_EXCEPTION_IF_NULL(output_addr);
+      if (output_addr->DeviceType() != device::DeviceAddressType::kCPU) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+}  // namespace
+
 void AnfRuntimeAlgorithm::InferShape(const CNodePtr &node, std::map<uint32_t, tensor::TensorPtr> *depend_tensors) {
   MS_EXCEPTION_IF_NULL(node);
   MS_LOG(INFO) << "InferShape start, node:" << node->DebugString();
@@ -2250,8 +2255,10 @@ void AnfRuntimeAlgorithm::InferShape(const CNodePtr &node, std::map<uint32_t, te
       if (iter_tensor != depend_tensors->end()) {
         auto tensor_ptr = iter_tensor->second;
         MS_EXCEPTION_IF_NULL(tensor_ptr);
-        // sync data from device to host
-        tensor_ptr->data_sync();
+        if (!SkipDataSync(node, *depend_tensors)) {
+          // sync data from device to host
+          tensor_ptr->data_sync();
+        }
         auto real_abs = real_input->abstract();
         if (real_abs->isa<abstract::AbstractTensor>()) {
           real_input->abstract()->set_value(tensor_ptr);

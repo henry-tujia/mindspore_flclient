@@ -56,6 +56,9 @@ void OutputActor::RunOpControl(AID *const, OpContext<DeviceTensor> *const contex
       if (outputs_[device_tensor_store_key.first] == nullptr) {
         SET_OPCONTEXT_FAIL_RET_WITH_ERROR(*context, "Create output tensor failed.");
       }
+      output_nodes_[device_tensor_store_key.first] = {device_tensor_store_key.second, 0};
+      const auto &device_tensor = AnfAlgo::GetMutableOutputAddr(device_tensor_store_key.second, 0, false);
+      output_device_tensors_[device_tensor_store_key.first] = device_tensor.get();
     }
 
     current_outputs_num_ = 0;
@@ -148,7 +151,6 @@ void OutputActor::UpdateOutputDeviceAddress() {
   // they are fixed addresses and persistent.
   for (size_t i = 0; i < output_nodes_.size(); ++i) {
     auto &output_node = output_nodes_[i].first;
-    auto output_index = output_nodes_[i].second;
     auto &tensor = outputs_[i];
 
     if (i >= output_device_tensors_.size()) {
@@ -170,11 +172,13 @@ void OutputActor::UpdateOutputDeviceAddress() {
     MS_EXCEPTION_IF_NULL(tensor_device_address);
 
     // Update tensor device address by device tensor of output node.
-    tensor_device_address->set_original_ref_count(device_tensor->original_ref_count());
+    tensor_device_address->set_original_ref_count(SIZE_MAX);
     tensor_device_address->ResetRefCount();
+    tensor_device_address->set_dynamic_ref_count(INT32_MAX);
     auto node_with_index = device_tensor->GetNodeIndex();
     tensor_device_address->SetNodeIndex(node_with_index.first, node_with_index.second);
     tensor_device_address->set_from_persistent_mem(device_tensor->from_persistent_mem());
+    tensor_device_address->set_host_shape(device_tensor->host_shape());
     // The outputs may have the same output node, so need skip when the node has been done.
     if (device_tensor->GetPtr() == nullptr) {
       continue;
@@ -190,9 +194,7 @@ void OutputActor::UpdateOutputDeviceAddress() {
                           << output_node->fullname_with_scope() << ", alloc size: " << tensor_device_address->GetSize()
                           << "B.";
       }
-      if (!tensor_device_address->SyncDeviceToDevice(trans::GetRuntimePaddingShape(output_node, output_index),
-                                                     device_tensor->GetSize(), device_tensor->type_id(),
-                                                     device_tensor->GetPtr(), device_tensor->format())) {
+      if (!tensor_device_address->SyncDeviceToDevice(device_tensor)) {
         MS_LOG(EXCEPTION) << "Sync device to device failed, device type: " << tensor_device_address->DeviceType();
       }
     } else {

@@ -49,8 +49,10 @@ class MatmulFp32BaseCPUKernel : public InnerKernel {
  public:
   int ParallelRunByOC(int task_id) const;
   int ParallelRunByBatch(int task_id) const;
+  int ParallelRunIsNotPackByBatch(int task_id) const;
   using ParallelRun = int (MatmulFp32BaseCPUKernel::*)(int task_id) const;
   ParallelRun parallel_fun_ = nullptr;
+  bool is_pack_ = true;
 
  protected:
   int InitBufferA();
@@ -97,6 +99,8 @@ class MatmulFp32BaseCPUKernel : public InnerKernel {
   MatrixPackFun matrix_a_pack_fun_ = nullptr;
   MatrixPackFun matrix_b_pack_fun_ = nullptr;
   bool batch_split_ = false;
+  bool out_need_aligned_ = false;
+  int col_step_ = 0;
 #if defined(ENABLE_AVX) || defined(ENABLE_AVX512)
   GemmFun gemmCalFun = nullptr;
   GemvFun gemvCalFun = nullptr;

@@ -295,7 +295,8 @@ def save_checkpoint(save_obj, ckpt_file_name, integrated_save=True,
 
     ckpt_file_name = os.path.realpath(ckpt_file_name)
     if async_save:
-        thr = Thread(target=_exec_save, args=(ckpt_file_name, data_list, enc_key, enc_mode), name="asyn_save_ckpt")
+        data_copy = copy.deepcopy(data_list)
+        thr = Thread(target=_exec_save, args=(ckpt_file_name, data_copy, enc_key, enc_mode), name="asyn_save_ckpt")
         thr.start()
     else:
         _exec_save(ckpt_file_name, data_list, enc_key, enc_mode)
@@ -1149,11 +1150,12 @@ def parse_print(print_file_name):
         ...         def construct(self, input_pra):
         ...             self.print('print:', input_pra)
         ...             return input_pra
-
         >>> x = np.array([[1, 2, 3, 4], [5, 6, 7, 8]]).astype(np.float32)
         >>> input_pra = Tensor(x)
         >>> net = PrintInputTensor()
         >>> net(input_pra)
+
+        >>> import mindspore
         >>> data = mindspore.parse_print('./log.data')
         >>> print(data)
         ['print:', Tensor(shape=[2, 4], dtype=Float32, value=
@@ -1491,8 +1493,13 @@ def load_distributed_checkpoint(network, checkpoint_filenames, predict_strategy=
     Args:
         network (Cell): Network for distributed predication.
         checkpoint_filenames (list[str]): The name of Checkpoint files in order of rank id.
-        predict_strategy (dict): Strategy of predication process. Default: None.
-        train_strategy_filename (str): Train strategy proto file name. Default: None.
+        predict_strategy (dict): Strategy of predication process. It means that using one device to predict
+                                 when setting predict_strategy as None. Default: None.
+        train_strategy_filename (str): The filename of training strategy protocol buffer file.
+                                       When train_strategy_filename is None, the training strategy file will be
+                                       obtained from context.get_auto_parallel_context("strategy_ckpt_load_file").
+                                       Therefore, the training strategy file needs to be specified
+                                       in at least one of them. Default: None.
         strict_load (bool): Whether to strict load the parameter into net. If False, it will load parameter
                             into net when parameter name's suffix in checkpoint file is the same as the
                             parameter in the network. When the types are inconsistent perform type conversion

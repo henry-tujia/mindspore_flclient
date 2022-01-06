@@ -102,11 +102,12 @@ int BatchnormCPUKernel::Run() {
 
 int BatchnormCPUKernel::DoExecute(int task_id) {
   auto param = reinterpret_cast<BatchNormParameter *>(op_parameter_);
-  auto in_tensor_data = in_tensors_.at(0)->MutableData();
+  auto in_tensor_data = reinterpret_cast<float *>(in_tensors_.at(0)->data());
   CHECK_NULL_RETURN(in_tensor_data);
-  auto out_tensor_data = out_tensors_.at(0)->MutableData();
+  auto out_tensor_data = reinterpret_cast<float *>(out_tensors_.at(0)->data());
   CHECK_NULL_RETURN(out_tensor_data);
-  BatchNormFp32(in_tensor_data, mean_, variance_, param, task_id, out_tensor_data);
+  BatchNormFp32(in_tensor_data, reinterpret_cast<float *>(mean_), reinterpret_cast<float *>(variance_), param, task_id,
+                out_tensor_data);
   return RET_OK;
 }
 
@@ -137,6 +138,16 @@ int BatchnormCPUKernel::RestoreDefaultMomentum() {
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Restore Momentum Error";
     return RET_ERROR;
+  }
+  return RET_OK;
+}
+
+int BatchnormCPUKernel::SetupVirtualBatch(int virtual_batch_multiplier, int param) {
+  if ((virtual_batch_multiplier > 0)) {
+    int momentum = (param < 0.0f) ? (this->get_momentum() / virtual_batch_multiplier) : param;
+    return this->set_momentum(momentum);
+  } else {
+    return this->RestoreDefaultMomentum();
   }
   return RET_OK;
 }

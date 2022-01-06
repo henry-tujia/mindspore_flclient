@@ -60,7 +60,7 @@ class ControlActor : public MemoryAwareActor {
   void Init() override;
 
   // Receive partial.
-  virtual void RunOpPartial(OpPartialPtr partial, size_t position, OpContext<DeviceTensor> *const context);
+  virtual void RunOpPartial(const OpPartialPtr &partial, size_t position, OpContext<DeviceTensor> *const context);
 
   // Receive branch id.
   virtual void RunBranchID(int branch_id, OpContext<DeviceTensor> *const context);
@@ -115,7 +115,7 @@ class ControlActor : public MemoryAwareActor {
   std::vector<DeviceTensor *> input_device_tensors_;
 
   // The lists of device tensors which need free by dynamic ref count, will be cleared at the end of step.
-  std::vector<std::vector<DeviceTensor *>> memory_free_lists_;
+  std::queue<std::vector<DeviceTensor *>> memory_free_lists_;
 
   // Input num.
   size_t input_partials_num_{0};

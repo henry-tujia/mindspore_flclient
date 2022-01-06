@@ -30,6 +30,7 @@ import time
 import uuid
 import multiprocessing
 from multiprocessing.pool import RUN
+from multiprocessing.util import Finalize
 import queue
 from enum import Enum
 from functools import partial
@@ -55,6 +56,7 @@ from mindspore.parallel._utils import _get_device_num
 from mindspore.dataset.engine.offload import GetOffloadModel
 
 import mindspore.dataset.transforms.py_transforms as py_transforms
+from mindspore.dataset.text.utils import SentencePieceModel, DE_C_INTER_SENTENCEPIECE_MODE
 
 from . import samplers
 from .iterators import DictIterator, TupleIterator, DummyIterator, check_iterator_cleanup, _set_iterator_cleanup, \
@@ -72,7 +74,8 @@ from .validators import check_batch, check_shuffle, check_map, check_filter, che
     check_photo_tour_dataset, check_ag_news_dataset, check_dbpedia_dataset, check_lj_speech_dataset, \
     check_yes_no_dataset, check_speech_commands_dataset, check_tedlium_dataset, check_svhn_dataset, \
     check_stl10_dataset, check_yelp_review_dataset, check_penn_treebank_dataset, check_iwslt2016_dataset, \
-    check_iwslt2017_dataset, check_sogou_news_dataset, check_yahoo_answers_dataset, check_udpos_dataset
+    check_iwslt2017_dataset, check_sogou_news_dataset, check_yahoo_answers_dataset, check_udpos_dataset,\
+    check_conll2000_dataset
 from ..core.config import get_callback_timeout, _init_device_info, get_enable_shared_mem, get_num_parallel_workers, \
     get_prefetch_size
 from ..core.datatypes import mstype_to_detype, mstypelist_to_detypelist
@@ -97,6 +100,7 @@ OffloadToManualOffloadMode = {
 
 
 class Shuffle(str, Enum):
+    """Specify the shuffle mode."""
     GLOBAL: str = "global"
     FILES: str = "files"
     INFILE: str = "infile"
@@ -161,7 +165,7 @@ def zip(datasets):
             The number of datasets must be more than 1.
 
     Returns:
-        ZipDataset, dataset zipped.
+        Dataset, dataset zipped.
 
     Raises:
         ValueError: If the number of datasets is 1.
@@ -435,7 +439,7 @@ class Dataset:
                 bucket if it is not a full batch (default=False).
 
         Returns:
-            BucketBatchByLengthDataset, dataset bucketed and batched by length.
+            Dataset, dataset bucketed and batched by length.
 
         Examples:
             >>> # Create a dataset where certain counts rows are combined into a batch
@@ -601,7 +605,7 @@ class Dataset:
                 dataset will result in a global shuffle.
 
         Returns:
-            ShuffleDataset, dataset shuffled.
+            Dataset, dataset shuffled.
 
         Raises:
             RuntimeError: If exist sync operators before shuffle.
@@ -717,7 +721,7 @@ class Dataset:
               `operations`.
 
         Returns:
-            MapDataset, dataset after mapping operation.
+            Dataset, dataset after mapping operation.
 
         Examples:
             >>> # dataset is an instance of Dataset which has 2 columns, "image" and "label".
@@ -805,6 +809,13 @@ class Dataset:
             ...                       output_columns=["mod2", "mod3", "mod5", "mod7"],
             ...                       column_order=["mod7", "mod3", "col2"])
         """
+        if hasattr(self, 'operator_mixed') and getattr(self, 'operator_mixed') is True:
+            num_parallel_workers = 1
+            logger.warning(
+                "Input 'operations' of 'map' includes network computing operators like in mindspore.nn, mindspore.ops, "
+                "mindspore.numpy module and etc, which do not support multi-thread compiling, recommend to replace it "
+                "with python implemented operator like numpy etc. Here decrease 'num_parallel_workers' into 1.")
+
         return MapDataset(self, operations, input_columns, output_columns, column_order, num_parallel_workers,
                           python_multiprocessing, cache, callbacks, max_rowsize, offload)
 
@@ -824,7 +835,7 @@ class Dataset:
                 in parallel (default=None).
 
         Returns:
-            FilterDataset, dataset filtered.
+            Dataset, dataset filtered.
 
         Examples:
             >>> # generator data(0 ~ 63)
@@ -846,7 +857,7 @@ class Dataset:
             count (int): Number of times the dataset is going to be repeated (default=None).
 
         Returns:
-            RepeatDataset, dataset repeated.
+            Dataset, dataset repeated.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -875,7 +886,7 @@ class Dataset:
             count (int): Number of elements in the dataset to be skipped.
 
         Returns:
-            SkipDataset, dataset that containing rows like origin rows subtract skipped rows.
+            Dataset, dataset that containing rows like origin rows subtract skipped rows.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -899,7 +910,7 @@ class Dataset:
             count (int, optional): Number of elements to be taken from the dataset (default=-1).
 
         Returns:
-            TakeDataset, dataset taken.
+            Dataset, dataset taken.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -1054,7 +1065,7 @@ class Dataset:
                 to be zipped together with this dataset.
 
         Returns:
-            ZipDataset, dataset zipped.
+            Dataset, dataset zipped.
 
         Examples:
             >>> # Create a dataset which is the combination of dataset and dataset_1
@@ -1082,7 +1093,7 @@ class Dataset:
                 to be concatenated together with this dataset.
 
         Returns:
-            ConcatDataset, dataset concatenated.
+            Dataset, dataset concatenated.
 
         Examples:
             >>> # Create a dataset by concatenating dataset_1 and dataset_2 with "+" operator
@@ -1108,7 +1119,7 @@ class Dataset:
             output_columns (Union[str, list[str]]): List of names of the output columns.
 
         Returns:
-            RenameDataset, dataset renamed.
+            Dataset, dataset renamed.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -1135,7 +1146,7 @@ class Dataset:
             columns(Union[str, list[str]]): List of names of the columns to project.
 
         Returns:
-            ProjectDataset, dataset projected.
+            Dataset, dataset projected.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -1198,7 +1209,7 @@ class Dataset:
             of data transmission per time is 256M.
 
         Returns:
-            TransferDataset, dataset for transferring.
+            Dataset, dataset for transferring.
         """
         return self.to_device(send_epoch_end=send_epoch_end, create_data_info_queue=create_data_info_queue)
 
@@ -1285,8 +1296,8 @@ class Dataset:
                with random attribute in map operator.
             3. When array dimension is variable, one-dimensional arrays or
                multi-dimensional arrays with variable dimension 0 are supported.
-            4. Mindrecord does not support DE_UINT64, multi-dimensional DE_UINT8(drop dimension) nor
-               multi-dimensional DE_STRING.
+            4. Mindrecord does not support uint64, multi-dimensional uint8(drop dimension) nor
+               multi-dimensional string.
 
         Args:
             file_name (str): Path to dataset file.
@@ -1325,7 +1336,7 @@ class Dataset:
                 use this param to select the conversion method, only take False for better performance (default=True).
 
         Returns:
-            TupleIterator, tuple iterator over the dataset.
+            Iterator, tuple iterator over the dataset.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -1357,7 +1368,7 @@ class Dataset:
                 if output_numpy=False, iterator will output MSTensor (default=False).
 
         Returns:
-            DictIterator, dictionary iterator over the dataset.
+            Iterator, dictionary iterator over the dataset.
 
         Examples:
             >>> # dataset is an instance object of Dataset
@@ -1886,11 +1897,11 @@ class TextBaseDataset(Dataset):
             columns(list[str]): Column names to get words from.
             vocab_size(int): Vocabulary size.
             character_coverage(int): Percentage of characters covered by the model, must be between
-                        0.98 and 1.0 Good defaults are: 0.9995 for languages with rich character sets like
-                        Japanese or Chinese character sets, and 1.0 for other languages with small character sets
-                        like English or Latin.
+                0.98 and 1.0 Good defaults are: 0.9995 for languages with rich character sets like
+                Japanese or Chinese character sets, and 1.0 for other languages with small character sets
+                like English or Latin.
             model_type(SentencePieceModel): Model type. Choose from unigram (default), bpe, char, or word.
-                                        The input sentence must be pretokenized when using word type.
+                The input sentence must be pretokenized when using word type.
             params(dict): Any extra optional parameters of sentencepiece library according to your raw data
 
         Returns:
@@ -1899,13 +1910,13 @@ class TextBaseDataset(Dataset):
         Examples:
             >>> from mindspore.dataset.text import SentencePieceModel
             >>>
-            >>> # DE_C_INTER_SENTENCEPIECE_MODE is a mapping dict
-            >>> from mindspore.dataset.text.utils import DE_C_INTER_SENTENCEPIECE_MODE
             >>> dataset = ds.TextFileDataset("/path/to/sentence/piece/vocab/file", shuffle=False)
-            >>> dataset = dataset.build_sentencepiece_vocab(["text"], 5000, 0.9995,
-            ...                                             DE_C_INTER_SENTENCEPIECE_MODE[SentencePieceModel.UNIGRAM],
-            ...                                             {})
+            >>> dataset = dataset.build_sentencepiece_vocab(["text"], 5000, 0.9995, SentencePieceModel.UNIGRAM, {})
         """
+        if not isinstance(model_type, SentencePieceModel):
+            raise TypeError("Argument model_type with value {0} is not of type SentencePieceModel, but got {1}."\
+                            .format(model_type, type(model_type)))
+        model_type = DE_C_INTER_SENTENCEPIECE_MODE[model_type]
         vocab = cde.SentencePieceVocab()
 
         ir_tree, api_tree = self.create_ir_tree()
@@ -2367,7 +2378,8 @@ class BatchDataset(Dataset):
 
 class BatchInfo(cde.CBatchInfo):
     """
-    The information object associates with the current batch of tensors.
+    Only the batch size function and per_batch_map of the batch operator can dynamically adjust parameters
+    based on the number of batches and epochs during training.
     """
 
     def get_batch_num(self):
@@ -4857,6 +4869,7 @@ class SamplerFn:
         self.ppid = os.getpid()
         self.pids = []
         self.check_interval = 300  # the interval of check queue's size
+        self._final_join = True
 
         # Event for end of epoch
         if multi_process is True:
@@ -4899,6 +4912,13 @@ class SamplerFn:
             self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.pids))
             self.watch_dog.daemon = True
             self.watch_dog.start()
+
+            if self._final_join is True:
+                self._jointhread = Finalize(
+                    self.watch_dog, self._finalize_join,
+                    args=(weakref.ref(self.watch_dog), self.eot),
+                    exitpriority=-5
+                )
 
     def process(self, indices):
         """
@@ -4960,13 +4980,21 @@ class SamplerFn:
             self.eof.set()
             self.need_join = False
             for w in self.workers:
-                if psutil.pid_exists(w.pid):
+                if self.multi_process is True and hasattr(w, '_closed') and w._closed is False:  # pylint: disable=W0212
                     w.join()
             self._abort_watchdog()
 
     def _abort_watchdog(self):
         if hasattr(self, 'eot') and self.eot is not None and not self.eot.is_set():
             self.eot.set()
+
+    @classmethod
+    def _finalize_join(cls, twr, eot):
+        thread = twr()
+        if thread is not None:
+            if eot is not None and not eot.is_set():
+                eot.set()
+            thread.join()
 
     def __del__(self):
         self._stop_subprocess()
@@ -5259,6 +5287,13 @@ class GeneratorDataset(MappableDataset, TextBaseDataset):
         else:
             self.source = source
         self.prepared_source = None  # source to be sent to C++
+        if hasattr(self, 'operator_mixed') and getattr(self, 'operator_mixed') is True:
+            self.num_parallel_workers = 1
+            logger.warning(
+                "Input 'source' of 'GeneratorDataset' includes network computing operators like in mindspore.nn, "
+                "mindspore.ops, mindspore.numpy module and etc, which do not support multi-thread compiling, recommend"
+                " to replace it with python implemented operator like numpy etc. Here decrease 'num_parallel_workers' "
+                "into 1.")
 
         self.python_multiprocessing = python_multiprocessing
 
@@ -6640,6 +6675,64 @@ class CocoDataset(MappableDataset):
             runtime_getter = self._init_tree_getters()
             self._class_indexing = dict(runtime_getter[0].GetClassIndexing())
         return self._class_indexing
+
+
+class CoNLL2000Dataset(SourceDataset):
+    """
+    A source dataset that reads and parses CoNLL2000 dataset.
+
+    The generated dataset has three columns: :py:obj:`[word, pos_tag, chunk_tag]`.
+    The tensor of column :py:obj:`word` is of the string type.
+    The tensor of column :py:obj:`pos_tag` is of the string type.
+    The tensor of column :py:obj:`chunk_tag` is of the string type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        usage (str, optional): Usage of this dataset, can be `train`, `test`,  or `all`. `train` will read from
+            8936 train samples, `test` will read from 2,012 test samples,
+            `all` will read from all 1,0948 samples (default=None, all samples).
+        num_samples (int, optional): Number of samples (rows) to read (default=None, reads the full dataset).
+        shuffle (Union[bool, Shuffle level], optional): Perform reshuffling of the data every epoch
+            (default=Shuffle.GLOBAL).
+            If shuffle is False, no shuffling will be performed;
+            If shuffle is True, the behavior is the same as setting shuffle to be Shuffle.GLOBAL
+            Otherwise, there are two levels of shuffling:
+
+            - Shuffle.GLOBAL: Shuffle both the files and samples.
+
+            - Shuffle.FILES: Shuffle files only.
+
+        num_shards (int, optional): Number of shards that the dataset will be divided into (default=None).
+            When this argument is specified, `num_samples` reflects the max sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, number set in the config).
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+
+    Examples:
+        >>> conll2000_dataset_dir = "/path/to/conll2000_dataset_dir"
+        >>> dataset = ds.CoNLL2000Dataset(dataset_files=conll2000_dataset_dir, usage='all')
+    """
+
+    @check_conll2000_dataset
+    def __init__(self, dataset_dir, usage=None, num_samples=None, shuffle=Shuffle.GLOBAL, num_shards=None,
+                 shard_id=None, num_parallel_workers=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, num_samples=num_samples, shuffle=shuffle,
+                         num_shards=num_shards, shard_id=shard_id, cache=cache)
+        self.dataset_dir = dataset_dir
+        self.usage = replace_none(usage, 'all')
+
+    def parse(self, children=None):
+        return cde.CoNLL2000Node(self.dataset_dir, self.usage, self.num_samples, self.shuffle_flag, self.num_shards,
+                                 self.shard_id)
 
 
 class CelebADataset(MappableDataset):
