@@ -112,10 +112,6 @@ public class FileUtil {
             if (line.isEmpty()) {
                 continue;
             }
-            String[] info = line.split(">>>");
-            if (info.length > 1) {
-                line = info[1];
-            }
             List<Integer> tokens = customTokenizer.tokenize(line, isTrainMode);
             Optional<Feature> feature = customTokenizer.getFeatures(tokens, "other");
             if (!feature.isPresent()) {

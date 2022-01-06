@@ -62,6 +62,12 @@ public class LocalFLParameter {
      */
     public static final String ALBERT = "albert";
 
+/**
+     * The model name supported by federated learning tasks: "deepFm".
+     */
+    public static final String DEEPFM = "deepfm";
+    
+
     /**
      * The deployment environment supported by federated learning tasks: "android".
      */

@@ -72,7 +72,7 @@ public class FLCommunication implements IFLCommunication {
         sslProtocol = flParameter.getSslProtocol();
         if (!Common.checkFLName(flParameter.getFlName())) {
             env = flParameter.getDeployEnv();
-            if (ANDROID.equals(env) && Common.isHttps()) {
+            if (ANDROID.equals(env)) {
                 sslSocketFactory = flParameter.getSslSocketFactory();
                 x509TrustManager = flParameter.getX509TrustManager();
             }

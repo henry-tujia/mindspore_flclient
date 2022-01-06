@@ -23,10 +23,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
-<<<<<<< HEAD
-=======
-import java.util.Vector;
->>>>>>> d13157c5e1f28b842e3ea3aa1ba9490e971b4546
 import java.util.List;
 import java.util.logging.Logger;
 

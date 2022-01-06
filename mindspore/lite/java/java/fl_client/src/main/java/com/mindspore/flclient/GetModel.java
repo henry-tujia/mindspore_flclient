@@ -279,7 +279,7 @@ public class GetModel {
                 retCode = ResponseCode.RequestError;
                 return status;
             }
-            tag = client.updateFeatures(flParameter.getTrainModelPath(), trainFeatureMaps);
+            tag = client.updateFeatures(flParameter.getTrainModelPath(), inferFeatureMaps);
             Common.freeSession();
             if (!Status.SUCCESS.equals(tag)) {
                 LOGGER.severe(Common.addTag("[getModel] unsolved error code in <Client.updateFeatures>"));

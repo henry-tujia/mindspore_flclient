@@ -138,7 +138,6 @@ public class StartFLJob {
             LOGGER.info(Common.addTag("[startFLJob] parseResponseAlbert by " + localFLParameter.getServerMod()));
             ArrayList<FeatureMap> albertFeatureMaps = new ArrayList<FeatureMap>();
             ArrayList<FeatureMap> inferFeatureMaps = new ArrayList<FeatureMap>();
-            featureSize = 0;
             for (int i = 0; i < fmCount; i++) {
                 FeatureMap feature = flJob.featureMap(i);
                 if (feature == null) {
@@ -186,7 +185,6 @@ public class StartFLJob {
         } else if (localFLParameter.getServerMod().equals(ServerMod.FEDERATED_LEARNING.toString())) {
             LOGGER.info(Common.addTag("[startFLJob] parseResponseAlbert by " + localFLParameter.getServerMod()));
             ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
-            featureSize = 0;
             for (int i = 0; i < fmCount; i++) {
                 FeatureMap feature = flJob.featureMap(i);
                 if (feature == null) {
@@ -224,7 +222,6 @@ public class StartFLJob {
         int fmCount = flJob.featureMapLength();
         ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
         updateFeatureName.clear();
-        featureSize = 0;
         for (int i = 0; i < fmCount; i++) {
             FeatureMap feature = flJob.featureMap(i);
             if (feature == null) {
@@ -262,7 +259,6 @@ public class StartFLJob {
         int fmCount = flJob.featureMapLength();
         ArrayList<FeatureMap> trainFeatureMaps = new ArrayList<FeatureMap>();
         ArrayList<FeatureMap> inferFeatureMaps = new ArrayList<FeatureMap>();
-        featureSize = 0;
         for (int i = 0; i < fmCount; i++) {
             FeatureMap feature = flJob.featureMap(i);
             if (feature == null) {
@@ -314,7 +310,7 @@ public class StartFLJob {
         }
         LOGGER.info(Common.addTag("[startFLJob] set <batch size> for client: " + batchSize));
         client.setBatchSize(batchSize);
-        tag = client.updateFeatures(flParameter.getTrainModelPath(), trainFeatureMaps);
+        tag = client.updateFeatures(flParameter.getTrainModelPath(), inferFeatureMaps);
         Common.freeSession();
         if (!Status.SUCCESS.equals(tag)) {
             LOGGER.severe(Common.addTag("[startFLJob] unsolved error code in <Client.updateFeatures>"));
@@ -329,7 +325,6 @@ public class StartFLJob {
         Client client = ClientManager.getClient(flParameter.getFlName());
         int fmCount = flJob.featureMapLength();
         ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
-        featureSize = 0;
         for (int i = 0; i < fmCount; i++) {
             FeatureMap feature = flJob.featureMap(i);
             if (feature == null) {
@@ -425,6 +420,12 @@ public class StartFLJob {
             return FLClientStatus.FAILED;
         }
 
+        if (flJob.featureMapLength() <= 0) {
+            LOGGER.severe(Common.addTag("[startFLJob] the feature size get from server is zero"));
+            retCode = ResponseCode.SystemError;
+            return FLClientStatus.FAILED;
+        }
+
         retCode = flJob.retcode();
         LOGGER.info(Common.addTag("[startFLJob] ==========the response message of startFLJob is:================"));
         LOGGER.info(Common.addTag("[startFLJob] return retCode: " + retCode));
@@ -439,11 +440,6 @@ public class StartFLJob {
 
         switch (responseRetCode) {
             case (ResponseCode.SUCCEED):
-                if (flJob.featureMapLength() <= 0) {
-                    LOGGER.severe(Common.addTag("[startFLJob] the feature size get from server is zero"));
-                    retCode = ResponseCode.SystemError;
-                    return FLClientStatus.FAILED;
-                }
                 localFLParameter.setServerMod(flPlanConfig.serverMode());
                 if (flPlanConfig.lr() != 0) {
                     lr = flPlanConfig.lr();
@@ -611,11 +607,6 @@ public class StartFLJob {
             RequestFLJob.addIteration(builder, iteration);
             RequestFLJob.addDataSize(builder, dataSize);
             RequestFLJob.addTimestamp(builder, timestampOffset);
-            RequestFLJob.addSignData(builder, signDataOffset);
-            RequestFLJob.addRootCert(builder, rootCertOffset);
-            RequestFLJob.addEquipCaCert(builder, equipCACertOffset);
-            RequestFLJob.addEquipCert(builder, equipCertOffset);
-            RequestFLJob.addKeyAttestation(builder, keyAttestationOffset);
             int root = RequestFLJob.endRequestFLJob(builder);
             builder.finish(root);
             return builder.sizedByteArray();
