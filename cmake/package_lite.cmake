@@ -31,7 +31,7 @@ set(BENCHMARK_TRAIN_ROOT_DIR ${RUNTIME_PKG_NAME}/tools/benchmark_train)
 file(GLOB JPEGTURBO_LIB_LIST ${jpeg_turbo_LIBPATH}/*.so)
 
 # full mode will also package the files of lite_cv mode.
-if(BUILD_MINDDATA STREQUAL "full")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "full")
     # full header files
     install(FILES
             ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/constants.h
@@ -78,7 +78,7 @@ if(BUILD_MINDDATA STREQUAL "full")
             DESTINATION ${MIND_DATA_INC_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
 endif()
 
-if(BUILD_MINDDATA STREQUAL "wrapper")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "wrapper")
     install(DIRECTORY ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/ DESTINATION ${MIND_DATA_INC_DIR}
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "vision.h" EXCLUDE)
     if(PLATFORM_ARM64)
@@ -99,7 +99,7 @@ if(BUILD_MINDDATA STREQUAL "wrapper")
     endif()
 endif()
 
-if(BUILD_MINDDATA STREQUAL "lite")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "lite")
     install(DIRECTORY ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/ DESTINATION ${MIND_DATA_INC_DIR}
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
     if(PLATFORM_ARM64)
@@ -126,7 +126,7 @@ if(BUILD_MINDDATA STREQUAL "lite")
     endif()
 endif()
 
-if(BUILD_MINDDATA STREQUAL "lite_cv")
+if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "lite_cv")
     if(PLATFORM_ARM64)
         install(DIRECTORY ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/kernels/image/lite_cv
                 DESTINATION ${MIND_DATA_INC_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
@@ -226,7 +226,11 @@ if(PLATFORM_ARM64)
     endif()
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
-    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+    install(FILES
+            ${TOP_DIR}/mindspore/core/mindapi/base/format.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/types.h
+            DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
@@ -236,7 +240,7 @@ if(PLATFORM_ARM64)
         __install_micro_wrapper()
     endif()
     if(MSLITE_ENABLE_TOOLS)
-        if(NOT BUILD_FIRST)
+        if(NOT MSLITE_COMPILE_TWICE)
             install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR}
                     COMPONENT ${RUNTIME_COMPONENT_NAME})
             if(TARGET_HIMIX)
@@ -327,7 +331,11 @@ elseif(PLATFORM_ARM32)
     endif()
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
-    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+    install(FILES
+            ${TOP_DIR}/mindspore/core/mindapi/base/format.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/types.h
+            DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
@@ -335,7 +343,7 @@ elseif(PLATFORM_ARM32)
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h")
     __install_micro_wrapper()
     if(MSLITE_ENABLE_TOOLS AND NOT TARGET_OHOS_LITE)
-        if(NOT BUILD_FIRST)
+        if(NOT MSLITE_COMPILE_TWICE)
             install(TARGETS ${BENCHMARK_NAME} RUNTIME
                     DESTINATION ${BENCHMARK_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
             if(TARGET_HIMIX)
@@ -416,7 +424,11 @@ elseif(WIN32)
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
-    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+    install(FILES
+            ${TOP_DIR}/mindspore/core/mindapi/base/format.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/types.h
+            DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
@@ -462,7 +474,11 @@ else()
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(FILES ${TOP_DIR}/mindspore/core/ir/dtype/type_id.h DESTINATION ${RUNTIME_INC_DIR}/ir/dtype
             COMPONENT ${RUNTIME_COMPONENT_NAME})
-    install(FILES ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
+    install(FILES
+            ${TOP_DIR}/mindspore/core/mindapi/base/format.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/type_id.h
+            ${TOP_DIR}/mindspore/core/mindapi/base/types.h
+            DESTINATION ${RUNTIME_INC_DIR}/mindapi/base
             COMPONENT ${RUNTIME_COMPONENT_NAME})
     install(DIRECTORY ${TOP_DIR}/include/api/ DESTINATION ${RUNTIME_INC_DIR}/api
             COMPONENT ${RUNTIME_COMPONENT_NAME} FILES_MATCHING PATTERN "*.h" PATTERN "ops*" EXCLUDE)
@@ -533,6 +549,53 @@ else()
             set(LITE_ACL_DIR ${TOP_DIR}/mindspore/lite/build/tools/converter/adapter/acl)
             install(FILES ${LITE_ACL_DIR}/mindspore_shared_lib/libmindspore_shared_lib.so
                     DESTINATION ${CONVERTER_ROOT_DIR}/lib COMPONENT ${RUNTIME_COMPONENT_NAME})
+            if(MSLITE_ENABLE_RUNTIME_CONVERT)
+                install(FILES ${LITE_ACL_DIR}/mindspore_shared_lib/libmindspore_shared_lib.so
+                        DESTINATION ${RUNTIME_LIB_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${glog_LIBPATH}/libglog.so.0.4.0 DESTINATION ${RUNTIME_LIB_DIR} RENAME libglog.so.0
+                        COMPONENT ${RUNTIME_COMPONENT_NAME})
+            endif()
+            if(MSLITE_MINDDATA_IMPLEMENT STREQUAL "cloud" AND MSLITE_ENABLE_RUNTIME_CONVERT)
+                file(GLOB DATA_ENGINE_LIB_LIST ${LITE_ACL_DIR}/_c_dataengine/*.so)
+                file(GLOB DATA_RECORD_LIB_LIST ${LITE_ACL_DIR}/_c_mindrecord/*.so)
+                install(FILES ${DATA_ENGINE_LIB_LIST}
+                        DESTINATION ${RUNTIME_LIB_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${DATA_RECORD_LIB_LIST}
+                        DESTINATION ${RUNTIME_LIB_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${jpeg_turbo_LIBPATH}/libjpeg.so.62.3.0
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libjpeg.so.62 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${jpeg_turbo_LIBPATH}/libturbojpeg.so.0.2.0
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libturbojpeg.so.0 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${tinyxml2_LIBPATH}/libtinyxml2.so.8.0.0
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libtinyxml2.so.8 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${icu4c_LIBPATH}/libicuuc.so.67.1
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libicuuc.so.67 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${icu4c_LIBPATH}/libicudata.so.67.1
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libicudata.so.67 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${icu4c_LIBPATH}/libicui18n.so.67.1
+                        DESTINATION ${RUNTIME_LIB_DIR} RENAME libicui18n.so.67 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${grpc_LIBPATH}/libmindspore_grpc++.so.1.36.1 DESTINATION ${RUNTIME_LIB_DIR}
+                        RENAME libmindspore_grpc++.so.1 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${grpc_LIBPATH}/libmindspore_grpc.so.15.0.0 DESTINATION
+                        ${RUNTIME_LIB_DIR} RENAME libmindspore_grpc.so.15 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${grpc_LIBPATH}/libmindspore_gpr.so.15.0.0 DESTINATION
+                        ${RUNTIME_LIB_DIR} RENAME libmindspore_gpr.so.15 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${grpc_LIBPATH}/libmindspore_upb.so.15.0.0 DESTINATION
+                        ${RUNTIME_LIB_DIR} RENAME libmindspore_upb.so.15 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                install(FILES ${grpc_LIBPATH}/libmindspore_address_sorting.so.15.0.0 DESTINATION ${RUNTIME_LIB_DIR}
+                        RENAME libmindspore_address_sorting.so.15 COMPONENT ${RUNTIME_COMPONENT_NAME})
+                ## Public header files for minddata
+                install(
+                        FILES ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/config.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/constants.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/execute.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/text.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/transforms.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/vision.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/vision_lite.h
+                        ${TOP_DIR}/mindspore/ccsrc/minddata/dataset/include/dataset/vision_ascend.h
+                        DESTINATION ${RUNTIME_INC_DIR}/dataset COMPONENT ${RUNTIME_COMPONENT_NAME})
+            endif()
         endif()
 
         if(MSLITE_ENABLE_DPICO_ATC_ADAPTER)
@@ -568,7 +631,7 @@ else()
         __install_micro_codegen()
     endif()
     if(MSLITE_ENABLE_TOOLS)
-        if(NOT BUILD_FIRST)
+        if(NOT MSLITE_COMPILE_TWICE)
             install(TARGETS ${BENCHMARK_NAME} RUNTIME DESTINATION ${BENCHMARK_ROOT_DIR}
                     COMPONENT ${RUNTIME_COMPONENT_NAME})
         endif()
@@ -583,6 +646,10 @@ else()
                 DESTINATION ${CROPPER_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
         install(FILES ${TOP_DIR}/mindspore/lite/build/tools/cropper/cropper_mapping_npu.cfg
                 DESTINATION ${CROPPER_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+        if(SUPPORT_TRAIN)
+            install(FILES ${TOP_DIR}/mindspore/lite/build/tools/cropper/cropper_mapping_cpu_train.cfg
+                    DESTINATION ${CROPPER_ROOT_DIR} COMPONENT ${RUNTIME_COMPONENT_NAME})
+        endif()
     endif()
 endif()
 
