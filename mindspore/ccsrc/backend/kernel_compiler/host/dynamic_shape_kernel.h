@@ -20,6 +20,7 @@
 #include <string>
 #include "runtime/device/ascend/executor/host_dynamic_kernel.h"
 #include "backend/kernel_compiler/host/host_kernel_mod.h"
+#include "backend/kernel_compiler/kernel.h"
 using HostDynamicKernel = mindspore::device::ascend::HostDynamicKernel;
 namespace mindspore {
 namespace kernel {
@@ -28,6 +29,7 @@ class DynamicShapeKernel : public HostDynamicKernel {
   DynamicShapeKernel(void *stream, const CNodePtr &cnode_ptr) : HostDynamicKernel(stream, cnode_ptr) {}
   ~DynamicShapeKernel() override = default;
   void Execute() override;
+  void Execute(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs);
 };
 
 class DynamicShapeKernelMod : public HostKernelMod {
@@ -35,6 +37,8 @@ class DynamicShapeKernelMod : public HostKernelMod {
   DynamicShapeKernelMod() = default;
   ~DynamicShapeKernelMod() override = default;
   device::DynamicKernelPtr GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) override;
+  bool Launch(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &workspace,
+              const std::vector<AddressPtr> &outputs, void *stream_ptr) override;
 };
 MS_HOST_REG_KERNEL(DynamicShape, DynamicShapeKernelMod);
 }  // namespace kernel

@@ -45,8 +45,11 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_mindspore_Model_buildByGraph(JNIEnv 
     MS_LOGE("Make train config failed");
     return jlong(nullptr);
   }
-  cfg.reset(c_cfg_ptr);
-
+  if (c_cfg_ptr != nullptr) {
+    cfg.reset(c_cfg_ptr);
+  } else {
+    cfg.reset();
+  }
   auto model = new (std::nothrow) mindspore::Model();
   if (model == nullptr) {
     MS_LOGE("Model new failed");
@@ -224,6 +227,9 @@ jlong GetTensorByInOutName(JNIEnv *env, jlong model_ptr, jstring tensor_name, bo
     tensor = lite_model_ptr->GetInputByTensorName(env->GetStringUTFChars(tensor_name, JNI_FALSE));
   } else {
     tensor = lite_model_ptr->GetOutputByTensorName(env->GetStringUTFChars(tensor_name, JNI_FALSE));
+  }
+  if (tensor.impl() == nullptr) {
+    return jlong(nullptr);
   }
   auto tensor_ptr = std::make_unique<mindspore::MSTensor>(tensor);
   if (tensor_ptr == nullptr) {

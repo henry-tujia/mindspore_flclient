@@ -446,6 +446,7 @@ def _check_shape_value_on_axis_divided_by_target_value(input_shape, dim, param_n
                          f"but got {input_shape[dim]}")
     return True
 
+
 class _MicroBatch(Cell):
     """
     transform mini-batch to micro-batch in pipeline parallel.
@@ -530,7 +531,7 @@ class PipelineCell(Cell):
         micro_size (int): MicroBatch size.
 
     Supported Platforms:
-    ``Ascend`` ``GPU``
+        ``Ascend`` ``GPU``
 
     Examples:
         >>> net = Net()
@@ -702,7 +703,7 @@ class ParameterUpdate(Cell):
     def __init__(self, param):
         super(ParameterUpdate, self).__init__(auto_prefix=False)
         if not isinstance(param, Parameter):
-            raise TypeError("For 'ParameterUpdate', 'param' must be 'Parameter', but got {}.".format(param))
+            raise TypeError("For 'ParameterUpdate', 'param' must be 'Parameter', but got {}.".format(type(param)))
         self._param = param
 
     def construct(self, x):

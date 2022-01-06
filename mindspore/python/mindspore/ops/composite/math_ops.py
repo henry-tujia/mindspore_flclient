@@ -22,6 +22,7 @@ from mindspore._checkparam import Validator as validator
 from mindspore.ops.operations import _inner_ops as inner
 from mindspore.ops.primitive import constexpr
 from mindspore.ops import functional as F
+from mindspore.ops.operations._inner_ops import DynamicResizeNearestNeighbor
 from .. import operations as P
 
 
@@ -39,6 +40,9 @@ def _check_validate_keepdims(keep_dims, name):
     keep_dims = validator.check_value_type('keep_dims', keep_dims, [bool], name)
     return keep_dims
 
+@constexpr
+def is_const(x):
+    return x is not None
 
 def count_nonzero(x, axis=(), keep_dims=False, dtype=mstype.int32):
     r"""
@@ -61,6 +65,8 @@ def count_nonzero(x, axis=(), keep_dims=False, dtype=mstype.int32):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import numpy as np
         >>> # case 1: each value specified.
         >>> x = Tensor(np.array([[0, 1, 0], [1, 1, 0]]).astype(np.float32))
         >>> nonzero_num = ops.count_nonzero(x=x, axis=[0, 1], keep_dims=True, dtype=mindspore.int32)
@@ -272,6 +278,9 @@ def tensor_dot(x1, x2, axes):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
+        >>> import numpy as np
         >>> input_x1 = Tensor(np.ones(shape=[1, 2, 3]), mindspore.float32)
         >>> input_x2 = Tensor(np.ones(shape=[3, 1, 2]), mindspore.float32)
         >>> output = ops.tensor_dot(input_x1, input_x2, ((0,1),(1,2)))
@@ -363,6 +372,8 @@ def dot(x1, x2):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> input_x1 = Tensor(np.ones(shape=[2, 3]), mindspore.float32)
         >>> input_x2 = Tensor(np.ones(shape=[1, 3, 2]), mindspore.float32)
         >>> output = ops.dot(input_x1, input_x2)
@@ -580,6 +591,8 @@ def batch_dot(x1, x2, axes=None):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import numpy as np
         >>> x1 = Tensor(np.ones(shape=[2, 2, 3]), mindspore.float32)
         >>> x2 = Tensor(np.ones(shape=[2, 3, 2]), mindspore.float32)
         >>> axes = (-1, -2)
@@ -771,12 +784,14 @@ def matmul(x1, x2, dtype=None):
     Raises:
         ValueError: If the last dimension of `x1` is not the same size as the
             second-to-last dimension of `x2`, or if a scalar value is passed in.
-        ValueError: If the shape of `x1` and `x2` could not broadcast together。
+        ValueError: If the shape of `x1` and `x2` could not broadcast together.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> # case 1 : Reasonable application of broadcast mechanism
         >>> x1 = Tensor(np.arange(2*3*4).reshape(2, 3, 4), mindspore.float32)
         >>> x2 = Tensor(np.arange(4*5).reshape(4, 5), mindspore.float32)
@@ -858,16 +873,17 @@ def cummin(x, axis):
 
     It returns the cumulative minimum of elements and the index.
 
-    ..math::
-
-        y{i} = min(x{1}, x{2}, ... , x{i})
+    .. math::
+        \begin{array}{ll} \\
+            y{i} = min(x{1}, x{2}, ... , x{i})
+        \end{array}
 
     Args:
         x (Tensor): The input tensor, rank of `input_x` > 0.
         axis (Int): The dimension to do the operation, The axis is in the range from -len(`input_x`.shape)
           to len(`input_x`.shape) - 1. When it's in the range from 0 to len(`input_x`.shape) - 1, it means starting
           from the first dimension and counting forwards, When it's less than 0, it means we're counting backwards
-          from the last dimension. for example, -1 means the last dimension.
+          from the last dimension. For example, -1 means the last dimension.
 
     Outputs:
         - **output** (Tensor) - The output tensor of the cumulative minimum of elements.
@@ -882,6 +898,8 @@ def cummin(x, axis):
         ``Ascend``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> a = Tensor([-0.2284, -0.6628,  0.0975,  0.2680, -1.3298, -0.4220], mindspore.float32)
         >>> output = ops.cummin(a, axis=0)
         >>> print(output[0])
@@ -901,3 +919,51 @@ def cummin(x, axis):
         out1 = transpose(out1, prem)
         out2 = transpose(out2, prem)
     return [out1, out2]
+
+
+def resize_nearest_neighbor(input_x, size, align_corners=False):
+    r"""
+    Resizes the input tensor by using the nearest neighbor algorithm.
+
+    Resizes the input tensor to a given size by using the nearest neighbor algorithm. The nearest
+    neighbor algorithm selects the value of the nearest point and does not consider the
+    values of neighboring points at all, yielding a piecewise-constant interpolant.
+
+    Args:
+        input_x (Tensor) - The input tensor. The shape of the tensor is :math:`(N, C, H, W)`.
+        size (Union[Tensor, tuple, list]): The target size. The dimension of size must be 2.
+        align_corners (bool): Whether the centers of the 4 corner pixels of the input
+                              and output tensors are aligned. Default: False.
+
+    Outputs:
+        Tensor, the shape of the output tensor is  :math:`(N, C, NEW\_H, NEW\_W)`.
+        The data type is the same as the `input_x`.
+
+    Raises:
+        TypeError: If `input_x` is not a Tensor.
+        TypeError: If `size` is neither tuple nor list.
+        TypeError: If `align_corners` is not a bool.
+        ValueError: If length of `size` is not equal to 2.
+
+    Supported Platforms:
+        ``Ascend`` ``GPU`` ``CPU``
+
+    Examples:
+        >>> input_tensor = Tensor(np.array([[[[-0.1, 0.3, 3.6], [0.4, 0.5, -3.2]]]]), mindspore.float32)
+        >>> output = ops.ResizeNearestNeighbor(input_tensor, (2, 2))
+        >>> print(output)
+        [[[[-0.1  0.3]
+           [ 0.4  0.5]]]]
+    """
+    if size is None:
+        raise ValueError(f'For ResizeNearestNeighbor, size could not be None.')
+    if isinstance(size, (tuple, list)):
+        resize = P.ResizeNearestNeighbor(size, align_corners)
+        return resize(input_x)
+    if is_const(size):
+        size = size.asnumpy()
+        resize = P.ResizeNearestNeighbor(size, align_corners)
+        return resize(input_x)
+
+    resize = DynamicResizeNearestNeighbor(align_corners)
+    return resize(input_x, size)

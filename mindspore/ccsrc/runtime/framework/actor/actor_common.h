@@ -29,7 +29,7 @@
 #include "backend/session/kernel_graph.h"
 #include "utils/log_adapter.h"
 #include "ir/tensor.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 
 namespace mindspore {
 namespace runtime {
@@ -150,10 +150,10 @@ class ActorDispatcher {
 
   // The first five executions are for warm-up, the next five executions are statistics of multi thread execution time,
   // and the next next five executions are statistics of single thread execution time.
-  static constexpr size_t kMultiThreadExecutionCountBegin{31};
-  static constexpr size_t kMultiThreadExecutionCountEnd{40};
-  static constexpr size_t kSingleThreadExecutionCountBegin{41};
-  static constexpr size_t kSingleThreadExecutionCountEnd{50};
+  static constexpr size_t kMultiThreadExecutionCountBegin{21};
+  static constexpr size_t kMultiThreadExecutionCountEnd{30};
+  static constexpr size_t kSingleThreadExecutionCountBegin{31};
+  static constexpr size_t kSingleThreadExecutionCountEnd{40};
   // The single thread execution constraint.
   static constexpr size_t kSingleThreadExecutionActorMaxNum{100};
 

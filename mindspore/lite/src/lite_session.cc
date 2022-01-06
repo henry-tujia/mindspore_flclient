@@ -37,6 +37,9 @@
 #include "src/weight_decoder.h"
 #include "src/runtime/runtime_allocator.h"
 #include "src/lite_kernel_util.h"
+#ifndef CUSTOM_KERNEL_REGISTRY_CLIP
+#include "src/registry/register_kernel_impl.h"
+#endif
 #ifdef ENABLE_MINDRT
 #include "src/mindrt_executor.h"
 #endif
@@ -61,6 +64,9 @@ extern void common_log_init();
 #endif
 namespace lite {
 namespace {
+#ifndef CUSTOM_KERNEL_REGISTRY_CLIP
+const char *const kArchCPU = "CPU";
+#endif
 bool NeedBitUppackCheck(const SchemaTensorWrapper &src_tensor) {
   MS_ASSERT(src_tensor.handler() != nullptr);
   MS_ASSERT(src_tensor.data() != nullptr);
@@ -106,6 +112,23 @@ int DecompressTensor(const SchemaTensorWrapper &src_tensor, Tensor *dst_tensor) 
 #endif
   }
 }
+#ifndef CUSTOM_KERNEL_REGISTRY_CLIP
+bool ExistCustomCpuKernel() {
+  auto custom_kernel_creators = registry::RegistryKernelImpl::GetInstance()->GetCustomKernelCreators();
+  for (const auto &custom_kernel_creator : custom_kernel_creators) {  // <provider, <arch, <type, CreateKernel*>>>
+    if (custom_kernel_creator.second.empty()) {
+      continue;
+    }
+    if (std::any_of(custom_kernel_creator.second.begin(), custom_kernel_creator.second.end(),
+                    [](const std::pair<std::string, std::unordered_map<std::string, registry::CreateKernel *>> &pair) {
+                      return pair.first == kArchCPU && !pair.second.empty();
+                    })) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
 }  // namespace
 
 LiteSession::LiteSession() {
@@ -494,17 +517,9 @@ int LiteSession::IsolateOutputTensor() {
 }
 
 void LiteSession::UpdateLinkInfoForIsolateOutput() {
-  auto link_info = context_->GetAllLinkInfo();
   for (auto &item : isolate_graph_output_map_) {
-    for (auto &info : link_info) {
-      auto &receivers = info.second;
-      if (receivers.find(item.second) != receivers.end()) {
-        receivers.erase(item.second);
-        receivers.insert(item.first);
-      }
-    }
+    context_->ReplaceLinkInfoReceiverWithNewOne(item.first, item.second);
   }
-  context_->SetAllLinkInfo(link_info);
   return;
 }
 
@@ -561,6 +576,8 @@ int LiteSession::CompileGraph(Model *model) {
     return ret;
   }
   InitGraphInOutTensorsMap(model);
+
+  non_tail_call_kernels_ = scheduler.NonTailCallNodes();
 
   ret = PrepareKernels(model);
   if (ret != RET_OK) {
@@ -629,43 +646,21 @@ int LiteSession::SetAllocatorForDelegateKernels(const kernel::LiteKernel *kernel
 }
 
 int LiteSession::PrepareKernels(const Model *model) {
-  std::vector<kernel::LiteKernel *> all_kernels;
-  for (auto kernel : this->kernels_) {
-#ifndef DELEGATE_CLIP
-    if (kernel->desc().arch == kernel::kDelegate) {
-      all_kernels.push_back(kernel);
-      continue;
-    }
-#endif
-    auto sub_graph = reinterpret_cast<kernel::SubGraphKernel *>(kernel);
-    MS_ASSERT(sub_graph != nullptr);
-    auto kernel_in_subgraph = sub_graph->nodes();
-    all_kernels.insert(all_kernels.end(), kernel_in_subgraph.begin(), kernel_in_subgraph.end());
-  }
-
-  // find in_kernels and out_kernels for kernels
-  kernel::LiteKernelUtil::FindAllInoutKernels(all_kernels);
-
-  // find in_sub and out_sub for subgraph
+  // find kernel's in_kernels and out_kernels in every subgraph
+  kernel::LiteKernelUtil::FindAllInoutKernelsInSubgraphKernel(this->kernels_);
+  // find in_kernels and out_kernels between subgraph kernels
   kernel::LiteKernelUtil::FindAllInoutKernels(this->kernels_);
 
   // init init_ref_count for subgraphs and kernels
-  for (auto *kernel : this->kernels_) {
-    kernel->InitOutTensorInitRefCount();
-#ifndef DELEGATE_CLIP
-    if (kernel->desc().arch == kernel::kDelegate) {
-      continue;
-    }
-#endif
-    if (IsIsolatedSubGraph(kernel)) {
-      static_cast<kernel::SubGraphKernel *>(kernel)->InitInputTensorInitRefCount();
-    }
+  auto ret = SetTensorInitRefCount(model);
+  if (ret != RET_OK) {
+    MS_LOG(ERROR) << "SetTensorInitRefCount failed.";
+    return ret;
   }
-  AdjustModelOutputTensorInitRefCount(model);
 
   for (auto kernel : this->kernels_) {
     if (kernel->desc().arch == kernel::kDelegate) {
-      auto ret = SetAllocatorForDelegateKernels(kernel);
+      ret = SetAllocatorForDelegateKernels(kernel);
       if (ret != RET_OK) {
         MS_LOG(ERROR) << "Prepare kernel " << kernel->name() << " failed: " << ret;
         return ret;
@@ -679,14 +674,14 @@ int LiteSession::PrepareKernels(const Model *model) {
         return RET_ERROR;
       }
       for (auto &node : subgraph_kernel->nodes()) {
-        auto ret = node->Prepare();
+        ret = node->Prepare();
         if (ret != RET_OK) {
           MS_LOG(ERROR) << "node: " << node->name() << " prepare failed.";
           return ret;
         }
       }
     }
-    auto ret = kernel->Prepare();
+    ret = kernel->Prepare();
     if (ret != RET_OK) {
       MS_LOG(ERROR) << "Prepare kernel " << kernel->name() << " failed: " << ret;
       return ret;
@@ -694,6 +689,53 @@ int LiteSession::PrepareKernels(const Model *model) {
   }
   return RET_OK;
 }
+
+int LiteSession::SetTensorInitRefCount(const Model *model) {
+  for (auto *kernel : this->kernels_) {
+    kernel->InitOutTensorInitRefCount();
+#ifndef DELEGATE_CLIP
+    if (kernel->desc().arch == kernel::kDelegate) {
+      continue;
+    }
+#endif
+    if (IsIsolatedSubGraph(kernel)) {
+      static_cast<kernel::SubGraphKernel *>(kernel)->InitInputTensorInitRefCount();
+    }
+  }
+  AdjustModelOutputTensorInitRefCount(model);
+
+  if (!non_tail_call_kernels_.empty()) {
+#ifndef CONTROLFLOW_TENSORLIST_CLIP
+    return SetNonTaiCallSubgraphOutputInitRefCount(non_tail_call_kernels_);
+#endif
+  }
+  return RET_OK;
+}
+
+#ifndef CONTROLFLOW_TENSORLIST_CLIP
+int LiteSession::SetNonTaiCallSubgraphOutputInitRefCount(
+  const std::vector<kernel::LiteKernel *> &non_tail_call_kernels) {
+  for (auto call_kernel : non_tail_call_kernels_) {
+    auto call_output = call_kernel->out_tensors();
+    auto all_out_subgraphs = kernel::LiteKernelUtil::GetCallInputPartialsCorrespondingOutputSubgraph(call_kernel);
+    for (auto subgraph : all_out_subgraphs) {
+      MS_CHECK_TRUE_MSG(subgraph->out_tensors().size() == call_output.size(), RET_ERROR,
+                        "non tail call output size is not same as subgraph output.");
+      std::set<Tensor *> subgraph_outputs_set{};
+      for (size_t i = 0; i < subgraph->out_tensors().size(); ++i) {
+        auto output = subgraph->out_tensors()[i];
+        if (subgraph_outputs_set.find(output) == subgraph_outputs_set.end()) {
+          output->set_init_ref_count(1);
+          subgraph_outputs_set.insert(output);
+        } else {
+          output->set_init_ref_count(output->init_ref_count() + 1);
+        }
+      }
+    }
+  }
+  return RET_OK;
+}
+#endif
 
 std::vector<mindspore::tensor::MSTensor *> LiteSession::GetInputs() const { return this->input_vec_; }
 
@@ -751,6 +793,7 @@ int LiteSession::ContextInit(InnerContext *context) {
 int LiteSession::CreateTensorRTDelegate() {
 #if GPU_TENSORRT
   std::string cache_model_path;
+  std::string serialize_path;
   size_t vocab_size = 0;
   size_t device_cache_size = 0;
   if (config_info_ != nullptr) {
@@ -777,10 +820,16 @@ int LiteSession::CreateTensorRTDelegate() {
           device_cache_size = device_cache_size_opt.Get();
         }
       }
+
+      auto serialize_path_iter = ms_cache.find(kMSCacheSerializePath);
+      if (serialize_path_iter != ms_cache.end()) {
+        serialize_path = serialize_path_iter->second;
+      }
     }
   }
 
-  delegate_ = std::make_shared<TensorRTDelegate>(ms_context_, cache_model_path, vocab_size, device_cache_size);
+  delegate_ =
+    std::make_shared<TensorRTDelegate>(ms_context_, cache_model_path, vocab_size, device_cache_size, serialize_path);
   if (delegate_ == nullptr) {
     MS_LOG(ERROR) << "New tensorrt delegate_ failed";
     return RET_ERROR;
@@ -1351,6 +1400,11 @@ int LiteSession::RuntimeAllocatorInit() {
   if (RuntimeAllocatorValid() != RET_OK) {
     return RET_OK;
   }
+#ifndef CUSTOM_KERNEL_REGISTRY_CLIP
+  if (ExistCustomCpuKernel()) {
+    return RET_OK;
+  }
+#endif
   if (runtime_allocator_ == nullptr) {
     runtime_allocator_ = std::shared_ptr<RuntimeAllocator>(new (std::nothrow) RuntimeAllocator());
   } else {
@@ -1533,9 +1587,34 @@ mindspore::ModelType lite::LiteSession::LoadModelByBuff(const char *model_buf, c
     return mindspore::ModelType::kMindIR_Opt;
   }
   MS_LOG(WARNING) << "Invalid mslite model.";
+  return mindspore::ModelType::kMindIR;
+}
+
+mindspore::ModelType lite::LiteSession::LoadModelByBuff(const char *model_buf, const size_t &buf_size, char **lite_buf,
+                                                        size_t *size, mindspore::ModelType model_type,
+                                                        const std::shared_ptr<mindspore::Context> &ms_context) {
+  if (model_type == mindspore::ModelType::kMindIR_Opt) {
+    *size = buf_size;
+    *lite_buf = const_cast<char *>(model_buf);
+    return mindspore::ModelType::kMindIR_Opt;
+  }
+
+  if (model_type != mindspore::ModelType::kMindIR) {
+    return mindspore::ModelType::kUnknownType;
+  }
+
+  flatbuffers::Verifier verify((const uint8_t *)model_buf, buf_size);
+  auto version_verify = lite::LiteModel::VersionVerify(&verify);
+  if (version_verify != SCHEMA_INVALID) {
+    MS_LOG(DEBUG) << "The kMindIR type model buffer is valid mslite model buffer";
+    *size = buf_size;
+    *lite_buf = const_cast<char *>(model_buf);
+    return mindspore::ModelType::kMindIR_Opt;
+  }
+  MS_LOG(WARNING) << "Invalid mslite model.";
 
 #ifdef RUNTIME_CONVERT
-  *lite_buf = RuntimeConvert(model_buf, buf_size, size);
+  *lite_buf = RuntimeConvert(model_buf, buf_size, size, ms_context);
 #else
   MS_LOG(ERROR) << "Please enable runtime convert.";
 #endif
@@ -1552,6 +1631,27 @@ const char *lite::LiteSession::LoadModelByPath(const std::string &file, mindspor
 
   char *lite_buf = nullptr;
   auto buf_model_type = LoadModelByBuff(model_buf, buf_size, &lite_buf, size, model_type);
+  if (buf_model_type == mindspore::ModelType::kUnknownType || lite_buf == nullptr) {
+    return nullptr;
+  }
+  if (buf_model_type == mindspore::ModelType::kMindIR) {
+    delete[] model_buf;
+    model_buf = nullptr;
+  }
+  return lite_buf;
+}
+
+const char *lite::LiteSession::LoadModelByPath(const std::string &file, mindspore::ModelType model_type, size_t *size,
+                                               const std::shared_ptr<mindspore::Context> &ms_context) {
+  size_t buf_size;
+  auto model_buf = lite::ReadFile(file.c_str(), &buf_size);
+  if (model_buf == nullptr) {
+    MS_LOG(ERROR) << "The model path is invalid";
+    return model_buf;
+  }
+
+  char *lite_buf = nullptr;
+  auto buf_model_type = LoadModelByBuff(model_buf, buf_size, &lite_buf, size, model_type, ms_context);
   if (buf_model_type == mindspore::ModelType::kUnknownType || lite_buf == nullptr) {
     return nullptr;
   }
@@ -1592,9 +1692,64 @@ int lite::LiteSession::LoadModelAndCompileByBuf(const char *model_buf, mindspore
   return RET_OK;
 }
 
+int lite::LiteSession::LoadModelAndCompileByBuf(const char *model_buf, mindspore::ModelType model_type,
+                                                const size_t &buf_size,
+                                                const std::shared_ptr<mindspore::Context> &ms_context) {
+  size_t lite_buf_size = 0;
+  char *lite_buf = nullptr;
+  auto buf_model_type = LoadModelByBuff(model_buf, buf_size, &lite_buf, &lite_buf_size, model_type, ms_context);
+  if (buf_model_type == mindspore::ModelType::kUnknownType || lite_buf == nullptr) {
+    MS_LOG(ERROR) << "Invalid model_buf";
+    return RET_ERROR;
+  }
+
+  auto *model = lite::ImportFromBuffer(lite_buf, lite_buf_size, true);
+  if (model == nullptr) {
+    MS_LOG(ERROR) << "Import model failed";
+    return RET_ERROR;
+  }
+  auto ret = CompileGraph(model);
+  model->buf = nullptr;
+  if (buf_model_type == mindspore::ModelType::kMindIR) {
+    delete[] lite_buf;
+    lite_buf = nullptr;
+  }
+  if (ret != lite::RET_OK) {
+    MS_LOG(ERROR) << "Compile model failed";
+    delete model;
+    return RET_ERROR;
+  }
+  set_model(model);
+  return RET_OK;
+}
+
 int lite::LiteSession::LoadModelAndCompileByPath(const std::string &model_path, mindspore::ModelType model_type) {
   size_t model_size;
   auto model_buf = LoadModelByPath(model_path, model_type, &model_size);
+  if (model_buf == nullptr) {
+    MS_LOG(ERROR) << "Read model file failed";
+    return RET_ERROR;
+  }
+  auto *model = lite::ImportFromBuffer(model_buf, model_size, true);
+  if (model == nullptr) {
+    MS_LOG(ERROR) << "Import model failed";
+    return RET_ERROR;
+  }
+
+  (reinterpret_cast<lite::LiteModel *>(model))->set_keep_model_buf(true);
+  auto ret = CompileGraph(model);
+  if (ret != lite::RET_OK) {
+    MS_LOG(ERROR) << "Compile model failed";
+    return RET_ERROR;
+  }
+  set_model(model);
+  return RET_OK;
+}
+
+int lite::LiteSession::LoadModelAndCompileByPath(const std::string &model_path, mindspore::ModelType model_type,
+                                                 const std::shared_ptr<mindspore::Context> &ms_context) {
+  size_t model_size;
+  auto model_buf = LoadModelByPath(model_path, model_type, &model_size, ms_context);
   if (model_buf == nullptr) {
     MS_LOG(ERROR) << "Read model file failed";
     return RET_ERROR;

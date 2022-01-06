@@ -15,6 +15,7 @@
  */
 
 #include "minddata/mindrecord/include/common/shard_utils.h"
+#include "utils/file_utils.h"
 #include "utils/ms_utils.h"
 #include "./securec.h"
 
@@ -59,74 +60,34 @@ bool ValidateFieldName(const std::string &str) {
 
 Status GetFileName(const std::string &path, std::shared_ptr<std::string> *fn_ptr) {
   RETURN_UNEXPECTED_IF_NULL(fn_ptr);
-  char real_path[PATH_MAX] = {0};
-  char buf[PATH_MAX] = {0};
-  if (strncpy_s(buf, PATH_MAX, common::SafeCStr(path), path.length()) != EOK) {
-    RETURN_STATUS_UNEXPECTED("[Internal ERROR] Failed to call securec func [strncpy_s], path: " + path);
+
+  std::optional<std::string> prefix_path;
+  std::optional<std::string> file_name;
+  FileUtils::SplitDirAndFileName(path, &prefix_path, &file_name);
+  if (!file_name.has_value()) {
+    RETURN_STATUS_UNEXPECTED("Invalid file, failed to get the filename of mindrecord file. Please check file path: " +
+                             path);
   }
-  char tmp[PATH_MAX] = {0};
-#if defined(_WIN32) || defined(_WIN64)
-  if (_fullpath(tmp, dirname(&(buf[0])), PATH_MAX) == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to get the realpath of mindrecord files. Please check file path: " +
-                             std::string(buf));
-  }
-  if (_fullpath(real_path, common::SafeCStr(path), PATH_MAX) == nullptr) {
-    MS_LOG(DEBUG) << "Succeed to get realpath: " << common::SafeCStr(path) << ".";
-  }
-#else
-  if (realpath(dirname(&(buf[0])), tmp) == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to get the realpath of mindrecord files. Please check file path: " +
-                             std::string(buf));
-  }
-  if (realpath(common::SafeCStr(path), real_path) == nullptr) {
-    MS_LOG(DEBUG) << "Succeed to get realpath: " << common::SafeCStr(path) << ".";
-  }
-#endif
-  std::string s = real_path;
-  size_t i = s.rfind(kPathSeparator, s.length());
-  if (i != std::string::npos) {
-    if (i + 1 < s.size()) {
-      *fn_ptr = std::make_shared<std::string>(s.substr(i + 1));
-      return Status::OK();
-    }
-  }
-  *fn_ptr = std::make_shared<std::string>(s);
+  *fn_ptr = std::make_shared<std::string>(file_name.value());
+
   return Status::OK();
 }
 
 Status GetParentDir(const std::string &path, std::shared_ptr<std::string> *pd_ptr) {
   RETURN_UNEXPECTED_IF_NULL(pd_ptr);
-  char real_path[PATH_MAX] = {0};
-  char buf[PATH_MAX] = {0};
-  if (strncpy_s(buf, PATH_MAX, common::SafeCStr(path), path.length()) != EOK) {
-    RETURN_STATUS_UNEXPECTED("[Internal ERROR] Failed to call securec func [strncpy_s], path: " + path);
+
+  std::optional<std::string> prefix_path;
+  std::optional<std::string> file_name;
+  FileUtils::SplitDirAndFileName(path, &prefix_path, &file_name);
+  if (!prefix_path.has_value()) {
+    prefix_path = ".";
   }
-  char tmp[PATH_MAX] = {0};
-#if defined(_WIN32) || defined(_WIN64)
-  if (_fullpath(tmp, dirname(&(buf[0])), PATH_MAX) == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to get the realpath of mindrecord files. Please check file path: " +
-                             std::string(buf));
-  }
-  if (_fullpath(real_path, common::SafeCStr(path), PATH_MAX) == nullptr) {
-    MS_LOG(DEBUG) << "Succeed to get realpath: " << common::SafeCStr(path) << ".";
-  }
-#else
-  if (realpath(dirname(&(buf[0])), tmp) == nullptr) {
-    RETURN_STATUS_UNEXPECTED("Invalid file, failed to get the realpath of mindrecord files. Please check file path: " +
-                             std::string(buf));
-  }
-  if (realpath(common::SafeCStr(path), real_path) == nullptr) {
-    MS_LOG(DEBUG) << "Succeed to get realpath: " << common::SafeCStr(path) << ".";
-  }
-#endif
-  std::string s = real_path;
-  if (s.rfind(kPathSeparator) + 1 <= s.size()) {
-    *pd_ptr = std::make_shared<std::string>(s.substr(0, s.rfind(kPathSeparator) + 1));
-    return Status::OK();
-  }
-  std::string ss;
-  ss.push_back(kPathSeparator);
-  *pd_ptr = std::make_shared<std::string>(ss);
+
+  auto realpath = FileUtils::GetRealPath(prefix_path.value().data());
+  CHECK_FAIL_RETURN_UNEXPECTED(
+    realpath.has_value(), "Invalid file, failed to get the parent dir of mindrecord file. Please check file: " + path);
+
+  *pd_ptr = std::make_shared<std::string>(realpath.value() + kPathSeparator);
   return Status::OK();
 }
 
@@ -159,7 +120,11 @@ bool CheckIsValidUtf8(const std::string &str) {
 
 bool IsLegalFile(const std::string &path) {
   struct stat s;
+#if defined(_WIN32) || defined(_WIN64)
+  if (stat(FileUtils::UTF_8ToGB2312(path.data()).data(), &s) == 0) {
+#else
   if (stat(common::SafeCStr(path), &s) == 0) {
+#endif
     if (S_ISDIR(s.st_mode)) {
       return false;
     }

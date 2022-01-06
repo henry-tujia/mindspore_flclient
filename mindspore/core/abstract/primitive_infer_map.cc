@@ -26,9 +26,11 @@
 #include "ops/real_div.h"
 #include "ops/add.h"
 #include "ops/equal.h"
+#include "ops/greater_equal.h"
 #include "ops/not_equal.h"
 #include "ops/neg.h"
 #include "ops/mul.h"
+#include "ops/mod.h"
 #include "ops/sub.h"
 #include "ops/strided_slice.h"
 #include "ops/reduce_sum.h"
@@ -38,6 +40,8 @@
 #include "ops/tile.h"
 #include "ops/slice.h"
 #include "ops/grad/slice_grad.h"
+#include "ops/lstm.h"
+
 namespace mindspore {
 namespace abstract {
 std::set<int64_t> GetDependsFormMap(const CNodePtr &cnode) {
@@ -198,9 +202,10 @@ PrimitiveEvalImplMap &GetPrimitiveToEvalImplMap() {
     {prim::kPrimLoad, R{InferImplLoad, nullptr, true}},
     // Set impl to null as it will use PartialEvaluator;
     {prim::kPrimPartial, R{nullptr, nullptr, true}},
-    {prim::kPrimEnvGetItem, R{InferImplEnvGetItem, nullptr, true}},
-    {prim::kPrimEnvSetItem, R{InferImplEnvSetItem, nullptr, true}},
-    {prim::kPrimEnvAdd, R{InferImplEnvAdd, nullptr, true}},
+    {prim::kPrimEnvironCreate, R{InferImplEnvironCreate, nullptr, true}},
+    {prim::kPrimEnvironGet, R{InferImplEnvironGet, nullptr, true}},
+    {prim::kPrimEnvironSet, R{InferImplEnvironSet, nullptr, true}},
+    {prim::kPrimEnvironAdd, R{InferImplEnvironAdd, nullptr, true}},
     {prim::kPrimMakeRefKey, R{InferImplMakeRefKey, nullptr, true}},
     {prim::kPrimMakeRef, R{InferImplMakeRef, nullptr, true}},
     {prim::kPrimGetRefKey, R{InferImplGetRefKey, nullptr, true}},
@@ -247,12 +252,14 @@ PrimitiveEvalImplMap &GetPrimitiveToBackendEvalImplMap() {
   using R = PrimitiveEvalImplMap::mapped_type;
   static PrimitiveEvalImplMap prim_backend_eval_implement_map = {
     {prim::kPrimMul, R{ops::MulInfer, nullptr, true}},
+    {prim::kPrimMod, R{ops::ModInfer, nullptr, true}},
     {prim::kPrimAdd, R{ops::AddInfer, nullptr, false}},
     {prim::kPrimSqrtGrad, R{InferImplSqrtGrad, nullptr, true}},
     {prim::kPrimSub, R{ops::SubInfer, nullptr, false}},
     {prim::kPrimNeg, R{ops::NegInfer, nullptr, false}},
     {prim::kPrimTile, R{ops::TileInfer, nullptr, true}},
     {prim::kPrimEqual, R{ops::EqualInfer, nullptr, true}},
+    {prim::kPrimGreaterEqual, R{ops::GreaterEqualInfer, nullptr, true}},
     {prim::kPrimNotEqual, R{ops::NotEqualInfer, nullptr, true}},
     {prim::kPrimLog, R{ops::LogInfer, nullptr, true}},
     {prim::kPrimReciprocal, R{ops::ReciprocalInfer, nullptr, true}},
@@ -290,6 +297,7 @@ PrimitiveEvalImplMap &GetPrimitiveToBackendEvalImplMap() {
     {prim::kPrimArgMaxWithValue, R{InferImplArgMaxWithValue, nullptr, true}},
     {prim::kPrimFusedSparseAdam, R{InferImplFusedSparseAdam, nullptr, true}},
     {prim::kPrimTransData, R{InferImplTransData, nullptr, true}},
+    {prim::kPrimLstm, R{ops::LstmInfer, nullptr, true}},
   };
   return prim_backend_eval_implement_map;
 }

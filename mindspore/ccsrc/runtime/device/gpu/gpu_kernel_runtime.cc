@@ -33,7 +33,7 @@
 #include "runtime/device/gpu/gpu_memory_manager.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "runtime/device/gpu/gpu_memory_copy_manager.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "ir/dtype.h"
 #ifndef ENABLE_SECURITY
 #include "profiler/device/gpu/gpu_profiling.h"
@@ -94,7 +94,7 @@ bool GPUKernelRuntime::Init() {
 #endif
   mem_manager_ = std::make_shared<GPUMemoryManager>();
   MS_EXCEPTION_IF_NULL(mem_manager_);
-  mem_manager_->MallocDeviceMemory();
+  mem_manager_->Initialize();
   if (CollectiveInitializer::instance().collective_inited()) {
     auto collective_handle = CollectiveInitializer::instance().collective_handle();
     if (collective_handle != nullptr) {
@@ -294,7 +294,7 @@ void GPUKernelRuntime::ReleaseDeviceRes() {
 
   GPUDeviceManager::GetInstance().ReleaseDevice();
   if (mem_manager_ != nullptr) {
-    mem_manager_->FreeDeviceMemory();
+    mem_manager_->Finalize();
   }
 }
 

@@ -17,7 +17,6 @@
 #include "runtime/hardware/gpu/gpu_device_context.h"
 #include <dlfcn.h>
 #include <utility>
-#include "pipeline/pynative/pynative_profiling.h"
 #include "runtime/device/gpu/kernel_info_setter.h"
 #include "runtime/device/gpu/gpu_kernel_build.h"
 #include "runtime/device/gpu/gpu_device_address.h"
@@ -29,8 +28,9 @@
 #include "runtime/device/gpu/gpu_buffer_mgr.h"
 #include "backend/kernel_compiler/common_utils.h"
 #include "runtime/device/gpu/gpu_common.h"
+#include "runtime/device/gpu/cuda_common.h"
 #include "runtime/hardware/gpu/optimizer.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "utils/context/graph_kernel_flags.h"
 #include "runtime/device/gpu/gpu_bucket.h"
 #include "profiler/device/gpu/gpu_profiling.h"
@@ -83,7 +83,7 @@ void GPUDeviceContext::Initialize() {
   // Initialize memory pool.
   mem_manager_ = std::make_shared<GPUMemoryManager>();
   MS_EXCEPTION_IF_NULL(mem_manager_);
-  mem_manager_->MallocDeviceMemory();
+  mem_manager_->Initialize();
 
   // Initialize NCCL.
   if (CollectiveInitializer::instance().collective_inited()) {
@@ -120,6 +120,16 @@ bool GPUDeviceContext::InitDevice() {
       MS_LOG(ERROR) << "Failed to set current device id: " << SizeToInt(device_context_key_.device_id_);
       return false;
     }
+  }
+  // Check the Cuda capability
+  const float cuda_cap = GET_CUDA_CAP;
+  if (cuda_cap < SUPPORTED_CAP) {
+    MS_LOG(WARNING) << "The device with Cuda compute capability " << cuda_cap
+                    << " is lower than the minimum required capability " << SUPPORTED_CAP
+                    << ", this may cause some unexpected problems and severely affect the results. "
+                    << "Eg: the outputs are all zeros.\n"
+                    << "Device with a compute capability > " << SUPPORTED_CAP << " is required, "
+                    << "and it is recommended to use devices with a compute capability >= " << RECOMMEND_SM;
   }
 
   // Initialize device resource, such as stream, cudnn and cublas handle.
@@ -159,7 +169,7 @@ void GPUDeviceContext::Destroy() {
 
   // Release device memory
   if (mem_manager_ != nullptr) {
-    mem_manager_->FreeDeviceMemory();
+    mem_manager_->Finalize();
     mem_manager_ = nullptr;
   }
 }
@@ -203,6 +213,20 @@ bool GPUDeviceContext::AllocateContinuousMemory(const std::vector<DeviceAddressP
     return false;
   }
   return mem_manager_->MallocContinuousMemFromMemPool(addr_list, total_size, size_list);
+}
+
+void *GPUDeviceContext::AllocateMemory(size_t size) const {
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  if (!BindDeviceToCurrentThread()) {
+    return nullptr;
+  }
+  return mem_manager_->MallocMemFromMemPool(size, false);
+}
+
+void GPUDeviceContext::FreeMemory(void *const ptr) const {
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  MS_EXCEPTION_IF_NULL(ptr);
+  mem_manager_->FreeMemFromMemPool(ptr);
 }
 
 DeviceAddressPtr GPUDeviceContext::CreateDeviceAddress(void *const device_ptr, size_t device_size, const string &format,
@@ -299,6 +323,8 @@ void GPUDeviceContext::FuseOperators(const KernelGraphPtr &graph) const {
   pm->AddPass(std::make_shared<opt::PrintReduceFusion>("print_reduce"));
   pm->AddPass(std::make_shared<opt::BCEWithLogitsLossFusion>());
   pm->AddPass(std::make_shared<opt::InsertCastGPU>("insert_cast_gpu"));
+  pm->AddPass(std::make_shared<opt::NeighborExchangeV2Fusion>());
+  pm->AddPass(std::make_shared<opt::NeighborExchangeV2GradFusion>());
   optimizer->AddPassManager(pm);
   (void)optimizer->Optimize(graph);
   graph->SetExecOrderByDefault();
@@ -465,10 +491,8 @@ bool GPUDeviceContext::LaunchKernelWithProfiling(const CNodePtr &kernel, const s
   profiler_inst->OpDataProducerEnd();
 
   auto op_launch_start_end_time = profiler_inst->GetSingleOpLaunchTime();
-  std::string op_name = kernel->fullname_with_scope();
-  PynativeProfiler::SetDeviceOpNameAndLaunchTimePoint(std::make_pair(op_name, op_launch_start_end_time));
-  PynativeProfiler::SetDeviceOpNameAndLaunchCostTime(
-    std::make_pair(op_name, op_launch_start_end_time.second - op_launch_start_end_time.first));
+  MS_LOG(DEBUG) << "Launch kernel:" << kernel->fullname_with_scope() << " cost:"
+                << (op_launch_start_end_time.second - op_launch_start_end_time.first) / kBasicTimeTransferUnit;
 
   if (profiler_inst->GetSyncEnableFlag()) {
     CHECK_RET_WITH_RETURN_ERROR(SyncStream(), "Profiler SyncStream failed.");

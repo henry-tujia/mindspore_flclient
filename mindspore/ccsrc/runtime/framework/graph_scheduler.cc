@@ -361,7 +361,7 @@ void GraphScheduler::Run(ActorSet *const actor_set, const std::vector<DeviceCont
   op_context.results_ = &result;
 
   if ((strategy == GraphExecutionStrategy::kStep) && IsSingleOpActorSet(actor_set)) {
-    actor_set->data_prepare_actor_->PrepareData(input_tensors, &op_context);
+    actor_set->data_prepare_actor_->PrepareData(input_tensors, &op_context, GraphExecutionStrategy::kStep);
     MS_EXCEPTION_IF_NULL(actor_set->kernel_actors_[0]);
     actor_set->kernel_actors_[0]->RunOpControlWithInputTensor(nullptr, &op_context, &input_tensors_with_value_node);
     return;
@@ -377,7 +377,7 @@ void GraphScheduler::Run(ActorSet *const actor_set, const std::vector<DeviceCont
   ActorDispatcher::is_multi_thread_execution(actor_set->is_multi_thread_execution_);
   double start_time = GetTime();
   ActorDispatcher::Send(actor_set->data_prepare_actor_->GetAID(), &DataPrepareActor::PrepareData, input_tensors,
-                        &op_context);
+                        &op_context, GraphExecutionStrategy::kPipeline);
 
   // Get the run result.
   auto result_future = result[0].GetFuture();
@@ -1835,7 +1835,19 @@ void GraphScheduler::DumpActor(const ActorSet *actor_set, const GraphCompilerInf
     return;
   }
 
-  std::string filename = GetSaveGraphsPathName("actor_set_" + actor_set->name_ + ".ir");
+  // Get the saved actor set name.
+  auto &kernel_graphs = graph_compiler_info.graphs_;
+  MS_EXCEPTION_IF_NULL(kernel_graphs.front());
+  auto first_graph_id = kernel_graphs.front()->graph_id();
+  MS_EXCEPTION_IF_NULL(kernel_graphs.back());
+  auto last_graph_id = kernel_graphs.back()->graph_id();
+  std::string strategy = (graph_compiler_info.strategy_ == GraphExecutionStrategy::kPipeline) ? "pipeline" : "step";
+  std::string save_name = "actor_set_" + strategy + "_kernel_graph_" + std::to_string(first_graph_id);
+  if (last_graph_id != first_graph_id) {
+    save_name = save_name + "-" + std::to_string(last_graph_id);
+  }
+
+  std::string filename = GetSaveGraphsPathName(save_name + ".ir");
   std::ofstream ofs(filename);
   if (!ofs.is_open()) {
     MS_LOG(ERROR) << "Open file [" << filename << "] failed!";
@@ -1912,6 +1924,14 @@ void GraphScheduler::DumpDeviceTensorStore(const GraphCompilerInfo &graph_compil
       }
     }
     ofs << "\n";
+
+    for (auto &backend_front_map : graph->backend_front_anf_map()) {
+      MS_EXCEPTION_IF_NULL(backend_front_map.first);
+      MS_EXCEPTION_IF_NULL(backend_front_map.second);
+      MS_LOG(DEBUG) << "Graph: " << graph->graph_id()
+                    << ", backend node: " << backend_front_map.first->fullname_with_scope()
+                    << ", front node: " << backend_front_map.second->DebugString();
+    }
   }
 }
 }  // namespace runtime

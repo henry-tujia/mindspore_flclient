@@ -132,11 +132,14 @@ std::vector<int64_t> Convert2Long(const std::vector<size_t> &v);
 
 // check whether node depends on either of nodes or not
 bool IsDepend(const FuncGraph &graph, const AnfNodePtr &node, const std::vector<AnfNodePtr> &nodes);
+bool IsDepend(const FuncGraph &graph, const AnfNodePtr &node, const std::vector<AnfNodePtr> &nodes,
+              mindspore::HashSet<AnfNodePtr> *visited_nodes);
 
 bool UnVisited(const BaseRef &n);
 
 bool Visited(const BaseRef &n);
 
+// Create new cnode with dump flag and trace info maintained
 CNodePtr NewCNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &fg,
                   const std::vector<AnfNodePtr> &orig_nodes);
 
@@ -218,7 +221,7 @@ bool GetBoolAttr(const AnfNodePtr &node, const std::string &attr_name);
 // Check node's data type is in supported data type set
 bool CheckSupportDataType(const AnfNodePtr &node, const std::set<TypeId> &supported_data_type_set);
 
-// Create a new value node of func graph,not kernel graph
+// Create a new value node of func graph, not kernel graph
 ValueNodePtr MakeValueNode(const ValueNodePtr &value_node);
 
 // Transfer depend or updatestate to the new node

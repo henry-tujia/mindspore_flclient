@@ -30,6 +30,7 @@
 #include "abstract/abstract_value.h"
 #include "frontend/parallel/costmodel_context.h"
 #include "frontend/parallel/context.h"
+#include "frontend/parallel/graph_util/graph_splitter.h"
 #include "pipeline/jit/pass.h"
 #include "pipeline/jit/parse/parse_base.h"
 #include "pipeline/jit/parse/data_converter.h"
@@ -45,7 +46,10 @@
 #include "frontend/optimizer/ad/grad.h"
 #include "frontend/optimizer/py_pass_manager.h"
 #include "utils/ms_context.h"
+#include "utils/func_graph_analyzer.h"
+#include "utils/ms_utils.h"
 #include "vm/transform.h"
+#include "load_mindir/infer_mindir.h"
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
 #include "ps/parameter_server.h"
 #include "ps/scheduler.h"
@@ -88,6 +92,46 @@ bool IsDynamicShapeGraph(FuncGraphPtr func_graph) {
                      [](const AnfNodePtr &node) { return AnfAlgo::IsNodeDynamicShape(node); });
 }
 
+bool ExistControlNode(FuncGraphPtr func_graph) {
+  MS_EXCEPTION_IF_NULL(func_graph);
+  auto node_list = TopoSort(func_graph->get_return());
+  std::vector<PrimitivePtr> control_ops = {prim::kPrimSwitch, prim::kPrimCall, prim::kPrimSwitchLayer};
+  for (auto &node : node_list) {
+    if (std::any_of(control_ops.begin(), control_ops.end(),
+                    [&](PrimitivePtr prim) { return AnfAlgo::CheckPrimitiveType(node, prim); })) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool EnableMindRTForAscendSubGraph(const FuncGraphManagerPtr manager, FuncGraphPtr func_graph) {
+  MS_EXCEPTION_IF_NULL(manager);
+  MS_EXCEPTION_IF_NULL(func_graph);
+  auto context_ptr = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context_ptr);
+  std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  auto task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
+  std::string backend = context_ptr->backend_policy();
+  auto graphs = manager->func_graphs();
+  bool exist_while =
+    std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
+  bool exist_ctrl = exist_while || ExistControlNode(func_graph);
+  if (!func_graph->ContainMultiTarget() && task_sink &&
+      context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
+    if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
+      return true;
+    }
+  }
+  if (func_graph->ContainMultiTarget() && task_sink &&
+      context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
+    if (device_target == kAscendDevice && !IsDynamicShapeGraph(func_graph) && backend != kMsVm && !exist_ctrl) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Disable mindRT in the control flow scenario.
 void ResetMindRTEnable(const ResourcePtr &res) {
   MS_EXCEPTION_IF_NULL(res);
@@ -109,27 +153,13 @@ void ResetMindRTEnable(const ResourcePtr &res) {
     }
     if (common::GetEnv("DISABLE_ASCEND_MINDRT") != "1") {
       MS_LOG(INFO) << "Enable Ascend MindRT";
+      if (common::GetEnv("ENABLE_ASCEND_KERNEL_MINDRT") == "1" || common::kEnableAscendKernelByKernel) {
+        return;
+      }
       // No control flow && control flow without while need multigraph-sink, so enable mindrt.
       // Temporary changes: After MindRT supports control flow, the sinking mode is judged in MindRT.
-      if (!common::kEnableAscendSubGraphMindRT) {
-        auto task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
-        std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-        std::string backend = context_ptr->backend_policy();
-        if (!func_graph->ContainMultiTarget() && task_sink &&
-            context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode) {
-          auto graphs = manager->func_graphs();
-          bool exist_while =
-            std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
-          if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
-            return;
-          }
-        }
-      } else {
-        // Exception scenarios: dynamic shape and heterogeneous
-        std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-        if (!IsDynamicShapeGraph(func_graph) || !func_graph->ContainMultiTarget() || (device_target != kAscendDevice)) {
-          return;
-        }
+      if (EnableMindRTForAscendSubGraph(manager, func_graph)) {
+        return;
       }
     }
 
@@ -169,7 +199,11 @@ void ExecuteActionForMindRT(const ResourcePtr &res) {
       VectorRef outputs;
       mindrt_bc_ptr->RunGraph(actor_info, args, &outputs);
       MS_LOG(DEBUG) << "out size " << outputs.size();
-      return outputs[0];
+      if (outputs.empty()) {
+        return VectorRef();
+      } else {
+        return outputs[0];
+      }
     });
   res->SetResult(kOutput, run);
 }
@@ -718,7 +752,7 @@ bool EliminateForwardCNode(const ResourcePtr &res) {
   auto grad_exec = pynative_exec->grad_executor();
   bool eliminate_forward = grad_exec->eliminate_forward();
   grad_exec->set_eliminate_forward(eliminate_forward && ms_func_graph->func_graphs_used().empty());
-  auto grad_graph = ad::Grad(ms_func_graph, res);
+  auto grad_graph = ad::Grad(ms_func_graph, opt::Optimizer::MakeEmptyOptimizer(res));
   MS_EXCEPTION_IF_NULL(grad_graph);
   graph_executor->SetGradGraph(grad_graph, phase);
   ModifyOutputNode(ms_func_graph);
@@ -732,20 +766,81 @@ bool EliminateForwardCNode(const ResourcePtr &res) {
   return true;
 }
 
-bool TaskEmitAction(const ResourcePtr &res) {
+void SetRunMode(const ResourcePtr &res) {
   MS_EXCEPTION_IF_NULL(res);
-  if (MsContext::GetInstance()->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode &&
-      CheckGraphOutputConstOrParameter(res->func_graph())) {
-    return true;
+  auto context_ptr = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context_ptr);
+  // GPU/CPU no need set any context.
+  if (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) != kAscendDevice) {
+    return;
   }
-  if (res->func_graph() == nullptr) {
-    MS_LOG(EXCEPTION) << "TaskEmit args error";
+
+  FuncGraphPtr func_graph = res->func_graph();
+  MS_EXCEPTION_IF_NULL(func_graph);
+  auto backend_ptr = res->GetResult(kBackend).cast<compile::BackendPtr>();
+  MS_EXCEPTION_IF_NULL(backend_ptr);
+  std::string backend = context_ptr->backend_policy();
+  auto set_ctx = [&context_ptr, &backend_ptr](bool task_sink, bool is_multi_graph_sink, bool enable_loop_sink) {
+    context_ptr->set_param<bool>(MS_CTX_ENABLE_TASK_SINK, task_sink);
+    context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, is_multi_graph_sink);
+    context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, enable_loop_sink);
+    backend_ptr->set_is_multi_graph_sink(is_multi_graph_sink);
+  };
+
+  // PYNATIVE: no need set any context.
+  if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
+    MS_LOG(INFO) << "Run Graph mode with pynative.";
+    set_ctx(false, false, false);
+    return;
   }
-  auto closure_env = std::getenv("MS_DEV_ENABLE_CLOSURE");
-  if (closure_env == nullptr) {
-    // Disable mindRT in the control flow scenario.
-    ResetMindRTEnable(res);
+
+  // GRAPH | Single Op : KernelByKernel path in MindRT.
+  if (common::GetEnv(kGraphOpRun) == "1") {
+    MS_LOG(INFO) << "Run Graph mode with kernelbykernel.";
+    set_ctx(false, false, false);
+    return;
   }
+
+  // GRAPH | Dynamic Shape : MultiGraph path in MindRT.
+  if (IsDynamicShapeGraph(func_graph)) {
+    set_ctx(true, true, true);
+    MS_LOG(INFO) << "Run Graph mode with kernelbykernel(Dynamic Shape).";
+    return;
+  }
+
+  // GRAPH | Closure\ENV\While scenario : KernelByKernel path in MindRT.
+  auto manager = func_graph->manager();
+  MS_EXCEPTION_IF_NULL(manager);
+  auto graphs = manager->func_graphs();
+  FuncGraphAnalyzer analyzer(func_graph);
+  analyzer.Run();
+  bool exist_func = analyzer.HasIncorporateCall();
+  bool exist_closure = analyzer.ExistClosure();
+  bool exist_while =
+    std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
+  MS_LOG(INFO) << func_graph->ToString() << " exist_func: " << exist_func << " exist_closure: " << exist_closure
+               << " exist_while: " << exist_while;
+  if (exist_while || exist_func || exist_closure) {
+    MS_LOG(INFO) << "Run graph mode with kernelbykernel.";
+    set_ctx(false, false, false);
+    return;
+  }
+
+  // GRAPH | Heterogeneous scenario : SubGraph path in MindRT.
+  if (func_graph->ContainMultiTarget()) {
+    MS_LOG(INFO) << "Run graph mode with subgraph sink.";
+    set_ctx(true, false, false);
+    return;
+  }
+
+  // GRAPH | normal network and if/for/switch scenario etc : MultiGraph path in MindRT.
+  MS_LOG(INFO) << "Run graph mode with multigraph sink.";
+  set_ctx(true, true, true);
+  return;
+}
+
+// TODO(lzlang): delete
+void OriginSetRunMode(const ResourcePtr &res) {
   FuncGraphPtr func_graph = res->func_graph();
   MS_EXCEPTION_IF_NULL(func_graph);
   auto bc_ptr = res->GetResult(kBackend).cast<compile::BackendPtr>();
@@ -777,6 +872,35 @@ bool TaskEmitAction(const ResourcePtr &res) {
       context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, false);
     }
   }
+}
+
+bool TaskEmitAction(const ResourcePtr &res) {
+  MS_EXCEPTION_IF_NULL(res);
+  if (MsContext::GetInstance()->get_param<int>(MS_CTX_EXECUTION_MODE) == kGraphMode &&
+      CheckGraphOutputConstOrParameter(res->func_graph())) {
+    return true;
+  }
+  if (res->func_graph() == nullptr) {
+    MS_LOG(EXCEPTION) << "TaskEmit args error";
+  }
+  auto closure_env = std::getenv("MS_DEV_ENABLE_CLOSURE");
+  if (closure_env == nullptr) {
+    // Disable mindRT in the control flow scenario.
+    ResetMindRTEnable(res);
+  }
+  if (common::GetEnv("ENABLE_ASCEND_KERNEL_MINDRT") == "1" || common::kEnableAscendKernelByKernel) {
+    SetRunMode(res);
+  } else {  // TODO(lzlang): delete
+    OriginSetRunMode(res);
+  }
+
+  FuncGraphPtr func_graph = res->func_graph();
+  MS_EXCEPTION_IF_NULL(func_graph);
+  auto bc_ptr = res->GetResult(kBackend).cast<compile::BackendPtr>();
+  MS_EXCEPTION_IF_NULL(bc_ptr);
+  auto context_ptr = MsContext::GetInstance();
+  std::string backend = MsContext::GetInstance()->backend_policy();
+  MS_EXCEPTION_IF_NULL(context_ptr);
   // The graph compiling of mindRT.
   if ((backend == kMsConvert) && context_ptr->get_param<bool>(MS_CTX_ENABLE_MINDRT)) {
     TaskEmitActionForMindRT(res);
@@ -968,6 +1092,20 @@ bool StartPSSchedulerAction(const ResourcePtr &) {
   ps::Scheduler::GetInstance().Run();
   return true;
 }
+
+bool DistributedSplitAction(const ResourcePtr &res) {
+  MS_EXCEPTION_IF_NULL(res);
+  FuncGraphPtr func_graph = res->func_graph();
+  auto node = distributed::cluster::ClusterContext::instance()->node();
+  MS_EXCEPTION_IF_NULL(node);
+  auto node_role = distributed::cluster::ClusterContext::instance()->node_role();
+
+  parallel::GraphSplitterPtr splitter =
+    std::make_shared<parallel::GraphSplitter>(func_graph, node->rank_id(), node_role);
+  MS_EXCEPTION_IF_NULL(splitter);
+  splitter->Run();
+  return true;
+}
 #endif
 
 // The parallel primitive related valuenode might be partitioned so that its value changes by device,
@@ -1019,6 +1157,7 @@ bool RemoveValueNodeDuplicationsAction(const ResourcePtr &res) {
 }
 
 bool PipelineSplitAction(const ResourcePtr &res) { return PipelineSplitPass(res); }
+
 bool ValidateAction(const ResourcePtr &res) { return ValidatePass(res); }
 
 bool SetMindIRGraphAction(const ResourcePtr &res) {
@@ -1063,13 +1202,16 @@ bool SetMindIRGraphAction(const ResourcePtr &res) {
                          MS_EXCEPTION_IF_NULL(arg);
                          return arg->abstract()->Broaden();
                        });
+
+  bool is_equal_input_args = true;
   if (!AbstractBasePtrListDeepEqual(func_args, broaded_args)) {
-    MS_LOG(EXCEPTION) << "The input arguments is not compatible with the function graph which has been exported before."
-                      << "Please check the args is same with export.\n"
-                      << "The export input argument size: " << func_args.size() << "\n"
-                      << "The load input argument size: " << broaded_args.size() << "\n"
-                      << "Export input args info: " << abstract::ArgsToString(func_args) << "\n"
-                      << "The input args info: " << abstract::ArgsToString(broaded_args);
+    MS_LOG(WARNING) << "The input arguments is not compatible with the function graph which has been exported before."
+                    << "Please check the args is same with export.\n"
+                    << "The export input argument size: " << func_args.size() << "\n"
+                    << "The load input argument size: " << broaded_args.size() << "\n"
+                    << "Export input args info: " << abstract::ArgsToString(func_args) << "\n"
+                    << "The input args info: " << abstract::ArgsToString(broaded_args);
+    is_equal_input_args = false;
   }
 
   // suppose that there is not KeywordArgument for the top graph
@@ -1087,7 +1229,13 @@ bool SetMindIRGraphAction(const ResourcePtr &res) {
       broaded_args.push_back(abs_ref);
     }
   }
-  (void)AbstractAnalyze(res, res->func_graph(), broaded_args, true);
+
+  if (is_equal_input_args) {
+    (void)AbstractAnalyze(res, res->func_graph(), broaded_args, true);
+  } else {
+    // Use InferMindir which will find c++ infer in eval_map and backend_eval_map;
+    InferMindir(res->func_graph(), args_spec_list, true);
+  }
   auto it = abstract::AnalysisResultCacheMgr::GetInstance().begin();
   auto it_end = abstract::AnalysisResultCacheMgr::GetInstance().end();
   for (; it != it_end; ++it) {
@@ -1210,6 +1358,7 @@ std::vector<ActionItem> VmPipeline() {
   (void)actions.emplace_back(std::make_pair("eliminate_forward_cnode", EliminateForwardCNode));
 
   (void)actions.emplace_back(std::make_pair("validate", ValidateAction));
+
 #if ((defined ENABLE_CPU) && (!defined _WIN32))
   if (ps::PSContext::instance()->is_worker()) {
     if (distributed::cluster::ClusterContext::instance()->initialized()) {
@@ -1242,6 +1391,12 @@ std::vector<ActionItem> BackendPipeline() {
   return actions;
 }
 std::vector<ActionItem> MindIRPipeline() {
+  auto context_ptr = MsContext::GetInstance();
+  if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
+    MS_LOG(EXCEPTION)
+      << "The graph generated form MindIR is not support to execute in the PynativeMode, please convert "
+         "to the GraphMode.";
+  }
   std::vector<ActionItem> actions;
   // Set funcGraph loaded from MindIR to resource.
   (void)actions.emplace_back(std::make_pair("load_mindir", SetMindIRGraphAction));

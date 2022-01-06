@@ -199,7 +199,7 @@ class LogSoftmax(Cell):
 
 class ELU(Cell):
     r"""
-    Exponential Linear Uint activation function.
+    Exponential Linear Unit activation function.
 
     Applies the exponential linear unit function element-wise.
     The activation function is defined as:
@@ -735,7 +735,7 @@ class HSwish(Cell):
         >>> hswish = nn.HSwish()
         >>> result = hswish(x)
         >>> print(result)
-        [-0.3333  -0.3333  0  1.666  0.6665]
+        [-0.3333 -0.3333  0.      1.667   0.6665]
     """
 
     def __init__(self):

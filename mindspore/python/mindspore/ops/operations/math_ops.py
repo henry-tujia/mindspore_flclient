@@ -361,7 +361,7 @@ class AssignAdd(Primitive):
     Updates a `Parameter` by adding a value to it.
 
     Inputs of `variable` and `value` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
     If `value` is a number, the number is automatically converted to Tensor,
     and the data type is consistent with the Tensor data type involved in the operation.
@@ -424,7 +424,7 @@ class AssignSub(Primitive):
     Updates a `Parameter` by subtracting a value from it.
 
     Inputs of `variable` and `value` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
     If `value` is a number, the number is automatically converted to Tensor,
     and the data type is consistent with the Tensor data type involved in the operation.
@@ -586,7 +586,7 @@ class _Reduce(PrimitiveWithInfer):
 
 class ReduceMean(_Reduce):
     """
-    Reduces a dimension of a tensor by averaging all elements in the dimension, by Default. And also can reduces
+    Reduces a dimension of a tensor by averaging all elements in the dimension, by default. And also can reduce
     a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
@@ -663,8 +663,8 @@ class ReduceMean(_Reduce):
 
 class ReduceSum(_Reduce):
     """
-    Reduces a dimension of a tensor by summing all elements in the dimension, by Default. And also can reduces
-    a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by summing all elements in the dimension, by default. And also can reduce a
+    dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -742,11 +742,14 @@ class ReduceSum(_Reduce):
         super(ReduceSum, self).__init__(keep_dims)
         self.__setattr_flag__ = True
 
+    def __infer__(self, input_x, axis):
+        return self.do_infer(input_x, axis, mstype.number_type + (mstype.bool_,))
+
 
 class ReduceAll(_Reduce):
     """
-    Reduces a dimension of a tensor by the "logicalAND" of all elements in the dimension, by Default. And also can
-    reduces a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by the "logicalAND" of all elements in the dimension, by default. And also can
+    reduce a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -804,8 +807,8 @@ class ReduceAll(_Reduce):
 
 class ReduceAny(_Reduce):
     """
-    Reduces a dimension of a tensor by the "logical OR" of all elements in the dimension, by Default. And also can
-    reduces a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by the "logical OR" of all elements in the dimension, by default. And also can
+    reduce a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -863,8 +866,8 @@ class ReduceAny(_Reduce):
 
 class ReduceMax(_Reduce):
     """
-    Reduces a dimension of a tensor by the maximum value in this dimension, by Default. And also can
-    reduces a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by the maximum value in this dimension, by default. And also can
+    reduce a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -950,8 +953,8 @@ class ReduceMax(_Reduce):
 
 class ReduceMin(_Reduce):
     """
-    Reduces a dimension of a tensor by the minimum value in the dimension, by Default. And also can
-    reduces a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by the minimum value in the dimension, by default. And also can
+    reduce a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -1028,8 +1031,8 @@ class ReduceMin(_Reduce):
 
 class ReduceProd(_Reduce):
     """
-    Reduces a dimension of a tensor by multiplying all elements in the dimension, by Default. And also can
-    reduces a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
+    Reduces a dimension of a tensor by multiplying all elements in the dimension, by default. And also can
+    reduce a dimension of `x` along the axis. Determine whether the dimensions of the output and input are the same by
     controlling `keep_dims`.
 
     Args:
@@ -1191,7 +1194,7 @@ class Cdist(Primitive):
     Computes batched the p norm distance between each pair of the two collections of row vectors.
 
     Args:
-        p (float): P value for the p norm distance to calculate between each vector pair ∈[0,∞].
+        p (float): P value for the p norm distance to calculate between each vector pair ∈[0,∞]. Default: 2.0.
 
     Inputs:
         - **input_x** (Tensor) - Input tensor of shape :math:`(B, P, M)`.
@@ -1241,15 +1244,15 @@ class LpNorm(Primitive):
 
     Args:
         axis(int,list,tuple): Specifies which dimension or dimensions of input to calculate the norm across.
-        p(int): The order of norm.
-        keep_dims(bool): Whether the output tensors have dim retained or not.
+        p(int): The order of norm. Default: 2.
+        keep_dims(bool): Whether the output tensors have dim retained or not. Default: False.
         epsilon(float): A value added to the denominator for numerical stability. Default: 1e-12.
 
     Inputs:
         - **input** (Tensor) - Input tensor.
 
     Outputs:
-        Tensor, has the same dtype as `input`, which shape is depend on the args axis.For example, if the size of input
+        Tensor, has the same dtype as `input`, which shape depends on the args axis.For example, if the size of input
         is (2, 3, 4), axis is [0, 1], Outputs' shape will be (4,).
 
     Raises:
@@ -1536,7 +1539,7 @@ class AddN(Primitive):
 
     Inputs:
         - **x** (Union(tuple[Tensor], list[Tensor])) - The input tuple or list
-          is made up of multiple tensors whose dtype is number or bool to be added together.
+          is made up of multiple tensors whose dtype is number to be added together.
 
     Outputs:
         Tensor, has the same shape and dtype as each entry of the `x`.
@@ -1689,20 +1692,20 @@ class Neg(PrimitiveWithInfer):
 
 class InplaceAdd(PrimitiveWithInfer):
     """
-    Adds v into specified rows of x. Computes y = x; y[i,] += v.
+    Adds `v` into specified rows of `x`. Computes `y` = `x`; y[i,] += `v`.
 
     Args:
-        indices (Union[int, tuple]): Indices into the left-most dimension of x, and determines which rows of x
-            to add with v. It is an integer or a tuple, whose value is in [0, the first dimension size of x).
+        indices (Union[int, tuple]): Indices into the left-most dimension of `x`, and determines which rows of `x`
+            to add with `v`. It is an integer or a tuple, whose value is in [0, the first dimension size of `x`).
 
     Inputs:
         - **x** (Tensor) - The first input is a tensor whose data type is float16, float32 or int32.
           :math:`(N,*)` where :math:`*` means, any number of additional dimensions, its rank should be less than 8.
-        - **input_v** (Tensor) - The second input is a tensor that has the same dimension sizes as x except
+        - **input_v** (Tensor) - The second input is a tensor that has the same dimension sizes as `x` except
           the first dimension, which must be the same as indices' size. It has the same data type with `x`.
 
     Outputs:
-        Tensor, has the same shape and dtype as x.
+        Tensor, has the same shape and dtype as `x`.
 
     Raises:
         TypeError: If `indices` is neither int nor tuple.
@@ -1758,20 +1761,20 @@ class InplaceAdd(PrimitiveWithInfer):
 
 class InplaceSub(PrimitiveWithInfer):
     """
-    Subtracts v into specified rows of x. Computes y = x; y[i, :] -= v.
+    Subtracts `v` into specified rows of `x`. Computes `y` = `x`; y[i,] -= `v.
 
     Args:
-        indices (Union[int, tuple]): Indices into the left-most dimension of x, and determines which rows of x
-            to subtract with v. It is an int or tuple, whose value is in [0, the first dimension size of x).
+        indices (Union[int, tuple]): Indices into the left-most dimension of `x`, and determines which rows of `x`
+            to subtract with `v`. It is an int or tuple, whose value is in [0, the first dimension size of `x`).
 
     Inputs:
         - **x** (Tensor) - The first input is a tensor whose data type is float16, float32 or int32.
           :math:`(N,*)` where :math:`*` means, any number of additional dimensions, its rank should be less than 8.
-        - **input_v** (Tensor) - The second input is a tensor who has the same dimension sizes as x except
+        - **input_v** (Tensor) - The second input is a tensor who has the same dimension sizes as `x` except
           the first dimension, which must be the same as indices' size. It has the same data type with `x`.
 
     Outputs:
-        Tensor, has the same shape and dtype as x.
+        Tensor, has the same shape and dtype as `x`.
 
     Raises:
         TypeError: If `indices` is neither int nor tuple.
@@ -2294,7 +2297,7 @@ class Expm1(Primitive):
 class HistogramFixedWidth(PrimitiveWithInfer):
     """
     Returns a rank 1 histogram counting the number of entries in values that fall into every bin. The bins are equal
-    width and determined by the arguments range and nbins.
+    width and determined by the inputs `range` and the arguments `nbins`.
 
     Args:
         dtype (str): An optional attribute. The dtype must be "int32". Default: "int32".
@@ -2302,8 +2305,8 @@ class HistogramFixedWidth(PrimitiveWithInfer):
 
     Inputs:
         - **x** (Tensor) - Numeric Tensor. Must be one of the following types: int32, float32, float16.
-        - **range** (Tensor) - Must has the same data type as `x`, and the shape is [2].
-          x <= range[0] will be mapped to hist[0], x >= range[1] will be mapped to hist[-1].
+        - **range** (Tensor) - Must have the same data type as `x`, and the shape is (2,).
+          x <= range[0] will be mapped to histogram[0], x >= range[1] will be mapped to histogram[-1].
 
     Outputs:
         Tensor, the type is int32.
@@ -2611,15 +2614,6 @@ class Maximum(_MathBinaryOp):
         Float32
     """
 
-    def infer_value(self, x, y):
-        if x is not None and y is not None:
-            x = x.asnumpy()
-            y = y.asnumpy()
-            out = np.maximum(x, y)
-            out = np.array(out, x.dtype)
-            return Tensor(out)
-        return None
-
 
 class RealDiv(_MathBinaryOp):
     """
@@ -2778,15 +2772,6 @@ class DivNoNan(_MathBinaryOp):
         """Initialize _BinaryOp"""
         self.init_prim_io_names(inputs=['x', 'y'], outputs=['output'])
 
-    def infer_value(self, x, y):
-        if x is not None and y is not None:
-            x = x.asnumpy()
-            y = y.asnumpy()
-            with np.errstate(divide='ignore', invalid='ignore'):
-                out = np.true_divide(x, y)
-                out[~np.isfinite(out)] = 0
-            return out
-        return None
 
 
 class MulNoNan(_MathBinaryOp):
@@ -2947,7 +2932,7 @@ class TruncateDiv(_MathBinaryOp):
     """
 
 
-class TruncateMod(_MathBinaryOp):
+class TruncateMod(Primitive):
     r"""
     Returns the remainder of division element-wise.
 
@@ -2989,7 +2974,12 @@ class TruncateMod(_MathBinaryOp):
         >>> print(output)
         [ 2  1 -1]
     """
+    __mindspore_signature__ = (sig.sig_dtype.T, sig.sig_dtype.T)
 
+    @prim_attr_register
+    def __init__(self):
+        """Initialize TruncateMod."""
+        self.init_prim_io_names(inputs=['x', 'y'], outputs=['output'])
 
 class Mod(_MathBinaryOp):
     r"""
@@ -3087,7 +3077,7 @@ class FloorMod(_MathBinaryOp):
     Inputs of `x` and `y` comply with the implicit type conversion rules to make the data types consistent.
     The inputs must be two tensors or one tensor and one scalar.
     When the inputs are two tensors,
-    dtypes of them cannot be both bool , and the shapes of them could be broadcast.
+    dtypes of them cannot be both bool, and the shapes of them could be broadcast.
     When the inputs are one tensor and one scalar,
     the scalar could only be a constant.
 
@@ -3112,7 +3102,7 @@ class FloorMod(_MathBinaryOp):
 
     Outputs:
         Tensor, the shape is the same as the one after broadcasting,
-        and the data type is the one with higher precision or higher digits among the two inputs.
+        and the data type is the one with higher precision of the two inputs.
 
     Raises:
         TypeError: If neither `x` nor `y` is a Tensor.
@@ -3209,7 +3199,7 @@ class Xdivy(Primitive):
         """Initialize Xdivy."""
         self.init_prim_io_names(inputs=['x', 'y'], outputs=['output'])
 
-class Xlogy(_MathBinaryOp):
+class Xlogy(Primitive):
     r"""
     Computes the first input tensor multiplied by the logarithm of second input tensor element-wise.
     Returns zero when `x` is zero.
@@ -3250,9 +3240,12 @@ class Xlogy(_MathBinaryOp):
         >>> print(output)
         [-3.465736   0.        2.7725887]
     """
+    __mindspore_signature__ = (sig.sig_dtype.T, sig.sig_dtype.T)
 
-    def infer_dtype(self, x_dtype, y_dtype):
-        return _MathBinaryOp.do_infer_dtype(x_dtype, y_dtype, [mstype.float16, mstype.float32], self.name)
+    @prim_attr_register
+    def __init__(self):
+        """Initialize Xlogy."""
+        self.init_prim_io_names(inputs=['x', 'y'], outputs=['output'])
 
 
 class Acosh(Primitive):
@@ -3331,7 +3324,7 @@ class Cosh(Primitive):
         """Initialize Cosh"""
 
 
-class Asinh(PrimitiveWithInfer):
+class Asinh(Primitive):
     r"""
     Computes inverse hyperbolic sine of the input element-wise.
 
@@ -3364,13 +3357,6 @@ class Asinh(PrimitiveWithInfer):
     @prim_attr_register
     def __init__(self):
         """Initialize Asinh"""
-
-    def infer_shape(self, x_shape):
-        return x_shape
-
-    def infer_dtype(self, x_dtype):
-        validator.check_tensor_dtype_valid('x', x_dtype, mstype.number_type, self.name)
-        return x_dtype
 
 
 class Sinh(Primitive):
@@ -3496,11 +3482,11 @@ class ApproximateEqual(_LogicBinaryOp):
         & \text{ if } \left | x_{i} - y_{i} \right | \ge \text{tolerance},\ \  False
         \end{cases}
 
-    where :math:`\text{tolerance}` indicates Acceptable maximum tolerance.
+    where `tolerance` indicates Acceptable maximum tolerance.
 
     Inputs of `x` and `y` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
-    the relatively highest priority data type.
+    If they have different data types, the lower precision data type will be converted to
+    the relatively highest precision data type.
 
     Args:
         tolerance (float): The maximum deviation that two elements can be considered equal. Default: 1e-05.
@@ -3508,15 +3494,15 @@ class ApproximateEqual(_LogicBinaryOp):
     Inputs:
         - **x** (Tensor) - A tensor. Must be one of the following types: float32, float16.
           :math:`(N,*)` where :math:`*` means, any number of additional dimensions, its rank should be less than 8.
-        - **y** (Tensor) - A tensor of the same type and shape as 'x'.
+        - **y** (Tensor) - A tensor of the same type and shape as `x`.
 
     Outputs:
-        Tensor, the shape is the same as the shape of 'x', and the data type is bool.
+        Tensor, the shape is the same as the shape of `x`, and the data type is bool.
 
     Raises:
         TypeError: If `tolerance` is not a float.
-        RuntimeError: If the data type of `x`, `y` conversion of Parameter is required
-                      when data type conversion of Parameter is not supported.
+        RuntimeError: If the data type of `x`, `y` conversion of Parameter is given
+                      but data type conversion of Parameter is not supported.
 
     Supported Platforms:
         ``Ascend``
@@ -3550,7 +3536,7 @@ class EqualCount(PrimitiveWithInfer):
           must be the same as `x`, and vice versa.
 
     Outputs:
-        Tensor, with the type same as input tensor and size as (1,).
+        Tensor, with the type same as input tensor and shape as (1,).
 
     Raises:
         TypeError: If `x` or `y` is not a Tensor.
@@ -3679,14 +3665,6 @@ class Greater(_LogicBinaryOp):
         >>> print(output)
         [False  True False]
     """
-
-    def infer_value(self, x, y):
-        if x is not None and y is not None:
-            x = x.asnumpy()
-            y = y.asnumpy()
-            out = np.array(np.greater(x, y))
-            return Tensor(out)
-        return None
 
 
 class GreaterEqual(_LogicBinaryOp):
@@ -3873,7 +3851,7 @@ class LessEqual(_LogicBinaryOp):
     """
 
 
-class LogicalNot(PrimitiveWithInfer):
+class LogicalNot(Primitive):
     """
     Computes the "logical NOT" of a tensor element-wise.
 
@@ -3907,18 +3885,6 @@ class LogicalNot(PrimitiveWithInfer):
         """Initialize LogicalNot"""
         self.init_prim_io_names(inputs=['x'], outputs=['output'])
 
-    def infer_shape(self, x_shape):
-        return x_shape
-
-    def infer_dtype(self, x_dtype):
-        validator.check_tensor_dtype_valid("x", x_dtype, [mstype.bool_], self.name + " or '~' operator")
-        return mstype.tensor_type(mstype.bool_)
-
-    def infer_value(self, x):
-        if x is not None:
-            x = x.asnumpy()
-            return Tensor(np.logical_not(x))
-        return None
 
 
 class LogicalAnd(_LogicBinaryOp):
@@ -3961,17 +3927,6 @@ class LogicalAnd(_LogicBinaryOp):
         >>> print(output)
         [ True False False]
     """
-
-    def infer_dtype(self, x_dtype, y_dtype):
-        return _LogicBinaryOp.do_infer_dtype(x_dtype, y_dtype, (mstype.bool_,), self.name)
-
-    def infer_value(self, x, y):
-        if x is not None and y is not None:
-            x = x.asnumpy()
-            y = y.asnumpy()
-            out = np.array(np.logical_and(x, y))
-            return Tensor(out)
-        return None
 
 
 class LogicalOr(_LogicBinaryOp):
@@ -4024,8 +3979,8 @@ class IsNan(Primitive):
     .. math::
 
         out_i = \begin{cases}
-          & \text{ if } x_{i} = \text{Nan},\ \ True \\
-          & \text{ if } x_{i} \ne  \text{Nan},\ \ False
+          & \ True,\ \text{ if } x_{i} = \text{Nan} \\
+          & \ False,\ \text{ if } x_{i} \ne  \text{Nan}
         \end{cases}
 
     where :math:`Nan` means not a number.
@@ -4247,7 +4202,7 @@ class NPUGetFloatStatus(PrimitiveWithInfer):
         >>> from mindspore.common.tensor import Tensor
         >>> from mindspore.ops import operations as P
         >>> class Net(nn.Cell):
-        >>>     def __init__(self):
+        ...     def __init__(self):
         ...         super().__init__()
         ...         self.alloc_status = P.NPUAllocFloatStatus()
         ...         self.get_status = P.NPUGetFloatStatus()
@@ -4321,7 +4276,7 @@ class NPUClearFloatStatus(PrimitiveWithInfer):
         >>> from mindspore.common.tensor import Tensor
         >>> from mindspore.ops import operations as P
         >>> class Net(nn.Cell):
-        >>>     def __init__(self):
+        ...     def __init__(self):
         ...         super().__init__()
         ...         self.alloc_status = P.NPUAllocFloatStatus()
         ...         self.get_status = P.NPUGetFloatStatus()
@@ -4438,7 +4393,7 @@ class ACos(Primitive):
         self.init_prim_io_names(inputs=['x'], outputs='output')
 
 
-class Sin(PrimitiveWithInfer):
+class Sin(Primitive):
     r"""
     Computes sine of the input element-wise.
 
@@ -4471,12 +4426,6 @@ class Sin(PrimitiveWithInfer):
     def __init__(self):
         """Initialize Sin."""
 
-    def infer_shape(self, x_shape):
-        return x_shape
-
-    def infer_dtype(self, x_dtype):
-        validator.check_tensor_dtype_valid('x', x_dtype, mstype.number_type, self.name)
-        return x_dtype
 
 
 class Asin(Primitive):
@@ -4815,15 +4764,13 @@ class Atan2(_MathBinaryOp):
     such that :math:`x = r*\sin(\theta), y = r*\cos(\theta)`, where :math:`r = \sqrt{x^2 + y^2}`.
 
     Inputs of `x` and `y` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
-    the relatively highest priority data type.
+    If they have different data types, the lower precision data type will be converted to
+    the relatively highest precision data type.
 
     Inputs:
         - **x** (Tensor) - The input tensor.
           :math:`(N,*)` where :math:`*` means, any number of additional dimensions.
-          The data type will give priority to the high-precision data type
-        - **y** (Tensor) - The input tensor.
-          It has the same shape with `x`. The data type will give priority to the high-precision data type.
+        - **y** (Tensor) - The input tensor. It has the same shape with `x`.
 
     Outputs:
         Tensor, the shape is the same as the one after broadcasting,and the data type is same as `x`.
@@ -4910,7 +4857,7 @@ class BitwiseAnd(_BitwiseBinaryOp):
 
     Inputs of `x` and `y` comply with the implicit type conversion rules to
     make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Inputs:
@@ -4949,7 +4896,7 @@ class BitwiseOr(_BitwiseBinaryOp):
 
     Inputs of `x` and `y` comply with the implicit type conversion rules to
     make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Inputs:
@@ -4987,7 +4934,7 @@ class BitwiseXor(_BitwiseBinaryOp):
 
     Inputs of `x` and `y` comply with the implicit type conversion rules to
     make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Inputs:
@@ -5160,11 +5107,11 @@ class BesselI1e(Primitive):
 
 class Inv(Primitive):
     r"""
-    Computes Inv(Reciprocal) of input tensor element-wise.
+    Computes Reciprocal of input tensor element-wise.
 
     .. math::
 
-        out_i = out_i = \frac{1}{x_{i} }
+        out_i = \frac{1}{x_{i} }
 
     Inputs:
         - **x** (Tensor) - The shape of tensor is
@@ -5203,7 +5150,8 @@ class Invert(Primitive):
         out_i = -x_{i}
 
     Inputs:
-        - **x** (Tensor[int16], Tensor[uint16]) - The shape of tensor is :math:`(x_1, x_2, ..., x_R)`.
+        - **x** (Tensor) - The shape of tensor is :math:`(x_1, x_2, ..., x_R)`.
+          The data type should be one of the following types: int16, uint16.
 
     Outputs:
         Tensor, has the same shape as `x`.
@@ -5230,7 +5178,7 @@ class Invert(Primitive):
 
 class Eps(PrimitiveWithInfer):
     """
-    Creates a tensor filled with `x` dtype minimum value.
+    Creates a tensor filled with minimum value in `x` dtype.
 
     Inputs:
         - **x** (Tensor) - Input tensor. The data type must be float16, float32 or float64.
@@ -5388,8 +5336,8 @@ class MatrixInverse(PrimitiveWithInfer):
 
 class IndexAdd(Primitive):
     """
-    Adds tensor y to specified axis and indices of tensor x. The axis should be in the range from 0 to len(x.dim) - 1,
-    and indices should be in the range from 0 to the size of x at the axis dimension.
+    Adds tensor `y` to specified axis and indices of tensor `x`. The axis should be in [0,  len(x.dim) - 1],
+    and indices should be in [0, the size of `x`] at the axis dimension.
 
     Args:
         axis (int): The dimension along which to index.
@@ -5397,7 +5345,7 @@ class IndexAdd(Primitive):
         check_index_bound (bool): If true, check index boundary. If false, don't check index boundary. Default: True.
 
     Inputs:
-        - **x** (Parameter) - The input tensor to add to.
+        - **x** (Parameter) - The input Parameter to add to.
         - **indices** (Tensor) - Add the  value of `x` and `y` along the dimension of the `axis` according to the
           specified index value, with data type int32.
           The `indices` must be 1D with the same size as the size of `y` in the `axis` dimension. The values
@@ -5406,10 +5354,10 @@ class IndexAdd(Primitive):
           The shape must be the same as `x` except the `axis` th dimension.
 
     Outputs:
-        Tensor, has the same shape and dtype as x.
+        Tensor, has the same shape and dtype as `x`.
 
     Raises:
-        TypeError: If `x` is not a Tensor.
+        TypeError: If `x` is not a Parameter.
         TypeError: If neither `indices` nor `y` is a Tensor.
         ValueError: If axis is out of `x` rank's range.
         ValueError: If `x` rank is not the same as `y` rank.
@@ -5424,7 +5372,8 @@ class IndexAdd(Primitive):
         ...     def __init__(self):
         ...         super(Net, self).__init__()
         ...         self.index_add = ops.IndexAdd(axis=1)
-        ...         self.x = Parameter(Tensor(np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]), mindspore.float32))
+        ...         self.x = Parameter(Tensor(np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]), mindspore.float32),
+        ...                 name="name_x")
         ...         self.indices = Tensor(np.array([0, 2]), mindspore.int32)
         ...
         ...     def construct(self, y):
@@ -5460,20 +5409,20 @@ class Erfinv(Primitive):
                                 erfinv(erf(x)) = x
 
     Inputs:
-        - **input_x** (Tensor) - The input tensor to compute to, with data type float32, float16.
+        - **input_x** (Tensor) - The input tensor to compute to, with data type float32 or float16.
 
     Outputs:
         Tensor, has the same shape and dtype as `input_x`.
 
     Raises:
-        TypeError: If dtype of `input_x` is not one of: float32, float16.
+        TypeError: If dtype of `input_x` is neither float32 nor float16.
 
     Supported Platforms:
         ``Ascend``
 
     Examples:
         >>> x = Tensor(np.array([0, 0.5, -0.9]), mindspore.float32)
-        >>> erfinv = P.Erfinv()
+        >>> erfinv = ops.Erfinv()
         >>> output = erfinv(x)
         >>> print(output)
         [ 0.          0.47695306 -1.1630805 ]

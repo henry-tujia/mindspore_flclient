@@ -69,7 +69,8 @@ Status ModelImpl::Build(const void *model_data, size_t data_size, ModelType mode
     return kLiteNullptr;
   }
 
-  auto ret = session->LoadModelAndCompileByBuf(static_cast<const char *>(model_data), model_type, data_size);
+  auto ret =
+    session->LoadModelAndCompileByBuf(static_cast<const char *>(model_data), model_type, data_size, ms_context);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Init session failed";
     return kLiteError;
@@ -88,7 +89,7 @@ Status ModelImpl::Build(const std::string &model_path, ModelType model_type,
     return kLiteNullptr;
   }
 
-  auto ret = session->LoadModelAndCompileByPath(model_path, model_type);
+  auto ret = session->LoadModelAndCompileByPath(model_path, model_type, ms_context);
   if (ret != RET_OK) {
     MS_LOG(ERROR) << "Init session failed";
     return kLiteError;
@@ -258,7 +259,7 @@ Status ModelImpl::Predict(const std::vector<MSTensor> &inputs, std::vector<MSTen
       MS_LOG(ERROR) << "Tensor " << user_input.Name() << " has no data.";
       return kLiteInputTensorError;
     }
-    if (user_input.Name() != input->tensor_name()) {
+    if (user_input.Name() != input->tensor_name() && user_input.Name() != "MindDataTensor") {
       MS_LOG(WARNING) << "Tensor " << user_input.Name() << " has a different name from input" << input->tensor_name()
                       << ".";
     }
@@ -343,12 +344,12 @@ std::vector<MSTensor> ModelImpl::GetOutputs() {
   std::vector<MSTensor> res;
   auto names = session_->GetOutputTensorNames();
   if (names.empty()) {
-    MS_LOG(ERROR) << "The names of model is null.";
+    MS_LOG(ERROR) << "The output tensor name of this model is null.";
     return empty;
   }
   auto outputs = session_->GetOutputs();
   if (outputs.empty()) {
-    MS_LOG(ERROR) << "The output tensor name of this model is null.";
+    MS_LOG(ERROR) << "The outputs of model is null.";
     return empty;
   }
   if (names.size() != outputs.size()) {
@@ -650,6 +651,32 @@ Status ModelImpl::UpdateWeights(const std::vector<MSTensor> &new_weights) {
   return static_cast<StatusCode>(ret);
 }
 
+Status ModelImpl::SetupVirtualBatch(int virtual_batch_multiplier, float lr, float momentum) {
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return kLiteNullptr;
+  }
+  auto ret = session_->SetupVirtualBatch(virtual_batch_multiplier, lr, momentum);
+  return static_cast<StatusCode>(ret);
+}
+
+Status ModelImpl::SetLearningRate(float learning_rate) {
+  if (session_ == nullptr) {
+    MS_LOG(ERROR) << "Session is null.";
+    return kLiteNullptr;
+  }
+  auto ret = session_->SetLearningRate(learning_rate);
+  return static_cast<StatusCode>(ret);
+}
+
+float ModelImpl::GetLearningRate() {
+  if (session_ == nullptr) {
+    MS_LOG(WARNING) << "Session is null.";
+    return 0.0;
+  }
+  return session_->GetLearningRate();
+}
+
 lite::LiteSession *ModelImpl::CreateLiteSession(lite::InnerContext *context) {
   auto session = new (std::nothrow) lite::LiteSession();
   if (session == nullptr) {
@@ -669,4 +696,5 @@ lite::LiteSession *ModelImpl::CreateLiteSession(lite::InnerContext *context) {
   }
   return session;
 }
+
 }  // namespace mindspore

@@ -26,20 +26,20 @@
 #include "backend/optimizer/graph_kernel/add_stitch_atomic_clean_gpu.h"
 #include "backend/optimizer/graph_kernel/arithmetic_simplify.h"
 #include "backend/optimizer/graph_kernel/core/graph_kernel_cluster.h"
-#include "backend/optimizer/graph_kernel/eliminate_redundant_output.h"
+#include "backend/optimizer/graph_kernel/core/eliminate_redundant_output.h"
 #include "backend/optimizer/graph_kernel/insert_pad.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_splitter.h"
 #include "backend/optimizer/graph_kernel/adapter/graph_kernel_expander_with_py.h"
 #include "backend/optimizer/graph_kernel/cast_matmul_fusion.h"
 #include "backend/optimizer/graph_kernel/raise_reduction_precision.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_cse.h"
-#include "backend/optimizer/graph_kernel/shape_ops_splitter.h"
+#include "backend/optimizer/graph_kernel/core/shape_ops_splitter.h"
 #include "backend/optimizer/graph_kernel/value_graph_binder.h"
 #include "backend/optimizer/graph_kernel/parallel_fusion.h"
 #include "backend/optimizer/graph_kernel/optimize_assign.h"
 #include "backend/optimizer/graph_kernel/split_umonad.h"
 #include "backend/optimizer/graph_kernel/reorder_ops.h"
-#include "backend/optimizer/graph_kernel/update_state_formatter.h"
+#include "backend/optimizer/graph_kernel/core/update_state_formatter.h"
 #include "backend/optimizer/graph_kernel/axis_normalizer.h"
 #include "backend/optimizer/graph_kernel/decrease_compute_precision.h"
 #include "backend/optimizer/graph_kernel/decrease_transfer_precision.h"
@@ -51,6 +51,7 @@
 #include "backend/optimizer/graph_kernel/rewrite_output_shape.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_recompute.h"
 #include "backend/optimizer/graph_kernel/reduce_fake_out_mem.h"
+#include "backend/optimizer/graph_kernel/depend_elimination.h"
 
 namespace mindspore::graphkernel {
 using opt::CommonSubexpressionElimination;
@@ -64,6 +65,9 @@ inline unsigned int GetPassLevelByFlag(bool flag) { return flag ? OptLevel_1 : O
 
 PassManagerPtr GraphKernelOptimizer::PreProcess() const {
   auto pm = std::make_shared<GraphKernelPassManager>(0, "preprocess");
+  // Do DependElimination all passes of graphkernel
+  pm->AddPass(std::make_shared<DependElimination>(), OptLevel_1);
+
   // Do cse before all passes of graphkernel
   pm->AddPass(std::make_shared<CommonSubexpressionElimination>("cse1"), OptLevel_1);
 

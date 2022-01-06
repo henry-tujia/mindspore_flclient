@@ -25,7 +25,7 @@
 #include <utility>
 #include <vector>
 #include "debug/data_dump/dump_json_parser.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "debug/anf_ir_utils.h"
 #include "debug/common.h"
 #include "backend/session/anf_runtime_algorithm.h"
@@ -406,10 +406,8 @@ void E2eDump::DumpSetup(const session::KernelGraph *graph) {
   }
 }
 
-void E2eDump::UpdateIterGPUDump() {
-  if (!IsDeviceTargetGPU()) {
-    return;
-  }
+void E2eDump::UpdateIterMindRTDump() {
+  // update dump iter for GPU and kernel by kernel ascend dump.
   DumpJsonParser::GetInstance().UpdateDumpIter();
 }
 
@@ -493,7 +491,7 @@ void E2eDump::DumpData(const session::KernelGraph *graph, uint32_t rank_id, cons
 bool E2eDump::DumpSingleNodeData(const CNodePtr &node, uint32_t graph_id, uint32_t rank_id, const Debugger *debugger) {
   bool success = false;
   auto &dump_json_parser = DumpJsonParser::GetInstance();
-  if (dump_json_parser.GetIterDumpFlag()) {
+  if (dump_json_parser.DumpEnabledForIter()) {
     std::string dump_path = GenerateDumpPath(graph_id, rank_id);
     DumpInputSingleNode(node, dump_path, debugger);
     DumpOutputSingleNode(node, dump_path, debugger);
@@ -506,7 +504,7 @@ bool E2eDump::DumpParametersData(const session::KernelGraph *graph, uint32_t ran
   bool success = false;
   uint32_t graph_id = graph->graph_id();
   auto &dump_json_parser = DumpJsonParser::GetInstance();
-  if (dump_json_parser.GetIterDumpFlag()) {
+  if (dump_json_parser.DumpEnabledForIter()) {
     MS_LOG(INFO) << "DumpParameters. Current iteration is " << dump_json_parser.cur_dump_iter();
     MS_LOG(INFO) << "Current graph id is " << graph_id;
     std::string dump_path = GenerateDumpPath(graph_id, rank_id);
@@ -626,6 +624,8 @@ bool E2eDump::ConvertFormatForTensorAndDump(std::string dump_path, const T &tens
   // get host shape
   std::vector<size_t> device_shape;
   (void)std::copy(tensor.shape().dim().begin(), tensor.shape().dim().end(), std::back_inserter(device_shape));
+  ShapeVector shape_d;
+  (void)std::transform(device_shape.begin(), device_shape.end(), std::back_inserter(shape_d), SizeToLong);
   std::vector<size_t> host_shape;
   (void)std::copy(tensor.original_shape().dim().begin(), tensor.original_shape().dim().end(),
                   std::back_inserter(host_shape));
@@ -649,8 +649,7 @@ bool E2eDump::ConvertFormatForTensorAndDump(std::string dump_path, const T &tens
       MS_LOG(INFO) << "Do not support convert from format " << device_format << " to " << host_format << " for tensor "
                    << dump_path_slot;
     } else {
-      const trans::FormatArgs format_args{data_ptr,   data_size,    host_format, device_format,
-                                          host_shape, device_shape, src_type};
+      const trans::FormatArgs format_args{data_ptr, data_size, host_format, device_format, shape_to, shape_d, src_type};
       auto group = tensor.sub_format() > 1 ? tensor.sub_format() : 1;
       trans_success = trans::TransFormatFromDeviceToHost(format_args, trans_buf.data(), group);
       if (!trans_success) {

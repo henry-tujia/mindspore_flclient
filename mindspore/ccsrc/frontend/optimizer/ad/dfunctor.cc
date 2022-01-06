@@ -128,7 +128,7 @@ void DFunctor::BackPropagateFv(const AnfNodePtr &fv, const AnfNodePtr &din) {
     fv_adjoint->second->RegisterKUser(default_val_node, 1);
     anfnode_to_envitem_[fv_node] = std::make_pair(embed_node, default_val_node);
   }
-  auto dfv = tape_->NewCNode({NewValueNode(prim::kPrimEnvGetItem), din, embed_node, default_val_node});
+  auto dfv = tape_->NewCNode({NewValueNode(prim::kPrimEnvironGet), din, embed_node, default_val_node});
   MS_LOG(DEBUG) << "BackPropagateFv find adjoint in anfnode_to_adjoin_ or anfnode_to_adjoin_indirect_fv_ fv "
                 << fv->func_graph()->ToString() << " " << fv->ToString() << ".";
   MS_LOG(DEBUG) << "BackPropagateFv get item from " << din->ToString() << " key " << embed_node->ToString() << ".";
@@ -421,7 +421,7 @@ AnfNodePtr DFunctor::AttachFvDoutToTape(const AnfNodePtr &grad_fv) {
     fv_adjoint->second->RegisterKUser(node, 1);
     auto sens = fv_adjoint->second->dout();
     new_grad_fv = tape_->NewCNode({
-      NewValueNode(prim::kPrimEnvSetItem),
+      NewValueNode(prim::kPrimEnvironSet),
       new_grad_fv,
       node,
       sens,
@@ -448,7 +448,7 @@ AnfNodePtr DFunctor::AttachIndirectFvDoutToTape(const AnfNodePtr &grad_fv) {
     fv_adjoint.second->RegisterKUser(node, 1);
     auto sens = fv_adjoint.second->dout();
     new_grad_fv = tape_->NewCNode({
-      NewValueNode(prim::kPrimEnvSetItem),
+      NewValueNode(prim::kPrimEnvironSet),
       new_grad_fv,
       node,
       sens,
@@ -486,9 +486,9 @@ void DFunctor::MapMorphism() {
   // Set output for tape closure.
   AnfNodePtr grad_fv;
   if (lift_fv_before_grad) {
-    grad_fv = AttachFvDoutToTape(NewValueNode(newenv));
+    grad_fv = AttachFvDoutToTape(NewEnviron(tape_));
   } else {
-    grad_fv = AttachIndirectFvDoutToTape(AttachFvDoutToTape(NewValueNode(newenv)));
+    grad_fv = AttachIndirectFvDoutToTape(AttachFvDoutToTape(NewEnviron(tape_)));
   }
 
   std::vector<AnfNodePtr> inputs{NewValueNode(prim::kPrimMakeTuple), grad_fv};
@@ -835,12 +835,16 @@ CNodePtr GetJUser(const NodeUsersMap &node_user_map, const CNodePtr &cnode, int 
 }
 
 CNodePtr GetPrimalUser(const CNodePtr &j_user, const std::map<FuncGraphPtr, std::vector<CNodePtr>> &primal_map) {
-  // Check if J operation has relevant primal call in the same graph.
+  // Check if the forward network and the gradient of it are called in the same graph.
   auto graph = j_user->func_graph();
   auto iter = primal_map.find(graph);
   if (iter == primal_map.end()) {
-    MS_LOG(WARNING) << "J operation has no relevant primal call in the same graph. Func graph: " << graph->ToString()
-                    << ", J user: " << j_user->DebugString();
+    // The CNode using the forward graph result and the gradient of the forward graph are not in the same graph.
+    // The EliminatePrimalGraph optimization can not be done. If the code use the forward network and its gradient,
+    // the forward network can not be eliminated. This may cause the decrease of the compilation and running efficiency.
+    MS_LOG(INFO) << "The gradient operation of forward network and the forward network are not called in the same"
+                 << " graph. The CNode to use the gradient result is: " << j_user->DebugString()
+                 << " This CNode is in graph: " << graph->ToString();
     return nullptr;
   }
 

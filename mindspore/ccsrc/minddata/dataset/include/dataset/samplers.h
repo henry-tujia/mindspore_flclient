@@ -33,6 +33,7 @@ class SamplerObj;
 /// \brief An abstract base class to represent a sampler in the data pipeline.
 class MS_API Sampler : std::enable_shared_from_this<Sampler> {
   friend class AlbumDataset;
+  friend class Caltech256Dataset;
   friend class CelebADataset;
   friend class Cifar10Dataset;
   friend class Cifar100Dataset;
@@ -46,6 +47,7 @@ class MS_API Sampler : std::enable_shared_from_this<Sampler> {
   friend class FashionMnistDataset;
   friend class FlickrDataset;
   friend class ImageFolderDataset;
+  friend class IMDBDataset;
   friend class KMnistDataset;
   friend class LJSpeechDataset;
   friend class ManifestDataset;
@@ -56,6 +58,7 @@ class MS_API Sampler : std::enable_shared_from_this<Sampler> {
   friend class QMnistDataset;
   friend class RandomDataDataset;
   friend class SBUDataset;
+  friend class SemeionDataset;
   friend class SpeechCommandsDataset;
   friend class STL10Dataset;
   friend class TedliumDataset;
@@ -63,6 +66,7 @@ class MS_API Sampler : std::enable_shared_from_this<Sampler> {
   friend class TFRecordDataset;
   friend class USPSDataset;
   friend class VOCDataset;
+  friend class WIDERFaceDataset;
   friend class YesNoDataset;
   friend std::shared_ptr<SamplerObj> SelectSampler(int64_t, bool, int32_t, int32_t);
 

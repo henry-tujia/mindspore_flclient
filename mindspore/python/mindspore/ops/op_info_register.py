@@ -577,7 +577,7 @@ class TBERegOp(RegOp):
 
     def need_check_supported(self, need_check_supported=False):
         """
-        Whether the operator need check supports.
+        Whether the operator needs check supports.
 
         Args:
             need_check_supported (bool): Value of need_check_supported. Default: false.
@@ -588,7 +588,7 @@ class TBERegOp(RegOp):
 
     def is_dynamic_format(self, is_dynamic_format=False):
         """
-        Whether the operator need calop_select_format api.
+        Whether the operator needs calop_select_format api.
 
         Args:
             is_dynamic_format (bool): Value of is_dynamic_format. Default: false.
@@ -602,7 +602,7 @@ class TBERegOp(RegOp):
         The behavior type of operator, such as broadcast, reduce and so on.
 
         Args:
-            pattern (str): Value of op pattern.
+            pattern (str): Value of op pattern. Default: None.
         """
         if pattern is not None and self._is_string(pattern):
             self.op_pattern_ = pattern
@@ -676,7 +676,7 @@ class CustomRegOp(RegOp):
     Class used for generating the registration information for the `func` parameter of :class:`mindspore.ops.Custom`.
 
     Args:
-        op_name (str): kernel name. No need to set this value as `Custom` operator will generate a unique name
+        op_name (str): kernel name. No need to set this value as `Custom`, operator will generate a unique name
             automatically. Default: "Custom".
 
     Examples:
@@ -762,7 +762,7 @@ class CustomRegOp(RegOp):
 
 class DataType:
     r"""
-    Ascend ops various combinations of dtype and format.
+    Various combinations of dtype and format of Ascend ops.
 
     The current list below may be incomplete.
 

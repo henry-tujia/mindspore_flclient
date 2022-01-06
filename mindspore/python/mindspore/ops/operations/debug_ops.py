@@ -270,8 +270,8 @@ class InsertGradientOf(PrimitiveWithInfer):
     Examples:
         >>> import numpy as np
         >>> from mindspore import Tensor, ops, ms_function
-        >>> a = Tensor(np.array([1.0]).astype(np.float))
-        >>> b = Tensor(np.array([0.2]).astype(np.float))
+        >>> a = Tensor(np.array([1.0]).astype(np.float32))
+        >>> b = Tensor(np.array([0.2]).astype(np.float32))
         >>> def clip_gradient(dx):
         ...     ret = dx
         ...     if ret > a:
@@ -298,14 +298,14 @@ class InsertGradientOf(PrimitiveWithInfer):
         ...     def fd(x, y):
         ...         return grad_all(clip_test)(x, y)
         ...
-        ...     print("forward: ", f(Tensor(np.array([1.1]).astype(np.float)),
-        ...         Tensor(np.array([0.1]).astype(np.float))))
-        ...     print("clip_gradient:", fd(Tensor(np.array([1.1]).astype(np.float)),
-        ...         Tensor(np.array([0.1]).astype(np.float))))
+        ...     print("forward: ", f(Tensor(np.array([1.1]).astype(np.float32)),
+        ...         Tensor(np.array([0.1]).astype(np.float32))))
+        ...     print("clip_gradient:", fd(Tensor(np.array([1.1]).astype(np.float32)),
+        ...         Tensor(np.array([0.1]).astype(np.float32))))
         >>> InsertGradientOfClipDemo()
-        forward: [0.11]
-        clip_gradient: (Tensor(shape=[1], dtype=Float64, value= [ 2.00000000e-01]),
-                        Tensor(shape=[1], dtype=Float64,value= [ 1.00000000e+00]))
+        forward: [0.11000001]
+        clip_gradient: (Tensor(shape=[1], dtype=Float32, value= [ 2.00000003e-01]),
+                        Tensor(shape=[1], dtype=Float32, value= [ 1.00000000e+00]))
     """
 
     @prim_attr_register
@@ -336,10 +336,10 @@ class HookBackward(PrimitiveWithInfer):
     Args:
         hook_fn (Function): Python function. hook function.
         cell_id (str): Used to identify whether the function registered by the hook is actually registered on
-                       the specified Cell. where the Cell is an object. For example, 'nn.Add' is a Cell object.
+                       the specified Cell. Where the Cell is an object. For example, 'nn.Add' is a Cell object.
                        The default value of cell_id is ", in this case, the system will automatically register
                        when registering. Add a value of cell_id, the value of cell_id currently does not support
-                       custom values。
+                       custom values.
 
     Inputs:
         - **inputs** (Tensor) - The variable to hook.
@@ -352,6 +352,7 @@ class HookBackward(PrimitiveWithInfer):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> import mindspore
         >>> from mindspore import Tensor
         >>> from mindspore import ops
         >>> from mindspore.ops import GradOperation
@@ -369,9 +370,9 @@ class HookBackward(PrimitiveWithInfer):
         >>> def backward(x, y):
         ...     return grad_all(hook_test)(x, y)
         ...
-        >>> output = backward(1, 2)
+        >>> output = backward(Tensor(1, mindspore.float32), Tensor(2, mindspore.float32))
         >>> print(output)
-        ()
+        (Tensor(shape=[], dtype=Float32, value= 4), Tensor(shape=[], dtype=Float32, value= 4))
     """
 
     def __init__(self, hook_fn, cell_id=""):
@@ -391,6 +392,8 @@ class HookBackward(PrimitiveWithInfer):
         return inputs_shape
 
     def infer_dtype(self, *inputs_type):
+        for dtype in inputs_type:
+            validator.check_subclass("input", dtype, [mstype.tensor], self.name)
         if len(inputs_type) == 1:
             return inputs_type[0]
         return inputs_type

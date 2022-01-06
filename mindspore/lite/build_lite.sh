@@ -91,26 +91,41 @@ build_lite_x86_64_jni_and_jar() {
 
     cd ${LITE_JAVA_PATH}/java
     rm -rf gradle .gradle gradlew gradlew.bat
-    gradle wrapper --gradle-version 6.6.1 --distribution-type all
+    local gradle_version=`gradle --version | grep Gradle | awk '{print$2}'`
+    if [[ ${gradle_version} == '6.6.1' ]]; then
+      gradle_command=gradle
+    else
+      gradle wrapper --gradle-version 6.6.1 --distribution-type all
+      gradle_command=${LITE_JAVA_PATH}/java/gradlew
+    fi
     # build java common
-    ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/java/common
-    ${LITE_JAVA_PATH}/java/gradlew build -p ${LITE_JAVA_PATH}/java/common
+    ${gradle_command} clean -p ${LITE_JAVA_PATH}/java/common
+    ${gradle_command} build -p ${LITE_JAVA_PATH}/java/common
     cp ${LITE_JAVA_PATH}/java/common/build/libs/mindspore-lite-java-common.jar ${LITE_JAVA_PATH}/java/linux_x86/libs/
 
     # build java fl_client
     if [[ "X$is_train" = "Xon" ]]; then
-        ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew createFlatBuffers -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew build -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew clearJar -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew flReleaseJarX86 --rerun-tasks -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} clean -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} createFlatBuffers -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} build -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} clearJar -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} flReleaseJarX86 --rerun-tasks -p ${LITE_JAVA_PATH}/java/fl_client
         cp ${LITE_JAVA_PATH}/java/fl_client/build/libs/jarX86/mindspore-lite-java-flclient.jar ${BASEPATH}/output/tmp/${pkg_name}/runtime/lib/
         rm -rf ${LITE_JAVA_PATH}/java/fl_client/.gradle ${LITE_JAVA_PATH}/java/fl_client/src/main/java/mindspore
     fi
 
     # build jar
-    ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/
-    ${LITE_JAVA_PATH}/java/gradlew releaseJar -p ${LITE_JAVA_PATH}/
+    ${gradle_command} clean -p ${LITE_JAVA_PATH}/
+    if [[ "${ENABLE_ASAN}" == "ON" || "${ENABLE_ASAN}" == "on" ]] ; then
+      ${gradle_command} releaseJar -p ${LITE_JAVA_PATH}/ -x test
+    else
+      if [[ "${MSLITE_ENABLE_TESTCASES}" == "ON" || "${MSLITE_ENABLE_TESTCASES}" == "on" ]] ; then
+          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${LITE_JAVA_PATH}/native/libs/linux_x86/
+          ${gradle_command} releaseJar -p ${LITE_JAVA_PATH}/
+      else
+           ${gradle_command} releaseJar -p ${LITE_JAVA_PATH}/ -x test
+      fi
+    fi
     cp ${LITE_JAVA_PATH}/build/lib/jar/*.jar ${BASEPATH}/output/tmp/${pkg_name}/runtime/lib/
 
     # package
@@ -156,19 +171,24 @@ build_lite() {
       TOOLCHAIN_NAME="himix200"
       MSLITE_REGISTRY_DEVICE=Hi3516D
       check_Hi35xx
+      MSLITE_COMPILE_TWICE=ON
     elif [[ "${MSLITE_REGISTRY_DEVICE}" == "Hi3559A" && "${local_lite_platform}" == "arm64" ]]; then
       TOOLCHAIN_NAME="himix100"
       check_Hi35xx
+      MSLITE_COMPILE_TWICE=ON
     elif [[ "${MSLITE_REGISTRY_DEVICE}" == "SD3403" && "${local_lite_platform}" == "arm64" ]]; then
       TOOLCHAIN_NAME="mix210"
+      MSLITE_COMPILE_TWICE=ON
     elif [[ "${MSLITE_REGISTRY_DEVICE}" == "Hi3519A" && "${local_lite_platform}" == "arm32" ]]; then
       TOOLCHAIN_NAME="himix200"
       check_Hi35xx
+      MSLITE_COMPILE_TWICE=ON
     elif [[ ("${MSLITE_ENABLE_NNIE}" == "on" || "${MSLITE_REGISTRY_DEVICE}" == "Hi3516D") && "${local_lite_platform}" == "x86_64" ]]; then
       MSLITE_REGISTRY_DEVICE=Hi3516D
     fi
 
     machine=`uname -m`
+    echo "machine:${machine}."
     if [[ "${local_lite_platform}" == "arm32" ]]; then
       LITE_CMAKE_ARGS="${LITE_CMAKE_ARGS} -DPLATFORM_ARM32=on -DENABLE_NEON=on"
       if [ "$(uname)" == "Darwin" ]; then
@@ -241,23 +261,36 @@ build_lite() {
     if [[ "X$MSLITE_REGISTRY_DEVICE" != "X" ]]; then
       LITE_CMAKE_ARGS="${LITE_CMAKE_ARGS} -DMSLITE_REGISTRY_DEVICE=${MSLITE_REGISTRY_DEVICE}"
     fi
+    if [[ "X$MSLITE_COMPILE_TWICE" != "X" ]]; then
+      LITE_CMAKE_ARGS="${LITE_CMAKE_ARGS} -DMSLITE_COMPILE_TWICE=${MSLITE_COMPILE_TWICE}"
+    fi
     if [[ "${local_lite_platform}" == "arm64" || "${local_lite_platform}" == "arm32" ]]; then
       echo "default link libc++_static.a, export MSLITE_ANDROID_STL=c++_shared to link libc++_shared.so"
     fi
 
-    echo "cmake ${LITE_CMAKE_ARGS} -DBUILD_FIRST=ON ${BASEPATH}/mindspore/lite"
-    cmake ${LITE_CMAKE_ARGS} -DBUILD_FIRST=ON "${BASEPATH}/mindspore/lite"
+    echo "cmake ${LITE_CMAKE_ARGS} ${BASEPATH}/mindspore/lite"
+    cmake ${LITE_CMAKE_ARGS} "${BASEPATH}/mindspore/lite"
 
     if [[ "$(uname)" == "Darwin" && "${local_lite_platform}" != "x86_64" ]]; then
-        xcodebuild ONLY_ACTIVE_ARCH=NO -configuration Release -scheme mindspore-lite_static -target mindspore-lite_static -sdk iphoneos -quiet
+        xcodebuild ONLY_ACTIVE_ARCH=NO -configuration Release -scheme mindspore-lite_static -target mindspore-lite_static -sdk iphoneos -quiet -UseModernBuildSystem=YES
     elif [[ "$(uname)" == "Darwin" && "${local_lite_platform}" == "x86_64" ]]; then
-        xcodebuild ONLY_ACTIVE_ARCH=NO -configuration Release -scheme mindspore-lite_static -target mindspore-lite_static -sdk iphonesimulator -quiet
+        xcodebuild ONLY_ACTIVE_ARCH=NO -configuration Release -scheme mindspore-lite_static -target mindspore-lite_static -sdk iphonesimulator -quiet -UseModernBuildSystem=YES
     else
       make -j$THREAD_NUM && make install
-      cp -r ${BASEPATH}/output/tmp/mindspore*/runtime ${BASEPATH}/mindspore/lite/tools/benchmark
-      cmake ${LITE_CMAKE_ARGS} -DBUILD_FIRST=off "${BASEPATH}/mindspore/lite"
-      cmake --build "${BASEPATH}/mindspore/lite/build" --target benchmark -j$THREAD_NUM
-      make install && make package
+      if [[ "X$MSLITE_COMPILE_TWICE" == "XON" ]]; then
+        if [[ "X$MSLITE_ENABLE_TOOLS" != "X" ]]; then
+          MSLITE_ENABLE_TOOLS=$(echo $MSLITE_ENABLE_TOOLS | tr '[a-z]' '[A-Z]')
+        fi
+        if [[ "X$MSLITE_ENABLE_TOOLS" != "XOFF" ]]; then
+          LITE_CMAKE_ARGS=`echo $LITE_CMAKE_ARGS | sed 's/-DMSLITE_COMPILE_TWICE=ON/-DMSLITE_COMPILE_TWICE=OFF/g'`
+          cp -r ${BASEPATH}/output/tmp/mindspore*/runtime ${BASEPATH}/mindspore/lite/tools/benchmark
+          echo "cmake ${LITE_CMAKE_ARGS} ${BASEPATH}/mindspore/lite"
+          cmake ${LITE_CMAKE_ARGS} "${BASEPATH}/mindspore/lite"
+          cmake --build "${BASEPATH}/mindspore/lite/build" --target benchmark -j$THREAD_NUM
+          make install
+        fi
+      fi
+      make package
       if [[ "${local_lite_platform}" == "x86_64" ]]; then
         if [ "${JAVA_HOME}" ]; then
             echo -e "\e[31mJAVA_HOME=$JAVA_HOME  \e[0m"
@@ -409,13 +442,19 @@ build_aar() {
     fi
     cd ${LITE_JAVA_PATH}/java
     rm -rf gradle .gradle gradlew gradlew.bat
-    gradle wrapper --gradle-version 6.6.1 --distribution-type all
+    local gradle_version=`gradle --version | grep Gradle | awk '{print$2}'`
+    if [[ ${gradle_version} == '6.6.1' ]]; then
+      gradle_command=gradle
+    else
+      gradle wrapper --gradle-version 6.6.1 --distribution-type all
+      gradle_command=${LITE_JAVA_PATH}/java/gradlew
+    fi
     # build common module
-    ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/java/common
-    ${LITE_JAVA_PATH}/java/gradlew build -p ${LITE_JAVA_PATH}/java/common
+    ${gradle_command} clean -p ${LITE_JAVA_PATH}/java/common
+    ${gradle_command} build -p ${LITE_JAVA_PATH}/java/common
     # build new java api module
-    ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/
-    ${LITE_JAVA_PATH}/java/gradlew build -p ${LITE_JAVA_PATH}/
+    ${gradle_command} clean -p ${LITE_JAVA_PATH}/
+    ${gradle_command} build -p ${LITE_JAVA_PATH}/ -x test
 
     # build aar
     local npu_bak=${MSLITE_ENABLE_NPU}
@@ -432,20 +471,20 @@ build_aar() {
         is_train=off
     fi
     if [[ "X$is_train" = "Xon" ]]; then
-        ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew createFlatBuffers -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew build -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew clearJar -p ${LITE_JAVA_PATH}/java/fl_client
-        ${LITE_JAVA_PATH}/java/gradlew flReleaseJarAAR --rerun-tasks -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} clean -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} createFlatBuffers -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} build -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} clearJar -p ${LITE_JAVA_PATH}/java/fl_client
+        ${gradle_command} flReleaseJarAAR --rerun-tasks -p ${LITE_JAVA_PATH}/java/fl_client
         cp ${LITE_JAVA_PATH}/java/fl_client/build/libs/jarAAR/mindspore-lite-java-flclient.jar ${LITE_JAVA_PATH}/java/app/libs
         rm -rf ${LITE_JAVA_PATH}/java/fl_client/.gradle ${LITE_JAVA_PATH}/java/fl_client/src/main/java/mindspore
     fi
 
     cp ${LITE_JAVA_PATH}/java/common/build/libs/mindspore-lite-java-common.jar ${LITE_JAVA_PATH}/java/app/libs
     cp ${LITE_JAVA_PATH}/build/libs/mindspore-lite-java.jar ${LITE_JAVA_PATH}/java/app/libs
-    ${LITE_JAVA_PATH}/java/gradlew clean -p ${LITE_JAVA_PATH}/java/app
-    ${LITE_JAVA_PATH}/java/gradlew assembleRelease  -p ${LITE_JAVA_PATH}/java/app
-    ${LITE_JAVA_PATH}/java/gradlew publish -PLITE_VERSION=${VERSION_STR} -p ${LITE_JAVA_PATH}/java/app
+    ${gradle_command} clean -p ${LITE_JAVA_PATH}/java/app
+    ${gradle_command} assembleRelease  -p ${LITE_JAVA_PATH}/java/app
+    ${gradle_command} publish -PLITE_VERSION=${VERSION_STR} -p ${LITE_JAVA_PATH}/java/app
 
     cd ${LITE_JAVA_PATH}/java/app/build
     [ -n "${BASEPATH}" ] && rm -rf ${BASEPATH}/output/*.tar.gz*

@@ -29,7 +29,7 @@
 #include "backend/kernel_compiler/common_utils.h"
 #include "base/core_ops.h"
 #include "base/base_ref_utils.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "utils/config_manager.h"
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/session/executor_manager.h"
@@ -56,6 +56,21 @@
 #include "backend/session/pynative_task_manager.h"
 #include "pipeline/pynative/pynative_execute.h"
 #include "runtime/op_builder/op_lazy_builder.h"
+#ifdef ENABLE_DEBUGGER
+#include "debug/tensor_load.h"
+#include "debug/debugger/proto_exporter.h"
+#else
+#include "debug/debugger/proto_exporter_stub.h"
+#endif
+#ifdef ENABLE_DUMP_IR
+#include "debug/rdr/running_data_recorder.h"
+#include "debug/rdr/recorder_manager.h"
+#include "debug/rdr/graph_recorder.h"
+#endif
+#ifndef ENABLE_SECURITY
+#include "debug/data_dump/dump_json_parser.h"
+#include "debug/data_dump/e2e_dump.h"
+#endif
 
 namespace mindspore {
 namespace session {
@@ -173,10 +188,6 @@ BaseRef GetNodeOutputTensorFromInputs(const session::KernelWithIndex &node_outpu
   return nullptr;
 }
 
-int64_t ShapeSize(const std::vector<int64_t> &shape) {
-  return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int64_t>());
-}
-
 BaseRef CreateNodeOutputTensor(const session::KernelWithIndex &node_output_pair, const KernelGraphPtr &graph,
                                const std::vector<tensor::TensorPtr> &input_tensors,
                                std::map<tensor::TensorPtr, session::KernelWithIndex> *tensor_to_node) {
@@ -197,7 +208,7 @@ BaseRef CreateNodeOutputTensor(const session::KernelWithIndex &node_output_pair,
   (void)std::copy(shape.begin(), shape.end(), std::back_inserter(temp_shape));
   if (AnfAlgo::IsDynamicShape(node)) {
     auto max_shape = AnfAlgo::GetOutputMaxShape(node, output_index);
-    temp_shape = ShapeSize(max_shape) > ShapeSize(temp_shape) ? max_shape : temp_shape;
+    temp_shape = abstract::ShapeSize(max_shape) > abstract::ShapeSize(temp_shape) ? max_shape : temp_shape;
   }
   tensor::TensorPtr tensor;
   bool is_internal_output = graph->IsInternalOutput(node, output_index);
@@ -285,19 +296,50 @@ ValueNodePtr CreateNewValueNode(const AnfNodePtr &anf, KernelGraph *graph) {
   return new_value_node;
 }
 
+std::string GetOpRunDeviceTarget(const PrimitivePtr &op_prim) {
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  const std::string &device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+
+  MS_EXCEPTION_IF_NULL(op_prim);
+  const auto &attr_map = op_prim->attrs();
+  auto iter = attr_map.find(kAttrPrimitiveTarget);
+  if (iter != attr_map.end()) {
+    return GetValue<std::string>(iter->second);
+  }
+  return device_target;
+}
+
+// Need to discard input tensor properties in heterogeneous scenarios.
+// For example, the format of device_address in input_tensor is 5D format,
+// and it's invalid for CPU graph parameter.
+bool NeedDiscardTensorProperties(const std::string &op_device_target,
+                                 const device::DeviceAddressPtr &tensor_device_address) {
+  if (tensor_device_address == nullptr) {
+    return true;
+  }
+  auto tensor_device_address_type = tensor_device_address->DeviceType();
+  auto tensor_device_address_type_str = device::kDeviceTypeToName.at(tensor_device_address_type);
+  if (op_device_target == tensor_device_address_type_str) {
+    return false;
+  }
+  return true;
+}
+
 ParameterPtr ConstructRunOpParameter(const std::shared_ptr<KernelGraph> &graph, const tensor::TensorPtr &input_tensor,
-                                     int64_t tensor_mask) {
+                                     const OpRunInfo &op_run_info, int64_t tensor_mask) {
   MS_EXCEPTION_IF_NULL(graph);
   auto param = graph->NewParameter();
   MS_EXCEPTION_IF_NULL(param);
   if (tensor_mask == kParameterWeightTensorMask) {
     param->set_default_param(input_tensor);
   }
+
   // set the kernel info of parameter
   auto kernel_build_info_builder = std::make_shared<kernel::KernelBuildInfo::KernelBuildInfoBuilder>();
   MS_EXCEPTION_IF_NULL(input_tensor);
   auto device_address = std::dynamic_pointer_cast<device::DeviceAddress>(input_tensor->device_address());
-  if (device_address == nullptr) {
+  if (NeedDiscardTensorProperties(op_run_info.device_target, device_address)) {
     kernel_build_info_builder->SetOutputsFormat(std::vector<std::string>{kOpFormat_DEFAULT});
     TypeId param_init_data_type = AnfAlgo::IsParameterWeight(param) ? kTypeUnknown : input_tensor->data_type();
     kernel_build_info_builder->SetOutputsDeviceType(std::vector<TypeId>{param_init_data_type});
@@ -374,11 +416,12 @@ BaseRef CreateNodeOutputPlaceholder(const session::KernelWithIndex &node_output_
     return value_node->value();
   }
   if (node->isa<Parameter>()) {
-    for (size_t input_idx = 0; input_idx < graph->inputs().size(); input_idx++) {
+    const auto &input_nodes = graph->input_nodes();
+    for (size_t input_idx = 0; input_idx < input_nodes.size(); ++input_idx) {
       if (input_idx >= input_tensors.size()) {
         MS_LOG(EXCEPTION) << "Input idx:" << input_idx << " is out of range:" << input_tensors.size();
       }
-      if (graph->inputs()[input_idx] == node) {
+      if (input_nodes[input_idx] == node) {
         return input_tensors[input_idx];
       }
     }
@@ -1259,19 +1302,22 @@ OpRunInfo SessionBasic::GetSingleOpRunInfo(const CNodePtr &cnode, const GraphInf
                            .abstract = abstract,
                            .is_dynamic_shape = shape->IsDynamic(),
                            .is_auto_mixed_precision = false,
-                           .lazy_build = true,
+                           .lazy_build = !shape->IsDynamic(),
                            .next_op_name = std::string(),
                            .next_input_index = 0,
                            .graph_info = graph_info,
                            .tensor_mask = tensor_info.input_tensors_mask,
-                           .input_tensors = tensor_info.input_tensors};
+                           .input_tensors = tensor_info.input_tensors,
+                           .device_target = GetOpRunDeviceTarget(primitive)};
   return op_run_info;
 }
 
 void SessionBasic::GetParameterIndex(const KernelGraph *graph, const std::vector<tensor::TensorPtr> &inputs,
                                      std::map<AnfNodePtr, size_t> *parameter_index) {
+  MS_EXCEPTION_IF_NULL(graph);
+  MS_EXCEPTION_IF_NULL(parameter_index);
   size_t index = 0;
-  for (const auto &input_node : graph->inputs()) {
+  for (const auto &input_node : graph->input_nodes()) {
     auto params = AnfAlgo::GetAllOutput(input_node);
     for (const auto &param : params) {
       if (index >= inputs.size()) {
@@ -1328,37 +1374,54 @@ void SessionBasic::GetRefCount(const KernelGraph *graph, std::map<KernelWithInde
   }
 }
 
-void SessionBasic::GetForwardOpOutputRefCount(const KernelGraph *graph,
-                                              std::map<std::string, size_t> *forward_op_output_refcount) {
+void SessionBasic::GetForwardOpOutputRefCount(const KernelGraph *graph, const std::vector<tensor::TensorPtr> &inputs,
+                                              std::map<std::string, size_t> *forward_op_output_tensor_id) {
   if (!pynative::PynativeExecutor::GetInstance()->grad_executor()->grad_is_running()) {
     return;
   }
-  const auto &graph_value_nodes = graph->graph_value_nodes();
-  std::vector<tensor::TensorPtr> tensor_value_list;
-  for (const auto &v : graph_value_nodes) {
-    const auto &value = GetValueNode(v);
-    MS_EXCEPTION_IF_NULL(value);
-    TensorValueToTensor(value, &tensor_value_list);
+  auto context_ptr = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(context_ptr);
+  // Cpu can not clear device address, because it's device address and host address is the same
+  if (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kCPUDevice) {
+    return;
   }
+  MS_EXCEPTION_IF_NULL(forward_op_output_tensor_id);
   const auto &forward_op_output_id = pynative::PynativeExecutor::GetInstance()->grad_executor()->forward_op_output_id();
-  for (const auto &t : tensor_value_list) {
-    if (forward_op_output_id.find(t->id()) != forward_op_output_id.end()) {
-      (*forward_op_output_refcount)[t->id()] += 1;
+  MS_LOG(DEBUG) << "Total forward op out put size " << forward_op_output_id.size();
+  for (const auto &kernel : graph->execution_order()) {
+    const auto input_tensor_num = AnfAlgo::GetInputTensorNum(kernel);
+    for (size_t i = 1; i <= input_tensor_num; ++i) {
+      const auto &input = kernel->input(i);
+      auto kernel_with_index = AnfAlgo::VisitKernel(input, 0);
+      auto real_input = kernel_with_index.first;
+      MS_EXCEPTION_IF_NULL(real_input);
+      if (real_input->isa<ValueNode>()) {
+        const auto &tensor = GetValueNodeOutputTensor(real_input, kernel_with_index.second);
+        MS_EXCEPTION_IF_NULL(tensor);
+        if (forward_op_output_id.find(tensor->id()) != forward_op_output_id.end()) {
+          (*forward_op_output_tensor_id)[tensor->id()] += 1;
+        }
+      }
     }
   }
-  MS_LOG(DEBUG) << "Total value nodes in graph size " << graph_value_nodes.size() << ", total tensor value node size "
-                << tensor_value_list.size() << ", forward op output tensor size " << forward_op_output_refcount->size();
+  // Forward op output use as sens, so need add reference
+  for (const auto &tensor : inputs) {
+    if (forward_op_output_id.find(tensor->id()) != forward_op_output_id.end()) {
+      (*forward_op_output_tensor_id)[tensor->id()] += 1;
+    }
+  }
+  MS_LOG(DEBUG) << "Forward op output tensor in bprop graph size " << forward_op_output_tensor_id->size();
 }
 
 void SessionBasic::ReleaseForwardOpOutput(const std::vector<tensor::TensorPtr> &input_tensors,
-                                          std::map<std::string, size_t> *forward_op_output_refcount) {
-  MS_EXCEPTION_IF_NULL(forward_op_output_refcount);
+                                          std::map<std::string, size_t> *forward_op_output_tensor_id) {
+  MS_EXCEPTION_IF_NULL(forward_op_output_tensor_id);
   for (const auto &tensor : input_tensors) {
-    auto it = forward_op_output_refcount->find(tensor->id());
-    if (it != forward_op_output_refcount->end()) {
+    auto it = forward_op_output_tensor_id->find(tensor->id());
+    if (it != forward_op_output_tensor_id->end()) {
       if (--(it->second) == 0) {
         tensor->set_device_address(nullptr);
-        forward_op_output_refcount->erase(it);
+        forward_op_output_tensor_id->erase(it);
       }
     }
   }
@@ -1904,7 +1967,7 @@ void SessionBasic::SetSummaryNodes(KernelGraph *graph) {
       MS_EXCEPTION_IF_NULL(cnode);
       if (cnode->inputs().size() <= kSummaryGetItem) {
         MS_LOG(EXCEPTION) << "The node Summary should have 2 inputs at least, but got " << cnode->inputs().size() - 1
-                          << ". trace: " << trace::DumpSourceLines(cnode);
+                          << "." << trace::DumpSourceLines(cnode);
       }
       auto node = cnode->input(kSummaryGetItem);
       MS_EXCEPTION_IF_NULL(node);
@@ -2231,7 +2294,7 @@ std::shared_ptr<KernelGraph> SessionBasic::ConstructSingleOpGraph(const OpRunInf
       inputs.push_back(value_node);
       continue;
     }
-    auto parameter = ConstructRunOpParameter(graph, input_tensors[i], tensors_mask[i]);
+    auto parameter = ConstructRunOpParameter(graph, input_tensors[i], op_run_info, tensors_mask[i]);
     inputs.push_back(parameter);
     auto mutable_inputs = graph->MutableInputs();
     MS_EXCEPTION_IF_NULL(mutable_inputs);
@@ -2390,9 +2453,9 @@ void SessionBasic::RunOpsInGraphImpl(const GraphId &graph_id, const std::vector<
   graph_output_info.graph_outputs = outputs;
   CreateOutputPlaceholder(kernel_graph, inputs, graph_output_info.graph_outputs, &graph_output_info.output_indexes);
   std::map<KernelWithIndex, size_t> cnode_refcount;
-  std::map<std::string, size_t> forward_op_output_refcount;
+  std::map<std::string, size_t> forward_op_output_tensor_id;
   GetRefCount(kernel_graph.get(), &cnode_refcount);
-  GetForwardOpOutputRefCount(kernel_graph.get(), &forward_op_output_refcount);
+  GetForwardOpOutputRefCount(kernel_graph.get(), inputs, &forward_op_output_tensor_id);
   BuildOpsInGraph(graph_id, parameter_index, inputs, cnode_refcount);
 
   std::map<KernelWithIndex, tensor::TensorPtr> op_output_map;
@@ -2411,7 +2474,7 @@ void SessionBasic::RunOpsInGraphImpl(const GraphId &graph_id, const std::vector<
                     input_tensor_info.input_tensors_mask);
     graph_output_info.graph_output_tensors.clear();
     // Handle inputs and outputs of current op
-    ReleaseForwardOpOutput(input_tensor_info.input_tensors, &forward_op_output_refcount);
+    ReleaseForwardOpOutput(input_tensor_info.input_tensors, &forward_op_output_tensor_id);
     HandleOpInputs(input_tensor_info.input_kernel, &cnode_refcount, &op_output_map);
     HandleOpOutputs(kernel, op_outputs, cnode_refcount, &op_output_map, &graph_output_info);
     // Save grad node to Bucket
@@ -2658,15 +2721,48 @@ void SessionBasic::FinalOptimize(const KernelGraphPtr &graph) const {
   MS_LOG(INFO) << "End FinalOptimize for graph: " << graph->graph_id();
 }
 
-void SessionBasic::DumpGraph(const std::shared_ptr<KernelGraph> &kernel_graph) {
+void SessionBasic::DumpGraphs(const std::vector<KernelGraphPtr> &graphs) {
 #ifdef ENABLE_DUMP_IR
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
   bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
-  if (save_graphs) {
-    DumpIR("graph_build_" + std::to_string(kernel_graph->graph_id()) + ".ir", kernel_graph, true, kWholeStack);
-    DumpIRProto(kernel_graph, "vm_build_" + std::to_string(kernel_graph->graph_id()));
-    DumpIR("trace_code_graph", kernel_graph, true, kWholeStack);
+  auto &json_parser = DumpJsonParser::GetInstance();
+  json_parser.Parse();
+  if (!save_graphs && !json_parser.e2e_dump_enabled() && !json_parser.async_dump_enabled() &&
+      !mindspore::RecorderManager::Instance().RdrEnable()) {
+    return;
+  }
+  for (auto &graph : graphs) {
+    MS_EXCEPTION_IF_NULL(graph);
+    std::string name = "graph_build." + std::to_string(graph->graph_id());
+    DumpGraphParams dump_params = {true, static_cast<int>(kWholeStack)};
+    (void)mindspore::RDR::RecordAnfGraph(SUBMODULE_ID, name, graph, dump_params, ".ir;.pb");
+
+    auto &kernels = graph->execution_order();
+    std::string exec_order_name = "graph_exec_order." + std::to_string(graph->graph_id());
+    (void)mindspore::RDR::RecordGraphExecOrder(SUBMODULE_ID, exec_order_name, kernels);
+    if (save_graphs) {
+      std::string file_name = "graph_build_" + std::to_string(graph->graph_id()) + ".ir";
+      DumpIR(file_name, graph, true, kWholeStack);
+      DumpIRProto(graph, "vm_build_" + std::to_string(graph->graph_id()));
+      DumpIR("trace_code_graph", graph, true, kWholeStack);
+    }
+    if (context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET) != kAscendDevice) {
+      // Here dump data only with Ascend.
+      continue;
+    }
+    std::string final_graph = "trace_code_graph_" + std::to_string(graph->graph_id());
+    if (json_parser.e2e_dump_enabled() || json_parser.async_dump_enabled()) {
+      std::string root_dir = json_parser.path() + "/rank_" + std::to_string(rank_id_);
+      std::string target_dir = root_dir + "/graphs";
+      std::string cst_file_dir = GenerateDumpPath(graph->root_graph_id(), rank_id_, true);
+      std::string ir_file_path = target_dir + "/" + "ms_output_" + final_graph + ".ir";
+      DumpIRProtoWithSrcInfo(graph, final_graph, target_dir, kDebugWholeStack);
+      DumpConstantInfo(graph, cst_file_dir);
+      DumpIR("trace_code_graph", graph, true, kWholeStack, ir_file_path);
+      DumpGraphExeOrder("ms_execution_order_graph_" + std::to_string(graph->graph_id()) + ".csv", root_dir,
+                        graph->execution_order());
+    }
   }
 #endif
 }

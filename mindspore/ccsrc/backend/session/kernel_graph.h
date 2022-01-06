@@ -157,6 +157,7 @@ class KernelGraph : public FuncGraph {
   AnfNodePtr GetBackendAnfByFrontAnf(const AnfNodePtr &front_anf);
   // get front anf by backend anf
   AnfNodePtr GetFrontAnfByBackendAnf(const AnfNodePtr &backend_anf) const;
+  const mindspore::HashMap<AnfNodePtr, AnfNodePtr> &backend_front_anf_map() const { return backend_front_anf_map_; }
   // check backend node whether exist in map
   bool BackendNodeExistInFrontBackendMap(const AnfNodePtr &backend_anf);
   // get value node by tensor
@@ -295,12 +296,16 @@ class KernelGraph : public FuncGraph {
   void SetInputTensors(const std::vector<tensor::TensorPtr> &input_tensors) { input_tensors_ = input_tensors; }
   const std::vector<tensor::TensorPtr> &input_tensors() const { return input_tensors_; }
 
-  void SetOutputNodeToTensor(const KernelMapTensor &node_to_tensor) { output_node_to_tensor_ = node_to_tensor; }
+  void SetOutputNodeToTensor(const KernelMapTensor &node_to_tensor);
 
   tensor::TensorPtr GetNodeOutputTensor(const session::KernelWithIndex &output_index) const {
     auto iter = output_node_to_tensor_.find(output_index);
     if (iter != output_node_to_tensor_.end()) {
       return utils::cast<tensor::TensorPtr>(iter->second);
+    }
+    auto nop_node_output_iter = nop_node_output_map_.find(output_index);
+    if (nop_node_output_iter != nop_node_output_map_.end()) {
+      return GetNodeOutputTensor(nop_node_output_iter->second);
     }
     return nullptr;
   }
@@ -413,8 +418,8 @@ class KernelGraph : public FuncGraph {
   bool RemoveValueNodeFromGraph(const ValueNodePtr &value_node);
   void SetKernelInfoForNode(const AnfNodePtr &node) const;
   AnfNodePtr MakeValueNode(const AnfNodePtr &node) const;
-  void EnqueueActiveNodes(const AnfNodePtr &node, std::queue<AnfNodePtr> *visit_queue,
-                          mindspore::HashSet<AnfNodePtr> *visited_nodes, bool comm_first = true);
+  void EnqueueReadyNodes(const AnfNodePtr &node, std::queue<AnfNodePtr> *visit_queue,
+                         mindspore::HashSet<AnfNodePtr> *visited_nodes, bool comm_first = true);
   // update node edge list
   void UpdateNodeEdgeList(std::queue<AnfNodePtr> *seed_nodes);
   // add node depend edge by data edge
@@ -498,6 +503,7 @@ class KernelGraph : public FuncGraph {
   std::vector<AnfNodePtr> input_nodes_;
   std::vector<tensor::TensorPtr> input_tensors_;
   KernelMapTensor output_node_to_tensor_;
+  std::map<session::KernelWithIndex, session::KernelWithIndex, session::KernelWithIndexCmp> nop_node_output_map_;
   mindspore::HashMap<uint32_t, std::weak_ptr<session::KernelGraph>> pre_graphs_;
   mindspore::HashMap<uint32_t, std::weak_ptr<session::KernelGraph>> post_graphs_;
   // The send/recv pairs inserted for allreduce, the key is allreduce kernel, the first of pair is send node, the second

@@ -69,9 +69,12 @@ class DeviceContext {
     return default_partition_segments;
   }
 
-  // Relevant function to allocate and free device memory.
+  // Relevant function to allocate and free device memory of DeviceAddress.
   virtual bool AllocateMemory(DeviceAddress *const &address, size_t size) const = 0;
   virtual void FreeMemory(DeviceAddress *const &address) const = 0;
+  // Relevant function to allocate and free device memory of raw ptr.
+  virtual void *AllocateMemory(size_t size) const = 0;
+  virtual void FreeMemory(void *const ptr) const = 0;
 
   // Allocate continuous device memory end to end into 'addr_list'.
   // Communication operators may need continuous memory for input and output
@@ -152,10 +155,6 @@ class DeviceContext {
   // Return collective communication object for caller to access
   CollectiveCommunicationLib *collective_comm_lib() const { return collective_comm_lib_; }
 
-  // TODO(jiaorui): will be delete
-  // Dump all graphs.
-  virtual void DumpAllGraphs(const std::vector<KernelGraphPtr> &all_graphs) const {}
-
   void EnableRuntimeCache(const KernelGraphPtr &graph) const {
     auto node_list = graph->TopoSort(graph->get_return());
     for (auto &node : node_list) {
@@ -165,8 +164,7 @@ class DeviceContext {
       }
       MS_EXCEPTION_IF_NULL(kernel_info);
       auto runtime_cache = kernel_info->runtime_cache();
-      MS_EXCEPTION_IF_NULL(runtime_cache);
-      runtime_cache->set_valid();
+      runtime_cache.runtime_cache().set_valid();
     }
   }
 

@@ -15,7 +15,7 @@
 
 """tbe ops"""
 from .celu import _celu_tbe
-from .cummin import  _cummin_tbe
+from .cummin import _cummin_tbe
 from .abs import _abs_tbe
 from .abs_ds import _abs_ds_tbe
 from .inplace_add import _inplace_add_tbe
@@ -58,6 +58,7 @@ from .apply_adagrad_d_a import _apply_adagrad_d_a_tbe
 from .apply_add_sign import _apply_add_sign_tbe
 from .apply_add_sign_ds import _apply_add_sign_ds_tbe
 from .apply_power_sign import _apply_power_sign_tbe
+from .apply_power_sign_ds import _apply_power_sign_ds_tbe
 from .apply_gradient_descent import _apply_gradient_descent_tbe
 from .apply_gradient_descent_ds import _apply_gradient_descent_ds_tbe
 from .apply_proximal_gradient_descent import _apply_proximal_gradient_descent_tbe
@@ -89,6 +90,7 @@ from .conv2d_backprop_input import _conv2d_backprop_input_tbe
 from .conv2d_ds import _conv2d_ds_tbe
 from .conv2d_backprop_filter_ds import _conv2d_backprop_filter_ds_tbe
 from .conv2d_backprop_input_ds import _conv2d_backprop_input_ds_tbe
+from .conv2d_transpose import _conv2d_transpose_tbe
 from .confusion_mul_grad import _confusion_mul_grad_tbe
 from .dropout_do_mask import _dropout_do_mask_tbe
 from .dropout_do_mask_ds import _dropout_do_mask_ds_tbe
@@ -184,6 +186,7 @@ from .log import _log_tbe
 from .xdivy import _xdivy_tbe
 from .xdivy_ds import _xdivy_ds_tbe
 from .xlogy import _xlogy_tbe
+from .xlogy_ds import _xlogy_ds_tbe
 from .floor_div import _floor_div_tbe
 from .floor_div_ds import _floor_div_ds_tbe
 from .zeros_like import _zeros_like_tbe
@@ -202,7 +205,9 @@ from .less_ds import _less_ds_tbe
 from .less_equal import _less_equal_tbe
 from .less_equal_ds import _less_equal_ds_tbe
 from .logical_and import _logical_and_tbe
+from .logical_and_ds import _logical_and_ds_tbe
 from .logical_not import _logical_not_tbe
+from .logical_not_ds import _logical_not_ds_tbe
 from .logical_or import _logical_or_tbe
 from .logical_or_ds import _logical_or_ds_tbe
 from .reduce_max import _reduce_max_tbe
@@ -237,6 +242,7 @@ from .transpose_d import _transpose_d_tbe
 from .transpose_ds import _transpose_ds_tbe
 from .truncate_div import _truncate_div_tbe
 from .truncate_mod import _truncate_mod_tbe
+from .truncate_mod_ds import _truncate_mod_ds_tbe
 from .unsorted_segment_sum import _unsorted_segment_sum_tbe
 from .unsorted_segment_sum_ds import _unsorted_segment_sum_ds_tbe
 from .unsorted_segment_prod import _unsorted_segment_prod_tbe
@@ -248,6 +254,7 @@ from .select import _select_tbe
 from .pow import _pow_tbe
 from .pow_ds import _pow_ds_tbe
 from .maximum import _maximum_tbe
+from .maximum_ds import _maximum_ds_tbe
 from .minimum import _minimum_tbe
 from .minimum_ds import _minimum_ds_tbe
 from .minimum_grad import _minimum_grad_tbe
@@ -258,6 +265,7 @@ from .slice import _slice_tbe
 from .sign import _sign_tbe
 from .sign_ds import _sign_ds_tbe
 from .greater import _greater_tbe
+from .greater_ds import _greater_ds_tbe
 from .clip_by_norm_no_div_sum import _clip_by_norm_no_div_sum_tbe
 from .clip_by_value import _clip_by_value_tbe
 from .layer_norm_beta_gamma_backprop import _layer_norm_beta_gamma_backprop_tbe
@@ -288,7 +296,9 @@ from .sigmoid import _sigmoid_tbe
 from .sigmoid_ds import _sigmoid_ds_tbe
 from .sigmoid_grad import _sigmoid_grad_tbe
 from .resize_nearest_neighbor import _resize_nearest_neighbor_tbe
+from .resize_nearest_neighbor_ds import _resize_nearest_neighbor_ds_tbe
 from .resize_nearest_neighbor_grad import _resize_nearest_neighbor_grad_tbe
+from .resize_nearest_neighbor_grad_ds import _resize_nearest_neighbor_grad_ds_tbe
 from .pad_d import _pad_d_tbe
 from .pad_d_ds import _pad_d_ds_tbe
 from .arg_max_with_value import _arg_max_with_value_tbe
@@ -312,6 +322,7 @@ from .depthwise_conv2d import _depthwise_conv2d_tbe
 from .depthwise_conv2d_backprop_filter import _depthwise_conv2d_backprop_filter_tbe
 from .depthwise_conv2d_backprop_input import _depthwise_conv2d_backprop_input_tbe
 from .greater_equal import _greater_equal_tbe
+from .greater_equal_ds import _greater_equal_ds_tbe
 from .not_equal import _not_equal_tbe
 from .floor_mod import _floor_mod_tbe
 from .scatter_nd_update import _scatter_nd_update_tbe
@@ -326,6 +337,7 @@ from .ones_like_ds import _ones_like_ds_tbe
 from .batch_to_space import _batch_to_space_tbe
 from .space_to_batch import _space_to_batch_tbe
 from .depth_to_space import _depth_to_space_tbe
+from .depth_to_space_ds import _depth_to_space_ds_tbe
 from .space_to_depth import _space_to_depth_tbe
 from .extract_image_patches import _extract_image_patches_tbe
 from .sort import _sort_tbe
@@ -365,6 +377,7 @@ from .binary_cross_entropy import _binary_cross_entropy_tbe
 from .binary_cross_entropy_grad import _binary_cross_entropy_grad_tbe
 from .bce_with_logits_loss import _bce_with_logits_loss_op_tbe
 from .sin import _sin_tbe
+from .sin_ds import _sin_ds_tbe
 from .cos_ds import _cos_ds_tbe
 from .cos import _cos_tbe
 from .tan import _tan_tbe
@@ -389,9 +402,11 @@ from .batch_to_space_nd import _batch_to_space_nd_tbe
 from .space_to_batch_nd import _space_to_batch_nd_tbe
 from .batch_to_space_nd_ds import _batch_to_space_nd_ds_tbe
 from .bitwise_and import _bitwise_and_tbe
+from .bitwise_and_ds import _bitwise_and_ds_tbe
 from .bitwise_or import _bitwise_or_tbe
 from .bitwise_or_ds import _bitwise_or_ds_tbe
 from .bitwise_xor import _bitwise_xor_tbe
+from .bitwise_xor_ds import _bitwise_xor_ds_tbe
 from .reduce_all import _reduce_all_tbe
 from .reduce_any import _reduce_any_tbe
 from .sparse_apply_adagrad import _sparse_apply_adagrad_tbe
@@ -402,8 +417,11 @@ from .asin_ds import _asin_ds_tbe
 from .asin_grad import _asin_grad_tbe
 from .asin_grad_ds import _asin_grad_ds_tbe
 from .asinh import _asinh_tbe
+from .asinh_ds import _asinh_ds_tbe
 from .asinh_grad import _asinh_grad_tbe
+from .asinh_grad_ds import _asinh_grad_ds_tbe
 from .div_no_nan import _div_no_nan_tbe
+from .div_no_nan_ds import _div_no_nan_ds_tbe
 from .atan import _atan_tbe
 from .atan_ds import _atan_ds_tbe
 from .atan_grad import _atan_grad_tbe
@@ -417,6 +435,7 @@ from .sinh_ds import _sinh_ds_tbe
 from .inv import _inv_tbe
 from .inv_ds import _inv_ds_tbe
 from .inv_grad import _inv_grad_tbe
+from .inv_grad_ds import _inv_grad_ds_tbe
 from .invert import _invert_tbe
 from .invert_ds import _invert_ds_tbe
 from .basic_lstm_cell import _basic_lstm_cell_tbe
@@ -461,6 +480,7 @@ from .scatter_sub import _scatter_sub_tbe
 from .scatter_mul import _scatter_mul_tbe
 from .scatter_div import _scatter_div_tbe
 from .mod import _mod_tbe
+from .mod_ds import _mod_ds_tbe
 from .max_pool_grad_grad import _max_pool_grad_grad_tbe
 from .max_pool_grad_grad_with_argmax import _max_pool_grad_grad_with_argmax_tbe
 from .tensor_move import _tensor_move_tbe

@@ -32,7 +32,7 @@ from mindspore import nn
 from mindspore import ops
 from mindspore.common.api import _MindsporeFunctionExecutor
 from mindspore.common.dtype import pytype_to_dtype
-from .namespace import CellNamespace, ClosureNamespace, ClassMemberNamespace
+from .namespace import CellNamespace, ClosureNamespace, ClassMemberNamespace, ClassAttrNamespace
 from .resources import parse_object_map, ops_symbol_map, convert_object_map, trope_ns, SYMBOL_UNDEFINE, NO_IMPLEMENT
 
 # define return value
@@ -377,6 +377,14 @@ def get_module_namespace(obj):
     return mod_namespace
 
 
+def get_class_attr_namespace_symbol(obj):
+    """Get class namespace."""
+    logger.debug("get class namespace, object: %r", obj)
+    class_namespace = ClassAttrNamespace(obj)
+    logger.debug("class namespace: %r", class_namespace)
+    return class_namespace
+
+
 def get_class_member_namespace_symbol(obj):
     """Get obj class member type."""
     logger.debug("get class instance namespace, object: %r", obj)
@@ -630,6 +638,15 @@ class Parser:
 
         logger.error("Fn type is invalid")
         return None, None
+
+    def is_constant_value(self, var, attr):
+        if var in self.global_namespace:
+            module = self.global_namespace[var]
+            if hasattr(module, attr):
+                value = getattr(module, attr)
+                # Check if value is constant.
+                return isinstance(value, (int, float, bool))
+        return False
 
     def is_unsupported_namespace(self, value):
         unsupported = isinstance(value, _builtin_function_or_method_type) and value not in convert_object_map

@@ -38,6 +38,35 @@ WordIdType Vocab::Lookup(const WordType &word) const {
   return itr == word2id_.end() ? kNoTokenExists : itr->second;
 }
 
+std::vector<WordIdType> Vocab::Lookup(const std::vector<WordType> &words) const {
+  std::vector<WordIdType> ids;
+  std::transform(words.begin(), words.end(), std::back_inserter(ids), [this](auto w) { return Lookup(w); });
+  return ids;
+}
+
+WordType Vocab::ReverseLookup(const WordIdType &id) {
+  // lazy initialization, since I think it's not common use but waste memory
+  if (id2word_.empty()) {
+    for (const auto [word_, id_] : word2id_) {
+      id2word_[id_] = word_;
+    }
+  }
+  auto itr = id2word_.find(id);
+  return itr == id2word_.end() ? kNoIdExists : itr->second;
+}
+
+std::vector<WordType> Vocab::ReverseLookup(const std::vector<WordIdType> &ids) {
+  // lazy initialization, since I think it's not common use but waste memory
+  if (id2word_.empty()) {
+    for (const auto [word_, id_] : word2id_) {
+      id2word_[id_] = word_;
+    }
+  }
+  std::vector<WordType> words;
+  std::transform(ids.begin(), ids.end(), std::back_inserter(words), [this](auto i) { return ReverseLookup(i); });
+  return words;
+}
+
 #ifdef ENABLE_PYTHON
 Status Vocab::BuildFromPyList(const py::list &words, const py::list &special_tokens, bool prepend_special,
                               std::shared_ptr<Vocab> *vocab) {
@@ -174,16 +203,20 @@ Status Vocab::BuildFromFileCpp(const std::string &path, const std::string &delim
       // if delimiter is not found, find_first_of would return std::string::npos which is -1
       word = word.substr(0, word.find_first_of(delimiter));
     }
-    CHECK_FAIL_RETURN_UNEXPECTED(word2id.find(word) == word2id.end(),
-                                 "from_file: word_list contains duplicate word:" + word);
-    CHECK_FAIL_RETURN_UNEXPECTED(specials.find(word) == specials.end(),
-                                 "from_file: special_tokens and word_list contain duplicate word:" + word);
-
+    if (word2id.find(word) != word2id.end()) {
+      handle.close();
+      RETURN_STATUS_UNEXPECTED("from_file: word_list contains duplicate word:" + word);
+    }
+    if (specials.find(word) != specials.end()) {
+      handle.close();
+      RETURN_STATUS_UNEXPECTED("from_file: special_tokens and word_list contain duplicate word:" + word);
+    }
     word2id[word] = word_id++;
     // break if enough row is read, if vocab_size is smaller than 0
     if (word2id.size() == vocab_size) break;
   }
 
+  handle.close();
   word_id = prepend_special ? 0 : word2id.size();
 
   for (auto special_token : special_tokens) {
@@ -221,14 +254,19 @@ Status Vocab::BuildFromFile(const std::string &path, const std::string &delimite
       // if delimiter is not found, find_first_of would return std::string::npos which is -1
       word = word.substr(0, word.find_first_of(delimiter));
     }
-    CHECK_FAIL_RETURN_UNEXPECTED(word2id.find(word) == word2id.end(), "from_file: duplicate word:" + word + ".");
-    CHECK_FAIL_RETURN_UNEXPECTED(specials.find(word) == specials.end(),
-                                 "from_file: " + word + " is already in special_tokens.");
+    if (word2id.find(word) != word2id.end()) {
+      handle.close();
+      RETURN_STATUS_UNEXPECTED("from_file: duplicate word:" + word + ".");
+    }
+    if (specials.find(word) != specials.end()) {
+      handle.close();
+      RETURN_STATUS_UNEXPECTED("from_file: special_tokens and word_list contain duplicate word:" + word);
+    }
     word2id[word] = word_id++;
     // break if enough row is read, if vocab_size is smaller than 0
     if (word2id.size() == vocab_size) break;
   }
-
+  handle.close();
   word_id = prepend_special ? 0 : word2id.size();
 
   for (auto special_token : special_tokens) {
@@ -240,6 +278,7 @@ Status Vocab::BuildFromFile(const std::string &path, const std::string &delimite
 }
 
 const WordIdType Vocab::kNoTokenExists = -1;
+const WordType Vocab::kNoIdExists = std::string();
 
 }  // namespace dataset
 }  // namespace mindspore

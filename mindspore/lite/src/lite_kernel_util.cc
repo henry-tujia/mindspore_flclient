@@ -28,6 +28,7 @@
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
 #include "src/control_flow/entrance_subgraph_kernel.h"
 #include "src/control_flow/exit_subgraph_kernel.h"
+#include "src/runtime/kernel/arm/base/partial_fusion.h"
 #endif
 
 namespace mindspore::kernel {
@@ -295,6 +296,27 @@ std::vector<LiteKernel *> LiteKernelUtil::GetCallInputPartials(LiteKernel *call_
   return partial_nodes;
 }
 
+std::vector<LiteKernel *> LiteKernelUtil::GetCallInputPartialsCorrespondingOutputSubgraph(LiteKernel *call_node) {
+  auto partial_nodes = GetCallInputPartials(call_node);
+  std::vector<kernel::LiteKernel *> all_subgraphs{};
+  for (auto partial_node : partial_nodes) {
+    auto partial_kernel = reinterpret_cast<kernel::PartialFusionKernel *>(partial_node->kernel());
+    if (partial_kernel == nullptr) {
+      MS_LOG(ERROR) << "cast to partial kernel failed.";
+      return all_subgraphs;
+    }
+    // only get the output subgraph, the last subgraph is the output subgraph.
+    auto partial_subgraphs = partial_kernel->subgraph_kernels();
+    all_subgraphs.push_back(partial_subgraphs.back());
+    // exit graph's input graph also need set same output tensor init refcount.
+    if (partial_subgraphs.size() > 1 && partial_subgraphs.back()->subgraph_type() == kExitSubGraph) {
+      auto last_index = partial_subgraphs.size() - 1;
+      all_subgraphs.push_back(partial_subgraphs[last_index - 1]);
+    }
+  }
+  return all_subgraphs;
+}
+
 LiteKernel *LiteKernelUtil::GetPartialOutputCall(LiteKernel *partial_node) {
   if (partial_node->type() != schema::PrimitiveType_PartialFusion) {
     MS_LOG(ERROR) << "input node is not partial node.";
@@ -389,6 +411,29 @@ void LiteKernelUtil::FindAllInoutKernels(const std::vector<kernel::LiteKernel *>
       }
     }
   }
+}
+
+void LiteKernelUtil::FindAllInoutKernelsInSubgraphKernel(const std::vector<LiteKernel *> &kernels) {
+  std::vector<kernel::LiteKernel *> all_kernels;
+  for (auto kernel : kernels) {
+#ifndef DELEGATE_CLIP
+    if (kernel->desc().arch == kernel::kDelegate) {
+      all_kernels.push_back(kernel);
+      continue;
+    }
+#endif
+    auto sub_graph = reinterpret_cast<kernel::SubGraphKernel *>(kernel);
+    MS_ASSERT(sub_graph != nullptr);
+    auto kernel_in_subgraph = sub_graph->nodes();
+    all_kernels.insert(all_kernels.end(), kernel_in_subgraph.begin(), kernel_in_subgraph.end());
+  }
+
+  kernel::LiteKernelUtil::FindAllInoutKernels(all_kernels);
+}
+
+bool LiteKernelUtil::IsOutputSubGraph(kernel::SubGraphKernel *subgraph_kernel) {
+  return std::all_of(subgraph_kernel->out_tensors().begin(), subgraph_kernel->out_tensors().end(),
+                     [](lite::Tensor *tensor) { return tensor->IsGraphOutput(); });
 }
 
 namespace {

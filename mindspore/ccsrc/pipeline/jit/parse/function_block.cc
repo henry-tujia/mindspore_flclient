@@ -188,6 +188,14 @@ AnfNodePtr FunctionBlock::MakeResolveAstOp(const py::object &op) {
 AnfNodePtr FunctionBlock::MakeResolveClassMember(const std::string &attr) {
   auto ast = parser_.ast();
   MS_EXCEPTION_IF_NULL(ast);
+  // The fallback feature is enabled in default.
+  // Not support change the flag during the process is alive.
+  static const auto use_fallback = (parser_.support_fallback() != "0");
+  if (use_fallback && !global_py_params().contains("self")) {
+    py::object self_namespace = ast->CallParseModFunction(PYTHON_MOD_GET_ATTR_NAMESPACE_SYMBOL, ast->obj());
+    AddGlobalPyParam("self", self_namespace);
+  }
+
   py::object namespace_var = ast->CallParseModFunction(PYTHON_MOD_GET_MEMBER_NAMESPACE_SYMBOL, ast->obj());
   NameSpacePtr name_space = std::make_shared<NameSpace>(RESOLVE_NAMESPACE_NAME_CLASS_MEMBER, namespace_var);
   SymbolPtr symbol = std::make_shared<Symbol>(attr);
@@ -261,7 +269,8 @@ AnfNodePtr FunctionBlock::HandleBuiltinNamespaceInfo(const py::tuple &info) {
 // Make a resolve node for symbol string
 AnfNodePtr FunctionBlock::MakeResolveSymbol(const std::string &value) {
   MS_LOG(DEBUG) << "value: " << value;
-  if (value.compare(0, strlen("self"), "self") == 0) {
+  // The prefix of value is "self.".
+  if (value.compare(0, strlen("self."), "self.") == 0) {
     auto start = value.find_first_of('.') + 1;
     if (start >= value.size()) {
       MS_LOG(ERROR) << "Find invalid resolve symbol str: " << value;
@@ -590,6 +599,9 @@ void FunctionBlock::AttachIsolatedNodesBeforeReturn() {
     state = states[1];
   } else {
     state = func_graph_->NewCNode(std::move(states));
+    if (state->debug_info()) {
+      state->debug_info()->set_location(nullptr);
+    }
   }
 
   AnfNodePtr old_output = nullptr;
@@ -605,6 +617,12 @@ void FunctionBlock::AttachIsolatedNodesBeforeReturn() {
   }
   AnfNodePtr stop_grad_node = func_graph_->NewCNode({NewValueNode(prim::kPrimStopGradient), state});
   CNodePtr depend_node = func_graph_->NewCNode({NewValueNode(prim::kPrimDepend), old_output, stop_grad_node});
+  if (stop_grad_node->debug_info()) {
+    stop_grad_node->debug_info()->set_location(nullptr);
+  }
+  if (depend_node->debug_info()) {
+    depend_node->debug_info()->set_location(nullptr);
+  }
   // We add this attribute for @constexpr use scene, since we must infer them before other nodes.
   // That means isolated nodes will be evaluated first. It's not complete, but works in most scenes.
   depend_node->AddAttr(kAttrTopoSortRhsFirst, MakeValue(true));
@@ -612,6 +630,10 @@ void FunctionBlock::AttachIsolatedNodesBeforeReturn() {
   MS_LOG(INFO) << "Attached for side-effect nodes, depend_node: " << depend_node->DebugString()
                << ", state: " << state->DebugString(recursive_level);
   func_graph_->set_output(depend_node, true);
+  if (return_node && return_node->debug_info()) {
+    auto new_return = func_graph_->get_return();
+    new_return->set_debug_info(return_node->debug_info());
+  }
 }
 
 void FunctionBlock::SetAsDeadBlock() { is_dead_block_ = true; }

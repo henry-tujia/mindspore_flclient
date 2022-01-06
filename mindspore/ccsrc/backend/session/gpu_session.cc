@@ -48,6 +48,7 @@
 #include "backend/optimizer/gpu/add_relu_v2_fusion.h"
 #include "backend/optimizer/gpu/add_relu_grad_v2_fusion.h"
 #include "backend/optimizer/gpu/matmul_biasadd_fusion.h"
+#include "backend/optimizer/gpu/neighbor_exchange_v2_fusion.h"
 #ifdef ENABLE_GPU_INFER
 #include "backend/optimizer/trt_pass/graph_converter.h"
 #endif
@@ -57,7 +58,7 @@
 #include "backend/optimizer/pass/getitem_tuple.h"
 #include "backend/optimizer/pass/optimize_updatestate.h"
 #include "backend/optimizer/gpu/adjust_depend_for_parallel_optimizer_recompute_all_gather_fusion.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "debug/anf_ir_dump.h"
 #include "debug/dump_proto.h"
 #ifdef ENABLE_DEBUGGER
@@ -173,6 +174,8 @@ void GPUSession::Optimize(const std::shared_ptr<KernelGraph> &kernel_graph) {
   pm->AddPass(std::make_shared<opt::PrintReduceFusion>("print_reduce"));
   pm->AddPass(std::make_shared<opt::BCEWithLogitsLossFusion>());
   pm->AddPass(std::make_shared<opt::InsertCastGPU>("insert_cast_gpu"));
+  pm->AddPass(std::make_shared<opt::NeighborExchangeV2Fusion>());
+  pm->AddPass(std::make_shared<opt::NeighborExchangeV2GradFusion>());
   optimizer->AddPassManager(pm);
   (void)optimizer->Optimize(kernel_graph);
   kernel_graph->SetExecOrderByDefault();
@@ -310,7 +313,7 @@ size_t UpdateGraphInputAbstract(const AnfNodePtr input_node, const tensor::Tenso
   if (input_param != nullptr && input_param->has_dynamic_shape()) {
     auto tensor_shape = tensor->shape();
     std::vector<size_t> shape_tmp;
-    (void)std::transform(tensor_shape.begin(), tensor_shape.end(), std::back_inserter(shape_tmp), IntToSize);
+    (void)std::transform(tensor_shape.begin(), tensor_shape.end(), std::back_inserter(shape_tmp), LongToSize);
     AnfAlgo::SetOutputInferTypeAndShape({AnfAlgo::GetOutputInferDataType(input_node, 0)}, {shape_tmp},
                                         input_node.get());
     size = abstract::ShapeSize(shape_tmp) * abstract::TypeIdSize(tensor->data_type());
@@ -458,14 +461,6 @@ GraphId GPUSession::CompileGraphImpl(const KernelGraphPtr &graph) {
   }
   // Build kernel if node is cnode
   BuildKernel(graph);
-#ifdef ENABLE_DUMP_IR
-  std::string name = "graph_build";
-  DumpGraphParams dump_params = {true, static_cast<int>(kWholeStack)};
-  (void)mindspore::RDR::RecordAnfGraph(SubModuleId::SM_SESSION, name, graph, dump_params, ".ir,.pb");
-  auto &kernels = graph->execution_order();
-  std::string exec_order_name = "graph_exec_order." + std::to_string(graph->graph_id());
-  (void)mindspore::RDR::RecordGraphExecOrder(SubModuleId::SM_SESSION, exec_order_name, kernels);
-#endif
 #ifndef ENABLE_SECURITY
   // Get summary nodes.
   SetSummaryNodes(graph.get());
@@ -504,7 +499,7 @@ GraphId GPUSession::CompileGraphImpl(const KernelGraphPtr &graph) {
     AllocateMemory(graph.get());
   }
 
-  DumpGraph(graph);
+  DumpGraphs({graph});
 
 #ifdef ENABLE_DEBUGGER
   if (debugger_ && debugger_->DebuggerBackendEnabled()) {

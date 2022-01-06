@@ -73,7 +73,8 @@ def _get_print_file_name(file_name):
     time_second = str(int(time.time()))
     file_name = file_name + "." + time_second
     if os.path.exists(file_name):
-        ValueError("This file {} already exists.".format(file_name))
+        raise ValueError("For 'context.set_context', the argument 'print_file_path' {} already exists, "
+                         "please check it".format(file_name))
     return file_name
 
 
@@ -95,9 +96,6 @@ class _ThreadLocalInfo(threading.local):
     @reserve_class_name_in_scope.setter
     def reserve_class_name_in_scope(self, reserve_class_name_in_scope):
         """Set whether to save the network class name in the scope."""
-        if not isinstance(reserve_class_name_in_scope, bool):
-            raise ValueError("For 'context.set_context', the type of the property 'reserve_class_name_in_scope' must "
-                             "be bool, but got {}.".format(type(reserve_class_name_in_scope)))
         self._reserve_class_name_in_scope = reserve_class_name_in_scope
 
 
@@ -248,12 +246,14 @@ class _Context:
 
     def set_variable_memory_max_size(self, variable_memory_max_size):
         """set values of variable_memory_max_size and graph_memory_max_size"""
+        logger.warning("The parameter 'variable_memory_max_size' is deprecated, and will be removed in a future "
+                       "version. Please use parameter 'max_device_memory' instead.")
         if not Validator.check_str_by_regular(variable_memory_max_size, _re_pattern):
             raise ValueError("For 'context.set_context', the argument 'variable_memory_max_size' should be in correct"
                              " format! It must be a string ending with 'GB', in addition to that, it must contain "
                              "only numbers or decimal points, such as \"5GB\" or \"3.5GB\", but got {}."
                              .format(variable_memory_max_size))
-        if int(variable_memory_max_size[:-2]) > _DEVICE_APP_MEMORY_SIZE:
+        if float(variable_memory_max_size[:-2]) > _DEVICE_APP_MEMORY_SIZE:
             raise ValueError("For 'context.set_context', the argument 'variable_memory_max_size' should not be "
                              "greater than 31GB, but got {}.".format(variable_memory_max_size))
         variable_memory_max_size_ = variable_memory_max_size[:-2] + " * 1024 * 1024 * 1024"
@@ -303,8 +303,8 @@ class _Context:
     def set_env_config_path(self, env_config_path):
         """Check and set env_config_path."""
         if not self._context_handle.enable_dump_ir():
-            raise ValueError("The 'env_config_path' is not supported, please enable ENABLE_DUMP_IR "
-                             "with '-D on' and recompile source.")
+            raise ValueError("For 'context.set_context', the argument 'env_config_path' is not supported, please "
+                             "enable ENABLE_DUMP_IR with '-D on' and recompile source firstly.")
         env_config_path = os.path.realpath(env_config_path)
         if not os.path.isfile(env_config_path):
             raise ValueError("For 'context.set_context', the 'env_config_path' file %r is not exists, "
@@ -341,6 +341,9 @@ class _Context:
     @reserve_class_name_in_scope.setter
     def reserve_class_name_in_scope(self, reserve_class_name_in_scope):
         """Set whether to save the network class name in the scope."""
+        if not isinstance(reserve_class_name_in_scope, bool):
+            raise ValueError("For 'context.set_context', the type of the property 'reserve_class_name_in_scope' must "
+                             "be bool, but got {}.".format(type(reserve_class_name_in_scope)))
         self._thread_local_info.reserve_class_name_in_scope = reserve_class_name_in_scope
 
     @property
@@ -493,7 +496,7 @@ def set_auto_parallel_context(**kwargs):
                         communication fusion config has two keys: "mode" and "config".
                         It supports following communication fusion types and configurations:
 
-                        - allreduce: if communication fusion type is `allreduce`. The `mode` contains: `auto`, `size`
+                        - allreduce: If communication fusion type is `allreduce`. The `mode` contains: `auto`, `size`
                           and `index`. In `auto` mode, allreduce fusion is configured by gradients size, and the default
                           fusion threshold is `64` MB. In 'size' mode, allreduce fusion is configured by gradients size
                           manually, and the fusion threshold must be larger than `0` MB. In `index` mode, it is same as
@@ -582,7 +585,7 @@ def _check_target_specific_cfgs(device, arg_key):
         'print_file_path': ['Ascend'],
         'variable_memory_max_size': ['Ascend'],
         'auto_tune_mode': ['Ascend'],
-        'max_device_memory': ['GPU'],
+        'max_device_memory': ['Ascend', 'GPU'],
         'mempool_block_size': ['GPU', 'Ascend']
     }
     # configs not in map device_cfgs are supposed to be suitable for all devices
@@ -626,7 +629,7 @@ def set_context(**kwargs):
     |                         +------------------------------+----------------------------+
     |                         |   device_target              |   CPU/GPU/Ascend           |
     |                         +------------------------------+----------------------------+
-    |                         |  max_device_memory           |  GPU                       |
+    |                         |  max_device_memory           |  GPU/Ascend                |
     |                         +------------------------------+----------------------------+
     |                         |  variable_memory_max_size    |  Ascend                    |
     |                         +------------------------------+----------------------------+
@@ -682,11 +685,10 @@ def set_context(**kwargs):
             while device_num_per_host should be no more than 4096. Default: 0.
         device_target (str): The target device to run, support "Ascend", "GPU", and "CPU".
             If device target is not set, the version of MindSpore package is used.
-        max_device_memory (str): Set the maximum memory available for devices.
-            Currently, it is only supported on GPU. The format is "xxGB". Default: "1024GB".
+        max_device_memory (str): Set the maximum memory available for devices. The format is "xxGB". Default: "1024GB".
             The actual used memory size is the minimum of the available memory of the device and max_device_memory.
-        variable_memory_max_size (str): Set the maximum size of the variable memory max size. Default: "30GB".
-            After this parameter is set, the maximum memory used by the framework is restricted to the configured value.
+        variable_memory_max_size (str): This parameter is deprecated, and will be removed in a future version.
+            Please use parameter 'max_device_memory' instead.
         mempool_block_size (str): Set the size of the memory pool block in PyNative mode for devices.
             The format is "xxGB". Default: "1GB". Minimum size is "1G". The actual used memory block size is the minimum
             of the available memory of the device and mempool_block_size.
@@ -762,15 +764,15 @@ def set_context(**kwargs):
               Default: 2. Graph kernel fusion can be enabled equivalently by setting opt_level greater than 0.
               Available values are:
 
-              - 0: Disable graph kernel fusion;
-              - 1: enable the basic fusion of operators;
+              - 0: disables graph kernel fusion;
+              - 1: enables the basic fusion of operators;
               - 2: includes all optimizations of level 1,
                 and turns on more optimizations such as CSE, arithmetic simplification and so on;
               - 3: includes all optimizations of level 2, and turns on more optimizations such as SitchingFusion,
                 ParallelFusion and so on. Optimizations of this level are radical and unstable in some scenarios.
                 Be caution when using this level.
 
-            - dump_as_text: dump detail info as text files. Default: false.
+            - dump_as_text: dumps detail info as text files. Default: false.
 
             More options can refer to the implementation code.
         enable_reduce_precision (bool): Whether to enable precision reduction.
@@ -807,6 +809,7 @@ def set_context(**kwargs):
             if enable_compile_cache is still set to True and the network scripts are not changed,
             the compile cache is loaded. Note that only limited automatic detection for the changes of
             python scripts is supported by now, which means that there is a correctness risk. Default: False.
+            Note that it isn't yet supported in PS mode.
             This is an experimental prototype that is subject to change and/or deletion.
         compile_cache_path (str): Path to save the cache of the graph compiled by front-end. Default: ".".
             If the specified directory does not exist, the system will automatically create the directory.
@@ -816,6 +819,7 @@ def set_context(**kwargs):
         ValueError: If input key is not an attribute in context.
 
     Examples:
+        >>> from mindspore import context
         >>> context.set_context(mode=context.PYNATIVE_MODE)
         >>> context.set_context(precompile_only=True)
         >>> context.set_context(device_target="Ascend")
@@ -847,8 +851,8 @@ def set_context(**kwargs):
         ctx.set_device_target(kwargs['device_target'])
         device = ctx.get_param(ms_ctx_param.device_target)
         if not device.lower() in __device_target__:
-            raise ValueError(f"Error, package type {__package_name__} support device type {__device_target__}, "
-                             f"but got device target {device}")
+            raise ValueError(f"For 'context.set_context', package type {__package_name__} support 'device_target' "
+                             f"type {__device_target__}, but got {device}.")
     device = ctx.get_param(ms_ctx_param.device_target)
     for key, value in kwargs.items():
         if key in ('enable_profiling', 'profiling_options', 'enable_auto_mixed_precision',
@@ -886,6 +890,7 @@ def get_context(attr_key):
     Raises:
         ValueError: If input key is not an attribute in context.
     Examples:
+        >>> from mindspore import context
         >>> context.get_context("device_target")
         >>> context.get_context("device_id")
     """
@@ -967,7 +972,7 @@ def set_ps_context(**kwargs):
                           Default: False.
         config_file_path (string): Configuration file path used by recovery, parameter server training mode only
                                    supports Server disaster recovery currently. Default: ''.
-        scheduler_manage_port (int): scheduler manage port used to scale out/in. Default: 11202.
+        scheduler_manage_port (int): Scheduler manage port used to scale out/in. Default: 11202.
         enable_ssl (bool): Set PS SSL mode enabled or disabled. Default: False.
         client_password (str): Password to decrypt the secret key stored in the client certificate. Default: ''.
         server_password (str): Password to decrypt the secret key stored in the server certificate. Default: ''.
@@ -976,6 +981,7 @@ def set_ps_context(**kwargs):
         ValueError: If input key is not the attribute in parameter server training mode context.
 
     Examples:
+        >>> from mindspore import context
         >>> context.set_ps_context(enable_ps=True, enable_ssl=True, client_password='123456', server_password='123456')
     """
     _set_ps_context(**kwargs)
@@ -997,6 +1003,7 @@ def get_ps_context(attr_key):
         ValueError: If input key is not attribute in auto parallel context.
 
     Examples:
+        >>> from mindspore import context
         >>> context.get_ps_context("enable_ps")
     """
     return _get_ps_context(attr_key)
@@ -1062,6 +1069,18 @@ def set_fl_context(**kwargs):
         enable_ssl (bool): Set PS SSL mode enabled or disabled. Default: False.
         client_password (str): Password to decrypt the secret key stored in the client certificate. Default: ''.
         server_password (str): Password to decrypt the secret key stored in the server certificate. Default: ''.
+        pki_verify (bool): If True, the identity verification between server and clients would be turned on.
+            You should also download Root CA certificate, Root CA G2 certificate and Mobile Equipment CRL certificate
+            from https://pki.consumer.huawei.com/ca/. It should be noted that only when the client is an Android
+            environment with HUKS service, pki_verify can be True. Default: False.
+        root_first_ca_path (str): The file path of the Root CA certificate. It should be given when pki_verify
+            is True. Default: "".
+        root_second_ca_path (str): The file path of the Root CA G2 certificate. It should be given when
+            pki_verify is True. Default: "".
+        equip_crl_path (str): The file path of the Mobile Equipment CRL certificate. It should be given when
+            pki_verify is True. Default: "".
+        replay_attack_time_diff (int): The maximum tolerable error of certificate timestamp verification (ms).
+            Default: 600000.
 
     Raises:
         ValueError: If input key is not the attribute in federated learning mode context.

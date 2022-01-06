@@ -89,6 +89,8 @@
 
 // IR leaf nodes disabled for android
 #ifndef ENABLE_ANDROID
+#include "minddata/dataset/engine/ir/datasetops/source/amazon_review_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/caltech256_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/celeba_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/cifar100_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/cifar10_node.h"
@@ -100,10 +102,12 @@
 #include "minddata/dataset/engine/ir/datasetops/source/dbpedia_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/div2k_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/emnist_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/en_wik9_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/fake_image_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/fashion_mnist_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/flickr_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/image_folder_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/imdb_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/iwslt2016_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/iwslt2017_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/kmnist_node.h"
@@ -116,6 +120,7 @@
 #include "minddata/dataset/engine/ir/datasetops/source/qmnist_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/random_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/sbu_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/semeion_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/sogou_news_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/speech_commands_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/stl10_node.h"
@@ -125,6 +130,8 @@
 #include "minddata/dataset/engine/ir/datasetops/source/udpos_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/usps_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/voc_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/wider_face_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/wiki_text_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yahoo_answers_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yelp_review_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yes_no_node.h"
@@ -904,6 +911,37 @@ AlbumDataset::AlbumDataset(const std::vector<char> &dataset_dir, const std::vect
 }
 
 #ifndef ENABLE_ANDROID
+AmazonReviewDataset::AmazonReviewDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+                                         int64_t num_samples, ShuffleMode shuffle, int32_t num_shards, int32_t shard_id,
+                                         const std::shared_ptr<DatasetCache> &cache) {
+  auto ds = std::make_shared<AmazonReviewNode>(CharToString(dataset_dir), CharToString(usage), num_samples, shuffle,
+                                               num_shards, shard_id, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+Caltech256Dataset::Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode,
+                                     const std::shared_ptr<Sampler> &sampler,
+                                     const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<Caltech256Node>(CharToString(dataset_dir), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+Caltech256Dataset::Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode, const Sampler *sampler,
+                                     const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<Caltech256Node>(CharToString(dataset_dir), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+Caltech256Dataset::Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode,
+                                     const std::reference_wrapper<Sampler> sampler,
+                                     const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler.get().Parse();
+  auto ds = std::make_shared<Caltech256Node>(CharToString(dataset_dir), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
 CelebADataset::CelebADataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
                              const std::shared_ptr<Sampler> &sampler, bool decode,
                              const std::set<std::vector<char>> &extensions,
@@ -1114,6 +1152,12 @@ EMnistDataset::EMnistDataset(const std::vector<char> &dataset_dir, const std::ve
   ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
 }
 
+EnWik9Dataset::EnWik9Dataset(const std::vector<char> &dataset_dir, int64_t num_samples, ShuffleMode shuffle,
+                             int32_t num_shards, int32_t shard_id, const std::shared_ptr<DatasetCache> &cache) {
+  auto ds = std::make_shared<EnWik9Node>(CharToString(dataset_dir), num_samples, shuffle, num_shards, shard_id, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
 FakeImageDataset::FakeImageDataset(int32_t num_images, const std::vector<int32_t> &image_size, int32_t num_classes,
                                    int32_t base_seed, const std::shared_ptr<Sampler> &sampler,
                                    const std::shared_ptr<DatasetCache> &cache) {
@@ -1228,6 +1272,30 @@ ImageFolderDataset::ImageFolderDataset(const std::vector<char> &dataset_dir, boo
   auto sampler_obj = sampler.get().Parse();
   auto ds = std::make_shared<ImageFolderNode>(CharToString(dataset_dir), decode, sampler_obj, recursive,
                                               SetCharToString(extensions), MapCharToString(class_indexing), cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+IMDBDataset::IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+                         const std::shared_ptr<Sampler> &sampler, const std::shared_ptr<DatasetCache> &cache) {
+  // Create logical representation of IMDBDataset.
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<IMDBNode>(CharToString(dataset_dir), CharToString(usage), sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+IMDBDataset::IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, const Sampler *sampler,
+                         const std::shared_ptr<DatasetCache> &cache) {
+  // Create logical representation of IMDBDataset.
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<IMDBNode>(CharToString(dataset_dir), CharToString(usage), sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+IMDBDataset::IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+                         const std::reference_wrapper<Sampler> sampler, const std::shared_ptr<DatasetCache> &cache) {
+  // Create logical representation of IMDBDataset.
+  auto sampler_obj = sampler.get().Parse();
+  auto ds = std::make_shared<IMDBNode>(CharToString(dataset_dir), CharToString(usage), sampler_obj, cache);
   ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
 }
 
@@ -1518,6 +1586,27 @@ QMnistDataset::QMnistDataset(const std::vector<char> &dataset_dir, const std::ve
   ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
 }
 
+SemeionDataset::SemeionDataset(const std::vector<char> &dataset_dir, const std::shared_ptr<Sampler> &sampler,
+                               const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<SemeionNode>(CharToString(dataset_dir), sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+SemeionDataset::SemeionDataset(const std::vector<char> &dataset_dir, const Sampler *sampler,
+                               const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<SemeionNode>(CharToString(dataset_dir), sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+SemeionDataset::SemeionDataset(const std::vector<char> &dataset_dir, const std::reference_wrapper<Sampler> &sampler,
+                               const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler.get().Parse();
+  auto ds = std::make_shared<SemeionNode>(CharToString(dataset_dir), sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
 TedliumDataset::TedliumDataset(const std::vector<char> &dataset_dir, const std::vector<char> &release,
                                const std::vector<char> &usage, const std::vector<char> &extensions,
                                const std::shared_ptr<Sampler> &sampler, const std::shared_ptr<DatasetCache> &cache) {
@@ -1609,7 +1698,15 @@ VOCDataset::VOCDataset(const std::vector<char> &dataset_dir, const std::vector<c
   auto ds = std::make_shared<VOCNode>(CharToString(dataset_dir), CharToString(task), CharToString(usage),
                                       MapCharToString(class_indexing), decode, sampler_obj, cache, extra_metadata);
   ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
-}  // namespace dataset
+}
+
+WikiTextDataset::WikiTextDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+                                 int64_t num_samples, ShuffleMode shuffle, int32_t num_shards, int32_t shard_id,
+                                 const std::shared_ptr<DatasetCache> &cache) {
+  auto ds = std::make_shared<WikiTextNode>(CharToString(dataset_dir), CharToString(usage), num_samples, shuffle,
+                                           num_shards, shard_id, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
 
 RandomDataDataset::RandomDataDataset(const int32_t &total_rows, std::shared_ptr<SchemaObj> schema,
                                      const std::vector<std::vector<char>> &columns_list,
@@ -1701,6 +1798,29 @@ UDPOSDataset::UDPOSDataset(const std::vector<char> &dataset_dir, const std::vect
   auto ds = std::make_shared<UDPOSNode>(CharToString(dataset_dir), CharToString(usage), num_samples, shuffle,
                                         num_shards, shard_id, cache);
   ir_node_ = std::static_pointer_cast<UDPOSNode>(ds);
+}
+
+WIDERFaceDataset::WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                                   const std::shared_ptr<Sampler> &sampler,
+                                   const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<WIDERFaceNode>(CharToString(dataset_dir), CharToString(usage), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+WIDERFaceDataset::WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                                   const Sampler *sampler, const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler ? sampler->Parse() : nullptr;
+  auto ds = std::make_shared<WIDERFaceNode>(CharToString(dataset_dir), CharToString(usage), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
+}
+
+WIDERFaceDataset::WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                                   const std::reference_wrapper<Sampler> sampler,
+                                   const std::shared_ptr<DatasetCache> &cache) {
+  auto sampler_obj = sampler.get().Parse();
+  auto ds = std::make_shared<WIDERFaceNode>(CharToString(dataset_dir), CharToString(usage), decode, sampler_obj, cache);
+  ir_node_ = std::static_pointer_cast<DatasetNode>(ds);
 }
 
 YahooAnswersDataset::YahooAnswersDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,

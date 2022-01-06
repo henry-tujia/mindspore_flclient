@@ -19,7 +19,6 @@ import types
 import sys
 import os
 import time
-import traceback
 import ast
 import importlib
 from collections import OrderedDict
@@ -30,7 +29,7 @@ from mindspore import log as logger
 from mindspore._extends.remote import kernel_build_server
 from .tensor import Tensor as MsTensor
 from .tensor import CSRTensor as MsCSRTensor
-from .._c_expression import generate_arguments_key, GraphExecutor_, Tensor, MetaTensor, CSRTensor, PynativeExecutor_
+from .._c_expression import GraphExecutor_, Tensor, MetaTensor, CSRTensor, PynativeExecutor_, _ms_memory_recycle
 from .._c_expression import verify_inputs_signature, init_exec_dataset, _set_dataset_mode_config, init_pipeline
 from ..parallel._ps_context import _is_role_pserver, _is_role_sched
 from ..parallel._utils import _get_device_num, _get_global_rank, _need_to_full, _check_full_batch, _to_full_tensor, \
@@ -38,33 +37,12 @@ from ..parallel._utils import _get_device_num, _get_global_rank, _need_to_full, 
 from .._checkparam import Validator
 
 # store ms_function class compiled pipeline cache
-ms_compile_cache = {}
+ms_compile_cache = set()
+# store cell compiled pipeline cache,
+# {cell1:set_cache1, cell2:set_cache2, ...}
+cells_compile_cache = {}
 
 BROADCAST_PHASE = "_broadcast_"
-
-
-def _convert_function_arguments(fn, *args):
-    """
-    Process the fn default parameters.
-
-    Args:
-        fn (Function): The function to be parsed.
-        args (tuple): The parameters of the function.
-    """
-    arguments_dict = OrderedDict()
-    parse_method = None
-    if isinstance(fn, (types.FunctionType, types.MethodType)):
-        parse_method = fn.__name__
-        index = 0
-        for value in args:
-            arguments_dict[f'arg{index}'] = value
-            index = index + 1
-        logger.debug("fn(%r) full parameters dict is: %r", fn, arguments_dict)
-        converted = True
-    else:
-        logger.warning("Find error: fn isn't function or method")
-        converted = False
-    return converted, arguments_dict, parse_method
 
 
 def _wrap_func(fn):
@@ -119,14 +97,15 @@ def _check_all_tensor(sequence):
     return True
 
 
-def _get_filename_from_trace(trace):
-    # format: File "xxx.py", line x, in <module>
-    strings = trace.strip().split(' ')
-    filename = strings[1].rstrip(',').strip('"')
-    return filename
+sys_path = list(sys.path)
+# Get the entry script path.
+if sys.argv and sys.argv[0] != '':
+    entry_script_path = os.path.realpath(sys.argv[0])
+    entry_script_path_dir = os.path.split(entry_script_path)[0]
+    if entry_script_path_dir in sys_path:
+        sys_path.remove(entry_script_path_dir)
 
-# The first path is the current path or empty.
-sys_path = sys.path[1:]
+
 def _in_sys_path(file_path):
     for path in sys_path:
         if file_path.startswith(path):
@@ -171,6 +150,7 @@ def __get_compile_cache_dep_files(file_path, compile_cache_dep_files, pkg):
                 dep_file_path = module.__file__
             else:
                 continue
+            # Exclude the installed modules.
             if not _in_sys_path(dep_file_path) and not dep_file_path in compile_cache_dep_files:
                 logger.debug(f"dependent file path: {dep_file_path}")
                 compile_cache_dep_files.append(dep_file_path)
@@ -179,22 +159,13 @@ def __get_compile_cache_dep_files(file_path, compile_cache_dep_files, pkg):
 
 def _get_compile_cache_dep_files():
     """Get the dependency files of the network"""
-    tb = traceback.format_stack()
-    compile_cache_dep_files = []
-    filename = None
-    # Get the entry script file.
-    entry_id = 0
-    while entry_id < len(tb) and _in_sys_path(_get_filename_from_trace(tb[entry_id])):
-        logger.debug(f"trace: {tb[entry_id]}")
-        entry_id += 1
-    if entry_id < len(tb):
-        filename = _get_filename_from_trace(tb[entry_id])
-    if filename is None:
+    if entry_script_path is None:
+        logger.warning("Can not get the entry script file path.")
         return []
-    file_path = os.path.realpath(filename)
-    logger.debug(f"entry script file path: {file_path}")
-    compile_cache_dep_files.append(file_path)
-    __get_compile_cache_dep_files(file_path, compile_cache_dep_files, None)
+    compile_cache_dep_files = []
+    logger.debug(f"entry script file path: {entry_script_path}")
+    compile_cache_dep_files.append(entry_script_path)
+    __get_compile_cache_dep_files(entry_script_path, compile_cache_dep_files, None)
     return compile_cache_dep_files
 
 
@@ -217,10 +188,14 @@ class _MindsporeFunctionExecutor:
     """
 
     def __init__(self, fn, ms_create_time, input_signature=None, obj=None):
+        init_pipeline()
+        if not isinstance(fn, (types.FunctionType, types.MethodType)):
+            raise RuntimeError('fn {} is not function or method'.format(fn))
+
         self.fn = fn
         self.input_signature = input_signature
         self.obj = None
-        if hasattr(obj, fn.__name__):
+        if obj and hasattr(obj, fn.__name__):
             self.obj = obj
         self._graph_executor = GraphExecutor_.get_instance()
         self._create_time = ms_create_time
@@ -237,7 +212,7 @@ class _MindsporeFunctionExecutor:
         init_phase = "init_subgraph" + graph_name[graph_name.find("."):]
         _exec_init_graph(self.obj, init_phase)
 
-    def compile(self, args_list, arg_names, method_name):
+    def compile(self, args_list, method_name):
         """Returns pipeline for the given args."""
         # Verify the signature for both function and method
         if self.input_signature is not None:
@@ -250,9 +225,8 @@ class _MindsporeFunctionExecutor:
             if not is_valid_input:
                 raise ValueError("Inputs is incompatible with input signature!")
 
-        dic = dict(zip(arg_names, args_list))
         generate_name = self.fn.__module__ + "." + self.fn.__name__ + "." + self.fn.__code__.co_filename + "." + \
-            str(self.fn.__code__.co_firstlineno) + '.' + str(id(self.fn))
+                        str(self.fn.__code__.co_firstlineno) + '.' + str(id(self.fn))
         if _pynative_executor.grad_flag():
             generate_name = generate_name + ".grad"
         self.fn.__parse_method__ = method_name
@@ -273,9 +247,9 @@ class _MindsporeFunctionExecutor:
         else:
             self.enable_tuple_broaden = False
         self._graph_executor.set_enable_tuple_broaden(self.enable_tuple_broaden)
-        key = generate_arguments_key(dic, self.enable_tuple_broaden)
+        key = self._graph_executor.generate_arguments_key(args_list, self.enable_tuple_broaden)
         phase = generate_name + '.' + str(key)
-        if phase in ms_compile_cache.keys():
+        if phase in ms_compile_cache:
             return phase
 
         if self.obj is None:
@@ -287,23 +261,16 @@ class _MindsporeFunctionExecutor:
             raise RuntimeError("Executor compile failed.")
         if context.get_context("enable_ge"):
             self.build_data_init_graph(phase)
-        ms_compile_cache[phase] = phase
+        ms_compile_cache.add(phase)
         return phase
 
     @_wrap_func
     def __call__(self, *args):
-        init_pipeline()
-        converted, arguments_dict, parse_method = _convert_function_arguments(self.fn, *args)
-        if not converted:
-            raise RuntimeError('Process function parameter is failure')
-
-        args_list = tuple(arguments_dict.values())
-        arg_names = tuple(arguments_dict.keys())
+        args_list = args
         if self.obj is not None:
             args_list = args_list[1:]
-            arg_names = arg_names[1:]
 
-        phase = self.compile(args_list, arg_names, parse_method)
+        phase = self.compile(args_list, self.fn.__name__)
 
         if context.get_context("precompile_only"):
             return None
@@ -398,21 +365,6 @@ def ms_function(fn=None, obj=None, input_signature=None):
     if fn is not None:
         return wrap_mindspore(fn)
     return wrap_mindspore
-
-
-def _generate_pip_args(obj, *args, method="construct"):
-    """Generate arguments for pipeline."""
-    if hasattr(obj, method):
-        fn = getattr(obj, method)
-    else:
-        raise AttributeError('The process method is not exist')
-    converted, arguments_dict, parse_method = _convert_function_arguments(fn, *args)
-    if not converted:
-        raise RuntimeError('Process method parameter is failure')
-    args_list = tuple(arguments_dict.values())
-    args_names = tuple(arguments_dict.keys())
-    obj.__parse_method__ = parse_method
-    return args_names, args_list
 
 
 def _get_auto_split_param_names(parameter_layout_dict):
@@ -601,6 +553,14 @@ class _CellGraphExecutor:
     def _build_data_graph(self, obj, phase):
         self._graph_executor.build_data_graph(obj.parameters_dict(), phase, obj.parameters_broadcast_dict())
 
+    def set_queue_name(self, queue_name):
+        """
+        while a mode use shared dataset with others, need set queue_name which saved in data_set
+        :param queue_name:
+        :return:
+        """
+        self._graph_executor.set_queue_name(queue_name)
+
     def _set_dataset_mode(self, args_list):
         """set dataset mode."""
         # decide whether to sink based on whether the inputs is virtual or args_list is ()
@@ -640,15 +600,17 @@ class _CellGraphExecutor:
             Str, the full phase of the cell.
             Bool, if the graph has been compiled before, return False, else return True.
         """
-
-        args_names, args_list = _generate_pip_args(obj, *args)
-        dic = dict(zip(args_names, args_list))
+        obj.__parse_method__ = 'construct'
+        if not hasattr(obj, obj.__parse_method__):
+            raise AttributeError(
+                'The class {} dose not have method {}'.format(obj.__class__.__name__, obj.__parse_method__))
+        args_list = args
         if hasattr(obj, "enable_tuple_broaden"):
             self.enable_tuple_broaden = obj.enable_tuple_broaden
         else:
             self.enable_tuple_broaden = False
         self._graph_executor.set_enable_tuple_broaden(self.enable_tuple_broaden)
-        key = generate_arguments_key(dic, self.enable_tuple_broaden)
+        key = self._graph_executor.generate_arguments_key(args_list, self.enable_tuple_broaden)
         obj.arguments_key = str(key)
         phase = phase + '.' + str(obj.create_time) + '.' + str(id(obj)) + '.' + obj.arguments_key
 
@@ -663,8 +625,7 @@ class _CellGraphExecutor:
 
         is_sink_mode = args and isinstance(args[0], Tensor) and args[0].virtual_flag
         if auto_parallel_mode and _need_to_full() and not is_sink_mode and obj.auto_parallel_compile_and_run():
-            args_full = _to_full_tensor(args, _get_device_num(), _get_global_rank())
-            _, args_list = _generate_pip_args(obj, *args_full)
+            args_list = _to_full_tensor(args, _get_device_num(), _get_global_rank())
 
         enable_ge = context.get_context("enable_ge")
         self._graph_executor.set_weights_values(obj.parameters_dict())
@@ -753,12 +714,8 @@ class _CellGraphExecutor:
     def _exec_pip(self, obj, *args, phase=''):
         """Execute the generated pipeline."""
         fn = obj.construct
-        converted, arguments_dict, parse_method = _convert_function_arguments(fn, *args)
-        if not converted:
-            raise RuntimeError('Process method parameter is failure')
-        args_list = tuple(arguments_dict.values())
-        obj.__parse_method__ = parse_method
-        return self._graph_executor(args_list, phase)
+        obj.__parse_method__ = fn.__name__
+        return self._graph_executor(args, phase)
 
     def run(self, obj, *args, phase='predict'):
         """
@@ -832,7 +789,24 @@ class _CellGraphExecutor:
                                    "jit_config")
 
 
+def ms_memory_recycle():
+    """
+    Recycle memory used by MindSpore.
+    When train multi Neural network models in one process, memory used by mindspore is very large,
+    this is because mindspore cached runtime memory for every model.
+    To recycle these cached memory, users can call this function after training of one model.
+    """
+    if ms_compile_cache:
+        _cell_graph_executor.del_net_res(ms_compile_cache)
+        ms_compile_cache.clear()
+    for cell_cache in cells_compile_cache.values():
+        if cell_cache:
+            _cell_graph_executor.del_net_res(cell_cache)
+            cell_cache.clear()
+    _ms_memory_recycle()
+
+
 _cell_graph_executor = _CellGraphExecutor()
 _pynative_executor = _PynativeExecutor()
 
-__all__ = ['ms_function']
+__all__ = ['ms_function', 'ms_memory_recycle']

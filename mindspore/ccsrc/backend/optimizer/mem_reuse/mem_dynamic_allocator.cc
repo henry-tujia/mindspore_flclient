@@ -25,7 +25,10 @@ namespace mindspore {
 namespace device {
 static const char kPersistentParamMem[] = "Persistent mem";
 static const char kCommonMem[] = "Common mem";
-const size_t kGBToByte = 1073741824;
+constexpr size_t kGBToByte = 1024 << 20;
+// The smallest memory request size, if it is smaller than this size, the device memory request may fail
+// Set experience value to 10M
+const size_t kMinimumAllocMem = 10 << 20;
 
 DynamicMemPoolBestFit::~DynamicMemPoolBestFit() {
   persistent_mem_->clear();
@@ -56,7 +59,10 @@ std::vector<DeviceMemPtr> DynamicMemPoolBestFit::AllocContinuousTensorMem(size_t
   }
   std::lock_guard<std::mutex> locker(mutex_);
   // Remove the pre-alloc memory.
-  const auto &mem_block = FindMemBlock(device_addr, common_mem_);
+  auto mem_block = FindMemBlock(device_addr, common_mem_);
+  if (mem_block == nullptr) {
+    mem_block = FindMemBlock(device_addr, persistent_mem_);
+  }
   MS_EXCEPTION_IF_NULL(mem_block);
   const auto &iter = mem_block->block_all_mem_buf_map_.find(device_addr);
   if (iter == mem_block->block_all_mem_buf_map_.end()) {
@@ -125,14 +131,14 @@ size_t DynamicMemPoolBestFit::MemAllocUnitSize(bool from_persistent_mem) const {
   return from_persistent_mem ? persistent_mem_->unit_size_ : common_mem_->unit_size_;
 }
 
-void DynamicMemPoolBestFit::SetMemAllocUintSize(size_t size) {
-  persistent_mem_->unit_size_ = DYNAMIC_MEM_ALLOC_UNIT_SIZE;
-  common_mem_->unit_size_ = size;
-  config_unit_size_ = size;
-  MS_LOG(INFO) << "Set mem alloc unit size " << size;
+void DynamicMemPoolBestFit::SetMemAllocUintSize(size_t common_size, size_t persist_size) {
+  persistent_mem_->unit_size_ = persist_size;
+  common_mem_->unit_size_ = common_size;
+  config_unit_size_ = common_size;
+  MS_LOG(INFO) << "Set mem alloc unit size, common " << common_size << " persistent " << persist_size;
 }
 
-void DynamicMemPoolBestFit::SetMempoolBlockSize(size_t available_device_mem_size) {
+void DynamicMemPoolBestFit::SetMemPoolBlockSize(size_t available_device_mem_size) {
   auto ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   float mem_block_size = ms_context->get_param<float>(MS_CTX_MEMPOOL_BLOCK_SIZE);
@@ -216,6 +222,12 @@ size_t DynamicMemPoolBestFit::CalMemBlockAllocSize(size_t size, bool from_persis
   if (device_free_mem_size < size) {
     MS_LOG(WARNING) << "Memory not enough: current free memory size[" << device_free_mem_size
                     << "] is smaller than required size[" << size << "].";
+    return 0;
+  }
+  // The memory of the device is too small, which may cause the new application to fail.
+  if (device_free_mem_size < kMinimumAllocMem) {
+    MS_LOG(WARNING) << "Device memory size [" << device_free_mem_size << "] is smaller than minimum alloc size ["
+                    << kMinimumAllocMem << "].";
     return 0;
   }
   auto alloc_mem_size = MemAllocUnitSize(from_persistent_mem);

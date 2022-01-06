@@ -28,8 +28,8 @@ class AscendMemoryManager : public MemoryManager {
   AscendMemoryManager() = default;
   ~AscendMemoryManager() override = default;
 
-  void MallocDeviceMemory() override;
-  void FreeDeviceMemory() override;
+  void Initialize() override;
+  void Finalize() override;
   void ResetDynamicMemory() override;
   void ClearGlobalIdleMem() override;
   void *MallocMemFromMemPool(size_t size, bool from_persistent_mem) override;
@@ -38,6 +38,8 @@ class AscendMemoryManager : public MemoryManager {
   uint64_t GetMsMaxMemSize();
   void MallocSomasDynamicMem(const session::KernelGraph &graph) override;
   uint8_t *MallocCommunicationMemFromMemPool(size_t size) override;
+  bool MallocContinuousMemFromMemPool(const DeviceAddressPtrList &addr_list, size_t total_size,
+                                      std::vector<size_t> size_list) override;
   std::vector<void *> MallocContinuousMemFromMemPool(size_t total_size, std::vector<size_t> size_list) override {
     return AscendMemoryPool::GetInstance().AllocContinuousTensorMem(total_size, size_list);
   }

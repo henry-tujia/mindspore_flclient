@@ -63,6 +63,35 @@ def check_imagefolderdataset(method):
     return new_method
 
 
+def check_imdb_dataset(method):
+    """A wrapper that wraps a parameter checker around the original IMDBDataset."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        nreq_param_bool = ['shuffle']
+
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        validate_dataset_param_value(nreq_param_bool, param_dict, bool)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        usage = param_dict.get('usage')
+        if usage is not None:
+            check_valid_str(usage, ["train", "test", "all"], "usage")
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
 def check_iwslt2016_dataset(method):
     """A wrapper that wraps a parameter checker around the original Dataset(IWSLT2016dataset)."""
 
@@ -450,6 +479,62 @@ def check_usps_dataset(method):
             check_valid_str(usage, ["train", "test", "all"], "usage")
 
         validate_dataset_param_value(nreq_param_int, param_dict, int)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_caltech101_dataset(method):
+    """A wrapper that wraps a parameter checker around the original Dataset(Caltech101Dataset)."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        nreq_param_bool = ['shuffle', 'decode']
+        nreq_param_str = ['target_type']
+
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        target_type = param_dict.get('target_type')
+        if target_type is not None:
+            check_valid_str(target_type, ["category", "annotation", "all"], "target_type")
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        validate_dataset_param_value(nreq_param_bool, param_dict, bool)
+        validate_dataset_param_value(nreq_param_str, param_dict, str)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_caltech256_dataset(method):
+    """A wrapper that wraps a parameter checker around the original Dataset(Caltech256Dataset)."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        nreq_param_bool = ['shuffle', 'decode']
+
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        validate_dataset_param_value(nreq_param_bool, param_dict, bool)
         check_sampler_shuffle_shard_options(param_dict)
 
         cache = param_dict.get('cache')
@@ -2078,6 +2163,36 @@ def check_dbpedia_dataset(method):
     return new_method
 
 
+def check_wider_face_dataset(method):
+    """A wrapper that wraps a parameter checker around the WIDERFaceDataset."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        nreq_param_bool = ['decode', 'shuffle']
+
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        usage = param_dict.get('usage')
+        if usage is not None:
+            check_valid_str(usage, ["train", "test", "valid", "all"], "usage")
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        validate_dataset_param_value(nreq_param_bool, param_dict, bool)
+
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
 def check_yelp_review_dataset(method):
     """A wrapper that wraps a parameter checker around the original Dataset(YelpReviewDataset)."""
 
@@ -2290,6 +2405,112 @@ def check_conll2000_dataset(method):
         usage = param_dict.get('usage')
         if usage is not None:
             check_valid_str(usage, ["train", "test", "all"], "usage")
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_amazon_review_dataset(method):
+    """A wrapper that wraps a parameter checker around the original Dataset(AmazonReviewDataset)."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+
+        # check dataset_files
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        # check usage
+        usage = param_dict.get('usage')
+        if usage is not None:
+            check_valid_str(usage, ["train", "test", "all"], "usage")
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_semeion_dataset(method):
+    """Wrapper method to check the parameters of SemeionDataset."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        nreq_param_bool = ['shuffle']
+
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        validate_dataset_param_value(nreq_param_bool, param_dict, bool)
+
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_wiki_text_dataset(method):
+    """A wrapper that wraps a parameter checker around the original Dataset(WikiTextDataset)."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+
+        # check dataset_dir
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
+
+        # check usage
+        usage = param_dict.get('usage')
+        if usage is not None:
+            check_valid_str(usage, ["train", "valid", "test", "all"], "usage")
+
+        validate_dataset_param_value(nreq_param_int, param_dict, int)
+        check_sampler_shuffle_shard_options(param_dict)
+
+        cache = param_dict.get('cache')
+        check_cache_option(cache)
+
+        return method(self, *args, **kwargs)
+
+    return new_method
+
+
+def check_en_wik9_dataset(method):
+    """Wrapper method to check the parameters of EnWik9 dataset."""
+
+    @wraps(method)
+    def new_method(self, *args, **kwargs):
+        _, param_dict = parse_user_args(method, *args, **kwargs)
+
+        nreq_param_int = ['num_samples', 'num_parallel_workers', 'num_shards', 'shard_id']
+        dataset_dir = param_dict.get('dataset_dir')
+        check_dir(dataset_dir)
 
         validate_dataset_param_value(nreq_param_int, param_dict, int)
         check_sampler_shuffle_shard_options(param_dict)

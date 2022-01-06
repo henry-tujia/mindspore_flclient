@@ -18,6 +18,7 @@
 #include "backend/session/anf_runtime_algorithm.h"
 #include "utils/trace_base.h"
 #include "runtime/device/ascend/ascend_kernel_runtime.h"
+#include "runtime/mem.h"
 
 namespace mindspore {
 namespace kernel {
@@ -56,6 +57,8 @@ void DynamicShapeKernel::Execute() {
   } else {
     auto runtime_instance = device::KernelRuntimeManager::Instance().GetCurrentKernelRuntime();
     MS_EXCEPTION_IF_NULL(runtime_instance);
+    // cppcheck-suppress unreadVariable
+    auto lock = AscendKernelMod::LockRuntime();
     auto ret = runtime_instance->SyncStream();
     if (!ret) {
       MS_LOG(EXCEPTION) << "Sync stream error!";
@@ -68,8 +71,60 @@ void DynamicShapeKernel::Execute() {
   MS_LOG(INFO) << "Execute DynamicShapeKernel End";
 }
 
+void DynamicShapeKernel::Execute(const std::vector<AddressPtr> &inputs, const std::vector<AddressPtr> &outputs) {
+  MS_LOG(INFO) << "Execute DynamicShapeKernel Start";
+  auto cnode = cnode_ptr_.lock();
+  MS_EXCEPTION_IF_NULL(cnode);
+  auto input_num = AnfAlgo::GetInputTensorNum(cnode);
+  if (input_num != 1) {
+    MS_LOG(EXCEPTION) << "Op [" << cnode->DebugString() << "] has invalid input num, should be 1, but got " << input_num
+                      << trace::DumpSourceLines(cnode);
+  }
+
+  auto prev_output_shape = AnfAlgo::GetPrevNodeOutputInferShape(cnode, 0);
+  std::vector<int64_t> output_shape = {SizeToLong(prev_output_shape.size())};
+
+  auto output_type = TypeId::kNumberTypeInt64;
+
+  auto output_tensor_for_sync = std::make_shared<tensor::Tensor>(output_type, output_shape);
+  MS_EXCEPTION_IF_NULL(output_tensor_for_sync);
+  auto data_ptr = static_cast<int64_t *>(output_tensor_for_sync->data_c());
+  for (size_t i = 0; i < prev_output_shape.size(); ++i) {
+    MS_LOG(INFO) << "DEBUG prev_output_shape[" << i << "]:" << prev_output_shape[i];
+    *(data_ptr + i) = SizeToLong(prev_output_shape[i]);
+  }
+
+  if (outputs.empty()) {
+    MS_LOG(EXCEPTION) << "Output address of DynamicShape is empty";
+  }
+  auto status = rtMemcpyAsync(outputs[0]->addr, outputs[0]->size, output_tensor_for_sync->data_c(),
+                              LongToSize(output_tensor_for_sync->data().nbytes()), RT_MEMCPY_HOST_TO_DEVICE, stream_);
+  if (status != RT_ERROR_NONE) {
+    MS_LOG(EXCEPTION) << "Execute DynamicShapeKernel rtMemcpyAsync failed!";
+  }
+  MS_LOG(INFO) << "Execute DynamicShapeKernel End";
+}
+
 device::DynamicKernelPtr DynamicShapeKernelMod::GenDynamicKernel(const CNodePtr &cnode_ptr, void *stream_ptr) {
   return std::make_shared<DynamicShapeKernel>(stream_ptr, cnode_ptr);
+}
+
+bool DynamicShapeKernelMod::Launch(const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
+                                   const std::vector<AddressPtr> &, void *stream_ptr) {
+  auto node = anf_node_.lock();
+  MS_EXCEPTION_IF_NULL(node);
+  auto cnode = node->cast<CNodePtr>();
+  MS_EXCEPTION_IF_NULL(cnode);
+  stream_ = stream_ptr;
+  auto shape_kernel = std::make_shared<DynamicShapeKernel>(stream_ptr, cnode);
+  try {
+    shape_kernel->Execute();
+  } catch (const std::exception &e) {
+    MS_LOG(ERROR) << "DynamicShapeKernelMod Launch failed. node: " << cnode->fullname_with_scope()
+                  << ", Error message is " << e.what();
+    return false;
+  }
+  return true;
 }
 }  // namespace kernel
 }  // namespace mindspore

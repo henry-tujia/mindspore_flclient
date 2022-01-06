@@ -26,6 +26,8 @@
 
 // IR leaf nodes
 #include "minddata/dataset/engine/ir/datasetops/source/ag_news_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/amazon_review_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/caltech256_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/celeba_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/cifar100_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/cifar10_node.h"
@@ -37,22 +39,26 @@
 #include "minddata/dataset/engine/ir/datasetops/source/dbpedia_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/div2k_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/emnist_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/en_wik9_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/fake_image_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/fashion_mnist_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/flickr_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/generator_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/image_folder_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/imdb_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/iwslt2016_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/iwslt2017_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/kmnist_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/mnist_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/penn_treebank_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/random_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/semeion_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/speech_commands_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/stl10_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/tedlium_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/text_file_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/udpos_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/wiki_text_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yahoo_answers_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yelp_review_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/yes_no_node.h"
@@ -70,6 +76,7 @@
 #include "minddata/dataset/engine/ir/datasetops/source/tf_record_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/usps_node.h"
 #include "minddata/dataset/engine/ir/datasetops/source/voc_node.h"
+#include "minddata/dataset/engine/ir/datasetops/source/wider_face_node.h"
 #endif
 
 namespace mindspore {
@@ -77,7 +84,6 @@ namespace dataset {
 
 // PYBIND FOR LEAF NODES
 // (In alphabetical order)
-
 PYBIND_REGISTER(AGNewsNode, 2, ([](const py::module *m) {
                   (void)py::class_<AGNewsNode, DatasetNode, std::shared_ptr<AGNewsNode>>(*m, "AGNewsNode",
                                                                                          "to create an AGNewsNode")
@@ -87,6 +93,29 @@ PYBIND_REGISTER(AGNewsNode, 2, ([](const py::module *m) {
                                                                   usage, num_shards, shard_id, nullptr);
                       THROW_IF_ERROR(ag_news->ValidateParams());
                       return ag_news;
+                    }));
+                }));
+
+PYBIND_REGISTER(AmazonReviewNode, 2, ([](const py::module *m) {
+                  (void)py::class_<AmazonReviewNode, DatasetNode, std::shared_ptr<AmazonReviewNode>>(
+                    *m, "AmazonReviewNode", "to create an AmazonReviewNode")
+                    .def(py::init([](std::string dataset_dir, std::string usage, int64_t num_samples, int32_t shuffle,
+                                     int32_t num_shards, int32_t shard_id) {
+                      std::shared_ptr<AmazonReviewNode> amazon_review = std::make_shared<AmazonReviewNode>(
+                        dataset_dir, usage, num_samples, toShuffleMode(shuffle), num_shards, shard_id, nullptr);
+                      THROW_IF_ERROR(amazon_review->ValidateParams());
+                      return amazon_review;
+                    }));
+                }));
+
+PYBIND_REGISTER(Caltech256Node, 2, ([](const py::module *m) {
+                  (void)py::class_<Caltech256Node, DatasetNode, std::shared_ptr<Caltech256Node>>(
+                    *m, "Caltech256Node", "to create a Caltech256Node")
+                    .def(py::init([](std::string dataset_dir, bool decode, py::handle sampler) {
+                      auto caltech256 =
+                        std::make_shared<Caltech256Node>(dataset_dir, decode, toSamplerObj(sampler), nullptr);
+                      THROW_IF_ERROR(caltech256->ValidateParams());
+                      return caltech256;
                     }));
                 }));
 
@@ -220,6 +249,18 @@ PYBIND_REGISTER(EMnistNode, 2, ([](const py::module *m) {
                     }));
                 }));
 
+PYBIND_REGISTER(EnWik9Node, 2, ([](const py::module *m) {
+                  (void)py::class_<EnWik9Node, DatasetNode, std::shared_ptr<EnWik9Node>>(*m, "EnWik9Node",
+                                                                                         "to create an EnWik9Node")
+                    .def(py::init([](std::string dataset_dir, int32_t num_samples, int32_t shuffle, int32_t num_shards,
+                                     int32_t shard_id) {
+                      std::shared_ptr<EnWik9Node> en_wik9 = std::make_shared<EnWik9Node>(
+                        dataset_dir, num_samples, toShuffleMode(shuffle), num_shards, shard_id, nullptr);
+                      THROW_IF_ERROR(en_wik9->ValidateParams());
+                      return en_wik9;
+                    }));
+                }));
+
 PYBIND_REGISTER(FakeImageNode, 2, ([](const py::module *m) {
                   (void)py::class_<FakeImageNode, DatasetNode, std::shared_ptr<FakeImageNode>>(
                     *m, "FakeImageNode", "to create a FakeImageNode")
@@ -287,6 +328,16 @@ PYBIND_REGISTER(ImageFolderNode, 2, ([](const py::module *m) {
                                                                            toStringMap(class_indexing), nullptr);
                       THROW_IF_ERROR(imagefolder->ValidateParams());
                       return imagefolder;
+                    }));
+                }));
+
+PYBIND_REGISTER(IMDBNode, 2, ([](const py::module *m) {
+                  (void)py::class_<IMDBNode, DatasetNode, std::shared_ptr<IMDBNode>>(*m, "IMDBNode",
+                                                                                     "to create an IMDBNode")
+                    .def(py::init([](std::string dataset_dir, std::string usage, py::handle sampler) {
+                      auto imdb = std::make_shared<IMDBNode>(dataset_dir, usage, toSamplerObj(sampler), nullptr);
+                      THROW_IF_ERROR(imdb->ValidateParams());
+                      return imdb;
                     }));
                 }));
 
@@ -461,6 +512,16 @@ PYBIND_REGISTER(SBUNode, 2, ([](const py::module *m) {
                     }));
                 }));
 
+PYBIND_REGISTER(SemeionNode, 2, ([](const py::module *m) {
+                  (void)py::class_<SemeionNode, DatasetNode, std::shared_ptr<SemeionNode>>(*m, "SemeionNode",
+                                                                                           "to create a SemeionNode")
+                    .def(py::init([](std::string dataset_dir, py::handle sampler) {
+                      auto semeion = std::make_shared<SemeionNode>(dataset_dir, toSamplerObj(sampler), nullptr);
+                      THROW_IF_ERROR(semeion->ValidateParams());
+                      return semeion;
+                    }));
+                }));
+
 PYBIND_REGISTER(SogouNewsNode, 2, ([](const py::module *m) {
                   (void)py::class_<SogouNewsNode, DatasetNode, std::shared_ptr<SogouNewsNode>>(
                     *m, "SogouNewsNode", "to create a SogouNewsNode")
@@ -579,6 +640,29 @@ PYBIND_REGISTER(VOCNode, 2, ([](const py::module *m) {
                     }));
                 }));
 
+PYBIND_REGISTER(WIDERFaceNode, 2, ([](const py::module *m) {
+                  (void)py::class_<WIDERFaceNode, DatasetNode, std::shared_ptr<WIDERFaceNode>>(
+                    *m, "WIDERFaceNode", "to create a WIDERFaceNode")
+                    .def(py::init([](std::string dataset_dir, std::string usage, bool decode, py::handle sampler) {
+                      auto wider_face =
+                        std::make_shared<WIDERFaceNode>(dataset_dir, usage, decode, toSamplerObj(sampler), nullptr);
+                      THROW_IF_ERROR(wider_face->ValidateParams());
+                      return wider_face;
+                    }));
+                }));
+
+PYBIND_REGISTER(WikiTextNode, 2, ([](const py::module *m) {
+                  (void)py::class_<WikiTextNode, DatasetNode, std::shared_ptr<WikiTextNode>>(*m, "WikiTextNode",
+                                                                                             "to create a WikiTextNode")
+                    .def(py::init([](std::string dataset_dir, std::string usage, int32_t num_samples, int32_t shuffle,
+                                     int32_t num_shards, int32_t shard_id) {
+                      auto wiki_text = std::make_shared<WikiTextNode>(
+                        dataset_dir, usage, num_samples, toShuffleMode(shuffle), num_shards, shard_id, nullptr);
+                      THROW_IF_ERROR(wiki_text->ValidateParams());
+                      return wiki_text;
+                    }));
+                }));
+
 PYBIND_REGISTER(YahooAnswersNode, 2, ([](const py::module *m) {
                   (void)py::class_<YahooAnswersNode, DatasetNode, std::shared_ptr<YahooAnswersNode>>(
                     *m, "YahooAnswersNode", "to create a YahooAnswersNode")
@@ -612,6 +696,5 @@ PYBIND_REGISTER(YesNoNode, 2, ([](const py::module *m) {
                       return yes_no;
                     }));
                 }));
-
 }  // namespace dataset
 }  // namespace mindspore

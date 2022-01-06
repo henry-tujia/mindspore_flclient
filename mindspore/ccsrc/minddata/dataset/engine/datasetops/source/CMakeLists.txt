@@ -5,6 +5,8 @@ set_property(SOURCE ${_CURRENT_SRC_FILES} PROPERTY COMPILE_DEFINITIONS SUBMODULE
 set(DATASET_ENGINE_DATASETOPS_SOURCE_SRC_FILES
     ag_news_op.cc
     album_op.cc
+    amazon_review_op.cc
+    caltech_op.cc
     celeba_op.cc
     cifar_op.cc
     cityscapes_op.cc
@@ -15,10 +17,12 @@ set(DATASET_ENGINE_DATASETOPS_SOURCE_SRC_FILES
     dbpedia_op.cc
     div2k_op.cc
     emnist_op.cc
+    en_wik9_op.cc
     fake_image_op.cc
     fashion_mnist_op.cc
     flickr_op.cc
     image_folder_op.cc
+    imdb_op.cc
     iwslt_op.cc
     io_block.cc
     kmnist_op.cc
@@ -32,6 +36,7 @@ set(DATASET_ENGINE_DATASETOPS_SOURCE_SRC_FILES
     qmnist_op.cc
     random_data_op.cc
     sbu_op.cc
+    semeion_op.cc
     sogou_news_op.cc
     speech_commands_op.cc
     stl10_op.cc
@@ -39,6 +44,8 @@ set(DATASET_ENGINE_DATASETOPS_SOURCE_SRC_FILES
     text_file_op.cc
     udpos_op.cc
     usps_op.cc
+    wider_face_op.cc
+    wiki_text_op.cc
     yahoo_answers_op.cc
     yelp_review_op.cc
     yes_no_op.cc

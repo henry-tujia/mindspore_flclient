@@ -77,7 +77,7 @@ void CPUDeviceContext::Initialize() {
 void CPUDeviceContext::Destroy() {
   // Release memory.
   if (mem_manager_ != nullptr) {
-    mem_manager_->FreeDeviceMemory();
+    mem_manager_->Finalize();
     mem_manager_ = nullptr;
   }
 }
@@ -112,6 +112,17 @@ void CPUDeviceContext::FreeMemory(DeviceAddress *const &address) const {
   }
   mem_manager_->FreeMemFromMemPool(address->ptr_);
   address->ptr_ = nullptr;
+}
+
+void *CPUDeviceContext::AllocateMemory(size_t size) const {
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  return mem_manager_->MallocMemFromMemPool(size, false);
+}
+
+void CPUDeviceContext::FreeMemory(void *const ptr) const {
+  MS_EXCEPTION_IF_NULL(ptr);
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  mem_manager_->FreeMemFromMemPool(ptr);
 }
 
 DeviceAddressPtr CPUDeviceContext::CreateDeviceAddress(void *const device_ptr, size_t device_size, const string &format,

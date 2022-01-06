@@ -70,12 +70,23 @@ bool HostKernelMod::Init(const AnfNodePtr &anf_node) {
     }
     output_size_list_.push_back(LongToSize(size_i));
   }
+  anf_node_ = anf_node;
   return true;
 }
 bool HostKernelMod::Launch(const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
                            const std::vector<AddressPtr> &, void *) {
   return true;
 }
+
+void HostKernelMod::InferOp() {
+  auto node = anf_node_.lock();
+  MS_EXCEPTION_IF_NULL(node);
+  if (!AnfAlgo::IsDynamicShape(node)) {
+    MS_LOG(EXCEPTION) << "The node is not dynamic shape.";
+  }
+  KernelMod::InferShape();
+}
+
 std::vector<TaskInfoPtr> HostKernelMod::GenTask(const std::vector<AddressPtr> &, const std::vector<AddressPtr> &,
                                                 const std::vector<AddressPtr> &, uint32_t) {
   return {};

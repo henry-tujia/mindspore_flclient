@@ -1,4 +1,4 @@
-# Copyright 2020-2021 Huawei Technologies Co., Ltd
+# Copyright 2020-2022 Huawei Technologies Co., Ltd
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 """Summary collector callback."""
 
 import os
+import stat
 import re
 import json
 from json.decoder import JSONDecodeError
@@ -78,6 +79,7 @@ class SummaryCollector(Callback):
         2. Not all information is collected at the training phase or at the eval phase.
         3. SummaryCollector always record the data collected by the summary operator.
         4. SummaryCollector only supports Linux systems.
+        5. The Summary is not supported when compile source with `-s on` option.
 
     Args:
         summary_dir (str): The collected data will be persisted to this directory.
@@ -94,20 +96,20 @@ class SummaryCollector(Callback):
             The data that supports control is shown below. Default: None.
 
             - collect_metric (bool): Whether to collect training metrics, currently only the loss is collected.
-              The first output will be treated as the loss and it will be averaged.
-              Optional: True/False. Default: True.
+              The first output will be treated as the loss and it will be averaged. Default: True.
             - collect_graph (bool): Whether to collect the computational graph. Currently, only
-              training computational graph is collected. Optional: True/False. Default: True.
+              training computational graph is collected. Default: True.
             - collect_train_lineage (bool): Whether to collect lineage data for the training phase,
-              this field will be displayed on the lineage page of Mindinsight. Optional: True/False. Default: True.
+              this field will be displayed on the `lineage page \
+              <https://www.mindspore.cn/mindinsight/docs/en/master/lineage_and_scalars_comparison.html>`_
+              of MindInsight. Default: True.
             - collect_eval_lineage (bool): Whether to collect lineage data for the evaluation phase,
-              this field will be displayed on the lineage page of Mindinsight. Optional: True/False. Default: True.
+              this field will be displayed on the lineage page of MindInsight. Default: True.
             - collect_input_data (bool): Whether to collect dataset for each training.
               Currently only image data is supported.
               If there are multiple columns of data in the dataset, the first column should be image data.
-              Optional: True/False. Default: True.
-            - collect_dataset_graph (bool): Whether to collect dataset graph for the training phase.
-              Optional: True/False. Default: True.
+              Default: True.
+            - collect_dataset_graph (bool): Whether to collect dataset graph for the training phase. Default: True.
             - histogram_regular (Union[str, None]): Collect weight and bias for parameter distribution page
               and displayed in MindInsight. This field allows regular strings to control which parameters to collect.
               It is not recommended to collect too many parameters at once, as it can affect performance.
@@ -137,7 +139,7 @@ class SummaryCollector(Callback):
         keep_default_action (bool): This field affects the collection behavior of the 'collect_specified_data' field.
             True: it means that after specified data is set, non-specified data is collected as the default behavior.
             False: it means that after specified data is set, only the specified data is collected,
-            and the others are not collected. Optional: True/False, Default: True.
+            and the others are not collected. Default: True.
         custom_lineage_data (Union[dict, None]): Allows you to customize the data and present it on the MingInsight
             lineage page. In the custom data, the type of the key supports str, and the type of value supports str, int
             and float. Default: None, it means there is no custom data.
@@ -166,9 +168,7 @@ class SummaryCollector(Callback):
               - npy: export tensor as npy file.
 
     Raises:
-        ValueError: If the parameter value is not expected.
-        TypeError: If the parameter type is not expected.
-        RuntimeError: If an error occurs during data collection.
+        ValueError: The Summary is not supported, please without `-s on` and recompile source.
 
     Examples:
         >>> import mindspore.nn as nn
@@ -372,7 +372,7 @@ class SummaryCollector(Callback):
                              f'but got the: {landscape_size}')
 
     @staticmethod
-    def  _check_unit(unit):
+    def _check_unit(unit):
         """Check unit type and value."""
         check_value_type('unit', unit, str)
         if unit not in ["step", "epoch"]:
@@ -544,10 +544,9 @@ class SummaryCollector(Callback):
             intervals = collect_landscape.get('intervals')
             collect_interval = False
             for interval in intervals:
-                if "cur_epoch_num" in cb_params:
-                    if cb_params.cur_epoch_num in interval:
-                        collect_interval = True
-                        break
+                if "cur_epoch_num" in cb_params and cb_params.cur_epoch_num in interval:
+                    collect_interval = True
+                    break
 
         if collect_landscape and collect_landscape.get('unit', 'step') == 'epoch' and collect_interval:
             self._save_model_params_for_landscape(cb_params)
@@ -586,10 +585,9 @@ class SummaryCollector(Callback):
         }
         meta_path = os.path.join(self._ckpt_dir, 'train_metadata.json')
         try:
-            file = os.open(meta_path, os.O_WRONLY|os.O_TRUNC|os.O_CREAT, 0o600)
-            data = json.dumps(data).encode()
-            os.write(file, data)
-            os.close(file)
+            with open(meta_path, 'w') as file:
+                json.dump(data, file)
+            os.chmod(meta_path, stat.S_IRUSR)
         except OSError as e:
             logger.error("Write meta data %s failed, detail: %s" % (meta_path, str(e)))
 

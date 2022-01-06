@@ -133,10 +133,7 @@ int LiteOpActor::IsolateInputData(std::vector<std::shared_ptr<LiteOpActor>> *act
     }
 
     // for case that subgraph input is subgraph output, replace old_tensor with new_tensor
-    auto receiver_set = ctx_->GetLinkInfo(old_tensor);
-    for (auto item : receiver_set) {
-      ctx_->SetLinkInfo(new_tensor, item);
-    }
+    ctx_->ReplaceLinkInfoSenderWithNewOne(new_tensor, old_tensor);
 
     // keep new link info for isolate input data case.
     ctx_->SetLinkInfo(old_tensor, new_tensor);
@@ -144,6 +141,11 @@ int LiteOpActor::IsolateInputData(std::vector<std::shared_ptr<LiteOpActor>> *act
     /* set subgraph input for copy data */
     kernel_->set_in_tensor(new_tensor, i);
   }
+
+  for (auto &item : *isolate_input_map_) {
+    ctx_->ReplaceLinkInfoReceiverWithNewOne(item.first, item.second);
+  }
+
   return RET_OK;
 }
 
@@ -270,7 +272,14 @@ int LiteOpActor::CreateCommonArrow(const std::unordered_map<void *, std::set<std
       output_data_arrows_.push_back(arrow);
     }
   }
+  return RET_OK;
+}
 
+int LiteOpActor::CreateEmptyArrow(const size_t &output_index) {
+  AID non;
+  auto arrow = std::make_shared<DataArrow>(output_index, non, output_index);
+  MS_CHECK_TRUE_MSG(arrow != nullptr, RET_ERROR, "create arrow failed.");
+  output_data_arrows_.push_back(arrow);
   return RET_OK;
 }
 
@@ -284,7 +293,12 @@ int LiteOpActor::CompileArrowThroughOutputTensors(
   for (size_t i = 0; i < output_tensors_size; ++i) {
     auto receiver_tensors = ctx_->GetLinkInfo(output_tensors[i]);
     if (receiver_tensors.empty()) {
-      MS_LOG(DEBUG) << "may be graph output.";
+      MS_LOG(DEBUG) << "create when running.";
+      auto ret = CreateEmptyArrow(i);
+      if (ret != RET_OK) {
+        MS_LOG(ERROR) << "CreateEmptyArrow failed, output tensor name: " << output_tensors[i]->tensor_name();
+        return ret;
+      }
       continue;
     }
     auto ret = CreateCommonArrow(receivers_map, subgraph_inputs_set, receiver_tensors, i, &receiver_index_set);
@@ -489,28 +503,35 @@ void LiteOpActor::SetInputShape() {
     if (input_tensor->shape() == inputs_data_[i]->shape()) {
       continue;
     }
-    MS_LOG(DEBUG) << "inputs_data_[" << i << "].shape: " << inputs_data_[i]->shape() << " vs kernel_->in_tensors()["
-                  << i << "].shape: " << kernel_->in_tensors()[i]->shape() << " are not equal.";
-    MS_LOG(DEBUG) << "this->kernel_->name(): " << this->kernel_->name();
 
     if (input_tensor->data_type() == kObjectTypeTensorType) {
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
-      auto input_tensorlist = reinterpret_cast<TensorList *>(input_tensor);
-      auto input_data_tensorlist = reinterpret_cast<TensorList *>(inputs_data_[i]);
-      input_tensorlist->FreeTensorListData();
-      input_tensorlist->set_element_shape(input_data_tensorlist->element_shape());
-      input_tensorlist->set_shape(input_data_tensorlist->shape());
-      std::vector<std::vector<int>> tensor_shape{};
-      std::transform(input_data_tensorlist->tensors().begin(), input_data_tensorlist->tensors().end(),
-                     std::back_inserter(tensor_shape), [](const Tensor *tensor_item) { return tensor_item->shape(); });
-      input_tensorlist->MallocTensorListData(input_data_tensorlist->tensors_data_type(), tensor_shape);
+      SetTensorListShape(input_tensor, inputs_data_[i]);
 #endif
     } else {
-      input_tensor->set_shape(inputs_data_[i]->shape());
-      input_tensor->set_format(inputs_data_[i]->format());
+      SetTensorShape(input_tensor, inputs_data_[i]);
     }
   }
 }
+
+void LiteOpActor::SetTensorShape(Tensor *dst, Tensor *src) {
+  dst->set_shape(src->shape());
+  dst->set_format(src->format());
+}
+
+#ifndef CONTROLFLOW_TENSORLIST_CLIP
+void LiteOpActor::SetTensorListShape(Tensor *dst, Tensor *src) {
+  auto input_tensorlist = reinterpret_cast<TensorList *>(dst);
+  auto input_data_tensorlist = reinterpret_cast<TensorList *>(src);
+  input_tensorlist->FreeTensorListData();
+  input_tensorlist->set_element_shape(input_data_tensorlist->element_shape());
+  input_tensorlist->set_shape(input_data_tensorlist->shape());
+  std::vector<std::vector<int>> tensor_shape{};
+  std::transform(input_data_tensorlist->tensors().begin(), input_data_tensorlist->tensors().end(),
+                 std::back_inserter(tensor_shape), [](const Tensor *tensor_item) { return tensor_item->shape(); });
+  input_tensorlist->MallocTensorListData(input_data_tensorlist->tensors_data_type(), tensor_shape);
+}
+#endif
 
 void LiteOpActor::InitInputData() {
   SetInputShape();

@@ -47,6 +47,11 @@ py::object VectorRefToPyData(const VectorRef &value_list);
 py::object VectorRefToPyData(const VectorRef &value_list, const AbstractBasePtr &output);
 // Wrap VectorRef to CSRTensor
 py::object MakeCSRTensor(const VectorRef &value_list);
+py::object CSRTensorToPyData(const tensor::CSRTensorPtr &csr_tensor) {
+  auto ref = py::tuple(1);
+  ref[0] = csr_tensor;
+  return ref[0];
+}
 py::object TensorToPyData(const tensor::TensorPtr &tensor) {
   MS_EXCEPTION_IF_NULL(tensor);
   if (tensor->NeedWait()) {
@@ -133,6 +138,12 @@ static ValueNameToConverterVector value_name_to_converter = {
      py::tuple tuple_container(1);
      tuple_container[0] = value->cast<tensor::MetaTensorPtr>();
      return tuple_container[0];
+   }},
+  // CSRTensor
+  {tensor::CSRTensor::kTypeId,
+   [](const ValuePtr &value) -> py::object {
+     auto csr_tensor_ptr = value->cast<tensor::CSRTensorPtr>();
+     return CSRTensorToPyData(csr_tensor_ptr);
    }},
   // RefKey
   {RefKey::kTypeId,
@@ -497,8 +508,29 @@ static AbstractBasePtr ToMonadAbstract(const py::object &type_obj) {
   MS_LOG(EXCEPTION) << "Not a type object: " << py::str(type_obj);
 }
 
-AbstractBasePtr MakePyInferRes2Abstract(const py::object &shape_obj, const py::object &type_obj,
-                                        const py::object &output) {
+static py::object GetPyAbsItemOfTupleOut(const py::object &output, const size_t index) {
+  auto out_dict = output.cast<py::dict>();
+  auto type_obj = out_dict[ATTR_DTYPE];
+  auto shape_obj = out_dict[ATTR_SHAPE];
+  auto out_item = py::dict();
+  auto shape_tuple = shape_obj.cast<py::tuple>();
+  auto typeid_tuple = type_obj.cast<py::tuple>();
+  out_item[ATTR_DTYPE] = typeid_tuple[index];
+  out_item[ATTR_SHAPE] = shape_tuple[index];
+  if (output.contains(py::str(ATTR_MIN_SHAPE))) {
+    out_item[ATTR_MIN_SHAPE] = output[ATTR_MIN_SHAPE].cast<py::tuple>()[index];
+  }
+  if (output.contains(py::str(ATTR_MAX_SHAPE))) {
+    out_item[ATTR_MAX_SHAPE] = output[ATTR_MAX_SHAPE].cast<py::tuple>()[index];
+  }
+  out_item[ATTR_VALUE] = py::none();
+  return out_item;
+}
+
+AbstractBasePtr MakePyInferRes2Abstract(const py::object &output) {
+  auto out_dict = output.cast<py::dict>();
+  auto type_obj = out_dict[ATTR_DTYPE];
+  auto shape_obj = out_dict[ATTR_SHAPE];
   if ((py::isinstance<py::list>(shape_obj) || py::isinstance<py::tuple>(shape_obj)) && py::isinstance<Type>(type_obj)) {
     auto ret_vec = shape_obj.cast<ShapeVector>();
     auto ret_dtype = type_obj.cast<TypePtr>();
@@ -510,21 +542,21 @@ AbstractBasePtr MakePyInferRes2Abstract(const py::object &shape_obj, const py::o
     }
     return MakePyInferRes2AbstractTensor(shape_obj, type_obj, output);
   } else if (py::isinstance<py::tuple>(shape_obj) && py::isinstance<py::tuple>(type_obj)) {
-    auto shape_tuple = shape_obj.cast<py::tuple>();
     auto typeid_tuple = type_obj.cast<py::tuple>();
     AbstractBasePtrList ptr_list;
-    for (size_t it = 0; it < shape_tuple.size(); ++it) {
-      auto tensor_it = MakePyInferRes2Abstract(shape_tuple[it], typeid_tuple[it]);
+    for (size_t it = 0; it < typeid_tuple.size(); ++it) {
+      auto output_it = GetPyAbsItemOfTupleOut(output, it);
+      auto tensor_it = MakePyInferRes2Abstract(output_it);
       ptr_list.push_back(tensor_it);
     }
     auto tuple = std::make_shared<abstract::AbstractTuple>(ptr_list);
     return tuple;
   } else if (py::isinstance<py::list>(shape_obj) && py::isinstance<py::list>(type_obj)) {
-    auto shape_list = shape_obj.cast<py::list>();
     auto typeid_list = type_obj.cast<py::list>();
     AbstractBasePtrList ptr_list;
-    for (size_t it = 0; it < shape_list.size(); ++it) {
-      auto tensor_it = MakePyInferRes2Abstract(shape_list[it], typeid_list[it]);
+    for (size_t it = 0; it < typeid_list.size(); ++it) {
+      auto output_it = GetPyAbsItemOfTupleOut(output, it);
+      auto tensor_it = MakePyInferRes2Abstract(output_it);
       ptr_list.push_back(tensor_it);
     }
     auto list = std::make_shared<abstract::AbstractList>(ptr_list);
@@ -626,12 +658,11 @@ py::object MakeCSRTensor(const VectorRef &value_list) {
       if (tensorptr->DataDim() != 0) {
         MS_LOG(EXCEPTION) << "Element in CSRTensor's shape must be scalar!";
       }
+      tensorptr->data_sync(false);
       shape.push_back(*(static_cast<int64_t *>(tensorptr->data_c())));
     }
   }
-  auto ref = py::tuple(1);
   auto csr_tensor_ptr = std::make_shared<CSRTensor>(indptr, indices, values, shape);
-  ref[0] = csr_tensor_ptr;
-  return ref[0];
+  return CSRTensorToPyData(csr_tensor_ptr);
 }
 }  // namespace mindspore

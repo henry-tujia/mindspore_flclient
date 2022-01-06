@@ -37,7 +37,7 @@ void SyncTensorData(const TensorPtr &host_tensor, const DeviceTensorPtr &device_
   MS_EXCEPTION_IF_NULL(node);
   MS_EXCEPTION_IF_NULL(device_context);
   MS_EXCEPTION_IF_NULL(context);
-
+  
   if ((device_tensor->GetPtr() == nullptr) &&
       (!device_context->AllocateMemory(device_tensor.get(), device_tensor->GetSize()))) {
     SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(strategy, *context, *device_context, node->fullname_with_scope(),
@@ -146,7 +146,8 @@ void PrepareDataForValue(const ValuePtr &value, const KernelWithIndex &node_with
     type = kNumberTypeInt32;
     (reinterpret_cast<int32_t *>(host_addr.get()))[0] = GetValue<int32_t>(value);
   } else {
-    MS_LOG(EXCEPTION) << "Invalid value:" << value->ToString();
+    std::string error_info = "Invalid value:" + value->ToString();
+    SET_OPCONTEXT_FAIL_RET_WITH_ERROR((*context), error_info);
   }
 
   auto type_size = GetTypeByte(TypeIdToType(type));
@@ -180,9 +181,14 @@ void UpdateRefNodeOutputDeviceAddress(const KernelGraphPtr &graph) {
     // Just compare shared_ptr of two DeviceAddress.
     // The ptr of DeviceAddress may still be nullptr.
     if (input_addr != ref_node_output_addr) {
-      // The output of RefNode will not be used by subsequent Node.
-      // So update the DeviceAddress of the kernel directly instead of updating the ptr of the DeviceAddress.
-      AnfAlgo::SetOutputAddr(input_addr, output_index, ref_node.get());
+      // AnfAlgo::SetOutputAddr cannot update the device_address of frontend Tensor
+      // if the output of RefNode is used by subsequent nodes.
+      // Because the frontend Tensor is copied from backend Tensor and the shared_ptr of Tensor is different.
+      if (input_addr->GetMutablePtr() == nullptr) {
+        AnfAlgo::SetOutputAddr(input_addr, output_index, ref_node.get());
+      } else {
+        ref_node_output_addr->set_ptr(input_addr->GetMutablePtr());
+      }
     }
   }
 }
@@ -241,23 +247,29 @@ void DataPrepareActor::UpdateDynamicShape(const AnfNodePtr &input_node, const Te
 }
 
 void DataPrepareActor::PrepareData(const std::vector<std::vector<TensorPtr>> &input_tensors,
-                                   OpContext<DeviceTensor> *const context) {
+                                   OpContext<DeviceTensor> *const context, GraphExecutionStrategy real_strategy) {
   MS_EXCEPTION_IF_NULL(context);
   MS_LOG(DEBUG) << "Data prepare actor(" << GetAID().Name() << ") prepares data.";
 
+  real_strategy_ = real_strategy;
   // Convert actor running data from input tensors.
   if (input_tensors.size() > 0) {
-    PrepareDataForDeviceTensorStore(input_tensors, context);
-    if (strategy_ == GraphExecutionStrategy::kPipeline) {
-      PrepareDataForHostTensorQueue(input_tensors, context);
-    } else if (strategy_ == GraphExecutionStrategy::kStep) {
-      PrepareDataForStepMode(input_tensors, context);
-    }
+    try {
+      PrepareDataForDeviceTensorStore(input_tensors, context);
+      if (strategy_ == GraphExecutionStrategy::kPipeline) {
+        PrepareDataForHostTensorQueue(input_tensors, context);
+      } else if (strategy_ == GraphExecutionStrategy::kStep) {
+        PrepareDataForStepMode(input_tensors, context);
+      }
 
-    // Debug actor is blocked, must wait debug actor callback message to process continue.
-    if (debug_aid_ != nullptr && strategy_ == GraphExecutionStrategy::kPipeline) {
-      SendDebugReq(context);
-      return;
+      // Debug actor is blocked, must wait debug actor callback message to process continue.
+      if (debug_aid_ != nullptr && strategy_ == GraphExecutionStrategy::kPipeline) {
+        SendDebugReq(context);
+        return;
+      }
+    } catch (const std::exception &e) {
+      std::string error_info = e.what();
+      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
     }
   }
 
@@ -351,7 +363,7 @@ void DataPrepareActor::PrepareDataForHostTensorQueue(const std::vector<std::vect
       std::string error_info = "Invalid tensor size:" + std::to_string(tensors.size()) +
                                " and input node size:" + std::to_string(input_nodes.size()) +
                                " for kernel graph:" + graph->ToString();
-      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
     }
     for (size_t j = 0; j < input_nodes.size(); ++j) {
       const auto &input_node = input_nodes[j];
@@ -367,7 +379,7 @@ void DataPrepareActor::PrepareDataForHostTensorQueue(const std::vector<std::vect
       auto tensor_position = host_data_source_actor_->FetchNodePosition(input_node);
       if (tensor_position >= host_tensors.size()) {
         std::string error_info = "The position of tensor is out of range: " + std::to_string(tensor_position);
-        SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+        SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
       }
       host_tensors[tensor_position] = input_tensor;
 
@@ -418,7 +430,7 @@ void DataPrepareActor::PrepareDataForStepMode(const std::vector<std::vector<Tens
         auto tensor_position = host_data_source_actor_->FetchNodePosition(input_node);
         if (tensor_position >= host_tensors.size()) {
           std::string error_info = "The position of tensor is out of range: " + std::to_string(tensor_position);
-          SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+          SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
         }
         host_tensors[tensor_position] = input_tensor;
       }
@@ -451,7 +463,7 @@ void DataPrepareActor::PrepareDataForStepMode(const std::vector<std::vector<Tens
       input_tensor->set_device_address(device_tensor);
       UpdateRefCount(device_tensor.get(), true);
 
-      SyncTensorData(input_tensor, device_tensor, input_node, device_context, context, strategy_);
+      SyncTensorData(input_tensor, device_tensor, input_node, device_context, context, real_strategy_);
     }
   }
 
@@ -488,7 +500,7 @@ void DataPrepareActor::PrepareDataForValueNodeTensor(const ValueNodePtr &node, c
     tensor->set_device_address(device_tensor);
     UpdateRefCount(device_tensor.get(), true);
 
-    SyncTensorData(tensor, device_tensor, node, device_context, context, strategy_);
+    SyncTensorData(tensor, device_tensor, node, device_context, context, real_strategy_);
   }
 }
 
@@ -532,8 +544,8 @@ void DataPrepareActor::PrepareDataForControlValueNode(const KernelWithIndex &nod
     UpdateRefCount(device_tensor.get(), true);
 
     if (!device_context->AllocateMemory(device_tensor.get(), device_tensor->GetSize())) {
-      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(strategy_, *context, *device_context, node->fullname_with_scope(),
-                                                  device_tensor->GetSize());
+      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(real_strategy_, *context, *device_context,
+                                                  node->fullname_with_scope(), device_tensor->GetSize());
     }
 
     auto host_tensor_size = LongToSize(tensor->data().nbytes());
@@ -571,8 +583,8 @@ void DataPrepareActor::PrepareDataForValueNode(const ValueNodePtr &node, const D
     MS_LOG(INFO) << "Prepare device data for value node: " << node->fullname_with_scope();
 
     if (!device_context->AllocateMemory(device_tensor.get(), device_tensor->GetSize())) {
-      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(strategy_, *context, *device_context, node->fullname_with_scope(),
-                                                  device_tensor->GetSize());
+      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(real_strategy_, *context, *device_context,
+                                                  node->fullname_with_scope(), device_tensor->GetSize());
     }
 
     // Copy data from value to device.
@@ -581,7 +593,7 @@ void DataPrepareActor::PrepareDataForValueNode(const ValueNodePtr &node, const D
     ShapeVector shape = {1, SizeToLong(tensor_size)};
     if (!device_tensor->SyncHostToDevice(shape, tensor_size, kNumberTypeUInt8, value.data())) {
       std::string error_info = "SyncHostToDevice failed, node name: " + node->fullname_with_scope();
-      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
     }
   }
 }
@@ -625,7 +637,7 @@ void DataPrepareActor::PrepareDataForWeightNode(const AnfNodePtr &backend_node, 
       if (device_tensor->is_ptr_persisted() && (host_tensor_address != device_tensor)) {
         if (!Copy(device_tensor.get(), host_tensor_address.get())) {
           std::string error_info = "Sync data error.";
-          SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+          SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
         }
         host_tensor_address = device_tensor;
       } else {
@@ -653,7 +665,7 @@ void DataPrepareActor::PrepareDataForWeightNode(const AnfNodePtr &backend_node, 
   if (is_need_sync || (host_tensor_address->GetPtr() == nullptr)) {
     MS_LOG(INFO) << "Prepare device data for weight node:" << backend_node->fullname_with_scope()
                  << ", device type:" << host_tensor_address->DeviceType();
-    SyncTensorData(tensor, host_tensor_address, backend_node, device_context, context, strategy_);
+    SyncTensorData(tensor, host_tensor_address, backend_node, device_context, context, real_strategy_);
   }
 
   // Allocate another device memory and copy data from host tensor to another device(if exist).
@@ -667,7 +679,7 @@ void DataPrepareActor::PrepareDataForWeightNode(const AnfNodePtr &backend_node, 
     MS_EXCEPTION_IF_NULL(another_device_context);
     if ((another_device_tensor->GetPtr() == nullptr) &&
         (!another_device_context->AllocateMemory(another_device_tensor.get(), another_device_tensor->GetSize()))) {
-      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(strategy_, *context, *another_device_context,
+      SET_OPCONTEXT_MEMORY_ALLOC_FAIL_BY_STRATEGY(real_strategy_, *context, *another_device_context,
                                                   backend_node->fullname_with_scope(),
                                                   another_device_tensor->GetSize());
     }
@@ -676,7 +688,7 @@ void DataPrepareActor::PrepareDataForWeightNode(const AnfNodePtr &backend_node, 
                  << ", device type:" << another_device_type;
     if (!Copy(another_device_tensor.get(), host_tensor_address.get())) {
       std::string error_info = "Sync data error.";
-      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
     }
   }
 }
@@ -777,7 +789,7 @@ void DataPrepareActor::PrepareHostTensorQueueForControlNode(const std::vector<Te
     auto tensor_position = host_data_source_actor_->FetchNodePosition(input_node);
     if (tensor_position >= host_tensors->size()) {
       std::string error_info = "The position of tensor is out of range: " + std::to_string(tensor_position);
-      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(strategy_, (*context), error_info);
+      SET_OPCONTEXT_FAIL_RET_WITH_ERROR_BY_STRATEGY(real_strategy_, (*context), error_info);
     }
     (*host_tensors)[tensor_position] = input_tensor;
 

@@ -86,6 +86,9 @@ std::vector<PrimitivePtr> GetExpandOps() {
     {kCPUDevice, OpLevel_1, prim::kPrimMaximumGrad},
     {kCPUDevice, OpLevel_1, prim::kPrimMinimumGrad},
     {kCPUDevice, OpLevel_1, prim::kPrimAdam},
+    {kCPUDevice, OpLevel_1, prim::kPrimTanhGrad},
+    {kCPUDevice, OpLevel_1, prim::kPrimSoftplus},
+    {kCPUDevice, OpLevel_1, prim::kPrimSoftplusGrad},
   };
   const auto &flags = GraphKernelFlags::GetInstance();
   return GkUtils::GetValidOps(expand_ops_with_level, flags.fusion_ops_level, flags.enable_expand_ops_only,
@@ -149,7 +152,7 @@ AnfNodePtr DefaultExpander::Run(const AnfNodePtr &node) {
   return graph_kernel_node;
 }
 
-ExpanderPtr GraphKernelExpander::GetExpander(const AnfNodePtr &node) { return std::make_shared<DefaultExpander>(); }
+ExpanderPtr GraphKernelExpander::GetExpander(const AnfNodePtr &) { return std::make_shared<DefaultExpander>(); }
 
 bool GraphKernelExpander::DoExpand(const FuncGraphPtr &func_graph) {
   bool changed = false;

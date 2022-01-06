@@ -170,6 +170,15 @@ bool CheckArgValid(const py::handle &arg) {
     return std::all_of(dict_arg.begin(), dict_arg.end(), [](const auto &pair) { return CheckArgValid(pair.second); });
   }
 
+  if (py::isinstance<Tensor>(arg)) {
+    auto tensor = py::cast<TensorPtr>(arg);
+    if (tensor->data_type() == kNumberTypeBool) {
+      MS_LOG(WARNING) << "The data types of Tensor:" << py::str(arg)
+                      << " is bool, which may cause SelectKernelInfo failure for operator [AddN]. "
+                         "For more details, please refer to the FAQ at https://www.mindspore.cn.";
+    }
+  }
+
   return py::isinstance<py::int_>(arg) || py::isinstance<py::float_>(arg) || py::isinstance<py::none>(arg) ||
          py::isinstance<Number>(arg) ||
          ((py::isinstance<Tensor>(arg) || py::isinstance<CSRTensor>(arg)) && !py::hasattr(arg, "__parameter__"));
@@ -467,33 +476,33 @@ void CheckArgsValid(const py::tuple &args) {
   }
 }
 
-py::object GenerateArgumentsKey(const std::unordered_map<std::string, py::object> &args, bool enable_tuple_broaden) {
+py::object GraphExecutorPy::GenerateArgumentsKey(const py::tuple &args, bool enable_tuple_broaden) {
   MS_LOG(DEBUG) << "GenerateArgumentsKey args size:" << args.size();
+
   abstract::AbstractBasePtrList args_spec;
-
-  for (const auto &arg : args) {
-    if (py::isinstance<py::module>(arg.second)) {
-      MS_LOG(EXCEPTION) << "GenerateArgumentsKey failed, argument input should not be py::module";
-    }
+  cur_convert_input_.clear();
+  std::size_t size = args.size();
+  for (std::size_t i = 0; i < size; i++) {
     ValuePtr converted = nullptr;
-    if (!parse::ConvertData(arg.second, &converted)) {
-      MS_LOG(EXCEPTION) << "GenerateArgumentsKey convert arg failed";
+    if (!parse::ConvertData(args[i], &converted)) {
+      MS_EXCEPTION(TypeError) << "parse::ConvertData for " << i << "th argument failed, the argument type is "
+                              << args[i].get_type() << ", value is '" << py::str(args[i]) << "'.";
     }
-    args_spec.push_back(ArgsToAbstract(converted, enable_tuple_broaden));
+    AbstractBasePtr ptr = ArgsToAbstract(converted, enable_tuple_broaden);
+    args_spec.push_back(ptr);
+    cur_convert_input_.emplace(args[i].ptr(), ptr);
   }
 
-  uint64_t key;
+  // If cache matched no need CheckArgsValid
   auto iter = g_args_cache.find(args_spec);
-  if (iter == g_args_cache.end()) {
-    static uint64_t key_counter = 0;
-    key = key_counter;
-    ++key_counter;
-    g_args_cache[args_spec] = key;
-    MS_LOG(INFO) << "Generate a new compile key for new args, key: " << key;
-  } else {
-    key = iter->second;
+  if (iter != g_args_cache.end()) {
+    return py::int_(iter->second);
   }
-  return py::int_(key);
+
+  static uint64_t key_counter = 0;
+  g_args_cache[args_spec] = key_counter;
+  MS_LOG(INFO) << "Generate a new compile key for new args, key: " << key_counter;
+  return py::int_(key_counter++);
 }
 
 py::bool_ VerifyInputSignature(const py::list &input_signature, const py::tuple &inputs) {
@@ -946,13 +955,6 @@ std::vector<ActionItem> GetPipeline(const ResourcePtr &resource, const std::stri
 
   if (use_vm && backend != "ge" && !is_air) {
     compile::SetMindRTEnable();
-    // Create backend.
-    auto backend_ptr = compile::CreateBackend();
-#ifdef ENABLE_DEBUGGER
-    // Connect session to debugger
-    backend_ptr->SetDebugger();
-#endif
-    resource->SetResult(kBackend, backend_ptr);
     // If enable compilation cache and the cache is read successfully, do the backend actions only.
     if (resource->enable_compile_cache() && resource->func_graph() != nullptr) {
       return BackendPipeline();
@@ -1006,14 +1008,32 @@ bool GraphExecutorPy::CompileInner(const py::object &source_obj, const py::tuple
   }
 
   phase_ = phase;
+  ConfigManager::GetInstance().ResetQueue(queue_name_);
   auto actions = GetPipeline(resource, phase, use_vm);
   std::shared_ptr<Pipeline> pip = std::make_shared<Pipeline>(resource, FilterActions(actions, phase));
+
+  if (pip->NeedCreateBackend()) {
+    // Create backend.
+    auto backend_ptr = compile::CreateBackend();
+#ifdef ENABLE_DEBUGGER
+    // Connect session to debugger
+    backend_ptr->SetDebugger();
+#endif
+    resource->SetResult(kBackend, backend_ptr);
+  }
 
   // Get the parameters items and add the value to args_spec.
   abstract::AbstractBasePtrList args_spec;
   std::size_t size = args.size();
   for (std::size_t i = 0; i < size; i++) {
     ValuePtr converted = nullptr;
+    // In some parallel mode need full_tensor which cause the args of GenerateArgumentsKey not same to compile,
+    // So can't use cur_convert_input_ directly.
+    auto iter = cur_convert_input_.find(args[i].ptr());
+    if (iter != cur_convert_input_.end()) {
+      args_spec.push_back(iter->second);
+      continue;
+    }
     bool succ = parse::ConvertData(args[i], &converted);
     if (!succ) {
       MS_LOG(EXCEPTION) << "Fail to convert the " << i << "th argument, args[" << i << "]: " << py::str(args[i]);
@@ -1181,7 +1201,7 @@ void RDRRecordGraph(const size_t action_index, const size_t action_size, const s
 
 #ifdef ENABLE_DUMP_IR
 void RecordIR(const size_t action_index, const size_t action_size, const std::string &action_name,
-              const FuncGraphPtr graph, const std::string &phase, FuncGraphPtr *user_graph) {
+              const FuncGraphPtr graph, FuncGraphPtr *user_graph) {
   if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG) && graph != nullptr) {
     *user_graph = graph;
     std::string base_name = GetBaseNameForIR(SizeToLong(action_index), action_name);
@@ -1201,8 +1221,7 @@ void RecordIR(const size_t action_index, const size_t action_size, const std::st
 #endif
 
 #ifndef ENABLE_SECURITY
-void SaveGraphForReadability(const std::string &action_name, const FuncGraphPtr graph, const std::string &phase,
-                             const ResourcePtr resource) {
+void SaveGraphForReadability(const std::string &action_name, const FuncGraphPtr graph, const ResourcePtr resource) {
   if (graph != nullptr && action_name.find("optimize") != string::npos) {
 #ifdef ENABLE_DUMP_IR
     if (MsContext::GetInstance()->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG)) {
@@ -1252,10 +1271,10 @@ void Pipeline::Run(const std::string &phase) {
 #ifdef ENABLE_DUMP_IR
       std::string filename = GetBaseNameForIR(SizeToLong(i), action.first);
       RDRRecordGraph(i, actions_.size(), filename, graph);
-      RecordIR(i, actions_.size(), action.first, graph, phase, &user_graph);
+      RecordIR(i, actions_.size(), action.first, graph, &user_graph);
 #endif
 #ifndef ENABLE_SECURITY
-      SaveGraphForReadability(action.first, graph, phase, resource_);
+      SaveGraphForReadability(action.first, graph, resource_);
 #endif
       i++;
 #ifdef ENABLE_TIMELINE
@@ -1276,16 +1295,17 @@ void Pipeline::Run(const std::string &phase) {
   MS_LOG(INFO) << "End";
 }
 
+bool Pipeline::NeedCreateBackend() {
+  return std::any_of(actions_.begin(), actions_.end(),
+                     [](ActionItem action) { return action.first == "task_emit" || action.first == "execute"; });
+}
+
 void ProcessVmArgInner(const py::tuple &args, const ResourcePtr &res, VectorRef *const arg_list) {
   MS_EXCEPTION_IF_NULL(arg_list);
   std::size_t size = args.size();
   bool arg_list_inited = !arg_list->empty();
   for (std::size_t i = 0; i < size; i++) {
     py::object arg = args[i];
-    auto ms_context = MsContext::GetInstance();
-    if (ms_context->backend_policy() == kMsConvert && py::isinstance<py::array>(arg)) {
-      MS_LOG(EXCEPTION) << "The " << i << "th arg is numpy array, not tensor.";
-    }
     ValuePtr converted = nullptr;
     bool succ = parse::ConvertData(arg, &converted);
     if (!succ) {
@@ -1361,15 +1381,6 @@ py::object GraphExecutorPy::Run(const py::tuple &args, const py::object &phase_o
   auto ret_val = std::make_shared<py::object>();
   if (info_.count(phase) != 0 && info_[phase]->func_graph != nullptr) {
     if (IsGraphOutputValueNodeOrParameter(info_[phase]->func_graph->output(), args, ret_val)) {
-      // Check the input arg must be Tensor when backend is "ms".
-      if (MsContext::GetInstance()->backend_policy() == kMsConvert) {
-        for (std::size_t i = 0; i < size; i++) {
-          ValuePtr converted = nullptr;
-          if (!parse::ConvertData(args[i], &converted)) {
-            MS_LOG(EXCEPTION) << "The " << i << "th arg convert failed.";
-          }
-        }
-      }
       return *ret_val;
     }
   }
@@ -1560,7 +1571,7 @@ bool InitExecDatasetVm(const std::string &queue_name, int64_t size, int64_t batc
       VectorRef outputs;
       mindrt_backend->RunGraph(actor_info, args, &outputs);
     }
-    ConfigManager::GetInstance().set_iter_num(size);
+    ConfigManager::GetInstance().set_iter_num(queue_name, size);
     return true;
   }
 
@@ -1569,12 +1580,12 @@ bool InitExecDatasetVm(const std::string &queue_name, int64_t size, int64_t batc
   // Convert CNodeList to LinConvertResult.
   auto segment = std::make_shared<GraphSegment>(std::vector<AnfNodePtr>{app_init}, false);
   auto runner = convert_fn(segment, "");
-  ConfigManager::GetInstance().set_iter_num(size);
+  ConfigManager::GetInstance().set_iter_num(queue_name, size);
   // PS cache does not support loop sink.
 #if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   if (ps::PSContext::instance()->is_worker() && ps::PsDataPrefetch::GetInstance().cache_enable()) {
     ps::PsDataPrefetch::GetInstance().CreateDataChannel(queue_name, LongToSize(size));
-    ConfigManager::GetInstance().set_iter_num(1);
+    ConfigManager::GetInstance().set_iter_num(queue_name, 1);
   }
 #endif
 
@@ -1725,6 +1736,26 @@ void FinalizeBackend() {
   MS_EXCEPTION_IF_NULL(context_ptr);
   (void)context::FinalizeGe(context_ptr);
   (void)context::CloseTsd(context_ptr);
+}
+
+void MemoryRecycle() {
+#ifdef ENABLE_DUMP_IR
+  mindspore::RDR::ResetRecorder();
+#endif
+  ReclaimOptimizer();
+  ad::g_k_prims.clear();
+  ad::ClearKPynativeCellStaticRes();
+  ad::PrimBpropOptimizer::GetPrimBpropOptimizerInst().Clear();
+  abstract::AnalysisResultCacheMgr::GetInstance().Clear();
+  abstract::AnalysisContext::ClearContext();
+  g_args_cache.clear();
+  // clean static variable to prevent from crash. As static variable is released after
+  // Python threads is released.
+  parse::data_converter::ClearObjectCache();
+  parse::Parser::CleanParserResource();
+  parse::CleanDataClassToClassMap();
+  trace::ClearTraceStack();
+  FuncGraphLoopBreaker::Inst().BreakLoop();
 }
 
 void ClearResAtexit() {

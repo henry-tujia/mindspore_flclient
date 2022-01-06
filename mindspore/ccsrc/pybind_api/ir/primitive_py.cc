@@ -96,38 +96,42 @@ py::tuple check_bprop_out(const py::object &grads_obj, const py::tuple &py_args,
   } else {
     grads = py::cast<py::tuple>(grads_obj);
   }
+  if (!MsContext::GetInstance()->get_param<bool>(MS_CTX_CHECK_BPROP_FLAG)) {
+    return grads;
+  }
   constexpr int filter_args_size = 2;
   if (grads.size() != py_args.size() - filter_args_size) {
-    MS_EXCEPTION(TypeError) << "For user defined bprop of net '" << bprop_cls_name
-                            << "', the gradients number: " << grads.size()
-                            << " is not equal to the args number: " << (py_args.size() - filter_args_size) << ".";
+    MS_EXCEPTION(TypeError) << "For user defined method 'bprop' of net '" << bprop_cls_name
+                            << "', the number of return values(gradients) should be equal to the number of input "
+                               "arguments except 'out' and 'dout', which is: "
+                            << (py_args.size() - filter_args_size) << ", but got:" << grads.size() << ".";
   }
-  if (MsContext::GetInstance()->get_param<bool>(MS_CTX_CHECK_BPROP_FLAG)) {
-    for (size_t i = 0; i < grads.size(); i++) {
-      if (py::isinstance<tensor::Tensor>(py_args[i])) {
-        if (!py::isinstance<tensor::Tensor>(grads[i])) {
-          MS_EXCEPTION(ValueError) << "For user defined bprop of net '" << bprop_cls_name << "', the gradient of the "
-                                   << i << "th arg should be Tensor, but got "
-                                   << py::cast<std::string>(grads[i].attr("__class__").attr("__name__"))
-                                   << ", and the value is " << py::cast<py::str>(grads[i]) << ".";
-        }
+  for (size_t i = 0; i < grads.size(); i++) {
+    if (py::isinstance<tensor::Tensor>(py_args[i])) {
+      if (!py::isinstance<tensor::Tensor>(grads[i])) {
+        MS_EXCEPTION(ValueError) << "For user defined method 'bprop' of net '" << bprop_cls_name << "', the " << i
+                                 << "th return value(gradient of the " << i << "th argument) should be Tensor, but got "
+                                 << py::cast<std::string>(grads[i].attr("__class__").attr("__name__"))
+                                 << ", and the value is " << py::cast<py::str>(grads[i]) << ".";
+      }
 
-        py::object arg_dtype = py_args[i].attr("dtype");
-        py::object grad_dtype = grads[i].attr("dtype");
-        py::tuple arg_shape = py_args[i].attr("shape");
-        py::tuple grad_shape = grads[i].attr("shape");
-        if (!grad_dtype.equal(arg_dtype)) {
-          MS_EXCEPTION(TypeError) << "For user defined bprop of net '" << bprop_cls_name << "', the gradient of the "
-                                  << i << "th arg should have the same dtype as the " << i << "th arg, but the " << i
-                                  << "th arg dtype is: " << py::cast<py::str>(arg_dtype)
-                                  << ", the gradient dtype is: " << py::cast<py::str>(grad_dtype) << ".";
-        }
-        if (!grad_shape.equal(arg_shape)) {
-          MS_EXCEPTION(ValueError) << "For user defined bprop of net '" << bprop_cls_name << "', the gradient of the "
-                                   << i << "th arg should have the same shape as the " << i << "th arg, but the " << i
-                                   << "th arg shape is: " << py::cast<py::str>(arg_shape)
-                                   << ", the gradient shape is: " << py::cast<py::str>(grad_shape) << ".";
-        }
+      py::object arg_dtype = py_args[i].attr("dtype");
+      py::object grad_dtype = grads[i].attr("dtype");
+      py::tuple arg_shape = py_args[i].attr("shape");
+      py::tuple grad_shape = grads[i].attr("shape");
+      if (!grad_dtype.equal(arg_dtype)) {
+        MS_EXCEPTION(TypeError) << "For user defined method 'bprop' of net '" << bprop_cls_name << "', the " << i
+                                << "th return value(gradient of the " << i
+                                << "th argument) should have the same dtype as the " << i
+                                << "th argument, which is:" << py::cast<py::str>(arg_dtype)
+                                << ", but got: " << py::cast<py::str>(grad_dtype) << ".";
+      }
+      if (!grad_shape.equal(arg_shape)) {
+        MS_EXCEPTION(ValueError) << "For user defined method 'bprop' of net '" << bprop_cls_name << "', the " << i
+                                 << "th return value(gradient of the " << i
+                                 << "th argument) should have the same shape as the " << i
+                                 << "th argument, which is:" << py::cast<py::str>(arg_shape)
+                                 << ", but got: " << py::cast<py::str>(grad_shape) << ".";
       }
     }
   }
@@ -405,14 +409,14 @@ void PrimitivePyAdapter::AddPyAttr(const py::str &name, const py::object &obj) {
   std::string attr_name = name;
   ValuePtr converted_ret = nullptr;
   if (py::isinstance<py::module>(obj)) {
-    MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to prim failed,"
-                      << " not support py::module to be attribute value; prim name: " << this->name_
+    MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to primitive failed,"
+                      << " not support py::module to be attribute value; primitive name: " << this->name_
                       << ", attribute name: " << attr_name << " attribute value: " << py::str(obj);
   }
   bool converted = parse::ConvertData(obj, &converted_ret);
   if (!converted) {
-    MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to prim failed,"
-                      << " convert python obj to MindSpore obj failed; prim name: " << this->name_
+    MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to primitive failed,"
+                      << " convert python obj to MindSpore obj failed; primitive name: " << this->name_
                       << ", attribute name:" << attr_name << ", attribute value:" << py::str(obj)
                       << ", attribute type:" << py::cast<std::string>(obj.attr("__class__").attr("__name__"));
   }
@@ -423,14 +427,14 @@ void PrimitivePyAdapter::AddPyAttr(const py::str &name, const py::object &obj) {
   if (attr_name == "primitive_target") {
     MS_EXCEPTION_IF_NULL(converted_ret);
     if (!converted_ret->isa<StringImm>()) {
-      MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to prim '" << this->name_
+      MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to primitive '" << this->name_
                         << "' failed, value of attribute 'primitive_target' must be CPU|GPU|Ascend but got "
                         << py::str(obj);
     }
     auto target = GetValue<std::string>(converted_ret);
     if (!target.empty() && target != kCPUDevice && target != kGPUDevice && target != kAscendDevice &&
         target != "Device") {
-      MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to prim '" << this->name_
+      MS_LOG(EXCEPTION) << "Call 'add_attr' to add attribute to primitive '" << this->name_
                         << "' failed, value of attribute 'primitive_target' must be CPU|GPU|Ascend but got "
                         << py::str(obj);
     }

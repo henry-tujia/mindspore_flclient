@@ -1,5 +1,5 @@
 /**
- * Copyright 2020-2021 Huawei Technologies Co., Ltd
+ * Copyright 2020-2022 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 #include "backend/session/kernel_graph.h"
 #include "debug/debugger/grpc_client.h"
 #include "debug/debug_services.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #ifdef ENABLE_D
 #include "debug/dump_data_builder.h"
 #endif
@@ -85,6 +85,8 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   void SetCurrentAndPrevRootGraph(uint32_t root_graph_id);
 
+  void SetAscendKernelByKernelFlag(bool value) { ascend_kernel_by_kernel_ = value; }
+
   void StoreRunGraphIdList(uint32_t graph_id);
 
   // analyze tensors and wait for command
@@ -95,7 +97,7 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   static uint32_t GetRankID();
 
-  void DumpGPU(const KernelGraphPtr &kernel_graph) const;
+  void Dump(const KernelGraphPtr &kernel_graph) const;
 
   void DumpSingleNode(const CNodePtr &node, uint32_t graph_id);
 
@@ -132,8 +134,8 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
 
   void SetTrainingDone(bool training_done);
 
-  // returns true if reply received and mindspore version matched with mindinsight version
-  // version_check should be true if you want the function to do backend compatibility check with Mindinsight
+  // returns true if reply received and mindspore version matched with mindInsight version
+  // version_check should be true if you want the function to do backend compatibility check with MindInsight
   bool SendMetadata(bool version_check);
 
   bool CheckSendMetadata();
@@ -149,6 +151,8 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   void ClearCurrentData();
 
   void LoadGraphOutputs();
+
+  void LoadNodeOutputs(const CNodePtr &node, uint32_t exec_order, uint32_t root_graph_id);
 
   void CheckDatasetSinkMode(const KernelGraphPtr &graph_ptr);
 
@@ -313,6 +317,7 @@ class Debugger : public std::enable_shared_from_this<Debugger> {
   static std::shared_ptr<Debugger> debugger_;
   uint32_t not_dataset_graph_sum_;
   std::list<uint32_t> rungraph_id_list_;
+  bool ascend_kernel_by_kernel_;
   std::string version_;
 };
 

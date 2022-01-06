@@ -147,6 +147,8 @@ def _check_3d_int_or_tuple(arg_name, arg_value, prim_name, allow_five=False, ret
 def check_number(arg_value, value, rel, arg_type=int, arg_name=None, prim_name=None):
     """
     Check argument integer.
+
+    Usage:
     - number = check_number(number, 0, Rel.GE, "number", None) # number >= 0
     """
     rel_fn = Rel.get_fns(rel)
@@ -961,7 +963,8 @@ def args_type_check(*type_args, **type_kwargs):
             for name, value in argument_dict.items():
                 if name in bound_types:
                     if value is not None and not isinstance(value, bound_types[name]):
-                        raise TypeError('The argument {} must be {}'.format(name, bound_types[name]))
+                        raise TypeError("The argument {} must be {}, but got {}"
+                                        .format(name, bound_types[name], type(value)))
             return func(*args, **kwargs)
 
         return wrapper

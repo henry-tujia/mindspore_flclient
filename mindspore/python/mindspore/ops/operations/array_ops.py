@@ -1615,7 +1615,7 @@ class InvertPermutation(PrimitiveWithInfer):
         values can not be negative.
 
     Inputs:
-        - **input_x** (Union(tuple[int], list[int]) - The input is constructed by multiple
+        - **input_x** (Union(tuple[int], list[int])) - The input is constructed by multiple
           integers, i.e., :math:`(y_1, y_2, ..., y_S)` representing the indices.
           The values must include 0. There can be no duplicate values or negative values.
           Only constant value is allowed. The maximum value must be equal to length of input_x.
@@ -2072,7 +2072,9 @@ class UnsortedSegmentSum(PrimitiveWithInfer):
     .. image:: api_img/UnsortedSegmentSum.png
 
     Note:
-        If the segment_id i is absent in the segment_ids, then output[i] will be filled with 0.
+        - If the segment_id i is absent in the segment_ids, then output[i] will be filled with 0.
+        - On Ascend, if the value of segment_id is less than 0 or greater than the length of the input data shape, an
+          execution error will occur.
 
     If the sum of the given segment_ids :math:`i` is empty, then :math:`\text{output}[i] = 0`. If the given segment_ids
     is negative, the value will be ignored. 'num_segments' must be equal to the number of different segment_ids.
@@ -3807,7 +3809,7 @@ class ScatterNd(PrimitiveWithInfer):
                 'value': None}
 
 
-class ResizeNearestNeighbor(PrimitiveWithInfer):
+class ResizeNearestNeighbor(Primitive):
     r"""
     Resizes the input tensor by using the nearest neighbor algorithm.
 
@@ -3853,14 +3855,6 @@ class ResizeNearestNeighbor(PrimitiveWithInfer):
         for i, value in enumerate(size):
             validator.check_non_negative_int(value, f'{i}th value of size', self.name)
         self.init_prim_io_names(inputs=['image_in'], outputs=['image_out'])
-
-    def infer_shape(self, x_shape):
-        validator.check('the dimension of input_x', len(x_shape), '', 4, Rel.EQ, self.name)
-        return tuple(x_shape)[:-2] + tuple(super().get_attr_dict()['size'])
-
-    def infer_dtype(self, x_dtype):
-        validator.check_tensor_dtype_valid("x", x_dtype, mstype.number_type, self.name)
-        return x_dtype
 
 
 class GatherNd(Primitive):
@@ -4087,7 +4081,7 @@ class ScatterUpdate(_ScatterOpDynamic):
         \text{input_x}[\text{indices}[i, ..., j], :] = \text{updates}[i, ..., j, :]
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4150,7 +4144,7 @@ class ScatterNdUpdate(Primitive):
     :math:`(i_0, i_1, ..., i_{Q-2}, x\_shape_N, ..., x\_shape_{P-1})`.
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4215,7 +4209,7 @@ class ScatterMax(_ScatterOp):
         = max(\text{input_x}[\text{indices}[i, ..., j], :], \text{updates}[i, ..., j, :])
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4269,7 +4263,7 @@ class ScatterMin(_ScatterOp):
         = min(\text{input_x}[\text{indices}[i, ..., j], :], \text{updates}[i, ..., j, :])
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4322,7 +4316,7 @@ class ScatterAdd(_ScatterOpDynamic):
         \text{input_x}[\text{indices}[i, ..., j], :] \mathrel{+}= \text{updates}[i, ..., j, :]
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Note:
@@ -4435,7 +4429,7 @@ class ScatterSub(_ScatterOpDynamic):
         \text{input_x}[\text{indices}[i, ..., j], :] \mathrel{-}= \text{updates}[i, ..., j, :]
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4545,7 +4539,7 @@ class ScatterMul(_ScatterOp):
         \text{input_x}[\text{indices}[i, ..., j], :] \mathrel{*}= \text{updates}[i, ..., j, :]
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4648,7 +4642,7 @@ class ScatterDiv(_ScatterOp):
         \text{input_x}[\text{indices}[i, ..., j], :] \mathrel{/}= \text{updates}[i, ..., j, :]
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4757,7 +4751,7 @@ class ScatterNdAdd(Primitive):
     :math:`(i_0, i_1, ..., i_{Q-2}, x\_shape_N, ..., x\_shape_{P-1})`.
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Args:
@@ -4848,7 +4842,7 @@ class ScatterNdSub(_ScatterNdOp):
     :math:`(i_0, i_1, ..., i_{Q-2}, x\_shape_N, ..., x\_shape_{P-1})`.
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     relatively highest priority data type.
 
     Args:
@@ -4917,7 +4911,7 @@ class ScatterNonAliasingAdd(Primitive):
     This operation outputs the `input_x` after the update is done, which makes it convenient to use the updated value.
 
     Inputs of `input_x` and `updates` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Inputs:
@@ -5082,21 +5076,6 @@ class DepthToSpace(PrimitiveWithInfer):
         validator.check('block_size', block_size, '', 2, Rel.GE, self.name)
         self.block_size = block_size
         self.add_prim_attr("data_format", "NCHW")
-
-    def infer_shape(self, x_shape):
-        validator.check('x dimension', len(x_shape), '', 4, Rel.EQ)
-        out_shape = copy.deepcopy(x_shape)
-        for i in range(2):
-            out_shape[i + 2] *= self.block_size
-
-        validator.check_int(x_shape[1] % (self.block_size * self.block_size),
-                            0, Rel.EQ, 'x_shape[1] % (block_size*block_size)', self.name)
-        out_shape[1] //= self.block_size * self.block_size
-        return out_shape
-
-    def infer_dtype(self, x_dtype):
-        validator.check_subclass("x_dtype", x_dtype, mstype.tensor, self.name)
-        return x_dtype
 
 
 class SpaceToBatch(PrimitiveWithInfer):
@@ -5482,7 +5461,7 @@ class BroadcastTo(Primitive):
 
     Inputs:
         - **input_x** (Tensor) - The input tensor. The data type should be one of the following types:
-          float16, float32, int32, int8, uint8.
+          float16, float32, int32, int8, uint8, bool.
           The shape is :math:`(N,*)` where :math:`*` means,any number of additional dimensions.
 
     Outputs:

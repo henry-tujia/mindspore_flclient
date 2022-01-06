@@ -39,7 +39,7 @@ def normal(shape, mean, stddev, seed=None):
         stddev (Tensor): The deviation σ distribution parameter. It should be greater than 0,
           with data type in [int8, int16, int32, int64, float16, float32].
         seed (int): Seed is used as entropy source for the Random number engines to generate pseudo-random numbers.
-          must be non-negative. Default: None, which will be treated as 0.
+          The value must be non-negative. Default: None, which will be treated as 0.
 
     Returns:
         Tensor. The shape should be equal to the broadcasted shape between the input `shape` and shapes
@@ -50,6 +50,8 @@ def normal(shape, mean, stddev, seed=None):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> shape = (3, 1, 2)
         >>> mean = Tensor(np.array([[3, 4], [5, 6]]), mindspore.float32)
         >>> stddev = Tensor(1.0, mindspore.float32)
@@ -169,6 +171,9 @@ def uniform(shape, minval, maxval, seed=None, dtype=mstype.float32):
         ``Ascend`` ``GPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
+        >>> import numpy as np
         >>> # For discrete uniform distribution, only one number is allowed for both minval and maxval:
         >>> shape = (4, 2)
         >>> minval = Tensor(1, mindspore.int32)
@@ -227,6 +232,8 @@ def gamma(shape, alpha, beta, seed=None):
         ``Ascend``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> # case 1: alpha_shape is (2, 2)
         >>> shape = (3, 1, 2)
         >>> alpha = Tensor(np.array([[3, 4], [5, 6]]), mindspore.float32)
@@ -304,6 +311,8 @@ def poisson(shape, mean, seed=None):
         ``Ascend``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> # case 1: It can be broadcast.
         >>> shape = (4, 1)
         >>> mean = Tensor(np.array([5.0, 10.0]), mindspore.float32)
@@ -335,12 +344,12 @@ def multinomial(inputs, num_sample, replacement=True, seed=None):
         but must be non-negative, finite and have a non-zero sum.
 
     Args:
-        x (Tensor): The input tensor containing probabilities, must be 1 or 2 dimensions, with
+        inputs (Tensor): The input tensor containing probabilities, must be 1 or 2 dimensions, with
           float32 data type.
         num_sample (int): Number of samples to draw.
         replacement (bool, optional): Whether to draw with replacement or not, default True.
         seed (int, optional): Seed is used as entropy source for the random number engines to generate
-          pseudo-random numbers, must be non-negative. Default: 0.
+          pseudo-random numbers, must be non-negative. Default: None.
 
     Outputs:
         Tensor, has the same rows with input. The number of sampled indices of each row is `num_samples`.
@@ -349,12 +358,14 @@ def multinomial(inputs, num_sample, replacement=True, seed=None):
     Raises:
         TypeError: If `x` is not a Tensor whose dtype is not float32.
         TypeError: If `num_sample` is not an int.
-        TypeError: If `seed` is neither an int nor a optional.
+        TypeError: If `seed` is neither an int nor an optional.
 
     Supported Platforms:
         ``GPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> # case 1: The output is random, and the length of the output is the same as num_sample.
         >>> x = Tensor([0, 9, 4, 0], mindspore.float32)
         >>> output = ops.multinomial(x, 2)

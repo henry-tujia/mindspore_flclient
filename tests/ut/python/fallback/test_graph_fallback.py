@@ -20,6 +20,7 @@ import mindspore.nn as nn
 from mindspore import Tensor, ms_function, context
 from mindspore.ops import operations as P
 from mindspore.ops import functional as F
+from mindspore.nn.probability import distribution
 import mindspore.common.dtype as mstype
 import mindspore.common._monad as monad
 
@@ -223,3 +224,145 @@ def test_context():
     net = ContextNet()
     out = net()
     print(out)
+
+
+def test_self_attr():
+    """
+    Feature: JIT Fallback
+    Description: Test self.attr in graph.
+    Expectation: No exception.
+    """
+    class Network(nn.Cell):
+        def __init__(self):
+            super(Network, self).__init__()
+            self.dim = 1
+
+        def construct(self, x):
+            batch = x.shape[0]
+            one = Tensor(np.ones([batch, self.dim]), mstype.float16)
+            return one * x
+
+    net = Network()
+    x = Tensor([1, 2], mstype.float32)
+    out = net(x)
+    print(out)
+
+
+def test_self_attr_2():
+    """
+    Feature: JIT Fallback
+    Description: Test self.attr in graph.
+    Expectation: No exception.
+    """
+    class Network(nn.Cell):
+        def __init__(self, fn):
+            super(Network, self).__init__()
+            self.fn = fn
+
+        def construct(self):
+            x = np.array([1, 2, 3])
+            y = np.array([3, 4, 5])
+            out = Tensor(self.fn(x, y))
+            return out
+
+    def fn(x, y):
+        return x + y
+
+    net = Network(fn)
+    out = net()
+    print(out)
+
+
+def test_self_attr_3():
+    """
+    Feature: JIT Fallback
+    Description: Test self.attr in graph.
+    Expectation: No exception.
+    """
+    class Network(nn.Cell):
+        def __init__(self):
+            super(Network, self).__init__()
+            self.value = [2, 2, 3]
+
+        def construct(self):
+            x = np.array(self.value.count(2))
+            return Tensor(x)
+
+    net = Network()
+    out = net()
+    print(out)
+
+
+def test_self_method():
+    """
+    Feature: JIT Fallback
+    Description: Test self.method in graph.
+    Expectation: No exception.
+    """
+    class Network(nn.Cell):
+        def construct(self):
+            x = np.array([1, 2, 3])
+            y = np.array([3, 4, 5])
+            out = Tensor(self.fn(x, y))
+            return out
+
+        def fn(self, x, y):
+            return x + y
+
+    net = Network()
+    out = net()
+    print(out)
+
+
+@pytest.mark.skip(reason='Not support in graph jit fallback feature yet')
+def test_self_method_2():
+    """
+    Feature: JIT Fallback
+    Description: Test self.method in graph.
+    Expectation: No exception.
+    """
+    class Network(nn.Cell):
+        def construct(self):
+            x = np.array([1, 2, 3])
+            y = np.array([3, 4, 5])
+            z = self.fn(x, y)
+            out = Tensor(z)
+            return out
+
+        def fn(self, x, y):
+            return x + y
+
+    net = Network()
+    out = net()
+    print(out)
+
+
+def test_probability_cauchy():
+    """
+    Feature: JIT Fallback
+    Description: NumPy method is called in probability cauchy.
+    Expectation: No exception.
+    """
+    class CauchyProb(nn.Cell):
+        def __init__(self, loc, scale, seed=10, dtype=mstype.float32, name='Cauchy'):
+            super().__init__()
+            self.b = distribution.Cauchy(loc, scale, seed, dtype, name)
+
+        def construct(self, value, loc=None, scale=None):
+            out1 = self.b.prob(value, loc, scale)
+            out2 = self.b.log_prob(value, loc, scale)
+            out3 = self.b.cdf(value, loc, scale)
+            out4 = self.b.log_cdf(value, loc, scale)
+            out5 = self.b.survival_function(value, loc, scale)
+            out6 = self.b.log_survival(value, loc, scale)
+            return out1, out2, out3, out4, out5, out6
+
+
+    loc = np.random.randn(1024, 512, 7, 7).astype(np.float32)
+    scale = np.random.uniform(0.0001, 100, size=(1024, 512, 7, 7)).astype(np.float32)
+    loc_a = np.random.randn(1024, 512, 7, 7).astype(np.float32)
+    scale_a = np.random.uniform(0.0001, 100, size=(1024, 512, 7, 7)).astype(np.float32)
+    value = np.random.randn(1024, 512, 7, 7).astype(np.float32)
+
+    net = CauchyProb(loc, scale)
+    net(Tensor(value), Tensor(loc_a), Tensor(scale_a))

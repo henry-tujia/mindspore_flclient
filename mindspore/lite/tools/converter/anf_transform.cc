@@ -43,6 +43,7 @@
 #include "tools/optimizer/fusion/tflite_lstm_cell_fusion.h"
 #include "tools/optimizer/fusion/tf_lstm_cell_fusion.h"
 #include "tools/optimizer/fusion/tf_bidirection_gru_fusion.h"
+#include "tools/optimizer/fusion/tensor_dot_fusion.h"
 #include "tools/optimizer/fusion/multi_head_attention_fusion.h"
 #include "tools/optimizer/fusion/glu_fusion.h"
 #include "tools/optimizer/fusion/tflite_rel_pos_multi_head_attention_fusion.h"
@@ -58,6 +59,8 @@
 #include "tools/optimizer/fusion/scale_scale_fusion.h"
 #include "tools/optimizer/fusion/fullconnected_fusion.h"
 #include "tools/optimizer/fusion/add_concat_activation_fusion.h"
+#include "tools/optimizer/fusion/matmul_activation_fusion.h"
+#include "tools/optimizer/fusion/activation_fusion.h"
 #include "tools/optimizer/graph/add_tensor_array.h"
 #include "tools/optimizer/graph/redundant_op_remove_pass.h"
 #include "tools/optimizer/graph/clip_convert_activation_pass.h"
@@ -193,6 +196,7 @@ int AnfTransform::RunFusionPass(const FuncGraphPtr &old_graph, const converter::
   fusion_pm->AddPass(std::make_shared<opt::BatchMatMulFusion>());
   fusion_pm->AddPass(std::make_shared<opt::BatchNormToScaleFusion>());
   fusion_pm->AddPass(std::make_shared<opt::SigmoidMulFusion>());
+  fusion_pm->AddPass(std::make_shared<opt::ActivationFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ConvActivationFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ConvTupleGetItemFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ConvTupleActivationFusion>());
@@ -215,6 +219,8 @@ int AnfTransform::RunFusionPass(const FuncGraphPtr &old_graph, const converter::
   fusion_pm->AddPass(std::make_shared<opt::ScaleActivationFusion>());
   fusion_pm->AddPass(std::make_shared<opt::ScaleScaleFusion>());
   fusion_pm->AddPass(std::make_shared<opt::FullConnectedFusion>());
+  fusion_pm->AddPass(std::make_shared<opt::TensorDotFusion>());
+  fusion_pm->AddPass(std::make_shared<opt::MatMulActivationFusion>());
   optimizer->AddPassManager(fusion_pm);
   if (optimizer->Optimize(old_graph) == nullptr) {
     MS_LOG(ERROR) << "run op fusion failed.";
@@ -400,7 +406,7 @@ int AnfTransform::DoSingleGraphQuantize(const FuncGraphPtr &old_graph, const con
     }
   } else if (config->commonQuantParam.quant_type == schema::QuantType_QUANT_WEIGHT) {
     double init_scale = config->mixedBitWeightQuantParam.init_scale;
-    if (config->mixedBitWeightQuantParam.auto_tune) {
+    if (config->commonQuantParam.bit_num == 0 && config->mixedBitWeightQuantParam.auto_tune) {
       quant::ParameterOptimizer optimizer;
       status = optimizer.GridSearchForScale(old_graph, const_cast<converter::Flags *>(config), &init_scale);
       if (status != RET_OK) {

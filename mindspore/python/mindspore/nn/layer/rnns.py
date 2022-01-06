@@ -25,6 +25,7 @@ from mindspore.common.parameter import ParameterTuple, Parameter
 from mindspore.nn.cell import Cell
 from mindspore import log as logger
 from mindspore._checkparam import Validator as validator
+from mindspore.ops.operations._rl_inner_ops import CudnnGRU
 from .rnn_cells import _rnn_relu_cell, _rnn_tanh_cell, _gru_cell, _lstm_cell
 from .rnn_utils import _Reverse, _ReverseSequence
 
@@ -51,11 +52,18 @@ def _check_input_dtype(input_dtype, param_name, allow_dtypes, cls_name):
 
 
 @constexpr
+def _check_input_dtype_same_and_valid(args_name, args_value, valid_values, cls_name):
+    args = {args_name[i]: args_value[i] for i in range(len(args_value))}
+    validator.check_types_same_and_valid(args, valid_values, cls_name)
+
+
+@constexpr
 def _check_is_tensor(param_name, input_data, cls_name):
     """Internal function, used to check whether the input data is Tensor."""
     if input_data is not None and not isinstance(P.typeof(input_data), mstype.tensor_type):
         raise TypeError(f"For '{cls_name}', the '{param_name}' should be '{mstype.tensor_type}', "
                         f"but got '{P.typeof(input_data)}'")
+
 
 @constexpr
 def _check_is_tuple(param_name, input_data, cls_name):
@@ -64,6 +72,7 @@ def _check_is_tuple(param_name, input_data, cls_name):
         raise TypeError(f"For '{cls_name}', the '{param_name}' should be '{mstype.Tuple}', "
                         f"but got '{P.typeof(input_data)}'")
 
+
 @constexpr
 def _check_tuple_length(param_name, input_data, length, cls_name):
     """Internal function, used to check whether the input data is Tensor."""
@@ -71,16 +80,25 @@ def _check_tuple_length(param_name, input_data, length, cls_name):
         raise TypeError(f"For '{cls_name}', the length of '{param_name}' should be '{length}', "
                         f"but got '{len(input_data)}'")
 
+@constexpr
+def _check_seq_length_size(batch_size_x, seq_length_size, cls_name):
+    if batch_size_x != seq_length_size:
+        raise ValueError(f"For '{cls_name}' batch size of x and seq_length should be equal, "
+                         f"but got {batch_size_x} of x and {seq_length_size} of seq_length.")
+
+
 def sequence_mask(lengths, maxlen):
     """generate mask matrix by seq_length"""
     range_vector = arange(0, maxlen, 1, lengths.dtype)
     result = range_vector < lengths.view(lengths.shape + (1,))
     return result.astype(mstype.int32)
 
+
 def select_by_mask(inputs, mask):
     """mask hiddens by mask matrix"""
     return mask.view(mask.shape + (1,)).swapaxes(0, 1) \
-        .expand_as(inputs).astype(mstype.bool_)  * inputs
+               .expand_as(inputs).astype(mstype.bool_) * inputs
+
 
 def get_hidden(output, seq_length):
     """get hidden state by seq_length"""
@@ -88,8 +106,10 @@ def get_hidden(output, seq_length):
     indices = P.Concat(1)((seq_length.view(-1, 1) - 1, batch_index.view(-1, 1)))
     return P.GatherNd()(output, indices)
 
+
 class _DynamicRNNBase(Cell):
     '''Dynamic RNN module to compute RNN cell by timesteps'''
+
     def __init__(self, mode):
         super().__init__()
         if mode == "RNN_RELU":
@@ -112,7 +132,7 @@ class _DynamicRNNBase(Cell):
         t = 0
         h = h_0
         while t < time_step:
-            x_t = x[t:t+1:1]
+            x_t = x[t:t + 1:1]
             x_t = P.Squeeze(0)(x_t)
             h = self.cell(x_t, h, w_ih, w_hh, b_ih, b_hh)
             if self.is_lstm:
@@ -142,7 +162,7 @@ class _DynamicRNNBase(Cell):
         state_t = h_t
         t = 0
         while t < time_step:
-            x_t = x[t:t+1:1]
+            x_t = x[t:t + 1:1]
             x_t = P.Squeeze(0)(x_t)
             h_t = self.cell(x_t, state_t, w_ih, w_hh, b_ih, b_hh)
             seq_cond = seq_length > t
@@ -160,30 +180,70 @@ class _DynamicRNNBase(Cell):
         return outputs, state_t
 
     def construct(self, x, h, seq_length, w_ih, w_hh, b_ih, b_hh):
+        x_dtype = x.dtype
         if seq_length is None:
-            return self.recurrent(x, h, w_ih, w_hh, b_ih, b_hh)
-        return self.variable_recurrent(x, h, seq_length, w_ih, w_hh, b_ih, b_hh)
+            return self.recurrent(x, h, w_ih.astype(x_dtype), w_hh.astype(x_dtype), \
+                                  b_ih.astype(x_dtype), b_hh.astype(x_dtype))
+        return self.variable_recurrent(x, h, seq_length, w_ih.astype(x_dtype), w_hh.astype(x_dtype), \
+                                       b_ih.astype(x_dtype), b_hh.astype(x_dtype))
+
 
 class _DynamicRNNRelu(_DynamicRNNBase):
     '''Dynamic RNN module with Relu activation'''
+
     def __init__(self):
         mode = 'RNN_RELU'
         super().__init__(mode)
 
+
 class _DynamicRNNTanh(_DynamicRNNBase):
     '''Dynamic RNN module with Tanh activation'''
+
     def __init__(self):
         mode = 'RNN_TANH'
         super().__init__(mode)
 
-class _DynamicGRUCPUGPU(_DynamicRNNBase):
+
+class _DynamicGRUCPUGPU(Cell):
     '''Dynamic GRU module on CPU and GPU'''
+
     def __init__(self):
-        mode = 'GRU'
-        super().__init__(mode)
+        super().__init__()
+        self.concat = P.Concat()
+        self.is_gpu = context.get_context("device_target") == "GPU"
+
+    def construct(self, x, h_0, seq_length, w_ih, w_hh, b_ih, b_hh):
+        gate_size, input_size = w_ih.shape
+        hidden_size = gate_size // 3
+        if self.is_gpu and seq_length is None:
+            if b_ih is None:
+                weights = self.concat((
+                    w_ih.view(-1, 1, 1),
+                    w_hh.view(-1, 1, 1)
+                ))
+                has_bias = False
+            else:
+                has_bias = True
+                weights = self.concat((
+                    w_ih.view(-1, 1, 1),
+                    w_hh.view(-1, 1, 1),
+                    b_ih.view(-1, 1, 1),
+                    b_hh.view(-1, 1, 1)
+                ))
+            output, h_n, _, _ = CudnnGRU(input_size, hidden_size, 1, has_bias, False, 0.0)(
+                x,
+                h_0.view(1, *h_0.shape),
+                weights.astype(x.dtype)
+            )
+        else:
+            output, h_n = _DynamicRNNBase('GRU')(x, h_0, seq_length, w_ih, w_hh, b_ih, b_hh)
+
+        return output, h_n
+
 
 class _DynamicGRUAscend(Cell):
     '''Dynamic GRU module on Ascend'''
+
     def __init__(self):
         super().__init__()
         self.gru = P.DynamicGRUV2(gate_order='rzh')
@@ -195,11 +255,11 @@ class _DynamicGRUAscend(Cell):
             b_ih = P.Zeros()(w_ih.shape[0], w_ih.dtype)
             b_hh = P.Zeros()(w_ih.shape[0], w_ih.dtype)
         outputs, _, _, _, _, _ = self.gru(self.cast(x, self.dtype), \
-                                         self.cast(self.transpose(w_ih, (1, 0)), self.dtype), \
-                                         self.cast(self.transpose(w_hh, (1, 0)), self.dtype), \
-                                         self.cast(b_ih, self.dtype), \
-                                         self.cast(b_hh, self.dtype), \
-                                         None, self.cast(h_0, self.dtype))
+                                          self.cast(self.transpose(w_ih, (1, 0)), self.dtype), \
+                                          self.cast(self.transpose(w_hh, (1, 0)), self.dtype), \
+                                          self.cast(b_ih, self.dtype), \
+                                          self.cast(b_hh, self.dtype), \
+                                          None, self.cast(h_0, self.dtype))
         if seq_length is not None:
             h = get_hidden(outputs, seq_length)
             mask = sequence_mask(seq_length, x.shape[0])
@@ -208,8 +268,10 @@ class _DynamicGRUAscend(Cell):
             h = outputs[-1]
         return outputs, h
 
+
 class _DynamicLSTMCPUGPU(Cell):
     '''Dynamic LSTM module on CPU and GPU'''
+
     def __init__(self):
         super().__init__()
         self.concat = P.Concat()
@@ -245,14 +307,16 @@ class _DynamicLSTMCPUGPU(Cell):
                     ))
             output, h_n, c_n, _, _ = P.LSTM(input_size, hidden_size, 1, has_bias, False, 0.0)(
                 x,
-                h_0[0].view(1, *h_0[0].shape),
-                h_0[1].view(1, *h_0[1].shape),
-                weights
+                P.ExpandDims()(h_0[0], 0),
+                P.ExpandDims()(h_0[1], 0),
+                weights.astype(x.dtype)
             )
         return output, (h_n, c_n)
 
+
 class _DynamicLSTMAscend(Cell):
     '''Dynamic LSTM module on Ascend'''
+
     def __init__(self):
         super().__init__()
         self.lstm = P.DynamicRNN()
@@ -294,8 +358,10 @@ class _DynamicLSTMAscend(Cell):
             c = c[-1]
         return outputs, (h, c)
 
+
 class _RNNBase(Cell):
     '''Basic class for RNN operators'''
+
     def __init__(self, mode, input_size, hidden_size, num_layers=1, has_bias=True,
                  batch_first=False, dropout=0., bidirectional=False):
         super().__init__()
@@ -463,37 +529,40 @@ class _RNNBase(Cell):
 
     def construct(self, x, hx=None, seq_length=None):
         '''Defines the RNN like operators performed'''
+        max_batch_size = x.shape[0] if self.batch_first else x.shape[1]
+        num_directions = 2 if self.bidirectional else 1
         _check_is_tensor("x", x, self.cls_name)
-        _check_input_dtype(x.dtype, "x", [mstype.float32], self.cls_name)
+        x_dtype = x.dtype
         if hx is not None:
             if not self.is_lstm:
                 _check_is_tensor("h", hx, self.cls_name)
-                _check_input_dtype(hx.dtype, "hx", [mstype.float32], self.cls_name)
+                _check_input_dtype_same_and_valid(['x', 'hx'], [x_dtype, hx.dtype], \
+                                                  [mstype.float32, mstype.float16], self.cls_name)
             else:
                 _check_is_tuple('hx', hx, self.cls_name)
                 _check_tuple_length('hx', hx, 2, self.cls_name)
                 _check_is_tensor('hx[0]', hx[0], self.cls_name)
                 _check_is_tensor('hx[1]', hx[1], self.cls_name)
-                _check_input_dtype(hx[0].dtype, "hx[0]", [mstype.float32], self.cls_name)
-                _check_input_dtype(hx[1].dtype, "hx[1]", [mstype.float32], self.cls_name)
+                _check_input_dtype_same_and_valid(['x', 'hx[0]', 'hx[1]'], [x_dtype, hx[0].dtype, hx[1].dtype], \
+                                                 [mstype.float32, mstype.float16], self.cls_name)
+        else:
+            hx = _init_state((self.num_layers * num_directions, max_batch_size, self.hidden_size), \
+                             x_dtype, self.is_lstm)
         if seq_length is not None:
             _check_input_dtype(seq_length.dtype, "seq_length", [mstype.int32, mstype.int64], self.cls_name)
-        max_batch_size = x.shape[0] if self.batch_first else x.shape[1]
-        num_directions = 2 if self.bidirectional else 1
-        if hx is None:
-            hx = _init_state((self.num_layers * num_directions, max_batch_size, self.hidden_size), \
-                              x.dtype, self.is_lstm)
+            _check_seq_length_size(max_batch_size, seq_length.shape[0], self.cls_name)
         if self.batch_first:
             x = P.Transpose()(x, (1, 0, 2))
         if self.bidirectional:
-            x, h = self._stacked_bi_dynamic_rnn(x, hx, seq_length)
+            x_n, hx_n = self._stacked_bi_dynamic_rnn(x, hx, seq_length)
         else:
-            x, h = self._stacked_dynamic_rnn(x, hx, seq_length)
+            x_n, hx_n = self._stacked_dynamic_rnn(x, hx, seq_length)
         if self.batch_first:
-            x = P.Transpose()(x, (1, 0, 2))
+            x_n = P.Transpose()(x_n, (1, 0, 2))
         if not self.is_lstm:
-            return x.astype(mstype.float32), h.astype(mstype.float32)
-        return x.astype(mstype.float32), (h[0].astype(mstype.float32), h[1].astype(mstype.float32))
+            return x_n.astype(x_dtype), hx_n.astype(x_dtype)
+        return x_n.astype(x_dtype), (hx_n[0].astype(x_dtype), hx_n[1].astype(x_dtype))
+
 
 class RNN(_RNNBase):
     r"""
@@ -524,14 +593,15 @@ class RNN(_RNNBase):
             num_directions=2 if bidirectional=True otherwise 1. Default: False.
 
     Inputs:
-        - **x** (Tensor) - Tensor of data type mindspore.float32 and
+        - **x** (Tensor) - Tensor of data type mindspore.float32 or mindspore.float16 and
           shape (seq_len, batch_size, `input_size`) or (batch_size, seq_len, `input_size`).
-        - **hx** (Tensor) - Tensor of data type mindspore.float32 and
-          shape (num_directions * `num_layers`, batch_size, `hidden_size`). Data type of `hx` must be the same as `x`.
-        - **seq_length** (Tensor) - The length of each sequence in a input batch.
+        - **hx** (Tensor) - Tensor of data type mindspore.float32 or mindspore.float16 and
+          shape (num_directions * `num_layers`, batch_size, `hidden_size`). The data type of `hx` must be the same as
+          `x`.
+        - **seq_length** (Tensor) - The length of each sequence in an input batch.
           Tensor of shape :math:`(\text{batch_size})`. Default: None.
           This input indicates the real sequence length before padding to avoid padded elements
-          have been used to compute hidden state and affect the final output. It is recommend to
+          have been used to compute hidden state and affect the final output. It is recommended to
           use this input when **x** has padding elements.
 
     Outputs:
@@ -544,12 +614,12 @@ class RNN(_RNNBase):
     Raises:
         TypeError: If `input_size`, `hidden_size` or `num_layers` is not an int.
         TypeError: If `has_bias`, `batch_first` or `bidirectional` is not a bool.
-        TypeError: If `dropout` is neither a float nor an int.
+        TypeError: If `dropout` is not a float.
         ValueError: If `dropout` is not in range [0.0, 1.0).
         ValueError: If `nonlinearity` is not in ['tanh', 'relu'].
 
     Supported Platforms:
-        ``Ascend`` ``GPU``
+        ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
         >>> net = nn.RNN(10, 16, 2, has_bias=True, batch_first=True, bidirectional=False)
@@ -559,6 +629,7 @@ class RNN(_RNNBase):
         >>> print(output.shape)
         (3, 5, 16)
     """
+
     def __init__(self, *args, **kwargs):
         if 'nonlinearity' in kwargs:
             if kwargs['nonlinearity'] == 'tanh':
@@ -573,6 +644,7 @@ class RNN(_RNNBase):
             mode = 'RNN_TANH'
 
         super(RNN, self).__init__(mode, *args, **kwargs)
+
 
 class GRU(_RNNBase):
     r"""
@@ -617,15 +689,15 @@ class GRU(_RNNBase):
             num_directions=2 if bidirectional=True otherwise 1. Default: False.
 
     Inputs:
-        - **x** (Tensor) - Tensor of data type mindspore.float32 and
+        - **x** (Tensor) - Tensor of data type mindspore.float32 or mindspore.float16 and
           shape (seq_len, batch_size, `input_size`) or (batch_size, seq_len, `input_size`).
-        - **hx** (Tensor) - Tensor of data type mindspore.float32 and
+        - **hx** (Tensor) - Tensor of data type mindspore.float32 or mindspore.float16 and
           shape (num_directions * `num_layers`, batch_size, `hidden_size`). The data type of `hx` must be the same as
           `x`.
-        - **seq_length** (Tensor) - The length of each sequence in a input batch.
+        - **seq_length** (Tensor) - The length of each sequence in an input batch.
           Tensor of shape :math:`(\text{batch_size})`. Default: None.
           This input indicates the real sequence length before padding to avoid padded elements
-          have been used to compute hidden state and affect the final output. It is recommend to
+          have been used to compute hidden state and affect the final output. It is recommended to
           use this input when **x** has padding elements.
 
     Outputs:
@@ -638,7 +710,7 @@ class GRU(_RNNBase):
     Raises:
         TypeError: If `input_size`, `hidden_size` or `num_layers` is not an int.
         TypeError: If `has_bias`, `batch_first` or `bidirectional` is not a bool.
-        TypeError: If `dropout` is neither a float nor an int.
+        TypeError: If `dropout` is not a float.
         ValueError: If `dropout` is not in range [0.0, 1.0).
 
     Supported Platforms:
@@ -652,9 +724,11 @@ class GRU(_RNNBase):
         >>> print(output.shape)
         (3, 5, 16)
     """
+
     def __init__(self, *args, **kwargs):
         mode = 'GRU'
         super(GRU, self).__init__(mode, *args, **kwargs)
+
 
 class LSTM(_RNNBase):
     r"""
@@ -704,15 +778,15 @@ class LSTM(_RNNBase):
             num_directions=2 if bidirectional=True otherwise 1. Default: False.
 
     Inputs:
-        - **x** (Tensor) - (Tensor) - Tensor of data type mindspore.float32 and
+        - **x** (Tensor) - (Tensor) - Tensor of data type mindspore.float32 or mindspore.float16 and
           shape (seq_len, batch_size, `input_size`) or (batch_size, seq_len, `input_size`).
         - **hx** (tuple) - A tuple of two Tensors (h_0, c_0) both of data type mindspore.float32
-          and shape (num_directions * `num_layers`, batch_size, `hidden_size`).
-          Data type of `hx` must be the same as `x`.
-        - **seq_length** (Tensor) - The length of each sequence in a input batch.
+        or mindspore.float16 and shape (num_directions * `num_layers`, batch_size, `hidden_size`).
+          The data type of `hx` must be the same as `x`.
+        - **seq_length** (Tensor) - The length of each sequence in an input batch.
           Tensor of shape :math:`(\text{batch_size})`. Default: None.
           This input indicates the real sequence length before padding to avoid padded elements
-          have been used to compute hidden state and affect the final output. It is recommend to
+          have been used to compute hidden state and affect the final output. It is recommended to
           use this input when **x** has padding elements.
 
     Outputs:
@@ -725,7 +799,7 @@ class LSTM(_RNNBase):
     Raises:
         TypeError: If `input_size`, `hidden_size` or `num_layers` is not an int.
         TypeError: If `has_bias`, `batch_first` or `bidirectional` is not a bool.
-        TypeError: If `dropout` is neither a float nor an int.
+        TypeError: If `dropout` is not a float.
         ValueError: If `dropout` is not in range [0.0, 1.0].
 
     Supported Platforms:
@@ -740,6 +814,7 @@ class LSTM(_RNNBase):
         >>> print(output.shape)
         (3, 5, 16)
     """
+
     def __init__(self, *args, **kwargs):
         mode = 'LSTM'
         super(LSTM, self).__init__(mode, *args, **kwargs)

@@ -178,12 +178,12 @@ class MS_CORE_API AnfNode : public Base {
   /// \brief Obtain the inferred abstract value of this AnfNode.
   ///
   /// \return The inferred abstract value.
-  const AbstractBasePtr &abstract() const { return abstract_; }
+  const AbstractBasePtr &abstract() const;
 
   /// \brief Set the abstract value of this AnfNode.
   ///
   /// \param[in] abs New abstract value.
-  void set_abstract(const AbstractBasePtr &abs) { abstract_ = abs; }
+  void set_abstract(const AbstractBasePtr &abs);
 
   /// \brief Obtain the intermediate abstract value of this AnfNode.
   ///
@@ -1141,20 +1141,6 @@ bool GetPrimitiveFlag(const PrimitivePtr &prim, const std::string &attr);
 
 // Gets effect info from a primitive by its attributes.
 EffectInfo GetPrimEffectInfo(const PrimitivePtr &prim);
-
-struct MonadState {
-  AnfNodePtr u{nullptr};
-  AnfNodePtr io{nullptr};
-};
-
-// Get Memory/IO monad state from node.
-MonadState GetMonadState(const AnfNodePtr &node, const AnfNodePtr &skip_input = nullptr);
-
-// Check if two state is equivalent.
-bool IsStateEquivalent(const MonadState &state1, const MonadState &state2);
-
-// Check if monad state is strict equivalent for the connected two nodes.
-bool IsStateStrictEquivalent(const AnfNodePtr &outer, const AnfNodePtr &inner);
 
 // Check if monad state is equivalent for the connected two nodes, not strict but more faster.
 bool IsStateEquivalent(const AnfNodePtr &outer, const AnfNodePtr &inner);

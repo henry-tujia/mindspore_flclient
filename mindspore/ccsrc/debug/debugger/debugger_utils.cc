@@ -123,12 +123,11 @@ bool CheckReadData(const CNodePtr &cnode) {
   }
   bool read_data = false;
   auto &dump_json_parser = DumpJsonParser::GetInstance();
-  bool dump_enabled = debugger->DumpDataEnabledIteration();
+  bool dump_enabled = dump_json_parser.DumpEnabledForIter();
+  MS_LOG(DEBUG) << "dump_enabled: " << dump_enabled;
   std::string kernel_name = GetKernelNodeName(cnode);
   if (dump_enabled) {
-    auto dump_mode = dump_json_parser.dump_mode();
-    // dump the node if dump_mode is 0, which means all kernels, or if this kernel is in the kernels list
-    if ((dump_mode == 0) || ((dump_mode == 1) && dump_json_parser.NeedDump(kernel_name))) {
+    if (dump_json_parser.NeedDump(kernel_name)) {
       read_data = true;
     }
   } else if (debugger->debugger_enabled()) {
@@ -168,6 +167,31 @@ void ReadDataAndDump(const CNodePtr &cnode, const KernelLaunchInfo *launch_info_
   debugger->PostExecuteNode(cnode, last_kernel);
 }
 
+void ReadDataAndDumpAscend(const CNodePtr &cnode, uint32_t exec_order_) {
+  auto debugger = Debugger::GetInstance();
+  if (!debugger) {
+    return;
+  }
+  auto &dump_json_parser = DumpJsonParser::GetInstance();
+  bool dump_enabled = dump_json_parser.DumpEnabledForIter();
+  MS_LOG(DEBUG) << "dump_enabled: " << dump_enabled;
+  auto kernel_graph = std::dynamic_pointer_cast<KernelGraph>(cnode->func_graph());
+  MS_EXCEPTION_IF_NULL(kernel_graph);
+  auto root_graph_id = kernel_graph->root_graph_id();
+
+  debugger->LoadNodeOutputs(cnode, exec_order_, root_graph_id);
+  // Dump kernel
+  if (dump_enabled) {
+    MS_EXCEPTION_IF_NULL(kernel_graph);
+    auto graph_id = kernel_graph->graph_id();
+    debugger->DumpSingleNode(cnode, graph_id);
+    // Clear Dumped data when online debugger is not enabled
+    if (!debugger->debugger_enabled()) {
+      debugger->ClearCurrentData();
+    }
+  }
+}
+
 std::string CheckDatasetSinkMode(const KernelGraphPtr &graph_ptr) {
   std::string error_info = "";
   bool sink_mode = ConfigManager::GetInstance().dataset_mode() || graph_ptr->IsDatasetGraph();
@@ -184,16 +208,19 @@ std::string CheckDatasetSinkMode(const KernelGraphPtr &graph_ptr) {
   return error_info;
 }
 
-void LoadDataForDump(const KernelGraphPtr &graph_ptr) {
+void LoadDataForDebugger(const KernelGraphPtr &graph_ptr) {
   auto context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context);
   if (context->get_param<std::string>(MS_CTX_DEVICE_TARGET) != kAscendDevice) {
     return;
   }
 #ifdef ENABLE_DEBUGGER
-  MS_LOG(INFO) << "Start load step";
   auto debugger = Debugger::GetInstance();
   MS_EXCEPTION_IF_NULL(debugger);
+  if (!debugger->CheckDebuggerEnabled()) {
+    return;
+  }
+  MS_LOG(INFO) << "Start load step";
   debugger->SetGraphPtr(graph_ptr);
   // load output
   debugger->LoadGraphOutputs();

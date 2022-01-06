@@ -23,6 +23,7 @@
 #include "runtime/framework/actor/control_flow/entrance_actor.h"
 #include "mindrt/include/async/async.h"
 #include "utils/log_adapter.h"
+#include "backend/kernel_compiler/environ_manager.h"
 
 namespace mindspore {
 namespace runtime {
@@ -76,6 +77,9 @@ void LoopCountActor::SendOutput(OpContext<DeviceTensor> *const context) {
     ActorDispatcher::Send(entrance_aid, &EntranceActor::ClearDataOnStepEnd, from_aid, context);
   }
 
+  // Clear the global data which are generated in the kernel running.
+  kernel::EnvironMgr::GetInstance().Clear();
+
   // The LoopCountActor exits.
   if (current_count_ == loop_count_) {
     current_count_ = 0;
@@ -84,7 +88,8 @@ void LoopCountActor::SendOutput(OpContext<DeviceTensor> *const context) {
 
   // Send to DataPrepareActor to trigger next step running.
   std::vector<std::vector<TensorPtr>> input_tensors;
-  ActorDispatcher::Send(data_prepare_aid_, &DataPrepareActor::PrepareData, input_tensors, context);
+  ActorDispatcher::Send(data_prepare_aid_, &DataPrepareActor::PrepareData, input_tensors, context,
+                        GraphExecutionStrategy::kPipeline);
 }
 }  // namespace runtime
 }  // namespace mindspore

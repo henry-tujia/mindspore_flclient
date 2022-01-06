@@ -70,15 +70,6 @@ class AsinhGrad(PrimitiveWithInfer):
     def __init__(self):
         """Initialize AsinhGrad"""
 
-    def infer_shape(self, x, dout):
-        validator.check("x shape", x, "dout shape", dout, Rel.EQ, self.name)
-        return x
-
-    def infer_dtype(self, x, dout):
-        args = {"x": x, "dout": dout}
-        validator.check_tensors_dtypes_same_and_valid(args, mstype.number_type, self.name)
-        return x
-
 
 class ReciprocalGrad(Primitive):
     """Performs grad of Reciprocal operation."""
@@ -1718,7 +1709,7 @@ class ResizeBilinearGrad(PrimitiveWithInfer):
         return orig_type
 
 
-class ResizeNearestNeighborGrad(PrimitiveWithInfer):
+class ResizeNearestNeighborGrad(Primitive):
     """
     Compute gradient of `ResizeNearestNeighbor` operator.
 
@@ -1734,12 +1725,6 @@ class ResizeNearestNeighborGrad(PrimitiveWithInfer):
     def __init__(self, align_corners=False):
         """Initialize ResizeNearestNeighborGrad"""
         self.init_prim_io_names(inputs=['grads', 'size'], outputs=['y'])
-
-    def __infer__(self, grads, size):
-        shp = (grads['shape'][0],) + (grads['shape'][1],) + size['value']
-        return {'shape': shp,
-                'dtype': grads['dtype'],
-                'value': None}
 
 
 class ROIAlignGrad(PrimitiveWithInfer):
@@ -1774,6 +1759,40 @@ class ROIAlignGrad(PrimitiveWithInfer):
     def infer_dtype(self, ydiff_type, rois_type):
         return ydiff_type
 
+class PsROIPoolingGrad(PrimitiveWithInfer):
+    """
+    PsROIPoolingGrad operator.
+    """
+
+    @prim_attr_register
+    def __init__(self, batch_size, channels, height, width, num_rois,
+                 pooled_height, pooled_width, spatial_scale, out_dim):
+
+        """Initialize PsROIPoolingGrad"""
+        validator.check_value_type("batch_size", batch_size, [int], self.name)
+        validator.check_value_type("channels", channels, [int], self.name)
+        validator.check_value_type("height", height, [int], self.name)
+        validator.check_value_type("width", width, [int], self.name)
+        validator.check_value_type("num_rois", num_rois, [int], self.name)
+        validator.check_value_type("pooled_height", pooled_height, [int], self.name)
+        validator.check_value_type("pooled_width", pooled_width, [int], self.name)
+        validator.check_value_type("spatial_scale", spatial_scale, [float], self.name)
+        validator.check_value_type("out_dim", out_dim, [int], self.name)
+        self.batch_size = batch_size
+        self.channels = channels
+        self.height = height
+        self.width = width
+        self.num_rois = num_rois
+        self.pooled_height = pooled_height
+        self.pooled_width = pooled_width
+        self.spatial_scale = spatial_scale
+        self.out_dim = out_dim
+
+    def infer_shape(self, ydiff_shape, rois_shape, mapping_channel_shape):
+        return [self.batch_size, self.channels, self.height, self.width]
+
+    def infer_dtype(self, ydiff_type, rois_type, mapping_channel_type):
+        return ydiff_type
 
 class SigmoidGrad(PrimitiveWithInfer):
     """Gets the gradient of Sigmoid operation."""
@@ -2028,7 +2047,7 @@ class RefToEmbed(Primitive):
     Make a key from Ref.
 
     The Key is a symbolic_key, is a embedding on Parameter, which is used as a key of the variable in env_type,
-    and get items by operation `env_get_item` with the symbolic_key instance. The `Parameter` is a ref.
+    and get items by operation `EnvironGet` with the symbolic_key instance. The `Parameter` is a ref.
 
     Inputs:
         - **input** (Ref) - Target ref, ref is short for reference. The value of a Parameter is a ref.
@@ -2175,21 +2194,12 @@ class BasicLSTMCellInputGrad(PrimitiveWithInfer):
         return (dgate_dtype, dgate_dtype)
 
 
-class InvGrad(PrimitiveWithInfer):
+class InvGrad(Primitive):
     """Computes gradients for inv operation."""
 
     @prim_attr_register
     def __init__(self):
-        pass
-
-    def infer_shape(self, x, grad):
-        validator.check("x_shape", x, "grad_shape", grad, Rel.EQ, self.name)
-        return x
-
-    def infer_dtype(self, x, grad):
-        validator.check_type_name("dgate", x, [mstype.float16, mstype.float32, mstype.int32, mstype.int8], self.name)
-        validator.check_type_name("grad", grad, [mstype.float16, mstype.float32, mstype.int32, mstype.int8], self.name)
-        return x
+        self.init_prim_io_names(inputs=['x', 'grad'], outputs=['y'])
 
 
 class LRNGrad(PrimitiveWithInfer):

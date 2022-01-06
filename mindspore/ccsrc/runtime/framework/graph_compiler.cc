@@ -22,8 +22,10 @@
 #include "runtime/framework/graph_scheduler.h"
 #include "runtime/op_builder/op_lazy_builder.h"
 #include "runtime/device/device_address.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "utils/convert_utils.h"
+#include "utils/context/graph_kernel_flags.h"
+#include "utils/ms_context.h"
 #include "ir/tensor.h"
 #include "backend/optimizer/common/helper.h"
 #include "base/base_ref_utils.h"
@@ -218,6 +220,9 @@ void CreateKernelWorkspaceDeviceAddress(const DeviceContext *device_context, con
     MS_EXCEPTION_IF_NULL(kernel_mod);
     auto workspace_sizes = kernel_mod->GetWorkspaceSizeList();
     for (size_t i = 0; i < workspace_sizes.size(); ++i) {
+      if (AnfAlgo::WorkspaceAddrExist(kernel, i)) {
+        break;
+      }
       auto device_address = device_context->CreateDeviceAddress(nullptr, workspace_sizes[i], "", kTypeUnknown);
       MS_LOG(DEBUG) << "Create addr for node:" << AnfAlgo::GetNodeDebugString(kernel) << " addr:" << device_address;
       AnfAlgo::SetWorkspaceAddr(device_address, i, kernel.get());
@@ -367,11 +372,18 @@ GraphId GraphCompiler::CompileGraph(const GraphSegmentPtr &segment, const AnfNod
 
   auto graph_id = CompileGraphImpl(graph, device_context);
 
+  session_->DumpGraphs({graph});
+
   // Cache the backend graph output nodes to front nodes with output index.
   auto backend_node = graph->output();
   MS_EXCEPTION_IF_NULL(backend_node);
   graph->CacheGraphOutputToFrontNodeWithIndex({backend_node}, outputs);
-  graph->set_root_graph_id(graph_id);
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  std::string device_target = ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+  if (device_target == kGPUDevice) {
+    graph->set_root_graph_id(graph_id);
+  }
   AnfAlgo::UpdateGraphValidRefPair(graph);
 
   return graph_id;
@@ -398,7 +410,7 @@ GraphId GraphCompiler::CompileGraph(const FuncGraphPtr &func_graph, const Device
   auto graph_id = CompileGraphImpl(root_graph, device_context);
 
   // dump all graphs.
-  device_context->DumpAllGraphs(all_graphs);
+  session_->DumpGraphs(all_graphs);
 
   // Cache the backend graph output nodes to front nodes with output index.
   auto output = func_graph->output();
@@ -417,6 +429,9 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   const auto &ms_context = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(ms_context);
   if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
+    // graphkernel not support pynative mode now, so when users open graphkernel
+    // in pynative mode should print a warning log to reminder users by using GetInstance func.
+    graphkernel::GraphKernelFlags::GetInstance();
     MS_EXCEPTION_IF_NULL(session_);
     session_->InitAllBucket(graph, device_context);
     return graph->graph_id();
@@ -443,6 +458,10 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   // 'KernelMod' is real executive object of kernel.
   device_context->CreateKernel(graph->execution_order());
 
+#ifndef ENABLE_SECURITY
+  session_->SetSummaryNodes(graph.get());
+#endif
+
   // Adjust kernel graph before run graph.
   device_context->PreprocessBeforeRunGraph(graph);
 
@@ -453,9 +472,6 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
 
   MS_EXCEPTION_IF_NULL(session_);
   session_->InitAllBucket(graph, device_context);
-#ifndef ENABLE_SECURITY
-  session_->SetSummaryNodes(graph.get());
-#endif
   SetSummaryNodesRefCount(graph.get());
 #ifdef ENABLE_DUMP_IR
   // Dump .pb graph after graph optimization.
@@ -472,17 +488,7 @@ GraphId GraphCompiler::CompileGraphImpl(const KernelGraphPtr &graph, const Devic
   }
 #endif
 
-#ifdef ENABLE_DUMP_IR
-  std::string name = "graph_build";
-  DumpGraphParams dump_params = {true, static_cast<int>(kWholeStack)};
-  (void)mindspore::RDR::RecordAnfGraph(SubModuleId::SM_SESSION, name, graph, dump_params, ".ir,.pb");
-  auto &kernels = graph->execution_order();
-  std::string exec_order_name = "graph_exec_order." + std::to_string(graph->graph_id());
-  (void)mindspore::RDR::RecordGraphExecOrder(SubModuleId::SM_SESSION, exec_order_name, kernels);
-#endif
-
   device_context->EnableRuntimeCache(graph);
-  session_->DumpGraph(graph);
   return graph->graph_id();
 }
 
@@ -624,10 +630,11 @@ void GraphCompiler::CalculateRefCount(const KernelGraphPtr &graph, std::map<Kern
 }
 
 void GraphCompiler::CalculateForwardOpOutputCount(const KernelGraphPtr &graph,
-                                                  std::map<std::string, size_t> *forward_op_output_refcount) const {
+                                                  const std::vector<tensor::TensorPtr> &inputs,
+                                                  std::map<std::string, size_t> *forward_op_output_tensor_id) const {
   MS_EXCEPTION_IF_NULL(session_);
-  forward_op_output_refcount->clear();
-  session_->GetForwardOpOutputRefCount(graph.get(), forward_op_output_refcount);
+  forward_op_output_tensor_id->clear();
+  session_->GetForwardOpOutputRefCount(graph.get(), inputs, forward_op_output_tensor_id);
 }
 
 void GraphCompiler::UpdateRefCount(const std::set<KernelWithIndex> &input_kernels_with_index,
@@ -638,10 +645,10 @@ void GraphCompiler::UpdateRefCount(const std::set<KernelWithIndex> &input_kernel
 }
 
 void GraphCompiler::UpdateForwardOpOutputRefCount(const std::vector<tensor::TensorPtr> &input_tensor,
-                                                  std::map<std::string, size_t> *forward_op_output_refcount) const {
+                                                  std::map<std::string, size_t> *forward_op_output_tensor_id) const {
   MS_EXCEPTION_IF_NULL(session_);
-  MS_EXCEPTION_IF_NULL(forward_op_output_refcount);
-  session_->ReleaseForwardOpOutput(input_tensor, forward_op_output_refcount);
+  MS_EXCEPTION_IF_NULL(forward_op_output_tensor_id);
+  session_->ReleaseForwardOpOutput(input_tensor, forward_op_output_tensor_id);
 }
 
 void GraphCompiler::RecoverGraphOutput(const AnfNodePtr &kernel, const VectorRef &op_outputs,

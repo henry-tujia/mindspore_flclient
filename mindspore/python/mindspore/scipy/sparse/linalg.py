@@ -19,6 +19,7 @@ from ...ops import functional as F
 from ..linalg import solve_triangular
 from ..linalg import cho_factor, cho_solve
 from ..utils import _INT_ZERO, _INT_NEG_ONE, _normalize_matvec, _to_tensor, _safe_normalize, _eps
+from ..utils_const import _raise_value_error
 
 
 def gram_schmidt(Q, q):
@@ -181,7 +182,7 @@ class IterativeGmres(nn.Cell):
 def gmres(A, b, x0=None, *, tol=1e-5, atol=0.0, restart=20, maxiter=None,
           M=None, solve_method='batched'):
     """
-    GMRES solves the linear system A x = b for x, given A and b.
+    GMRES solves the linear system :math:`A x = b` for x, given A and b.
 
     A is specified as a function performing A(vi) -> vf = A @ vi, and in principle
     need not have any particular special properties, such as symmetry. However,
@@ -229,8 +230,8 @@ def gmres(A, b, x0=None, *, tol=1e-5, atol=0.0, restart=20, maxiter=None,
               iteration. It does not allow for early termination, but has much less overhead on GPUs.
 
     Returns:
-        - Tensor, The converged solution. Has the same structure as `b`.
-        - None, Placeholder for convergence information.
+        - Tensor, the converged solution. Has the same structure as `b`.
+        - None, placeholder for convergence information.
 
     Supported Platforms:
         ``CPU`` ``GPU``
@@ -265,8 +266,8 @@ def gmres(A, b, x0=None, *, tol=1e-5, atol=0.0, restart=20, maxiter=None,
     elif solve_method == 'batched':
         x = BatchedGmres(A, M)(b, x0, tol, atol, restart, maxiter)
     else:
-        raise ValueError("solve_method should be in ('incremental' or 'batched'), but got {}."
-                         .format(solve_method))
+        _raise_value_error("solve_method should be in ('incremental' or 'batched'), but got {}."
+                           .format(solve_method))
     _, x_norm = _safe_normalize(x)
     info = mnp.where(mnp.isnan(x_norm), _INT_NEG_ONE, _INT_ZERO)
     return x, info
@@ -318,7 +319,7 @@ class CG(nn.Cell):
 
 
 def cg(A, b, x0=None, *, tol=1e-5, atol=0.0, maxiter=None, M=None):
-    """Use Conjugate Gradient iteration to solve ``Ax = b``.
+    """Use Conjugate Gradient iteration to solve :math:`Ax = b`.
 
     The numerics of MindSpore's `cg` should exact match SciPy's `cg` (up to
     numerical precision).
@@ -350,8 +351,8 @@ def cg(A, b, x0=None, *, tol=1e-5, atol=0.0, maxiter=None, M=None):
             to reach a given error tolerance. Default: None.
 
     Returns:
-        - Tensor, The converged solution. Has the same structure as `b`.
-        - None, Placeholder for convergence information.
+        - Tensor, the converged solution. Has the same structure as `b`.
+        - None, placeholder for convergence information.
 
     Supported Platforms:
         ``CPU`` ``GPU``
@@ -362,8 +363,9 @@ def cg(A, b, x0=None, *, tol=1e-5, atol=0.0, maxiter=None, M=None):
         >>> from mindspore.scipy.sparse.linalg import cg
         >>> A = Tensor(onp.array([[1, 2], [2, 1]], dtype='float32'))
         >>> b = Tensor(onp.array([1, -1], dtype='float32'))
-        >>> cg(A, b)
-        [-1.  1.]
+        >>> result, _ = cg(A, b)
+        >>> result
+        Tensor(shape=[2], dtype=Float32, value= [-1.00000000e+00,  1.00000000e+00])
     """
     if x0 is None:
         x0 = mnp.zeros_like(b)
@@ -375,8 +377,8 @@ def cg(A, b, x0=None, *, tol=1e-5, atol=0.0, maxiter=None, M=None):
         M = lambda x: x
 
     if x0.shape != b.shape:
-        raise ValueError(
-            'Tensor in x0 and b must have matching shapes: ', x0.shape, " vs ", b.shape)
+        _raise_value_error(
+            'Tensor in x0 and b must have matching shapes: {} vs {}'.format(x0.shape, b.shape))
 
     x = CG(A, M)(b, x0, tol, atol, maxiter)
     return x, None

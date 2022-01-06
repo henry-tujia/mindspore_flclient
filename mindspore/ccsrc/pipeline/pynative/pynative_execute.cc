@@ -431,8 +431,7 @@ py::list FilterTensorArgs(const py::args &args, bool has_sens = false) {
 }
 
 bool RunOpConvertConstInputToAttr(const py::object &input_object, size_t input_index, const PrimitivePtr &op_prim,
-                                  const mindspore::HashSet<size_t> &input_attrs, std::vector<size_t> *input_to_attr_idx,
-                                  std::vector<string> *input_to_attr_name) {
+                                  const mindspore::HashSet<size_t> &input_attrs) {
   MS_EXCEPTION_IF_NULL(op_prim);
   const auto &input_names_value = op_prim->GetAttr(kAttrInputNames);
   if (input_names_value == nullptr) {
@@ -447,8 +446,6 @@ bool RunOpConvertConstInputToAttr(const py::object &input_object, size_t input_i
     const auto &value = PyObjToValue(input_object);
     auto input_name = input_names_vec[input_index];
     op_prim->AddAttr(input_name, value);
-    input_to_attr_idx->push_back(input_index);
-    input_to_attr_name->push_back(input_name);
     return true;
   }
   return false;
@@ -615,13 +612,10 @@ void ConstructInputTensor(const OpExecInfoPtr &op_run_info, std::vector<int64_t>
     MS_LOG(EXCEPTION) << "The op input size " << input_num << ", but the size of input mask "
                       << op_run_info->inputs_mask.size();
   }
-  std::vector<size_t> input_to_attr_idx;
-  std::vector<string> input_to_attr_name;
   for (size_t index = 0; index < input_num; ++index) {
     // convert const input to attr
     if (reg_exist &&
-        RunOpConvertConstInputToAttr(op_run_info->op_inputs[index], index, op_prim, reg.GetConstInputAttrInfo(),
-                                     &input_to_attr_idx, &input_to_attr_name)) {
+        RunOpConvertConstInputToAttr(op_run_info->op_inputs[index], index, op_prim, reg.GetConstInputAttrInfo())) {
       continue;
     }
     // convert const and tuple input to tensor
@@ -631,13 +625,6 @@ void ConstructInputTensor(const OpExecInfoPtr &op_run_info, std::vector<int64_t>
     op_run_info->inputs_mask[index] = tensor_mask;
     std::vector<int64_t> new_mask(input_tensors->size() - tensors_mask->size(), tensor_mask);
     tensors_mask->insert(tensors_mask->end(), new_mask.begin(), new_mask.end());
-  }
-  bool exec_on_ascend =
-    (op_prim->HasAttr(kAttrPrimitiveTarget) && GetValue<string>(op_prim->GetAttr(kAttrPrimitiveTarget)) == "Ascend") ||
-    ms_context->get_param<std::string>(MS_CTX_DEVICE_TARGET) == kAscendDevice;
-  if (!input_to_attr_idx.empty() && exec_on_ascend) {
-    op_prim->set_attr(kAttrInputToAttrIdx, MakeValue(input_to_attr_idx));
-    op_prim->set_attr(kAttrInputToAttrName, MakeValue(input_to_attr_name));
   }
   op_prim->EndRecordAddAttr();
 }
@@ -2177,7 +2164,8 @@ py::object ForwardExecutor::RunOpInMs(const OpExecInfoPtr &op_exec_info, Pynativ
                                     static_cast<int>(op_exec_info->next_input_index),
                                     graph_info,
                                     tensors_mask,
-                                    input_tensors};
+                                    input_tensors,
+                                    cur_target};
 #else
   session::OpRunInfo op_run_info = {false,
                                     op_exec_info->op_name,
@@ -2190,7 +2178,8 @@ py::object ForwardExecutor::RunOpInMs(const OpExecInfoPtr &op_exec_info, Pynativ
                                     op_exec_info->next_input_index,
                                     graph_info,
                                     tensors_mask,
-                                    input_tensors};
+                                    input_tensors,
+                                    cur_target};
 #endif
 
   VectorRef outputs;
@@ -2941,7 +2930,8 @@ py::object GradExecutor::CheckAlreadyRun(const prim::GradOperationPtr &grad, con
   bool forward_run = false;
   // Get cell id and input args info
   const auto &cell_id = GetCellId(cell, args);
-  grad_operation_ = std::to_string(grad->get_all_) + std::to_string(grad->get_by_list_) + grad->grad_position_;
+  grad_operation_ = std::to_string(static_cast<int>(grad->get_all_)) +
+                    std::to_string(static_cast<int>(grad->get_by_list_)) + grad->grad_position_;
 
   std::string input_args_id;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -3165,7 +3155,7 @@ void GradExecutor::MakeNestedCnode(const py::object &cell, const py::tuple &forw
   r->manager()->AddFuncGraph(first_grad_fg);
   set_eliminate_forward(false);
   first_grad_fg->transforms().erase(kGrad);
-  FuncGraphPtr second_grad_fg = ad::Grad(first_grad_fg, r);
+  FuncGraphPtr second_grad_fg = ad::Grad(first_grad_fg, opt::Optimizer::MakeEmptyOptimizer(r));
   set_eliminate_forward(true);
   DumpGraphIR("second_grad_fg.ir", second_grad_fg);
   r->Clean();
@@ -3489,6 +3479,7 @@ void PynativeExecutor::ExitCell() {
 bool PynativeExecutor::IsTopCell() const { return cell_depth_ == 0; }
 
 void PynativeExecutor::ExecuteAllTask() {
+  mindspore::ScopedLongRunning long_running;
   session::PynativeTaskManager::GetInstance().ExecuteRemainingTasks();
   for (auto &item : kMindRtBackends) {
     MS_EXCEPTION_IF_NULL(item.second);

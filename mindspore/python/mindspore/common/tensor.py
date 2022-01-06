@@ -24,6 +24,7 @@ from .._c_expression import Tensor as Tensor_
 from .._c_expression import CSRTensor as CSRTensor_
 from .._c_expression import PynativeExecutor_
 from .._checkparam import Validator as validator
+from .._checkparam import Rel
 
 __all__ = ['Tensor', 'RowTensor', 'SparseTensor', 'CSRTensor']
 np_types = (np.int8, np.int16, np.int32, np.int64,
@@ -118,7 +119,7 @@ class Tensor(Tensor_):
         # If input_data is tuple/list/numpy.ndarray, it's support in check_type method.
         if init is None:
             validator.check_value_type('input_data', input_data,
-                                       (Tensor_, np.ndarray, list, tuple, float, int, bool, complex), 'Tensor')
+                                       (Tensor_, np.ndarray, np.str_, list, tuple, float, int, bool, complex), 'Tensor')
             valid_dtypes = (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64,
                             np.float16, np.float32, np.float64, np.bool_, np.str_, np.complex64, np.complex128)
             if isinstance(input_data, np.ndarray) and input_data.dtype not in valid_dtypes and \
@@ -846,16 +847,16 @@ class Tensor(Tensor_):
             >>> x = Tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]], mindspore.int32)
             >>> output = x.narrow(0, 0, 2)
             >>> print(output)
-            [[ 1,  2,  3],
-             [ 4,  5,  6]]
+            [[ 1 2 3],
+             [ 4 5 6]]
             >>> output = x.narrow(1, 1, 2)
             >>> print(output)
-            [[ 2,  3],
-             [ 5,  6],
-             [ 8,  9]]
+            [[ 2 3],
+             [ 5 6],
+             [ 8 9]]
         """
         self._init_check()
-        return tensor_operator_registry.get('narrow')()(self, axis, start, length)
+        return tensor_operator_registry.get('narrow')(self, axis, start, length)
 
     def swapaxes(self, axis1, axis2):
         """
@@ -952,6 +953,44 @@ class Tensor(Tensor_):
             return tensor_operator_registry.get('squeeze')(self)
         new_shape = validator.prepare_shape_for_squeeze(self.shape, axis)
         return tensor_operator_registry.get('reshape')()(self, new_shape)
+
+    def expand_dims(self, axis):
+        """
+        Insert a dimension of shape 1 at the specified axis of Tensor
+
+        Args:
+            axis (int): the axis at which to insert the singleton dimension.
+
+        Returns:
+            Tensor, with inserted dimension of length 1.
+
+        Raises:
+            TypeError: If axis is not an int.
+            ValueError: If axis is not in range [-self.ndim - 1, self.ndim + 1).
+
+        Supported Platforms:
+            ``Ascend`` ``GPU`` ``CPU``
+
+        Examples:
+            >>> import numpy as np
+            >>> from mindspore import Tensor
+            >>> x = Tensor(np.ones((2,2), dtype=np.float32))
+            >>> print(x)
+            [[1. 1.]
+            [1. 1.]]
+            >>> print(x.shape)
+            (2, 2)
+            >>> y = x.expand_dims(axis=0)
+            >>> print(y)
+            [[[1. 1.]
+            [1. 1.]]]
+            >>> print(y.shape)
+            (1, 2, 2)
+        """
+        self._init_check()
+        validator.check_is_int(axis, 'axis')
+        validator.check_int_range(axis, -self.ndim - 1, self.ndim + 1, Rel.INC_LEFT, 'axis')
+        return tensor_operator_registry.get('expand_dims')(self, axis)
 
     def astype(self, dtype, copy=True):
         """
@@ -1298,6 +1337,45 @@ class Tensor(Tensor_):
             raise TypeError("For 'Tensor.fill', the type of the argument 'value' must be int, float or bool, "
                             "but got {}.".format(type(value)))
         return tensor_operator_registry.get("fill")(self.dtype, self.shape, value)
+
+    def masked_fill(self, mask, value):
+        """
+        Fills elements of self tensor with value where mask is True.
+        The shape of mask must be equal to the shape of the underlying tensor.
+
+        Args:
+            mask (Tensor[bool]): The boolean mask.
+            value (Union[int, float]): The value to fill in with, which only supports a float or an int number.
+
+        Returns:
+            Tensor, has the same type and shape as self.
+
+        Raises:
+            TypeError: If mask is not a tensor.
+            TypeError: If mask is not bool.
+            TypeError: If value is neither int nor float number.
+
+        Supported Platforms:
+            ``Ascend`` ``GPU`` ``CPU``
+
+        Examples:
+            >>> import numpy as np
+            >>> from mindspore import Tensor
+            >>> a = Tensor(np.arange(4)).astype('float32'))
+            >>> print(a)
+            [0. 1. 2. 3.]
+            >>> mask = Tensor([False, False, True, True])
+            >>> print(a.masked_fill(mask, 0.0))
+            [0. 1. 0. 0.]
+        """
+        if not isinstance(mask, Tensor):
+            raise TypeError("For 'Tensor.masked_fill', the type of the argument 'mask' must be Tensor, but "
+                            "got {}.".format(type(mask)))
+        validator.check_type_name('mask', mask.dtype, [mstype.bool_], "Tensor")
+        mask_shape = validator.infer_out_shape(self.shape, mask.shape)
+        mask = tensor_operator_registry.get('broadcast_to')(mask_shape)(mask)
+        validator.check_value_type('value', value, [int, float], "Tensor")
+        return tensor_operator_registry.get("_masked_fill")(self, mask, value)
 
     def ptp(self, axis=None, keepdims=False):
         """
@@ -1711,7 +1789,7 @@ class Tensor(Tensor_):
             indices (Tensor): The indices with shape `(Nj...)` of the values to extract.
             axis (int, optional): The axis over which to select values. By default,
                 the flattened input tensor is used. Default: `None`.
-            mode ('raise', 'wrap', 'clip', optional):
+            mode ('raise', 'wrap', 'clip', optional): Default: "clip".
 
                 'raise' – Raises an error;
 
@@ -2173,9 +2251,12 @@ class RowTensor:
 
     For example, if indices is [0], values is [[1, 2]], dense_shape is
     (3, 2), then the dense representation of the row tensor will be:
-    [[1, 2],
-     [0, 0],
-     [0, 0]]
+
+    .. code-block::
+
+        [[1, 2],
+         [0, 0],
+         [0, 0]]
 
     RowTensor can only be used in the `Cell`'s construct method.
 
@@ -2244,9 +2325,12 @@ class SparseTensor:
 
     For example, if indices is [[0, 1], [1, 2]], values is [1, 2], dense_shape is
     (3, 4), then the dense representation of the sparse tensor will be:
-    [[0, 1, 0, 0],
-     [0, 0, 2, 0],
-     [0, 0, 0, 0]]
+
+    .. code-block::
+
+        [[0, 1, 0, 0],
+         [0, 0, 2, 0],
+         [0, 0, 0, 0]]
 
     Note:
         SparseTensor is not supported in Pynative mode at the moment.

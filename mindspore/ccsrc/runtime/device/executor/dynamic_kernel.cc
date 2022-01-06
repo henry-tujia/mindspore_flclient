@@ -20,7 +20,7 @@
 #include <stack>
 #include "backend/session/anf_runtime_algorithm.h"
 #include "backend/optimizer/common/helper.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "pipeline/jit/static_analysis/static_analysis.h"
 #include "abstract/dshape.h"
 #include "utils/utils.h"
@@ -103,7 +103,7 @@ void DynamicKernel::InferShape() {
         tuple_elements->set_value(out_tensor);
       }
     }
-    AnfAlgo::AddArgList(&args_spec_list, cnode_input, real_input, i);
+    (void)AnfAlgo::AddArgList(&args_spec_list, cnode_input, real_input, i);
   }
   auto eval_result = opt::CppInferShape(primitive, args_spec_list);
   cnode->set_abstract(eval_result);

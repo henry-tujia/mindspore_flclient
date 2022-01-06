@@ -458,8 +458,8 @@ inner::LiteGraphPtr AnfGraph2LiteGraph(const FuncGraphPtr &func_graph) {
     return inner::NodeBase({shape, type, format});
   };
   // set inputs
-  for (size_t i = 0; i < params.size(); i++) {
-    node_map[params[i]] = gb.Parameter(ExtractBuildInfo(params[i]), std::string("input_") + std::to_string(i));
+  for (auto &p : params) {
+    node_map[p] = gb.Parameter(ExtractBuildInfo(p));
   }
   // set ops
   for (auto node : todos) {
@@ -494,20 +494,5 @@ inner::LiteGraphPtr AnfGraph2LiteGraph(const FuncGraphPtr &func_graph) {
     gb.SetOutputs({node_map[output_node]});
   }
   return gb.Get();
-}
-
-FuncGraphManagerPtr GetFuncGraphManager(const FuncGraphPtr &func_graph) {
-  MS_EXCEPTION_IF_NULL(func_graph);
-  FuncGraphManagerPtr manager = func_graph->manager();
-  if (manager == nullptr) {
-    manager = Manage(func_graph, true);
-    func_graph->set_manager(manager);
-  }
-  return manager;
-}
-
-void UpdateMng(const FuncGraphManagerPtr &mng, const FuncGraphPtr &func_graph) {
-  mng->RemoveRoots();
-  mng->KeepRoots({func_graph});
 }
 }  // namespace mindspore::graphkernel

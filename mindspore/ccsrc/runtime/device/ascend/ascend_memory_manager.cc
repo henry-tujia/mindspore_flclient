@@ -31,9 +31,12 @@ namespace mindspore {
 namespace device {
 namespace ascend {
 
-void AscendMemoryManager::MallocDeviceMemory() { (void)AscendMemAdapter::GetInstance().Initialize(); }
+void AscendMemoryManager::Initialize() {
+  (void)AscendMemAdapter::GetInstance().Initialize();
+  AscendMemoryPool::GetInstance().Init();
+}
 
-void AscendMemoryManager::FreeDeviceMemory() { (void)AscendMemAdapter::GetInstance().DeInitialize(); }
+void AscendMemoryManager::Finalize() { (void)AscendMemAdapter::GetInstance().DeInitialize(); }
 
 void AscendMemoryManager::ResetDynamicMemory() { (void)AscendMemAdapter::GetInstance().ResetDynamicMemory(); }
 
@@ -127,6 +130,25 @@ uint8_t *AscendMemoryManager::MallocCommunicationMemFromMemPool(size_t size) {
                       << ", memory statistics:" << AscendMemAdapter::GetInstance().DevMemStatistics();
   }
   return base_ptr + kMemAlignSize;
+}
+
+bool AscendMemoryManager::MallocContinuousMemFromMemPool(const DeviceAddressPtrList &addr_list, size_t total_size,
+                                                         std::vector<size_t> size_list) {
+  auto device_ptr_list = MallocContinuousMemFromMemPool(total_size, size_list);
+  if (device_ptr_list.empty()) {
+    return false;
+  }
+  if (addr_list.size() != device_ptr_list.size()) {
+    MS_LOG(EXCEPTION) << "The size of device list " << addr_list.size() << " is not equal to the size of address list "
+                      << device_ptr_list.size();
+  }
+  for (size_t i = 0; i < addr_list.size(); i++) {
+    MS_EXCEPTION_IF_NULL(device_ptr_list[i]);
+    MS_EXCEPTION_IF_NULL(addr_list[i]);
+    addr_list[i]->ptr_ = device_ptr_list[i];
+    addr_list[i]->from_mem_pool_ = true;
+  }
+  return true;
 }
 
 size_t AscendMemoryManager::GetAvailableMemSize() {

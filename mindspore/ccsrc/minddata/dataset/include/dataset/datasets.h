@@ -1153,6 +1153,159 @@ inline std::shared_ptr<AlbumDataset> MS_API Album(const std::string &dataset_dir
                                         VectorStringToChar(column_names), decode, sampler, cache);
 }
 
+/// \class AmazonReviewDataset
+/// \brief A source dataset for reading and parsing Amazon Review Polarity and Amazon Review Full datasets.
+class MS_API AmazonReviewDataset : public Dataset {
+ public:
+  /// \brief Constructor of AmazonReviewDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage Part of dataset of AmazonReview, can be "train", "test" or "all".
+  /// \param[in] num_samples The number of samples to be included in the dataset.
+  /// \param[in] shuffle The mode for shuffling data every epoch.
+  ///     Can be any of:
+  ///     ShuffleMode.kFalse - No shuffling is performed.
+  ///     ShuffleMode.kFiles - Shuffle files only.
+  ///     ShuffleMode.kGlobal - Shuffle both the files and samples.
+  /// \param[in] num_shards Number of shards that the dataset should be divided into.
+  /// \param[in] shard_id The shard ID within num_shards. This argument should be
+  ///     specified only when num_shards is also specified.
+  /// \param[in] cache Tensor cache to use.
+  AmazonReviewDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, int64_t num_samples,
+                      ShuffleMode shuffle, int32_t num_shards, int32_t shard_id,
+                      const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Destructor of AmazonReviewDataset.
+  ~AmazonReviewDataset() = default;
+};
+
+/// \brief Function to create a AmazonReviewDataset.
+/// \note This dataset includes polarity and full, which can be read according to your own needs.
+///     The generated dataset has three columns ["label","title","content"]. Their types are all string.
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage Part of dataset of AmazonReview, can be "train", "test" or "all" (default="all").
+/// \param[in] num_samples The number of samples to be included in the dataset
+///     (Default = 0, which means all samples).
+/// \param[in] shuffle The mode for shuffling data every epoch (Default=ShuffleMode.kGlobal).
+///     Can be any of:
+///     ShuffleMode::kFalse - No shuffling is performed.
+///     ShuffleMode::kFiles - Shuffle files only.
+///     ShuffleMode::kGlobal - Shuffle both the files and samples.
+/// \param[in] num_shards Number of shards that the dataset should be divided into (Default = 1).
+/// \param[in] shard_id The shard ID within num_shards. This argument should be
+///     specified only when num_shards is also specified (Default = 0).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the AmazonReviewDataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string folder_path = "/path/to/amazon_review_dataset_directory";
+///      std::shared_ptr<Dataset> ds = AmazonReview(folder_path, "test", 0, ShuffleMode::kGlobal);
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In AmazonReview dataset, each data dictionary owns keys "label", "title", "content" */
+///      auto title = row["title"];
+/// \endcode
+inline std::shared_ptr<AmazonReviewDataset> MS_API AmazonReview(const std::string &dataset_dir,
+                                                                const std::string &usage = "all",
+                                                                int64_t num_samples = 0,
+                                                                ShuffleMode shuffle = ShuffleMode::kGlobal,
+                                                                int32_t num_shards = 1, int32_t shard_id = 0,
+                                                                const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<AmazonReviewDataset>(StringToChar(dataset_dir), StringToChar(usage), num_samples, shuffle,
+                                               num_shards, shard_id, cache);
+}
+
+/// \class Caltech256Dataset
+/// \brief A source dataset for reading and parsing Caltech256 dataset.
+class MS_API Caltech256Dataset : public Dataset {
+ public:
+  /// \brief Constructor of Caltech256Dataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode, const std::shared_ptr<Sampler> &sampler,
+                    const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of Caltech256Dataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode, const Sampler *sampler,
+                    const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of Caltech256Dataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  Caltech256Dataset(const std::vector<char> &dataset_dir, bool decode, const std::reference_wrapper<Sampler> sampler,
+                    const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Destructor of Caltech256Dataset.
+  ~Caltech256Dataset() = default;
+};
+
+/// \brief Function to create a Caltech256Dataset.
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset. If sampler is not
+///     given, a `RandomSampler` will be used to randomly iterate the entire dataset (default = RandomSampler()).
+/// \param[in] decode Decode the images after reading (default=false).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the Caltech256Dataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string dataset_path = "/path/to/caltech256_dataset_directory";
+///      std::shared_ptr<Dataset> ds = Caltech256(dataset_path, true, std::make_shared<RandomSampler>(false, 10));
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In Caltech256 dataset, each data dictionary has keys "image" and "label" */
+///      auto image = row["image"];
+/// \endcode
+inline std::shared_ptr<Caltech256Dataset> MS_API
+Caltech256(const std::string &dataset_dir, const std::shared_ptr<Sampler> &sampler = std::make_shared<RandomSampler>(),
+           bool decode = false, const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<Caltech256Dataset>(StringToChar(dataset_dir), decode, sampler, cache);
+}
+
+/// \brief Function to create a Caltech256Dataset
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+/// \param[in] decode Decode the images after reading (default=false).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the Caltech256Dataset.
+inline std::shared_ptr<Caltech256Dataset> MS_API Caltech256(const std::string &dataset_dir, const Sampler *sampler,
+                                                            bool decode = false,
+                                                            const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<Caltech256Dataset>(StringToChar(dataset_dir), decode, sampler, cache);
+}
+
+/// \brief Function to create a Caltech256Dataset.
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Sampler object used to choose samples from the dataset.
+/// \param[in] decode Decode the images after reading (default=false).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the Caltech256Dataset.
+inline std::shared_ptr<Caltech256Dataset> MS_API Caltech256(const std::string &dataset_dir,
+                                                            const std::reference_wrapper<Sampler> sampler,
+                                                            bool decode = false,
+                                                            const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<Caltech256Dataset>(StringToChar(dataset_dir), decode, sampler, cache);
+}
+
 /// \class CelebADataset
 /// \brief A source dataset for reading and parsing CelebA dataset.
 class MS_API CelebADataset : public Dataset {
@@ -1164,7 +1317,7 @@ class MS_API CelebADataset : public Dataset {
   ///      given, a `RandomSampler` will be used to randomly iterate the entire dataset (default = RandomSampler()).
   /// \param[in] decode Decode the images after reading (default=false).
   /// \param[in] extensions Set of file extensions to be included in the dataset (default={}).
-  /// \param[in] cache Tensor cache to use (default=nullptr which means no cache is used).
+  /// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
   CelebADataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
                 const std::shared_ptr<Sampler> &sampler, bool decode, const std::set<std::vector<char>> &extensions,
                 const std::shared_ptr<DatasetCache> &cache);
@@ -2181,12 +2334,57 @@ inline std::shared_ptr<EMnistDataset> MS_API EMnist(const std::string &dataset_d
 /// \param[in] sampler Sampler object used to choose samples from the dataset.
 /// \param[in] cache Tensor cache to use. (default=nullptr which means no cache is used).
 /// \return Shared pointer to the current EMnistDataset.
-inline std::shared_ptr<EMnistDataset> MS_APIEMnist(const std::string &dataset_dir, const std::string &name,
-                                                   const std::string &usage,
-                                                   const std::reference_wrapper<Sampler> sampler,
-                                                   const std::shared_ptr<DatasetCache> &cache = nullptr) {
+inline std::shared_ptr<EMnistDataset> MS_API EMnist(const std::string &dataset_dir, const std::string &name,
+                                                    const std::string &usage,
+                                                    const std::reference_wrapper<Sampler> sampler,
+                                                    const std::shared_ptr<DatasetCache> &cache = nullptr) {
   return std::make_shared<EMnistDataset>(StringToChar(dataset_dir), StringToChar(name), StringToChar(usage), sampler,
                                          cache);
+}
+
+/// \class EnWik9Dataset
+/// \brief A source dataset for reading and parsing EnWik9 dataset.
+class MS_API EnWik9Dataset : public Dataset {
+ public:
+  /// \brief Function to create a EnWik9Dataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] num_samples The number of samples to be included in the dataset.
+  /// \param[in] shuffle The mode for shuffling data every epoch.
+  ///     Can be any of:
+  ///     ShuffleMode.kFalse - No shuffling is performed.
+  ///     ShuffleMode.kFiles - Shuffle files only.
+  ///     ShuffleMode.kGlobal - Shuffle both the files and samples.
+  /// \param[in] num_shards Number of shards that the dataset should be divided into.
+  /// \param[in] shard_id The shard ID within num_shards. This argument should be
+  ///     specified only when num_shards is also specified.
+  /// \param[in] cache Tensor cache to use.
+  EnWik9Dataset(const std::vector<char> &dataset_dir, int64_t num_samples, ShuffleMode shuffle, int32_t num_shards,
+                int32_t shard_id, const std::shared_ptr<DatasetCache> &cache);
+
+  /// Destructor of EnWik9Dataset.
+  ~EnWik9Dataset() = default;
+};
+
+/// \brief Function to create a EnWik9Dataset.
+/// \note The generated dataset has one column ['text'].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] num_samples The number of samples to be included in the dataset
+///     (Default = 0, means all samples).
+/// \param[in] shuffle The mode for shuffling data every epoch (Default=ShuffleMode.kGlobal).
+///     Can be any of:
+///     ShuffleMode.kFalse - No shuffling is performed.
+///     ShuffleMode.kFiles - Shuffle files only.
+///     ShuffleMode.kGlobal - Shuffle both the files and samples.
+/// \param[in] num_shards Number of shards that the dataset should be divided into (Default = 1).
+/// \param[in] shard_id The shard ID within num_shards. This argument should be
+///     specified only when num_shards is also specified (Default = 0).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the EnWik9Dataset.
+inline std::shared_ptr<EnWik9Dataset> MS_API EnWik9(const std::string &dataset_dir, int64_t num_samples = 0,
+                                                    ShuffleMode shuffle = ShuffleMode::kGlobal, int32_t num_shards = 1,
+                                                    int32_t shard_id = 0,
+                                                    const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<EnWik9Dataset>(StringToChar(dataset_dir), num_samples, shuffle, num_shards, shard_id, cache);
 }
 
 /// \class FakeImageDataset
@@ -2574,6 +2772,94 @@ inline std::shared_ptr<ImageFolderDataset> MS_API ImageFolder(const std::string 
                                               MapStringToChar(class_indexing), cache);
 }
 
+/// \class IMDBDataset
+/// \brief A source dataset for reading and parsing IMDB dataset.
+class MS_API IMDBDataset : public Dataset {
+ public:
+  /// \brief Constructor of IMDBDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all".
+  /// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+              const std::shared_ptr<Sampler> &sampler, const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of IMDBDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all".
+  /// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, const Sampler *sampler,
+              const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of IMDBDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all".
+  /// \param[in] sampler Sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  IMDBDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage,
+              const std::reference_wrapper<Sampler> sampler, const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Destructor of IMDBDataset.
+  ~IMDBDataset() = default;
+};
+
+/// \brief A source dataset for reading and parsing IMDB dataset.
+/// \note The generated dataset has two columns ["text", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all"
+///     (Default="all").
+/// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset. If sampler is not
+///     given, a `RandomSampler` will be used to randomly iterate the entire dataset (default = RandomSampler()).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the IMDBDataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string dataset_path = "/path/to/imdb_dataset_directory";
+///      std::shared_ptr<Dataset> ds = IMDB(dataset_path, "all");
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In IMDB dataset, each data dictionary has keys "text" and "label" */
+///      auto text = row["text"];
+/// \endcode
+inline std::shared_ptr<IMDBDataset> MS_API
+IMDB(const std::string &dataset_dir, const std::string &usage = "all",
+     const std::shared_ptr<Sampler> &sampler = std::make_shared<RandomSampler>(),
+     const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<IMDBDataset>(StringToChar(dataset_dir), StringToChar(usage), sampler, cache);
+}
+
+/// \brief A source dataset for reading and parsing IMDB dataset.
+/// \note The generated dataset has two columns ["text", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all".
+/// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the IMDBDataset.
+inline std::shared_ptr<IMDBDataset> MS_API IMDB(const std::string &dataset_dir, const std::string &usage,
+                                                const Sampler *sampler,
+                                                const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<IMDBDataset>(StringToChar(dataset_dir), StringToChar(usage), sampler, cache);
+}
+
+/// \brief A source dataset for reading and parsing IMDB dataset.
+/// \note The generated dataset has two columns ["text", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of dataset. Acceptable usages include "train", "test" or "all".
+/// \param[in] sampler Sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the IMDBDataset.
+inline std::shared_ptr<IMDBDataset> MS_API IMDB(const std::string &dataset_dir, const std::string &usage,
+                                                const std::reference_wrapper<Sampler> sampler,
+                                                const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<IMDBDataset>(StringToChar(dataset_dir), StringToChar(usage), sampler, cache);
+}
+
 /// \class IWSLT2016Dataset.
 /// \brief A source dataset for reading and parsing IWSLT2016 dataset.
 class MS_API IWSLT2016Dataset : public Dataset {
@@ -2798,7 +3084,7 @@ class MS_API LJSpeechDataset : public Dataset {
 };
 
 /// \brief Function to create a LJSpeech Dataset.
-/// \notes The generated dataset has four columns ["waveform", "sample_rate", "transcription",
+/// \note The generated dataset has four columns ["waveform", "sample_rate", "transcription",
 ///     "normalized_transcription"].
 /// \param[in] dataset_dir Path to the root directory that contains the dataset.
 /// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset. If sampler is not
@@ -2812,7 +3098,7 @@ LJSpeech(const std::string &dataset_dir, const std::shared_ptr<Sampler> &sampler
 }
 
 /// \brief Function to create a LJSpeech Dataset.
-/// \notes The generated dataset has four columns ["waveform", "sample_rate", "transcription",
+/// \note The generated dataset has four columns ["waveform", "sample_rate", "transcription",
 ///     "normalized_transcription"].
 /// \param[in] dataset_dir Path to the root directory that contains the dataset.
 /// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
@@ -2824,7 +3110,7 @@ inline std::shared_ptr<LJSpeechDataset> MS_API LJSpeech(const std::string &datas
 }
 
 /// \brief Function to create a LJSpeech Dataset.
-/// \notes The generated dataset has four columns ["waveform", "sample_rate", "transcription",
+/// \note The generated dataset has four columns ["waveform", "sample_rate", "transcription",
 ///     "normalized_transcription"].
 /// \param[in] dataset_dir Path to the root directory that contains the dataset.
 /// \param[in] sampler Sampler object used to choose samples from the dataset.
@@ -3850,6 +4136,85 @@ inline std::shared_ptr<SBUDataset> MS_API SBU(const std::string &dataset_dir, bo
   return std::make_shared<SBUDataset>(StringToChar(dataset_dir), decode, sampler, cache);
 }
 
+/// \class SemeionDataset
+/// \brief A source dataset for reading and parsing Semeion dataset.
+class MS_API SemeionDataset : public Dataset {
+ public:
+  /// \brief Constructor of SemeionDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  SemeionDataset(const std::vector<char> &dataset_dir, const ::std::shared_ptr<Sampler> &sampler,
+                 const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of SemeionDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  SemeionDataset(const std::vector<char> &dataset_dir, const Sampler *sampler,
+                 const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of SemeionDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] sampler Sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  SemeionDataset(const std::vector<char> &dataset_dir, const ::std::reference_wrapper<Sampler> &samlper,
+                 const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Destructor of SemeionDataset.
+  ~SemeionDataset() = default;
+};
+
+/// \brief Function to create a Semeion Dataset.
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset. If sampler is not
+///     given, a `RandomSampler` will be used to randomly iterate the entire dataset (default = RandomSampler()).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the SemeionDataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string folder_path = "/path/to/semeion_dataset_directory";
+///      std::shared_ptr<Dataset> ds = SEMEION(folder_path, std::make_shared<SequentialSampler>(0, 6));
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In SEMEION dataset, each dictionary has keys "image" and "label" */
+///      auto image = row["image"];
+/// \endcode
+inline std::shared_ptr<SemeionDataset> MS_API
+Semeion(const std::string &dataset_dir, const std::shared_ptr<Sampler> &sampler = std::make_shared<RandomSampler>(),
+        const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<SemeionDataset>(StringToChar(dataset_dir), sampler, cache);
+}
+
+/// \brief Function to create a Semeion Dataset
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the SemeionDataset.
+inline std::shared_ptr<SemeionDataset> MS_API Semeion(const std::string &dataset_dir,
+                                                      const std::reference_wrapper<Sampler> sampler,
+                                                      const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<SemeionDataset>(StringToChar(dataset_dir), sampler, cache);
+}
+
+/// \brief Function to create a Semeion Dataset.
+/// \note The generated dataset has two columns ["image", "label"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] sampler Sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the SemeionDataset.
+inline std::shared_ptr<SemeionDataset> MS_API Semeion(const std::string &dataset_dir, Sampler *sampler,
+                                                      const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<SemeionDataset>(StringToChar(dataset_dir), sampler, cache);
+}
+
 /// \class SogouNewsDataset
 /// \brief A source dataset for reading and parsing Sogou News dataset.
 class MS_API SogouNewsDataset : public Dataset {
@@ -4603,6 +4968,177 @@ inline std::shared_ptr<VOCDataset> MS_API VOC(const std::string &dataset_dir, co
                                               bool extra_metadata = false) {
   return std::make_shared<VOCDataset>(StringToChar(dataset_dir), StringToChar(task), StringToChar(usage),
                                       MapStringToChar(class_indexing), decode, sampler, cache, extra_metadata);
+}
+
+/// \class WIDERFaceDataset
+/// \brief A source dataset for reading and parsing WIDERFace dataset.
+class MS_API WIDERFaceDataset : public Dataset {
+ public:
+  /// \brief Constructor of WIDERFaceDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all". "all" will read samples
+  ///     from "train" and "valid".
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                   const std::shared_ptr<Sampler> &sampler, const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of WIDERFaceDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all". "all" will read samples
+  ///     from "train" and "valid".
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                   const Sampler *sampler, const std::shared_ptr<DatasetCache> &cache);
+
+  /// \brief Constructor of WIDERFaceDataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all". "all" will read samples
+  ///     from "train" and "valid".
+  /// \param[in] decode Decode the images after reading.
+  /// \param[in] sampler Sampler object used to choose samples from the dataset.
+  /// \param[in] cache Tensor cache to use.
+  WIDERFaceDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, bool decode,
+                   const std::reference_wrapper<Sampler> sampler, const std::shared_ptr<DatasetCache> &cache);
+
+  /// Destructor of WIDERFaceDataset.
+  ~WIDERFaceDataset() = default;
+};
+
+/// \brief Function to create a WIDERFace Dataset.
+/// \note When usage is "train", "valid" or "all", the generated dataset has eight columns ["image", "bbox", "blur",
+///     "expression", "illumination", "occlusion", "pose", "invalid"]. When usage is "test", it only has one column
+///     ["image"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all" (default="all"). "all" will
+///     read samples from "train" and "valid".
+/// \param[in] decode The option to decode the images in dataset (default = false).
+/// \param[in] sampler Shared pointer to a sampler object used to choose samples from the dataset. If sampler is not
+///     given, a `RandomSampler` will be used to randomly iterate the entire dataset (default = RandomSampler()).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the WIDERFaceDataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string folder_path = "/path/to/wider_face_dataset_directory";
+///      std::shared_ptr<Dataset> ds = WIDERFace(folder_path, "train", std::make_shared<SequentialSampler>(0, 2));
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In WIDERFace dataset, if task='test', each dictionary has key "image" */
+///      /* Note: In WIDERFace dataset, if task='all', 'train' or 'valid', each dictionary has keys "image", "bbox",
+///      "blur", "expression", "illumination", "occlusion", "pose", "invalid" */
+///      auto image = row["image"];
+/// \endcode
+inline std::shared_ptr<WIDERFaceDataset> MS_API
+WIDERFace(const std::string &dataset_dir, const std::string &usage = "all", bool decode = false,
+          const std::shared_ptr<Sampler> &sampler = std::make_shared<RandomSampler>(),
+          const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<WIDERFaceDataset>(StringToChar(dataset_dir), StringToChar(usage), decode, sampler, cache);
+}
+
+/// \brief Function to create a WIDERFace Dataset.
+/// \note When usage is "train", "valid" or "all", the generated dataset has eight columns ["image", "bbox", "blur",
+///     "expression", "illumination", "occlusion", "pose", "invalid"]. When usage is "test", it only has one column
+///     ["image"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all". "all" will read samples
+///     from "train" and "valid".
+/// \param[in] decode The option to decode the images in dataset.
+/// \param[in] sampler Raw pointer to a sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the WIDERFaceDataset.
+inline std::shared_ptr<WIDERFaceDataset> MS_API WIDERFace(const std::string &dataset_dir, const std::string &usage,
+                                                          bool decode, const Sampler *sampler,
+                                                          const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<WIDERFaceDataset>(StringToChar(dataset_dir), StringToChar(usage), decode, sampler, cache);
+}
+
+/// \brief Function to create a WIDERFace Dataset.
+/// \note When usage is "train", "valid" or "all", the generated dataset has eight columns ["image", "bbox", "blur",
+///     "expression", "illumination", "occlusion", "pose", "invalid"]. When usage is "test", it only has one column
+///     ["image"].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage The type of data to be read, can be "train", "test", "valid" or "all". "all" will read samples
+///     from "train" and "valid".
+/// \param[in] decode The option to decode the images in dataset.
+/// \param[in] sampler Sampler object used to choose samples from the dataset.
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the WIDERFaceDataset.
+inline std::shared_ptr<WIDERFaceDataset> MS_API WIDERFace(const std::string &dataset_dir, const std::string &usage,
+                                                          bool decode, const std::reference_wrapper<Sampler> sampler,
+                                                          const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<WIDERFaceDataset>(StringToChar(dataset_dir), StringToChar(usage), decode, sampler, cache);
+}
+
+/// \class WikiTextDataset
+/// \brief A source dataset for reading and parsing WikiTextDataset dataset.
+class MS_API WikiTextDataset : public Dataset {
+ public:
+  /// \brief Constructor of WikiTextDataset Dataset.
+  /// \param[in] dataset_dir Path to the root directory that contains the dataset.
+  /// \param[in] usage The type of data list txt file to be read, can be "train", "test", 'valid' or "all".
+  /// \param[in] num_samples The number of samples to be included in the dataset.
+  /// \param[in] shuffle The mode for shuffling data every epoch.
+  ///     Can be any of:
+  ///     ShuffleMode.kFalse - No shuffling is performed.
+  ///     ShuffleMode.kFiles - Shuffle files only.
+  ///     ShuffleMode.kGlobal - Shuffle both the files and samples.
+  /// \param[in] num_shards Number of shards that the dataset should be divided into.
+  /// \param[in] shard_id The shard ID within num_shards. This argument should be
+  ///     specified only when num_shards is also specified.
+  /// \param[in] cache Tensor cache to use.
+  explicit WikiTextDataset(const std::vector<char> &dataset_dir, const std::vector<char> &usage, int64_t num_samples,
+                           ShuffleMode shuffle, int32_t num_shards, int32_t shard_id,
+                           const std::shared_ptr<DatasetCache> &cache);
+
+  /// Destructor of WikiTextDataset.
+  ~WikiTextDataset() = default;
+};
+
+/// \brief Function to create a WikiText Dataset.
+/// \note The generated dataset has one column ['text'].
+/// \param[in] dataset_dir Path to the root directory that contains the dataset.
+/// \param[in] usage One of "all", "train" , 'valid' or "test" (default = "all").
+/// \param[in] num_samples The number of samples to be included in the dataset
+///     (Default = 0, means all samples).
+/// \param[in] shuffle The mode for shuffling data every epoch (Default=ShuffleMode.kGlobal).
+///     Can be any of:
+///     ShuffleMode.kFalse - No shuffling is performed.
+///     ShuffleMode.kFiles - Shuffle files only.
+///     ShuffleMode.kGlobal - Shuffle both the files and samples.
+/// \param[in] num_shards Number of shards that the dataset should be divided into (Default = 1).
+/// \param[in] shard_id The shard ID within num_shards. This argument should be
+///     specified only when num_shards is also specified (Default = 0).
+/// \param[in] cache Tensor cache to use (default=nullptr, which means no cache is used).
+/// \return Shared pointer to the WikiTextDataset.
+/// \par Example
+/// \code
+///      /* Define dataset path and MindData object */
+///      std::string folder_path = "/path/to/wiki_dataset_directory";
+///      std::shared_ptr<Dataset> ds = WikiText(folder_path, "all");
+///
+///      /* Create iterator to read dataset */
+///      std::shared_ptr<Iterator> iter = ds->CreateIterator();
+///      std::unordered_map<std::string, mindspore::MSTensor> row;
+///      iter->GetNextRow(&row);
+///
+///      /* Note: In WikiText dataset, each dictionary has key "text" */
+///      auto text = row["text"];
+/// \endcode
+inline std::shared_ptr<WikiTextDataset> MS_API WikiText(const std::string &dataset_dir,
+                                                        const std::string &usage = "all", int64_t num_samples = 0,
+                                                        ShuffleMode shuffle = ShuffleMode::kGlobal,
+                                                        int32_t num_shards = 1, int32_t shard_id = 0,
+                                                        const std::shared_ptr<DatasetCache> &cache = nullptr) {
+  return std::make_shared<WikiTextDataset>(StringToChar(dataset_dir), StringToChar(usage), num_samples, shuffle,
+                                           num_shards, shard_id, cache);
 }
 
 /// \class YahooAnswersDataset

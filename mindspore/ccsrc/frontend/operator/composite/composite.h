@@ -81,7 +81,7 @@ class HyperMap : public MetaFuncGraph {
                       const ArgsPairList &arg_map);
   AnfNodePtr Make(const FuncGraphPtr &graph, const AnfNodePtr &fn_arg, const ArgsPairList &arg_map);
   ArgsPairList Harmonize(const FuncGraphPtr &graph, const ArgsPairList &args_spec_list);
-  std::vector<std::string> GetHyperMapInputIndex(size_t num);
+  std::pair<std::string, std::string> GetHyperMapInputIndex(size_t num);
 
   MultitypeFuncGraphPtr fn_leaf_;
   bool reverse_;
@@ -150,7 +150,7 @@ class GradOperation : public MetaFuncGraph {
   ~GradOperation() override = default;
   MS_DECLARE_PARENT(GradOperation, MetaFuncGraph)
 
-  FuncGraphPtr GetGrad(const AnfNodePtr &k, const AnfNodePtr &weights, const AnfNodePtr &position,
+  FuncGraphPtr GetGrad(const AnfNodePtr &j, const AnfNodePtr &weights, const AnfNodePtr &position,
                        const std::vector<AnfNodePtr> &forward_graph_params, bool enable_tuple_grad,
                        const std::vector<AnfNodePtr> &weight_args = {});
 

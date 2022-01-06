@@ -28,8 +28,21 @@
 #include "ir/func_graph.h"
 #include "ir/primitive.h"
 #include "utils/ms_context.h"
+#include "utils/anf_utils.h"
 
 namespace mindspore {
+const AbstractBasePtr &AnfNode::abstract() const {
+  // cppcheck-suppress unreadVariable
+  auto lock = AnfUtils::GetAbstractLock(this);
+  return abstract_;
+}
+
+void AnfNode::set_abstract(const AbstractBasePtr &abs) {
+  // cppcheck-suppress unreadVariable
+  auto lock = AnfUtils::GetAbstractLock(this);
+  abstract_ = abs;
+}
+
 // namespace to support intermediate representation definition
 CNode::CNode(const std::vector<AnfNodePtr> &inputs, const FuncGraphPtr &func_graph)
     : AnfNode(func_graph),
@@ -331,57 +344,6 @@ EffectInfo GetPrimEffectInfo(const PrimitivePtr &prim) {
   return {EffectInfo::kDetected, mem, io, false};
 }
 
-MonadState GetMonadState(const AnfNodePtr &node, const AnfNodePtr &skip_input) {
-  if (node == nullptr) {
-    return {};
-  }
-  MonadState state;
-  size_t seen = NewSeenGeneration();
-  std::queue<AnfNodePtr> que;
-  que.push(node);
-  while (!que.empty()) {
-    auto n = que.front();
-    que.pop();
-
-    // check whether this node has been matched or should be skipped.
-    if (n == nullptr || n->seen_ == seen || n == skip_input) {
-      continue;
-    }
-    n->seen_ = seen;
-
-    // check whether this node has monad abstract.
-    if (state.u == nullptr && HasAbstractUMonad(n)) {
-      state.u = n;
-    } else if (state.io == nullptr && HasAbstractIOMonad(n)) {
-      state.io = n;
-    } else {
-      auto cnode = dyn_cast<CNode>(n);
-      if (cnode != nullptr) {
-        for (auto it = cnode->inputs().rbegin(); it != cnode->inputs().rend(); ++it) {
-          que.push(*it);
-        }
-      }
-      continue;
-    }
-
-    if (state.u != nullptr && state.io != nullptr) {
-      return state;
-    }
-  }
-  return state;
-}
-
-bool IsStateEquivalent(const MonadState &state1, const MonadState &state2) {
-  return (state1.u == nullptr || state2.u == nullptr || state1.u == state2.u) &&
-         (state1.io == nullptr || state2.io == nullptr || state1.io == state2.io);
-}
-
-bool IsStateStrictEquivalent(const AnfNodePtr &outer, const AnfNodePtr &inner) {
-  MonadState state_matmul = GetMonadState(inner);
-  MonadState state_node = GetMonadState(outer, inner);
-  return IsStateEquivalent(state_matmul, state_node);
-}
-
 std::set<CNodePtr> GetLoadInputs(const AnfNodePtr &node) {
   std::set<CNodePtr> loads;
   auto cnode = dyn_cast<CNode>(node);
@@ -625,9 +587,8 @@ std::string GetCNodeTarget(const AnfNodePtr &node) {
   auto kernel_info = node->kernel_info();
   if (kernel_info != nullptr) {
     auto runtime_cache = kernel_info->runtime_cache();
-    MS_EXCEPTION_IF_NULL(runtime_cache);
-    if (runtime_cache->is_valid()) {
-      auto tmp_target = runtime_cache->device_target();
+    if (runtime_cache.runtime_cache().is_valid()) {
+      auto tmp_target = runtime_cache.runtime_cache().device_target();
       if (!tmp_target.empty()) {
         return tmp_target;
       }
@@ -646,9 +607,8 @@ std::string GetCNodeTarget(const AnfNodePtr &node) {
 
   if (kernel_info != nullptr) {
     auto runtime_cache = kernel_info->runtime_cache();
-    MS_EXCEPTION_IF_NULL(runtime_cache);
-    if (runtime_cache->is_valid()) {
-      runtime_cache->set_device_target(target);
+    if (runtime_cache.runtime_cache().is_valid()) {
+      runtime_cache.runtime_cache().set_device_target(target);
     }
   }
   return target;

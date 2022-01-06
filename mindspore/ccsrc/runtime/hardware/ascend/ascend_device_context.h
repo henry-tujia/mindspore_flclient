@@ -80,6 +80,9 @@ class AscendDeviceContext : public DeviceContext {
   // Relevant function to allocate and free device memory.
   bool AllocateMemory(DeviceAddress *const &address, size_t size) const override;
   void FreeMemory(DeviceAddress *const &address) const override;
+  // Relevant function to allocate and free device memory of raw ptr.
+  void *AllocateMemory(size_t size) const override;
+  void FreeMemory(void *const ptr) const override;
 
   // Allocate continuous device memory end to end into 'addr_list'.
   // Communication operators may need continuous memory for input and output
@@ -126,9 +129,6 @@ class AscendDeviceContext : public DeviceContext {
   // set rt_context_ to this thread to control device
   void BindDeviceToCurrentThread() const;
 
-  // dump all graphs.
-  void DumpAllGraphs(const std::vector<KernelGraphPtr> &all_graphs) const override;
-
  private:
   // Graph loader interface
   void AllocateGraphMemory(const NotNull<KernelGraphPtr> &root_graph) const;
@@ -138,6 +138,7 @@ class AscendDeviceContext : public DeviceContext {
   static bool IsGraphMode();
   bool PySyncRuning() const;
   bool MemoryCopyAsync(const CNodePtr &node, const vector<AddressPtr> &inputs, const vector<AddressPtr> &outputs) const;
+  void GenKernelEvents(const NotNull<KernelGraphPtr> &root_graph) const;
 
   void ReportErrorMessage() const;
   void ReportWarningMessage() const;
@@ -170,6 +171,9 @@ class AscendDeviceContext : public DeviceContext {
                          const std::vector<AddressPtr> &outputs) const;
   void *compute_stream_;
   void *communication_stream_;
+  void *GetKernelStream(const CNodePtr &node) const;
+  bool GetKernelRealInputs(const CNodePtr &kernel, const vector<AddressPtr> &inputs,
+                           std::vector<AddressPtr> *real_inputs) const;
 };
 }  // namespace ascend
 }  // namespace device

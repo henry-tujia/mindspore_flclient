@@ -20,11 +20,12 @@
 #include <utility>
 #include <cmath>
 
-#include "common/thread_pool.h"
 #include "utils/profile.h"
+#include "runtime/framework/actor/actor_common.h"
 
 namespace mindspore {
 namespace kernel {
+constexpr size_t kDefaultKernelSpinCount = 3000;
 
 void CpuDynamicKernel::UpdateArgs() {
   if (!is_input_dynamic_shape_ && is_output_dynamic_shape_ && !have_depends()) {
@@ -74,8 +75,9 @@ void CPUKernel::Init(const CNodePtr &kernel_node) {
 void CPUKernelUtils::ExpandDimsTo4(std::vector<size_t> *shape) {
   MS_EXCEPTION_IF_NULL(shape);
   auto len = shape->size();
-  if (len < 4) {
-    for (size_t i = 0; i < 4 - len; ++i) {
+  const size_t expect_dims = 4;
+  if (len < expect_dims) {
+    for (size_t i = 0; i < expect_dims - len; ++i) {
       (void)shape->insert(shape->begin(), 1);
     }
   }
@@ -167,25 +169,22 @@ ActorThreadPool *GetActorMgrInnerThreadPool() {
   auto thread_pool = actor_manager->GetActorThreadPool();
   // Init thread_pool if env is windows or ascend, in case that it won't be init in graph_scheduler.
   if (thread_pool == nullptr) {
-    const size_t kMaxThreadNum = 23;
-    size_t max_thread_num = std::thread::hardware_concurrency() - 1;
-#if ENABLE_D || ENABLE_GPU
-    const size_t kDeviceNum = 8;
-    max_thread_num /= kDeviceNum;
-#endif
-    if (max_thread_num < 1) {
-      max_thread_num = 1;
-    }
-    max_thread_num = max_thread_num < kMaxThreadNum ? max_thread_num : kMaxThreadNum;
-    (void)actor_manager->Initialize(true, 0, max_thread_num);
+    size_t actor_thread_num = 0;
+    size_t actor_and_kernel_thread_num = 0;
+    runtime::ComputeThreadNums(&actor_thread_num, &actor_and_kernel_thread_num);
+    (void)actor_manager->Initialize(true, actor_thread_num, actor_and_kernel_thread_num);
     thread_pool = actor_manager->GetActorThreadPool();
     MS_EXCEPTION_IF_NULL(thread_pool);
   }
+  thread_pool->SetKernelThreadMaxSpinCount(kDefaultKernelSpinCount);
   return thread_pool;
 }
 
 // Use threadpool of mindrt
 void ParallelLaunch(const CTask &task, size_t count, float block_size, Content content) {
+  if (count == 0) {
+    return;
+  }
   auto thread_pool = GetActorMgrInnerThreadPool();
   size_t kernel_thread_num = thread_pool->GetKernelThreadNum();
   if (kernel_thread_num == 0) {
@@ -202,6 +201,21 @@ void ParallelLaunch(const CTask &task, size_t count, float block_size, Content c
     size_t start = task_id * once_compute_size;
     size_t end = (start + once_compute_size) > count ? count : (start + once_compute_size);
     task(start, end);
+    return common::SUCCESS;
+  };
+  (void)thread_pool->ParallelLaunch(func, content, task_num);
+}
+
+void ParallelLaunch(const std::vector<common::Task> &tasks, Content content) {
+  auto thread_pool = GetActorMgrInnerThreadPool();
+  size_t kernel_thread_num = thread_pool->GetKernelThreadNum();
+  if (kernel_thread_num == 0) {
+    MS_LOG(EXCEPTION) << "Actor inner pool has been init, but kernel thread is 0!";
+  }
+
+  size_t task_num = tasks.size();
+  auto func = [&](void *, int task_id, float, float) {
+    tasks[task_id]();
     return common::SUCCESS;
   };
   (void)thread_pool->ParallelLaunch(func, content, task_num);

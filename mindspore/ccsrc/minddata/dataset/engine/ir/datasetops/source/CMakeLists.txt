@@ -5,6 +5,8 @@ add_subdirectory(samplers)
 set(DATASET_ENGINE_IR_DATASETOPS_SOURCE_SRC_FILES
         ag_news_node.cc
         album_node.cc
+        amazon_review_node.cc
+        caltech256_node.cc
         celeba_node.cc
         cifar100_node.cc
         cifar10_node.cc
@@ -16,10 +18,12 @@ set(DATASET_ENGINE_IR_DATASETOPS_SOURCE_SRC_FILES
         dbpedia_node.cc
         div2k_node.cc
         emnist_node.cc
+        en_wik9_node.cc
         fake_image_node.cc
         fashion_mnist_node.cc
         flickr_node.cc
         image_folder_node.cc
+        imdb_node.cc
         iwslt2016_node.cc
         iwslt2017_node.cc
         kmnist_node.cc
@@ -33,6 +37,7 @@ set(DATASET_ENGINE_IR_DATASETOPS_SOURCE_SRC_FILES
         qmnist_node.cc
         random_node.cc
         sbu_node.cc
+        semeion_node.cc
         sogou_news_node.cc
         speech_commands_node.cc
         stl10_node.cc
@@ -42,6 +47,8 @@ set(DATASET_ENGINE_IR_DATASETOPS_SOURCE_SRC_FILES
         udpos_node.cc
         usps_node.cc
         voc_node.cc
+        wider_face_node.cc
+        wiki_text_node.cc
         yahoo_answers_node.cc
         yelp_review_node.cc
         yes_no_node.cc

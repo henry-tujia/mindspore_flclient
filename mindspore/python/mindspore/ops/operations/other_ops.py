@@ -29,7 +29,7 @@ class Assign(Primitive):
     Assigns `Parameter` with a value.
 
     Inputs of `variable` and `value` comply with the implicit type conversion rules to make the data types consistent.
-    If they have different data types, lower priority data type will be converted to
+    If they have different data types, the lower priority data type will be converted to
     the relatively highest priority data type.
 
     Inputs:
@@ -161,7 +161,7 @@ class BoundingBoxDecode(PrimitiveWithInfer):
     """
     Decodes bounding boxes locations.
 
-    The function of the a operator is to calculate the offset, and this operator converts the offset into a Bbox,
+    The function of the operator is to calculate the offset, and this operator converts the offset into a Bbox,
     which is used to mark the target in the subsequent images, etc.
 
     Args:
@@ -486,7 +486,7 @@ class CheckBprop(PrimitiveWithInfer):
         - **input_y** (tuple[Tensor]) - The `input_y` contains the inputs of bprop to check against.
 
     Outputs:
-        (tuple[Tensor]), the `input_x`,
+        Tuple[Tensor], the `input_x`,
         if data type and shape of corresponding elements from `input_x` and `input_y` are the same.
 
     Raises:
@@ -519,12 +519,13 @@ class CheckBprop(PrimitiveWithInfer):
         self.prim_to_check = prim_to_check
 
     def infer_shape(self, xshapes, yshapes):
-        tips = f'Bprop of {self.prim_to_check}'
+        tips = f"user defined method 'bprop'"
         validator.check_value_type('grads', xshapes, (tuple,), tips)
         validator.check_value_type('params', yshapes, (tuple,), tips)
-        if len(xshapes) < len(yshapes):
-            raise ValueError(f"For '{tips}', the size of 'input_x.shape' should not be less than {len(yshapes)}, "
-                             f"but got {len(xshapes)}.")
+        if not len(xshapes) == len(yshapes):
+            raise ValueError(f"For {tips} the number of return values(gradients) should be equal to "
+                             f"the number of input arguments except 'out' and 'dout', "
+                             f"which is:{len(yshapes)} but got {len(xshapes)}.")
         checking_range = len(yshapes)
         for i in range(checking_range):
             xshape = xshapes[i]
@@ -532,17 +533,19 @@ class CheckBprop(PrimitiveWithInfer):
             if not xshape or not yshape:
                 continue
             if xshape != yshape:
-                raise ValueError(f"For '{tips}', the shape of 'input_x' in {i}th index should be {yshape},"
-                                 f" but got 'input_x[i]': {xshape}.")
+                raise ValueError(f"For {tips}, the {i}th return value(gradient of the {i}th argument) "
+                                 f"should have the same shape as the {i}th argument, "
+                                 f"which is:{yshape}, but got: {xshape}.")
         return xshapes
 
     def infer_dtype(self, xdtypes, ydtypes):
-        tips = f'Bprop of {self.prim_to_check}'
+        tips = f"user defined method 'bprop'"
         validator.check_value_type('grads', xdtypes, (tuple,), tips)
         validator.check_value_type('params', ydtypes, (tuple,), tips)
-        if len(xdtypes) < len(ydtypes):
-            raise ValueError(f"For '{tips}', the size of 'input_x.dtype' should not be less than {len(ydtypes)},"
-                             f" but got {len(xdtypes)}.")
+        if not len(xdtypes) == len(ydtypes):
+            raise ValueError(f"For {tips}, the number of return values(gradients) should be equal to "
+                             f"the number of input arguments except 'out' and 'dout', "
+                             f"which is:{len(ydtypes)} but got {len(xdtypes)}.")
         checking_range = len(ydtypes)
         for i in range(checking_range):
             xdtype = xdtypes[i]
@@ -551,12 +554,13 @@ class CheckBprop(PrimitiveWithInfer):
                 continue
             if isinstance(ydtype, mstype.function_type):
                 if not isinstance(xdtype, mstype.env_type_type):
-                    raise TypeError(f"For '{tips}', the dtype of 'input_x' in {i}th index should be "
-                                    f"{mstype.env_type_type}, but got {xdtype}.")
+                    raise TypeError(f"For {tips}, the {i}th return value(gradient of the {i}th argument) type "
+                                    f"should be {mstype.env_type_type}, but got {xdtype}.")
                 continue
             if xdtype != ydtype:
-                raise TypeError(f"For '{tips}', the dtype of 'input_x' in {i}th index should be {ydtype},"
-                                f" but got {xdtype}.")
+                raise TypeError(f"For {tips}, the {i}th return value(gradient of the {i}th argument) "
+                                f"should have the same dtype as the {i}th argument, "
+                                f"which is:{ydtype}, but got: {xdtype}.")
         return xdtypes
 
 

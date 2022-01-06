@@ -43,7 +43,15 @@ AbstractBasePtr InferImplIdentity(const AnalysisEnginePtr &, const PrimitivePtr 
   return args_spec_list[0];
 }
 
-AbstractBasePtr InferImplEnvGetItem(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
+AbstractBasePtr InferImplEnvironCreate(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                                       const AbstractBasePtrList &args_spec_list) {
+  // args: None.
+  CheckArgsSize(primitive->name(), args_spec_list, 0);
+  static AbstractBasePtr abs_env = std::make_shared<AbstractScalar>(kAnyValue, std::make_shared<EnvType>());
+  return abs_env;
+}
+
+AbstractBasePtr InferImplEnvironGet(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                     const AbstractBasePtrList &args_spec_list) {
   MS_EXCEPTION_IF_NULL(primitive);
   // args: Three objects of a subclass of AbstractBase, env, key, dflt(default).
@@ -53,7 +61,7 @@ AbstractBasePtr InferImplEnvGetItem(const AnalysisEnginePtr &, const PrimitivePt
   TypePtr type = key->GetTypeTrack();
   MS_EXCEPTION_IF_NULL(type);
   if (type->type_id() != kObjectTypeSymbolicKeyType) {
-    MS_LOG(EXCEPTION) << "EnvGetItem evaluator args[1] should be a SymbolicKeyInstance but: " << key->ToString();
+    MS_LOG(EXCEPTION) << "EnvironGet evaluator args[1] should be a SymbolicKeyInstance but: " << key->ToString();
   }
 
   auto context = MsContext::GetInstance();
@@ -76,7 +84,7 @@ AbstractBasePtr InferImplEnvGetItem(const AnalysisEnginePtr &, const PrimitivePt
   return expected;
 }
 
-AbstractBasePtr InferImplEnvSetItem(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
+AbstractBasePtr InferImplEnvironSet(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                     const AbstractBasePtrList &args_spec_list) {
   // args: Three objects of a subclass of AbstractBase, env, key, dflt(default).
   CheckArgsSize(primitive->name(), args_spec_list, 3);
@@ -86,7 +94,7 @@ AbstractBasePtr InferImplEnvSetItem(const AnalysisEnginePtr &, const PrimitivePt
   MS_EXCEPTION_IF_NULL(key_value_ptr);
   auto key_value_track = key_value_ptr->cast<SymbolicKeyInstancePtr>();
   if (key_value_track == nullptr) {
-    MS_LOG(EXCEPTION) << "EnvGetItem evaluator args[1] expected should be able to cast to SymbolicKeyInstancePtrbut: "
+    MS_LOG(EXCEPTION) << "EnvironSet evaluator args[1] expected should be able to cast to SymbolicKeyInstancePtrbut: "
                       << key_value_ptr->ToString();
   }
   auto expected = key_value_track->abstract();
@@ -94,8 +102,8 @@ AbstractBasePtr InferImplEnvSetItem(const AnalysisEnginePtr &, const PrimitivePt
   return std::make_shared<AbstractScalar>(kAnyValue, std::make_shared<EnvType>());
 }
 
-AbstractBasePtr InferImplEnvAdd(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
-                                const AbstractBasePtrList &args_spec_list) {
+AbstractBasePtr InferImplEnvironAdd(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
+                                    const AbstractBasePtrList &args_spec_list) {
   // args: Three objects of a subclass of AbstractBase, env, key, dflt(default).
   CheckArgsSize(primitive->name(), args_spec_list, 2);
   return std::make_shared<AbstractScalar>(kAnyValue, std::make_shared<EnvType>());
@@ -748,8 +756,8 @@ AbstractBasePtr InferImplCast(const AnalysisEnginePtr &, const PrimitivePtr &pri
 
 AbstractBasePtr InferImplExpandDims(const AnalysisEnginePtr &, const PrimitivePtr &primitive,
                                     const AbstractBasePtrList &args_spec_list) {
+  constexpr auto kExpandDimsInputsNum = 2;
   const std::string op_name = primitive->name();
-  CheckArgsSize(op_name, args_spec_list, 1);
   auto x = CheckArg<AbstractTensor>(op_name, args_spec_list, 0);
   MS_EXCEPTION_IF_NULL(x);
   MS_EXCEPTION_IF_NULL(x->shape());
@@ -757,8 +765,16 @@ AbstractBasePtr InferImplExpandDims(const AnalysisEnginePtr &, const PrimitivePt
   std::vector<int64_t> shape;
   std::vector<int64_t> x_shape = x->shape()->shape();
   (void)shape.insert(shape.end(), x_shape.begin(), x_shape.end());
-  auto axis = primitive->GetAttr("axis");
-  auto value = GetValue<int64_t>(axis);
+  int64_t value = 0;
+  if (args_spec_list.size() == kExpandDimsInputsNum) {
+    value = GetValue<int64_t>(args_spec_list[1]->BuildValue());
+  } else if (args_spec_list.size() == 1) {
+    auto axis = primitive->GetAttr("axis");
+    value = GetValue<int64_t>(axis);
+  } else {
+    MS_LOG(EXCEPTION) << " The num of ExpandDims must be 1 or 2, but got " << args_spec_list.size();
+  }
+
   if (value < -(SizeToInt(x_shape.size()) + 1) || value > SizeToInt(x_shape.size())) {
     MS_LOG(EXCEPTION) << " axis value should be in range [-input_x.dim-1,input_x.dim], but axis value is" << value
                       << " and input_x.dim is" << x_shape.size();

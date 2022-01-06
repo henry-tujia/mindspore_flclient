@@ -215,6 +215,7 @@ constexpr auto kFusedAdamWeightDecayName = "FusedAdamWeightDecay";
 constexpr auto kAdamWeightDecayName = "AdamWeightDecay";
 constexpr auto kFusedCastAdamWeightDecayName = "FusedCastAdamWeightDecay";
 constexpr auto kFusedAdamName = "FusedAdam";
+constexpr auto kFusedAdaFactorName = "FusedAdaFactor";
 constexpr auto kFusedSparseAdamName = "FusedSparseAdam";
 constexpr auto kFusedMatMulBiasAddName = "FusedMatMulBiasAdd";
 constexpr auto kDeadNodeName = "DeadNode";
@@ -419,6 +420,9 @@ constexpr auto kAttrBucketId = "bucket_id";
 constexpr auto kAttrGradOutputIndex = "grad_output_index";
 constexpr auto kAttrLabelIndex = "label_index";
 constexpr auto kAttrLabelSwitchList = "label_switch_list";
+constexpr auto kAttrBeginMask = "begin_mask";
+constexpr auto kAttrEndMask = "end_mask";
+constexpr auto kAttrEllipsisMask = "ellipsis_mask";
 constexpr auto kAttrNewAxisMask = "new_axis_mask";
 constexpr auto kAttrShrinkAxisMask = "shrink_axis_mask";
 constexpr auto kAttrDatadumpOriginalNames = "_datadump_original_names";
@@ -504,11 +508,11 @@ constexpr auto kAttrFixedInputFormat = "fixed_input_format";
 constexpr auto kAttrFixedOutputFormat = "fixed_output_format";
 constexpr auto kAttrFixedInputDeviceShape = "fixed_input_device_shape";
 constexpr auto kAttrFixedOutputDeviceShape = "fixed_output_device_shape";
-constexpr auto kAttrInputToAttrIdx = "input_to_attr_idx";
-constexpr auto kAttrInputToAttrName = "input_to_attr_name";
 constexpr auto kAttrFuncType = "func_type";
 constexpr auto kAttrCustAicpu = "cust_aicpu";
 constexpr auto kAttrIsInternalOutputNopNode = "is_internal_output_nop_node";
+constexpr auto kAttrIsUBFusionOp = "is_ub_fusion_op";
+constexpr auto kAttrMicro = "micro";
 
 // custom operator func type
 constexpr auto kCustomTypeAOT = "aot";
@@ -686,6 +690,7 @@ const std::set<std::string> kOptOperatorSet = {kMomentumOpName,
                                                kAdamWeightDecayName,
                                                kFusedCastAdamWeightDecayName,
                                                kFusedAdamName,
+                                               kFusedAdaFactorName,
                                                kFusedSparseAdamName,
                                                kFusedMulApplyMomentumOpName,
                                                kFusedWeightScaleApplyMomentum,

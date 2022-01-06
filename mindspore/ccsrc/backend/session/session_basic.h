@@ -73,6 +73,7 @@ struct OpRunInfo {
   std::string graph_info;
   std::vector<int64_t> tensor_mask;
   std::vector<tensor::TensorPtr> input_tensors;
+  std::string device_target = "Unknown";
 };
 
 struct InputTensorInfo {
@@ -195,9 +196,10 @@ class SessionBasic : public std::enable_shared_from_this<SessionBasic> {
                                VectorRef *const outputs,
                                std::map<KernelWithIndex, std::vector<std::vector<size_t>>> *output_indexes);
   void GetRefCount(const KernelGraph *graph, std::map<KernelWithIndex, size_t> *ref_count);
-  void GetForwardOpOutputRefCount(const KernelGraph *graph, std::map<std::string, size_t> *forward_op_output_refcount);
+  void GetForwardOpOutputRefCount(const KernelGraph *graph, const std::vector<tensor::TensorPtr> &inputs,
+                                  std::map<std::string, size_t> *forward_op_output_tensor_id);
   void ReleaseForwardOpOutput(const std::vector<tensor::TensorPtr> &input_tensors,
-                              std::map<std::string, size_t> *forward_op_output_refcount);
+                              std::map<std::string, size_t> *forward_op_output_tensor_id);
   void HandleOpInputs(const std::set<KernelWithIndex> &input_kernel, std::map<KernelWithIndex, size_t> *ref_count,
                       std::map<KernelWithIndex, tensor::TensorPtr> *op_output_map);
 
@@ -319,7 +321,7 @@ class SessionBasic : public std::enable_shared_from_this<SessionBasic> {
   void ClearAllBucket(const GraphId &graph_id);
   std::vector<uint32_t> GetAllReduceSplitIndex();
   virtual std::string GetCommWorldGroup() { return std::string(); }
-  void DumpGraph(const std::shared_ptr<KernelGraph> &kernel_graph);
+  void DumpGraphs(const std::vector<KernelGraphPtr> &graphs);
 #if ((defined ENABLE_CPU) && (!defined _WIN32) && !defined(__APPLE__))
   void CheckPSModeConsistence(const KernelGraphPtr &kernel_graph) const;
   void GetBatchElements(const AnfNodePtr &kernel_node) const;

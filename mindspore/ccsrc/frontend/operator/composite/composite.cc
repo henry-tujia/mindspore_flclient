@@ -108,21 +108,23 @@ AnfNodePtr HyperMap::FullMake(const FuncGraphPtr &func_graph, const AnfNodePtr &
   return func_graph->NewCNodeInOrder(inputs);
 }
 
-std::vector<std::string> HyperMap::GetHyperMapInputIndex(size_t num) {
+std::pair<std::string, std::string> HyperMap::GetHyperMapInputIndex(size_t num) {
   std::string error_index;
   std::string next_index;
-  if (num == 1) {
+  const size_t first_index = 1;
+  const size_t second_index = 2;
+  if (num == first_index) {
     // The first element in HyperMap is func_graph
     error_index = "first";
     next_index = "second";
-  } else if (num == 2) {
+  } else if (num == second_index) {
     error_index = "second";
     next_index = "third";
   } else {
     error_index = std::to_string(num) + "th";
     next_index = std::to_string(num + 1) + "th";
   }
-  return {error_index, next_index};
+  return std::pair<std::string, std::string>(error_index, next_index);
 }
 
 AnfNodePtr HyperMap::FullMake(const std::shared_ptr<List> &type, const FuncGraphPtr &func_graph,
@@ -137,9 +139,7 @@ AnfNodePtr HyperMap::FullMake(const std::shared_ptr<List> &type, const FuncGraph
   for (auto &item : arg_map) {
     num++;
     auto lhs = std::static_pointer_cast<List>(item.second);
-    std::vector<std::string> indexes = GetHyperMapInputIndex(num);
-    std::string error_index = indexes[0];
-    std::string next_index = indexes[1];
+    auto [error_index, next_index] = GetHyperMapInputIndex(num);
     if (lhs == nullptr) {
       MS_LOG(EXCEPTION) << "The " << error_index << " element in HyperMap has wrong type, expected a List, but got "
                         << item.second->ToString() << ".";
@@ -199,9 +199,7 @@ AnfNodePtr HyperMap::FullMake(const std::shared_ptr<Tuple> &type, const FuncGrap
   for (auto &item : arg_map) {
     num++;
     auto lhs = std::static_pointer_cast<Tuple>(item.second);
-    std::vector<std::string> indexes = GetHyperMapInputIndex(num);
-    std::string error_index = indexes[0];
-    std::string next_index = indexes[1];
+    auto [error_index, next_index] = GetHyperMapInputIndex(num);
     if (lhs == nullptr) {
       MS_LOG(EXCEPTION) << "The " << error_index << " element in HyperMap has wrong type, expected a Tuple, but got "
                         << item.second->ToString() << ".";
@@ -317,6 +315,7 @@ AnfNodePtr HyperMap::Make(const FuncGraphPtr &func_graph, const AnfNodePtr &fn_a
           << trace::GetDebugInfo(func_graph->debug_info()) << "\n";
       int64_t idx = 0;
       std::string str_index = "first";
+      const size_t diff_index = 2;
       for (auto &item : arg_map) {
         // The first element in HyperMap is func_graph
         if (idx == 0) {
@@ -324,7 +323,7 @@ AnfNodePtr HyperMap::Make(const FuncGraphPtr &func_graph, const AnfNodePtr &fn_a
         } else if (idx == 1) {
           str_index = "third";
         } else {
-          str_index = std::to_string(idx + 2) + "th";
+          str_index = std::to_string(idx + diff_index) + "th";
         }
         ++idx;
         oss << "The type of the " << str_index << " argument in HyperMap is " << item.second->ToString() << ".\n";
@@ -432,6 +431,7 @@ REGISTER_PYBIND_DEFINE(HyperMap_, ([](const py::module *m) {
                        }));
 
 bool CheckSequenceAllTensor(const abstract::AbstractTuplePtr &tuple) {
+  MS_EXCEPTION_IF_NULL(tuple);
   for (size_t i = 0; i < tuple->size(); ++i) {
     if (!(*tuple)[i]->isa<abstract::AbstractUndetermined>() &&
         !((*tuple)[i]->isa<abstract::AbstractTuple>() &&
@@ -443,6 +443,7 @@ bool CheckSequenceAllTensor(const abstract::AbstractTuplePtr &tuple) {
 }
 
 bool CheckTailGradFristSequence(const abstract::AbstractSequencePtr &sequeue, bool enable_tuple_grad) {
+  MS_EXCEPTION_IF_NULL(sequeue);
   return sequeue->size() > 1 && (*sequeue)[1] != nullptr &&
          ((*sequeue)[1]->isa<abstract::AbstractUndetermined>() ||
           (MsContext::GetInstance()->get_param<bool>(MS_CTX_GRAD_FOR_SCALAR) && (*sequeue)[1]->BuildType() != nullptr &&
@@ -586,7 +587,7 @@ FuncGraphPtr MakeTupleGradient::GenerateFuncGraph(const AbstractBasePtrList &arg
 
   std::vector<AnfNodePtr> grads;
   grads.push_back(NewValueNode(prim::kPrimMakeTuple));
-  grads.push_back(NewValueNode(newenv));
+  grads.push_back(NewEnviron(b));
   for (int64_t i = 0; i < tuple_size; ++i) {
     grads.push_back(b->NewCNodeInOrder({NewValueNode(prim::kPrimTupleGetItem), dout, NewValueNode(i)}));
   }
@@ -627,7 +628,7 @@ FuncGraphPtr MakeListGradient::GenerateFuncGraph(const AbstractBasePtrList &args
 
   std::vector<AnfNodePtr> grads;
   grads.push_back(NewValueNode(prim::kPrimMakeTuple));
-  grads.push_back(NewValueNode(newenv));
+  grads.push_back(NewEnviron(b));
   for (int64_t i = 0; i < list_size; ++i) {
     grads.push_back(b->NewCNodeInOrder({NewValueNode(prim::kPrimListGetItem), dout, NewValueNode(i)}));
   }
@@ -662,11 +663,12 @@ GradOperation::GradOperation(const std::string &name, bool get_all, bool get_by_
   }
 }
 
-FuncGraphPtr GradOperation::GetGrad(const AnfNodePtr &k, const AnfNodePtr &weights, const AnfNodePtr &position,
+FuncGraphPtr GradOperation::GetGrad(const AnfNodePtr &j, const AnfNodePtr &weights, const AnfNodePtr &position,
                                     const std::vector<AnfNodePtr> &forward_graph_params, bool enable_tuple_grad,
                                     const std::vector<AnfNodePtr> &weight_args) {
   FuncGraphPtr k_child = std::make_shared<FuncGraph>();
   k_child->set_flag(FUNC_GRAPH_FLAG_CORE, true);
+  k_child->set_flag(FUNC_GRAPH_FLAG_K_GRAPH, true);
 
   AnfNodePtr weights_node = nullptr;
   AnfNodePtr position_node = nullptr;
@@ -680,7 +682,7 @@ FuncGraphPtr GradOperation::GetGrad(const AnfNodePtr &k, const AnfNodePtr &weigh
   }
 
   std::vector<AnfNodePtr> inputs;
-  inputs.push_back(k);
+  inputs.push_back(j);
   for (size_t i = 0; i < forward_graph_params.size(); ++i) {
     inputs.push_back(k_child->add_parameter());
   }

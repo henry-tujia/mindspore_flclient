@@ -35,7 +35,6 @@ void LiteExitOpActor::RunOpData(OpData<Tensor> *inputs, OpContext<Tensor> *conte
   InitInputData();
   input_op_datas_.erase(op_uuid);
   AsyncOutput(context);
-  SetOutputData(context);
   return;
 }
 
@@ -49,19 +48,7 @@ void LiteExitOpActor::InitInputData() {
       src_tensor->DecRefCount();
       continue;
     }
-
-    if (NeedCastData(dst_tensor, src_tensor)) {
-      CastInputData(dst_tensor, src_tensor);
-      continue;
-    }
-
-    /* same data-type  */
-    if (src_tensor->allocator() == nullptr || src_tensor->IsGraphInput()) {
-      // delegate graph kernel output tensor
-      SetInputData(dst_tensor, src_tensor);
-    } else {
-      MoveInputData(dst_tensor, src_tensor);
-    }
+    MoveInputData(dst_tensor, src_tensor);
   }
   return;
 }
@@ -72,25 +59,11 @@ void LiteExitOpActor::SetInputShape() {
     if (output_tensor->shape() == inputs_data_[i]->shape()) {
       continue;
     }
-    MS_LOG(DEBUG) << "inputs_data_[" << i << "].shape: " << inputs_data_[i]->shape() << " vs kernel_->out_tensors()["
-                  << i << "].shape: " << kernel_->out_tensors()[i]->shape() << " are not equal.";
-    MS_LOG(DEBUG) << "this->kernel_->name(): " << this->kernel_->name();
 
     if (output_tensor->data_type() == kObjectTypeTensorType) {
-#ifndef CONTROLFLOW_TENSORLIST_CLIP
-      auto input_tensorlist = reinterpret_cast<TensorList *>(output_tensor);
-      auto input_data_tensorlist = reinterpret_cast<TensorList *>(inputs_data_[i]);
-      input_tensorlist->FreeTensorListData();
-      input_tensorlist->set_element_shape(input_data_tensorlist->element_shape());
-      input_tensorlist->set_shape(input_data_tensorlist->shape());
-      std::vector<std::vector<int>> tensor_shape{};
-      std::transform(input_data_tensorlist->tensors().begin(), input_data_tensorlist->tensors().end(),
-                     std::back_inserter(tensor_shape), [](const Tensor *tensor_item) { return tensor_item->shape(); });
-      input_tensorlist->MallocTensorListData(input_data_tensorlist->tensors_data_type(), tensor_shape);
-#endif
+      SetTensorListShape(output_tensor, inputs_data_[i]);
     } else {
-      output_tensor->set_shape(inputs_data_[i]->shape());
-      output_tensor->set_format(inputs_data_[i]->format());
+      SetTensorShape(output_tensor, inputs_data_[i]);
     }
   }
 }
@@ -133,7 +106,14 @@ void LiteExitOpActor::AsyncOutput(OpContext<Tensor> *context) {
     return;
   }
 
+  if (to_op_id.Name() == "") {
+    SetOutputData(context);
+  }
+
   for (size_t i = 0; i < output_data_arrows_.size(); i++) {
+    if (output_data_arrows_[i]->to_op_id_ != to_op_id && output_data_arrows_[i]->to_op_id_.Name() != "") {
+      continue;
+    }
     auto data = outputs_data_.at(i);
     Async(to_op_id, &mindspore::OpActor<Tensor>::RunOpData, data.get(), context);
   }

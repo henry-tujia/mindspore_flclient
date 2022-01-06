@@ -27,7 +27,7 @@ namespace core {
 constexpr int kHttpSuccess = 200;
 class HttpMsgHandler : public MessageHandler {
  public:
-  explicit HttpMsgHandler(const std::shared_ptr<HttpMessageHandler> &http_msg);
+  HttpMsgHandler(const std::shared_ptr<HttpMessageHandler> &http_msg, uint8_t *data, size_t len);
   ~HttpMsgHandler() override = default;
 
   void *data() const override;
@@ -36,7 +36,7 @@ class HttpMsgHandler : public MessageHandler {
 
  private:
   std::shared_ptr<HttpMessageHandler> http_msg_;
-  unsigned char *data_;
+  uint8_t *data_;
   size_t len_;
 };
 }  // namespace core

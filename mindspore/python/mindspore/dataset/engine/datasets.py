@@ -29,7 +29,7 @@ import stat
 import time
 import uuid
 import multiprocessing
-from multiprocessing.pool import RUN
+from multiprocessing.pool import RUN, TERMINATE
 from multiprocessing.util import Finalize
 import queue
 from enum import Enum
@@ -74,8 +74,10 @@ from .validators import check_batch, check_shuffle, check_map, check_filter, che
     check_photo_tour_dataset, check_ag_news_dataset, check_dbpedia_dataset, check_lj_speech_dataset, \
     check_yes_no_dataset, check_speech_commands_dataset, check_tedlium_dataset, check_svhn_dataset, \
     check_stl10_dataset, check_yelp_review_dataset, check_penn_treebank_dataset, check_iwslt2016_dataset, \
-    check_iwslt2017_dataset, check_sogou_news_dataset, check_yahoo_answers_dataset, check_udpos_dataset,\
-    check_conll2000_dataset
+    check_iwslt2017_dataset, check_sogou_news_dataset, check_yahoo_answers_dataset, check_udpos_dataset, \
+    check_conll2000_dataset, check_amazon_review_dataset, check_semeion_dataset, check_caltech101_dataset, \
+    check_caltech256_dataset, check_wiki_text_dataset, check_imdb_dataset, check_wider_face_dataset, \
+    check_en_wik9_dataset
 from ..core.config import get_callback_timeout, _init_device_info, get_enable_shared_mem, get_num_parallel_workers, \
     get_prefetch_size
 from ..core.datatypes import mstype_to_detype, mstypelist_to_detypelist
@@ -100,7 +102,12 @@ OffloadToManualOffloadMode = {
 
 
 class Shuffle(str, Enum):
-    """Specify the shuffle mode."""
+    """Specify the shuffle mode.
+
+    - GLOBAL: Shuffle both the files and samples.
+    - FILES: Shuffle files only.
+    - INFILE: Shuffle data within each file.
+    """
     GLOBAL: str = "global"
     FILES: str = "files"
     INFILE: str = "infile"
@@ -2255,9 +2262,9 @@ class BatchDataset(Dataset):
         self.python_multiprocessing = python_multiprocessing
         self.process_pool = None
         self.hook = None
-        self.pids = []
         self.eot = None
         self.watch_dog = None
+        self.workers = []
         self.max_rowsize = max_rowsize
 
     def parse(self, children=None):
@@ -2339,7 +2346,7 @@ class BatchDataset(Dataset):
             # obtain process id from multiprocessing.pool
             for pool in self.process_pool._pool:  # pylint: disable=W0212
                 process_id[op_id][1].add(pool.pid)
-                self.pids.append(pool.pid)
+                self.workers.append(pool)
             with _LOCK:
                 _OP_PROCESS.update(process_id)
 
@@ -2361,7 +2368,7 @@ class BatchDataset(Dataset):
     def _launch_watch_dog(self):
         if platform.system().lower() != 'windows':
             self.eot = threading.Event()
-            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.pids))
+            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.workers, self.process_pool))
             self.watch_dog.daemon = True
             self.watch_dog.start()
 
@@ -2575,24 +2582,49 @@ def wait_pid():
         pass
 
 
+# Terminate subprocess launched by multiprocessing.pool
+def _terminate_process(workers):
+    for w in workers:
+        if w.exitcode is None:
+            w.terminate()
+    for w in workers:
+        if w._closed is False:  # pylint: disable=W0212
+            w.join()
+
+
+# Monitor the exit number of subprocesses
+def _monitor_subprocess_exit(workers):
+    subprocess_exit_num = 0
+    for w in workers:
+        if w.exitcode is not None:
+            subprocess_exit_num += 1
+    return subprocess_exit_num
+
+
 # Dataset need _watch_dog thread to monitoring fork multi-processing,
 # and thread can't be a member function otherwise python won't collect and release resources.
-def _watch_dog(eot, pids):
+def _watch_dog(eot, workers, pool=None):
     """
     This thread is for monitoring subprocesses forked by GeneratorDataset/map/batch
     """
+    if not isinstance(workers, list):
+        raise TypeError("[Internal Error] The 2rd parameter of watch dog thread should be list of process, "\
+                        "but got {}.".format(type(workers)))
+    if pool is not None and not isinstance(pool, multiprocessing.pool.Pool):
+        raise TypeError("[Internal Error] The 3rd parameter of watch dog thread should be multiprocessing.Pool, "\
+                        "but got {}".format(type(pool)))
     while not eot.is_set():
         subprocess_exit_num = 0
         # Monitoring and count how many subprocesses already exit
-        for pid in pids:
-            try:
-                p = psutil.Process(pid)
-                if p.status() == psutil.STATUS_ZOMBIE:
-                    subprocess_exit_num += 1
-            except psutil.NoSuchProcess:
-                subprocess_exit_num += 1
+        subprocess_exit_num = _monitor_subprocess_exit(workers)
         # If find subprocess exit, we will wait for 30s and do some waitpid operations
         if subprocess_exit_num > 0:
+            if pool is not None:
+                # Python multiprocessing.pool has a bug, if sub process of pool is killed, pool will launch
+                # a new sub process, so we have to set worker_handler._state to TERMINATE to stop relaunching.
+                if pool._state == RUN:  # pylint: disable=W0212
+                    pool._state = TERMINATE  # pylint: disable=W0212
+                    pool._worker_handler._state = TERMINATE  # pylint: disable=W0212
             start = time.time()
             while time.time() - start < 30:
                 # We need to distinguishing get_dataset_size or train finished normally and hang scenario.
@@ -2605,6 +2637,10 @@ def _watch_dog(eot, pids):
                 wait_pid()
             # multiprocessing.queue may hang in .get() forever when put() process was killed.
             # We have to exit main process otherwise main process will hang.
+            if pool is not None:
+                _terminate_process(pool._pool)  # pylint: disable=W0212
+            else:
+                _terminate_process(workers)
             logger.critical("The subprocess of dataset may exit unexpected or be killed, "
                             "main process will exit.")
             os.kill(os.getpid(), signal.SIGTERM)
@@ -2838,9 +2874,9 @@ class MapDataset(TextBaseDataset, Dataset):
         self.python_multiprocessing = python_multiprocessing
         self.process_pool = None
         self.hook = None
-        self.pids = []
         self.eot = None
         self.watch_dog = None
+        self.workers = []
 
         self.callbacks = to_list(callbacks)
         self.max_rowsize = max_rowsize
@@ -2907,7 +2943,7 @@ class MapDataset(TextBaseDataset, Dataset):
                 process_id = {op_id: [self.num_parallel_workers, set()]}
                 for pool in self.process_pool._pool:  # pylint: disable=W0212
                     process_id[op_id][1].add(pool.pid)
-                    self.pids.append(pool.pid)
+                    self.workers.append(pool)
                 with _LOCK:
                     _OP_PROCESS.update(process_id)
                 for op in self.operations:
@@ -2940,7 +2976,7 @@ class MapDataset(TextBaseDataset, Dataset):
     def _launch_watch_dog(self):
         if platform.system().lower() != 'windows':
             self.eot = threading.Event()
-            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.pids))
+            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.workers, self.process_pool))
             self.watch_dog.daemon = True
             self.watch_dog.start()
 
@@ -3467,7 +3503,6 @@ class FashionMnistDataset(MappableDataset):
     We intend Fashion-MNIST to serve as a direct drop-in replacement for the original MNIST dataset for benchmarking
     machine learning algorithms. It shares the same image size and structure of training and testing splits.
 
-    Here is the original Fashion-MNIST dataset structure.
     You can unzip the dataset files into this directory structure and read by MindSpore's API.
 
     .. code-block::
@@ -3634,6 +3669,147 @@ class ImageFolderDataset(MappableDataset):
 
     def parse(self, children=None):
         return cde.ImageFolderNode(self.dataset_dir, self.decode, self.sampler, self.extensions, self.class_indexing)
+
+
+class IMDBDataset(MappableDataset):
+    """
+    A source dataset for reading and parsing Internet Movie Database (IMDb).
+
+    The generated dataset has two columns: :py:obj:`[text, label]`.
+    The tensor of column :py:obj:`text` is of the string type.
+    The tensor of column :py:obj:`label` is of a scalar of uint32 type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        usage (str, optional): Usage of this dataset, can be `train`, `test` or `all`
+            (default=None, will read all samples).
+        num_samples (int, optional): The number of images to be included in the dataset
+            (default=None, will read all samples).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, set in the config).
+        shuffle (bool, optional): Whether or not to perform shuffle on the dataset
+            (default=None, expected order behavior shown in the table).
+        sampler (Sampler, optional): Object used to choose samples from the
+            dataset (default=None, expected order behavior shown in the table).
+        num_shards (int, optional): Number of shards that the dataset will be divided
+            into (default=None). When this argument is specified, `num_samples` reflects
+            the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If sampler and shuffle are specified at the same time.
+        RuntimeError: If sampler and sharding are specified at the same time.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+
+    Note:
+        - The shape of the test column.
+        - This dataset can take in a `sampler`. `sampler` and `shuffle` are mutually exclusive.
+          The table below shows what input arguments are allowed and their expected behavior.
+
+    .. list-table:: Expected Order Behavior of Using `sampler` and `shuffle`
+       :widths: 25 25 50
+       :header-rows: 1
+
+       * - Parameter `sampler`
+         - Parameter `shuffle`
+         - Expected Order Behavior
+       * - None
+         - None
+         - random order
+       * - None
+         - True
+         - random order
+       * - None
+         - False
+         - sequential order
+       * - Sampler object
+         - None
+         - order defined by sampler
+       * - Sampler object
+         - True
+         - not allowed
+       * - Sampler object
+         - False
+         - not allowed
+
+    Examples:
+        >>> imdb_dataset_dir = "/path/to/imdb_dataset_directory"
+        >>>
+        >>> # 1) Read all samples (text files) in imdb_dataset_dir with 8 threads
+        >>> dataset = ds.IMDBDataset(dataset_dir=imdb_dataset_dir, num_parallel_workers=8)
+        >>>
+        >>> # 2) Read train samples (text files).
+        >>> dataset = ds.IMDBDataset(dataset_dir=imdb_dataset_dir, usage="train")
+
+    About IMDBDataset:
+
+    The IMDB dataset contains 50, 000 highly polarized reviews from the Internet Movie Database (IMDB). The data set
+    was divided into 25 000 comments for training and 25 000 comments for testing, with both the training set and test
+    set containing 50% positive and 50% negative comments. Train labels and test labels are all lists of 0 and 1, where
+    0 stands for negative and 1 for positive.
+
+    You can unzip the dataset files into this directory structure and read by MindSpore's API.
+
+    .. code-block::
+
+        .
+        └── imdb_dataset_directory
+             ├── train
+             │    ├── pos
+             │    │    ├── 0_9.txt
+             │    │    ├── 1_7.txt
+             │    │    ├── ...
+             │    ├── neg
+             │    │    ├── 0_3.txt
+             │    │    ├── 1_1.txt
+             │    │    ├── ...
+             ├── test
+             │    ├── pos
+             │    │    ├── 0_10.txt
+             │    │    ├── 1_10.txt
+             │    │    ├── ...
+             │    ├── neg
+             │    │    ├── 0_2.txt
+             │    │    ├── 1_3.txt
+             │    │    ├── ...
+
+    Citation:
+
+    .. code-block::
+
+        @InProceedings{maas-EtAl:2011:ACL-HLT2011,
+          author    = {Maas, Andrew L.  and  Daly, Raymond E.  and  Pham, Peter T.  and  Huang, Dan
+                        and  Ng, Andrew Y.  and  Potts, Christopher},
+          title     = {Learning Word Vectors for Sentiment Analysis},
+          booktitle = {Proceedings of the 49th Annual Meeting of the Association for Computational Linguistics:
+                        Human Language Technologies},
+          month     = {June},
+          year      = {2011},
+          address   = {Portland, Oregon, USA},
+          publisher = {Association for Computational Linguistics},
+          pages     = {142--150},
+          url       = {http://www.aclweb.org/anthology/P11-1015}
+        }
+    """
+
+    @check_imdb_dataset
+    def __init__(self, dataset_dir, usage=None, num_samples=None, num_parallel_workers=None, shuffle=None, sampler=None,
+                 num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, sampler=sampler, num_samples=num_samples,
+                         shuffle=shuffle, num_shards=num_shards, shard_id=shard_id, cache=cache)
+
+        self.dataset_dir = dataset_dir
+        self.usage = replace_none(usage, "all")
+
+    def parse(self, children=None):
+        return cde.IMDBNode(self.dataset_dir, self.usage, self.sampler)
 
 
 class IWSLT2016Dataset(SourceDataset, TextBaseDataset):
@@ -4821,8 +4997,13 @@ def _check_shm_usage(num_worker, queue_size, max_rowsize, num_queues=1):
     """
     threshold_ratio = 0.8
     if platform.system().lower() not in {"windows", "darwin"}:
-        shm_estimate_usage = _get_device_num() * num_worker * num_queues * \
-            (queue_size + 2) * max_rowsize * 1024 * 1024
+        device_num = _get_device_num()
+        # In the cluster, _get_device_num indicates the number of the entire cluster. The maximum number of cards
+        # on the ascend server is 8.
+        if device_num > 1 and context.get_context("device_target") == "Ascend":
+            device_num = min(device_num, 8)
+        shm_estimate_usage = device_num * num_worker * num_queues * \
+                             (queue_size + 2) * max_rowsize * 1024 * 1024
         try:
             shm_available = psutil.disk_usage('/dev/shm').free
             if shm_estimate_usage >= threshold_ratio * shm_available:
@@ -4909,7 +5090,7 @@ class SamplerFn:
             self.workers.append(worker)
         if multi_process is True and platform.system().lower() != 'windows':
             self.eot = threading.Event()
-            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.pids))
+            self.watch_dog = threading.Thread(target=_watch_dog, args=(self.eot, self.workers))
             self.watch_dog.daemon = True
             self.watch_dog.start()
 
@@ -4975,7 +5156,7 @@ class SamplerFn:
             yield _convert_row(result)
 
     def _stop_subprocess(self):
-        # Only the main process can call join
+        """Only the main process can call join."""
         if self.need_join is True and self.ppid == os.getpid():
             self.eof.set()
             self.need_join = False
@@ -5390,21 +5571,15 @@ class GeneratorDataset(MappableDataset, TextBaseDataset):
             # get process memory usage
             process = psutil.Process(os.getpid())
             process_memory = process.memory_info().rss
-            sys_memory = psutil.virtual_memory().total
+            sys_memory_free = psutil.virtual_memory().free
 
-            total_memory_maybe_used = process_memory * (self.num_parallel_workers + 1) * valid_num_shards
-            if total_memory_maybe_used / sys_memory > 0.85:
-                valid_num_worker = math.floor(sys_memory * 0.85 / valid_num_shards / process_memory - 1)
+            total_memory_maybe_used = process_memory * self.num_parallel_workers * valid_num_shards
+            if total_memory_maybe_used / sys_memory_free > 0.85:
+                valid_num_worker = math.floor(sys_memory_free * 0.85 / valid_num_shards / process_memory)
                 valid_num_worker = 1 if valid_num_worker <= 0 else valid_num_worker
-                if total_memory_maybe_used / sys_memory > 1.0:
-                    info = "GeneratorDataset num_parallel_workers: " + str(self.num_parallel_workers) + \
-                           " is too large which maybe cause a lot of memory occupation (>100%) during" \
-                           " multi process running. Therefore, it is recommended to" \
-                           " reduce num_parallel_workers to " + str(valid_num_worker) + " or smaller."
-                    raise RuntimeError(info)
                 info = "GeneratorDataset num_parallel_workers: " + str(self.num_parallel_workers) + \
-                       " is too large which maybe cause a lot of memory occupation (>85%) during multi " \
-                       "process running. Therefore, it is recommended to reduce num_parallel_workers to " \
+                       " is too large which maybe cause a lot of memory occupation (>85%) or out of memory(OOM) " \
+                       "during multi process running. Therefore, it is recommended to reduce num_parallel_workers to " \
                        + str(valid_num_worker) + " or smaller."
                 logger.warning(info)
 
@@ -5700,6 +5875,101 @@ class AGNewsDataset(SourceDataset, TextBaseDataset):
     def parse(self, children=None):
         return cde.AGNewsNode(self.dataset_dir, self.usage, self.num_samples, self.shuffle_flag, self.num_shards,
                               self.shard_id)
+
+
+class AmazonReviewDataset(SourceDataset):
+    """
+    A source dataset that reads and parses Amazon Review Polarity and Amazon Review Full datasets.
+
+    The generated dataset has three columns: :py:obj:`[label, title, content]`.
+    The tensor of column :py:obj:`label` is of the string type.
+    The tensor of column :py:obj:`title` is of the string type.
+    The tensor of column :py:obj:`content` is of the string type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the Amazon Review Polarity dataset
+            or the Amazon Review Full dataset.
+        usage (str, optional): Usage of this dataset, can be `train`, `test` or `all` (default= `all`).
+            For Polarity dataset, `train` will read from 3,600,000 train samples,
+            `test` will read from 400,000 test samples,
+            `all` will read from all 4,000,000 samples.
+             For Full dataset, `train` will read from 3,000,000 train samples,
+            `test` will read from 650,000 test samples,
+            `all` will read from all 3,650,000 samples (default=None, all samples).
+        num_samples (int, optional): Number of samples (rows) to be read (default=None, reads the full dataset).
+        shuffle (Union[bool, Shuffle level], optional): Perform reshuffling of the data every epoch
+            (default=Shuffle.GLOBAL).
+            If shuffle is False, no shuffling will be performed;
+            If shuffle is True, the behavior is the same as setting shuffle to be Shuffle.GLOBAL
+            Otherwise, there are two levels of shuffling:
+
+            - Shuffle.GLOBAL: Shuffle both the files and samples.
+
+            - Shuffle.FILES: Shuffle files only.
+        num_shards (int, optional): Number of shards that the dataset will be divided into (default=None).
+            When this argument is specified, `num_samples` reflects the max sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, number set in the  mindspore.dataset.config).
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+
+    Examples:
+        >>> amazon_review_dataset_dir = "/path/to/amazon_review_dataset_dir"
+        >>> dataset = ds.AmazonReviewDataset(dataset_dir=amazon_review_dataset_dir, usage='all')
+
+    About AmazonReview Dataset:
+
+    The Amazon reviews full dataset consists of reviews from Amazon. The data span a period of 18 years, including ~35
+    million reviews up to March 2013. Reviews include product and user information, ratings, and a plaintext review.
+    The dataset is mainly used for text classification, given the content and title, predict the correct star rating.
+
+    The Amazon reviews polarity dataset is constructed by taking review score 1 and 2 as negative, 4 and 5 as positive.
+    Samples of score 3 is ignored. In the dataset, class 1 is the negative and class 2 is the positive.
+
+    The Amazon Reviews Polarity and Amazon Reviews Full datasets have the same directory structures.
+    You can unzip the dataset files into the following structure and read by MindSpore's API:
+
+    .. code-block::
+
+        .
+        └── amazon_review_dir
+             ├── train.csv
+             ├── test.csv
+             └── readme.txt
+
+   Citation:
+
+    .. code-block::
+
+        @article{zhang2015character,
+          title={Character-level convolutional networks for text classification},
+          author={Zhang, Xiang and Zhao, Junbo and LeCun, Yann},
+          journal={Advances in neural information processing systems},
+          volume={28},
+          pages={649--657},
+          year={2015}
+        }
+    """
+
+    @check_amazon_review_dataset
+    def __init__(self, dataset_dir, usage=None, num_samples=None, num_parallel_workers=None, shuffle=Shuffle.GLOBAL,
+                 num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, num_samples=num_samples, shuffle=shuffle,
+                         num_shards=num_shards, shard_id=shard_id, cache=cache)
+        self.dataset_dir = dataset_dir
+        self.usage = replace_none(usage, 'all')
+
+    def parse(self, children=None):
+        return cde.AmazonReviewNode(self.dataset_dir, self.usage, self.num_samples, self.shuffle_flag, self.num_shards,
+                                    self.shard_id)
 
 
 class Cifar10Dataset(MappableDataset):
@@ -6264,6 +6534,84 @@ class USPSDataset(SourceDataset):
                             self.shard_id)
 
 
+class WikiTextDataset(SourceDataset):
+    """
+    A source dataset that reads and parses WikiText2 and WikiText103 datasets.
+
+    The generated dataset has one column :py:obj:`[text]`.
+    The tensor of column :py:obj:`text` is of the string type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        usage (str, optional): Acceptable usages include `train`, `test`, 'valid' and `all`(default=None, all samples).
+        num_samples (int, optional): Number of samples (rows) to read (default=None, reads the full dataset).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, number set in the config).
+        shuffle (Union[bool, Shuffle level], optional): Perform reshuffling of the data every epoch
+            (default=Shuffle.GLOBAL).
+            If shuffle is False, no shuffling will be performed;
+            If shuffle is True, the behavior is the same as setting shuffle to be Shuffle.GLOBAL
+            Otherwise, there are two levels of shuffling:
+
+            - Shuffle.GLOBAL: Shuffle both the files and samples.
+
+            - Shuffle.FILES: Shuffle files only.
+
+        num_shards (int, optional): Number of shards that the dataset will be divided into (default=None).
+            When this argument is specified, 'num_samples' reflects the max sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing.
+            (default=None, which means no cache is used).
+
+    Examples:
+        >>> wiki_text_dataset_dir = "/path/to/wiki_text_dataset_directory"
+        >>> dataset = ds.WikiTextDataset(dataset_dir=wiki_text_dataset_dir, usage='all')
+
+    About WikiTextDataset dataset:
+
+    The WikiText Long Term Dependency Language Modeling Dataset is an English lexicon containing 100 million words.
+    These terms are drawn from Wikipedia's premium and benchmark articles, including versions of Wikitext2 and
+    Wikitext103. For WikiText2, it has 36718 lines in wiki.train.tokens, 4358 lines in wiki.test.tokens and
+    3760 lines in wiki.valid.tokens. For WikiText103, it has 1801350 lines in wiki.train.tokens, 4358 lines in
+    wiki.test.tokens and 3760 lines in wiki.valid.tokens.
+
+    Here is the original WikiText dataset structure.
+    You can unzip the dataset files into this directory structure and read by MindSpore's API.
+
+    .. code-block::
+
+        .
+        └── WikiText2/WikiText103
+             ├── wiki.train.tokens
+             ├── wiki.test.tokens
+             ├── wiki.valid.tokens
+
+    Citation:
+
+    .. code-block::
+
+        @article{merity2016pointer,
+          title={Pointer sentinel mixture models},
+          author={Merity, Stephen and Xiong, Caiming and Bradbury, James and Socher, Richard},
+          journal={arXiv preprint arXiv:1609.07843},
+          year={2016}
+        }
+    """
+
+    @check_wiki_text_dataset
+    def __init__(self, dataset_dir, usage=None, num_samples=None, num_parallel_workers=None, shuffle=Shuffle.GLOBAL,
+                 num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, num_samples=num_samples, shuffle=shuffle,
+                         num_shards=num_shards, shard_id=shard_id, cache=cache)
+        self.dataset_dir = dataset_dir
+        self.usage = replace_none(usage, "all")
+
+    def parse(self, children=None):
+        return cde.WikiTextNode(self.dataset_dir, self.usage, self.num_samples, self.shuffle_flag, self.num_shards,
+                                self.shard_id)
+
+
 class VOCDataset(MappableDataset):
     """
     A source dataset for reading and parsing VOC dataset.
@@ -6464,6 +6812,362 @@ class VOCDataset(MappableDataset):
             for pair in self._class_indexing:
                 self.class_indexing[pair[0]] = pair[1][0]
         return self.class_indexing
+
+
+class _Caltech101Dataset:
+    """
+    Mainly for loading Caltech101 Dataset, and return two rows each time.
+    """
+
+    def __init__(self, dataset_dir, target_type="category", decode=False):
+        self.dataset_dir = os.path.realpath(dataset_dir)
+        self.image_dir = os.path.join(self.dataset_dir, "101_ObjectCategories")
+        self.annotation_dir = os.path.join(self.dataset_dir, "Annotations")
+        self.target_type = target_type
+        if self.target_type == "category":
+            self.column_names = ["image", "category"]
+        elif self.target_type == "annotation":
+            self.column_names = ["image", "annotation"]
+        else:
+            self.column_names = ["image", "category", "annotation"]
+        self.decode = decode
+        self.classes = sorted(os.listdir(self.image_dir))
+        if "BACKGROUND_Google" in self.classes:
+            self.classes.remove("BACKGROUND_Google")
+        name_map = {"Faces": "Faces_2",
+                    "Faces_easy": "Faces_3",
+                    "Motorbikes": "Motorbikes_16",
+                    "airplanes": "Airplanes_Side_2"}
+        self.annotation_classes = [name_map[class_name] if class_name in name_map else class_name
+                                   for class_name in self.classes]
+        self.image_index = []
+        self.image_label = []
+        for i, image_class in enumerate(self.classes):
+            sub_dir = os.path.join(self.image_dir, image_class)
+            if not os.path.isdir(sub_dir) or not os.access(sub_dir, os.R_OK):
+                continue
+            num_images = len(os.listdir(sub_dir))
+            self.image_index.extend(range(1, num_images + 1))
+            self.image_label.extend(num_images * [i])
+
+    def __getitem__(self, index):
+        image_file = os.path.join(self.image_dir, self.classes[self.image_label[index]],
+                                  "image_{:04d}.jpg".format(self.image_index[index]))
+        if not os.path.exists(image_file):
+            raise ValueError("The image file {} does not exist or permission denied!".format(image_file))
+        if self.decode:
+            image = np.asarray(Image.open(image_file).convert("RGB"))
+        else:
+            image = np.fromfile(image_file, dtype=np.uint8)
+
+        if self.target_type == "category":
+            return image, self.image_label[index]
+        annotation_file = os.path.join(self.annotation_dir, self.annotation_classes[self.image_label[index]],
+                                       "annotation_{:04d}.mat".format(self.image_index[index]))
+        if not os.path.exists(annotation_file):
+            raise ValueError("The annotation file {} does not exist or permission denied!".format(annotation_file))
+        annotation = loadmat(annotation_file)["obj_contour"]
+
+        if self.target_type == "annotation":
+            return image, annotation
+        return image, self.image_label[index], annotation
+
+    def __len__(self):
+        return len(self.image_index)
+
+
+class Caltech101Dataset(GeneratorDataset):
+    """
+    A source dataset that reads and parses Caltech101 dataset.
+
+    The columns of the generated dataset depend on the value of `target_type`.
+    When `target_type` is `category`, the columns are :py:obj:`[image, category]`.
+    When `target_type` is `annotation`, the columns are :py:obj:`[image, annotation]`.
+    When `target_type` is `all`, the columns are :py:obj:`[image, category, annotation]`.
+    The tensor of column :py:obj:`image` is of the uint8 type.
+    The tensor of column :py:obj:`category` is of the uint32 type.
+    The tensor of column :py:obj:`annotation` is a 2-dimensional ndarray that stores the contour of the image
+    and consists of a series of points.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset. This root directory contains two
+            subdirectories, one is called 101_ObjectCategories, which stores images,
+            and the other is called Annotations, which stores annotations.
+        target_type (str, optional): Target of the image. If target_type is "category", return category represents
+            the target class. If target_type is "annotation", return annotation.
+            If target_type is "all", return category and annotation (default=None, means "category").
+        num_samples (int, optional): The number of images to be included in the dataset
+            (default=None, all images).
+        num_parallel_workers (int, optional): Number of workers to read the data (default=1).
+        shuffle (bool, optional): Whether or not to perform shuffle on the dataset
+            (default=None, expected order behavior shown in the table).
+        decode (bool, optional): Whether or not to decode the images after reading (default=False).
+        sampler (Sampler, optional): Object used to choose samples from the
+            dataset (default=None, expected order behavior shown in the table).
+        num_shards (int, optional): Number of shards that the dataset will be divided
+            into (default=None). When this argument is specified, `num_samples` reflects
+            the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If target_type is not set correctly.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If sampler and shuffle are specified at the same time.
+        RuntimeError: If sampler and sharding are specified at the same time.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+
+    Note:
+        - This dataset can take in a `sampler`. `sampler` and `shuffle` are mutually exclusive.
+          The table below shows what input arguments are allowed and their expected behavior.
+
+    .. list-table:: Expected Order Behavior of Using `sampler` and `shuffle`
+       :widths: 25 25 50
+       :header-rows: 1
+
+       * - Parameter `sampler`
+         - Parameter `shuffle`
+         - Expected Order Behavior
+       * - None
+         - None
+         - random order
+       * - None
+         - True
+         - random order
+       * - None
+         - False
+         - sequential order
+       * - Sampler object
+         - None
+         - order defined by sampler
+       * - Sampler object
+         - True
+         - not allowed
+       * - Sampler object
+         - False
+         - not allowed
+
+    Examples:
+        >>> caltech101_dataset_directory = "/path/to/caltech101_dataset_directory"
+        >>>
+        >>> # 1) Read all samples (image files) in caltech101_dataset_directory with 8 threads
+        >>> dataset = ds.Caltech101Dataset(dataset_dir=caltech101_dataset_directory, num_parallel_workers=8)
+        >>>
+        >>> # 2) Read all samples (image files) with the target_type "annotation"
+        >>> dataset = ds.Caltech101Dataset(dataset_dir=caltech101_dataset_directory, target_type="annotation")
+
+    About Caltech101Dataset:
+
+    Pictures of objects belonging to 101 categories. About 40 to 800 images per category.
+    Most categories have about 50 images. Collected in September 2003 by Fei-Fei Li, Marco Andreetto,
+    and Marc 'Aurelio Ranzato. The size of each image is roughly 300 x 200 pixels.
+    The official provides the contour data of each object in each picture, which is the annotation.
+
+    .. code-block::
+
+        .
+        └── caltech101_dataset_directory
+            ├── 101_ObjectCategories
+            │    ├── Faces
+            │    │    ├── image_0001.jpg
+            │    │    ├── image_0002.jpg
+            │    │    ...
+            │    ├── Faces_easy
+            │    │    ├── image_0001.jpg
+            │    │    ├── image_0002.jpg
+            │    │    ...
+            │    ├── ...
+            └── Annotations
+                 ├── Airplanes_Side_2
+                 │    ├── annotation_0001.mat
+                 │    ├── annotation_0002.mat
+                 │    ...
+                 ├── Faces_2
+                 │    ├── annotation_0001.mat
+                 │    ├── annotation_0002.mat
+                 │    ...
+                 ├── ...
+
+    Citation:
+
+    .. code-block::
+
+        @article{FeiFei2004LearningGV,
+        author    = {Li Fei-Fei and Rob Fergus and Pietro Perona},
+        title     = {Learning Generative Visual Models from Few Training Examples:
+                    An Incremental Bayesian Approach Tested on 101 Object Categories},
+        journal   = {Computer Vision and Pattern Recognition Workshop},
+        year      = {2004},
+        url       = {http://www.vision.caltech.edu/Image_Datasets/Caltech101/},
+        }
+    """
+
+    @check_caltech101_dataset
+    def __init__(self, dataset_dir, target_type=None, num_samples=None, num_parallel_workers=1,
+                 shuffle=None, decode=False, sampler=None, num_shards=None, shard_id=None):
+        self.dataset_dir = dataset_dir
+        self.target_type = replace_none(target_type, "category")
+        self.decode = replace_none(decode, False)
+        dataset = _Caltech101Dataset(self.dataset_dir, self.target_type, self.decode)
+        super().__init__(dataset, column_names=dataset.column_names, num_samples=num_samples,
+                         num_parallel_workers=num_parallel_workers, shuffle=shuffle, sampler=sampler,
+                         num_shards=num_shards, shard_id=shard_id)
+
+    def get_class_indexing(self):
+        """
+        Get the class index.
+
+        Returns:
+            dict, a str-to-int mapping from label name to index.
+        """
+        class_dict = {'Faces': 0, 'Faces_easy': 1, 'Leopards': 2, 'Motorbikes': 3, 'accordion': 4, 'airplanes': 5,
+                      'anchor': 6, 'ant': 7, 'barrel': 8, 'bass': 9, 'beaver': 10, 'binocular': 11, 'bonsai': 12,
+                      'brain': 13, 'brontosaurus': 14, 'buddha': 15, 'butterfly': 16, 'camera': 17, 'cannon': 18,
+                      'car_side': 19, 'ceiling_fan': 20, 'cellphone': 21, 'chair': 22, 'chandelier': 23,
+                      'cougar_body': 24, 'cougar_face': 25, 'crab': 26, 'crayfish': 27, 'crocodile': 28,
+                      'crocodile_head': 29, 'cup': 30, 'dalmatian': 31, 'dollar_bill': 32, 'dolphin': 33,
+                      'dragonfly': 34, 'electric_guitar': 35, 'elephant': 36, 'emu': 37, 'euphonium': 38, 'ewer': 39,
+                      'ferry': 40, 'flamingo': 41, 'flamingo_head': 42, 'garfield': 43, 'gerenuk': 44, 'gramophone': 45,
+                      'grand_piano': 46, 'hawksbill': 47, 'headphone': 48, 'hedgehog': 49, 'helicopter': 50, 'ibis': 51,
+                      'inline_skate': 52, 'joshua_tree': 53, 'kangaroo': 54, 'ketch': 55, 'lamp': 56, 'laptop': 57,
+                      'llama': 58, 'lobster': 59, 'lotus': 60, 'mandolin': 61, 'mayfly': 62, 'menorah': 63,
+                      'metronome': 64, 'minaret': 65, 'nautilus': 66, 'octopus': 67, 'okapi': 68, 'pagoda': 69,
+                      'panda': 70, 'pigeon': 71, 'pizza': 72, 'platypus': 73, 'pyramid': 74, 'revolver': 75,
+                      'rhino': 76, 'rooster': 77, 'saxophone': 78, 'schooner': 79, 'scissors': 80, 'scorpion': 81,
+                      'sea_horse': 82, 'snoopy': 83, 'soccer_ball': 84, 'stapler': 85, 'starfish': 86,
+                      'stegosaurus': 87, 'stop_sign': 88, 'strawberry': 89, 'sunflower': 90, 'tick': 91,
+                      'trilobite': 92, 'umbrella': 93, 'watch': 94, 'water_lilly': 95, 'wheelchair': 96, 'wild_cat': 97,
+                      'windsor_chair': 98, 'wrench': 99, 'yin_yang': 100}
+        return class_dict
+
+
+class Caltech256Dataset(MappableDataset):
+    """
+    A source dataset that reads and parses Caltech256 dataset.
+
+    The generated dataset has two columns: :py:obj:`[image, label]`.
+    The tensor of column :py:obj:`image` is of the uint8 type.
+    The tensor of column :py:obj:`label` is of the uint32 type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        num_samples (int, optional): The number of images to be included in the dataset
+            (default=None, all images).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, set in the config).
+        shuffle (bool, optional): Whether or not to perform shuffle on the dataset
+            (default=None, expected order behavior shown in the table).
+        decode (bool, optional): Whether or not to decode the images after reading (default=False).
+        sampler (Sampler, optional): Object used to choose samples from the
+            dataset (default=None, expected order behavior shown in the table).
+        num_shards (int, optional): Number of shards that the dataset will be divided
+            into (default=None). When this argument is specified, `num_samples` reflects
+            the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing.
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If sampler and shuffle are specified at the same time.
+        RuntimeError: If sampler and sharding are specified at the same time.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+
+    Note:
+        - This dataset can take in a `sampler`. `sampler` and `shuffle` are mutually exclusive.
+          The table below shows what input arguments are allowed and their expected behavior.
+
+    .. list-table:: Expected Order Behavior of Using `sampler` and `shuffle`
+       :widths: 25 25 50
+       :header-rows: 1
+
+       * - Parameter `sampler`
+         - Parameter `shuffle`
+         - Expected Order Behavior
+       * - None
+         - None
+         - random order
+       * - None
+         - True
+         - random order
+       * - None
+         - False
+         - sequential order
+       * - Sampler object
+         - None
+         - order defined by sampler
+       * - Sampler object
+         - True
+         - not allowed
+       * - Sampler object
+         - False
+         - not allowed
+
+    Examples:
+        >>> caltech256_dataset_dir = "/path/to/caltech256_dataset_directory"
+        >>>
+        >>> # 1) Read all samples (image files) in caltech256_dataset_dir with 8 threads
+        >>> dataset = ds.Caltech256Dataset(dataset_dir=caltech256_dataset_dir, num_parallel_workers=8)
+
+    About Caltech256Dataset:
+
+    Caltech-256 is an object recognition dataset containing 30,607 real-world images, of different sizes,
+    spanning 257 classes (256 object classes and an additional clutter class).
+    Each class is represented by at least 80 images. The dataset is a superset of the Caltech-101 dataset.
+
+    .. code-block::
+
+        .
+        └── caltech256_dataset_directory
+             ├── 001.ak47
+             │    ├── 001_0001.jpg
+             │    ├── 001_0002.jpg
+             │    ...
+             ├── 002.american-flag
+             │    ├── 002_0001.jpg
+             │    ├── 002_0002.jpg
+             │    ...
+             ├── 003.backpack
+             │    ├── 003_0001.jpg
+             │    ├── 003_0002.jpg
+             │    ...
+             ├── ...
+
+    Citation:
+
+    .. code-block::
+
+        @article{griffin2007caltech,
+        title     = {Caltech-256 object category dataset},
+        added-at  = {2021-01-21T02:54:42.000+0100},
+        author    = {Griffin, Gregory and Holub, Alex and Perona, Pietro},
+        biburl    = {https://www.bibsonomy.org/bibtex/21f746f23ff0307826cca3e3be45f8de7/s364315},
+        interhash = {bfe1e648c1778c04baa60f23d1223375},
+        intrahash = {1f746f23ff0307826cca3e3be45f8de7},
+        publisher = {California Institute of Technology},
+        timestamp = {2021-01-21T02:54:42.000+0100},
+        year      = {2007}
+        }
+    """
+
+    @check_caltech256_dataset
+    def __init__(self, dataset_dir, num_samples=None, num_parallel_workers=None, shuffle=None, decode=False,
+                 sampler=None, num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, sampler=sampler, num_samples=num_samples,
+                         shuffle=shuffle, num_shards=num_shards, shard_id=shard_id, cache=cache)
+
+        self.dataset_dir = dataset_dir
+        self.decode = replace_none(decode, False)
+
+    def parse(self, children=None):
+        return cde.Caltech256Node(self.dataset_dir, self.decode, self.sampler)
 
 
 class CocoDataset(MappableDataset):
@@ -6820,7 +7524,7 @@ class CelebADataset(MappableDataset):
     CelebA has large diversities, large quantities, and rich annotations, including
 
     * 10,177 number of identities,
-    * 202,599 number of face images, and
+    * 202,599 number of face images,
     * 5 landmark locations, 40 binary attributes annotations per image.
 
     The dataset can be employed as the training and test sets for the following computer
@@ -9105,6 +9809,158 @@ class DIV2KDataset(MappableDataset):
         return cde.DIV2KNode(self.dataset_dir, self.usage, self.downgrade, self.scale, self.decode, self.sampler)
 
 
+class WIDERFaceDataset(MappableDataset):
+    """
+    A source dataset for reading and parsing WIDERFace dataset.
+
+    When usage is "train", "valid" or "all", the generated dataset has eight columns ["image", "bbox", "blur",
+    "expression", "illumination", "occlusion", "pose", "invalid"]. When usage is "test", it only has one column
+    ["image"].
+    The tensor of column :py:obj:`image` is a vector of the uint8 type.
+    The tensor of column :py:obj:`bbox` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`blur` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`expression` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`illumination` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`occlusion` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`pose` is a scalar of the uint32 type.
+    The tensor of column :py:obj:`invalid` is a scalar of the uint32 type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        usage (str, optional): Usage of this dataset, can be `train`, `test`, `valid` or `all`. `train` will read
+            from 12,880 samples, `test` will read from 16,097 samples, `valid` will read from 3,226 test samples
+            and `all` will read all `train` and `valid` samples (default=None, will be set to `all`).
+        num_samples (int, optional): The number of images to be included in the dataset
+            (default=None, will read all images).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, will use value set in the config).
+        shuffle (bool, optional): Whether or not to perform shuffle on the dataset
+            (default=None, expected order behavior shown in the table).
+        decode (bool, optional): Decode the images after reading (default=False).
+        sampler (Sampler, optional): Object used to choose samples from the dataset
+            (default=None, expected order behavior shown in the table).
+        num_shards (int, optional): Number of shards that the dataset will be divided into (default=None).
+            When this argument is specified, `num_samples` reflects the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within `num_shards` (default=None). This argument can only be specified
+            when `num_shards` is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If dataset_dir does not contain data files.
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If sampler and shuffle are specified at the same time.
+        RuntimeError: If sampler and sharding are specified at the same time.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+        ValueError: If usage is not in [`train`, `test`, `valid`, `all`].
+        ValueError: If annotation_file is not exist.
+        ValueError: If dataset_dir is not exist.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+
+    Note:
+        - This dataset can take in a `sampler`. `sampler` and `shuffle` are mutually exclusive.
+          The table below shows what input arguments are allowed and their expected behavior.
+
+    .. list-table:: Expected Order Behavior of Using `sampler` and `shuffle`
+       :widths: 25 25 50
+       :header-rows: 1
+
+       * - Parameter `sampler`
+         - Parameter `shuffle`
+         - Expected Order Behavior
+       * - None
+         - None
+         - random order
+       * - None
+         - True
+         - random order
+       * - None
+         - False
+         - sequential order
+       * - Sampler object
+         - None
+         - order defined by sampler
+       * - Sampler object
+         - True
+         - not allowed
+       * - Sampler object
+         - False
+         - not allowed
+
+    Examples:
+        >>> wider_face_dir = "/path/to/wider_face_dataset"
+        >>>
+        >>> # Read 3 samples from WIDERFace dataset
+        >>> dataset = ds.WIDERFaceDataset(dataset_dir=wider_face_dir, num_samples=3)
+
+    About WIDERFace dataset:
+
+    The WIDERFace database of people faces has a training set of 12,880 samples, a testing set of 16,097 examples
+    and a validating set of 3,226 examples. It is a subset of a larger set available from WIDER. The digits have
+    been size-normalized and centered in a fixed-size image.
+
+    The following is the original WIDERFace dataset structure.
+    You can unzip the dataset files into this directory structure and read by MindSpore's API.
+
+    .. code-block::
+
+        .
+        └── wider_face_dir
+             ├── WIDER_test
+             │    └── images
+             │         ├── 0--Parade
+             │         │     ├── 0_Parade_marchingband_1_9.jpg
+             │         │     ├── ...
+             │         ├──1--Handshaking
+             │         ├──...
+             ├── WIDER_train
+             │    └── images
+             │         ├── 0--Parade
+             │         │     ├── 0_Parade_marchingband_1_11.jpg
+             │         │     ├── ...
+             │         ├──1--Handshaking
+             │         ├──...
+             ├── WIDER_val
+             │    └── images
+             │         ├── 0--Parade
+             │         │     ├── 0_Parade_marchingband_1_102.jpg
+             │         │     ├── ...
+             │         ├──1--Handshaking
+             │         ├──...
+             └── wider_face_split
+                  ├── wider_face_test_filelist.txt
+                  ├── wider_face_train_bbx_gt.txt
+                  └── wider_face_val_bbx_gt.txt
+
+    Citation:
+
+    .. code-block::
+
+        @inproceedings{2016WIDER,
+          title={WIDER FACE: A Face Detection Benchmark},
+          author={Yang, S. and Luo, P. and Loy, C. C. and Tang, X.},
+          booktitle={IEEE},
+          pages={5525-5533},
+          year={2016},
+        }
+    """
+
+    @check_wider_face_dataset
+    def __init__(self, dataset_dir, usage=None, num_samples=None, num_parallel_workers=None, shuffle=None,
+                 decode=False, sampler=None, num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, sampler=sampler, num_samples=num_samples,
+                         shuffle=shuffle, num_shards=num_shards, shard_id=shard_id, cache=cache)
+
+        self.dataset_dir = dataset_dir
+        self.usage = replace_none(usage, "all")
+        self.decode = replace_none(decode, False)
+
+    def parse(self, children=None):
+        return cde.WIDERFaceNode(self.dataset_dir, self.usage, self.decode, self.sampler)
+
+
 class YelpReviewDataset(SourceDataset, TextBaseDataset):
     """
     A source dataset that reads and parses Yelp Review Polarity and Yelp Review Full dataset.
@@ -9339,6 +10195,126 @@ class YesNoDataset(MappableDataset):
 
     def parse(self, children=None):
         return cde.YesNoNode(self.dataset_dir, self.sampler)
+
+
+class SemeionDataset(MappableDataset):
+    """
+    A source dataset for reading and parsing Semeion dataset.
+
+    The generated dataset has two columns :py:obj:`[image, label]`.
+    The tensor of column :py:obj:`image` is of the uint8 type.
+    The tensor of column :py:obj:`label` is a scalar of the uint32 type.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        num_samples (int, optional): The number of samples to be included in the dataset
+            (default=None, will read all images).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, number set in the config).
+        shuffle (bool, optional): Whether to perform shuffle on the dataset (default=None, expected
+            order behavior shown in the table).
+        sampler (Sampler, optional): Object used to choose samples from the
+            dataset (default=None, expected order behavior shown in the table).
+        num_shards (int, optional): Number of shards that the dataset will be divided
+            into (default=None). When this argument is specified, `num_samples` reflects
+            the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Raises:
+        RuntimeError: If num_parallel_workers exceeds the max thread numbers.
+        RuntimeError: If sampler and shuffle are specified at the same time.
+        RuntimeError: If sampler and sharding are specified at the same time.
+        RuntimeError: If num_shards is specified but shard_id is None.
+        RuntimeError: If shard_id is specified but num_shards is None.
+        ValueError: If shard_id is invalid (< 0 or >= num_shards).
+
+    Note:
+        - This dataset can take in a `sampler`. `sampler` and `shuffle` are mutually exclusive.
+          The table below shows what input arguments are allowed and their expected behavior.
+
+    .. list-table:: Expected Order Behavior of Using `sampler` and `shuffle`
+       :widths: 25 25 50
+       :header-rows: 1
+
+       * - Parameter `sampler`
+         - Parameter `shuffle`
+         - Expected Order Behavior
+       * - None
+         - None
+         - random order
+       * - None
+         - True
+         - random order
+       * - None
+         - False
+         - sequential order
+       * - Sampler object
+         - None
+         - order defined by sampler
+       * - Sampler object
+         - True
+         - not allowed
+       * - Sampler object
+         - False
+         - not allowed
+
+    Examples:
+        >>> semeion_dataset_dir = "/path/to/semeion_dataset_directory"
+        >>>
+        >>> # 1) Get all samples from SEMEION dataset in sequence
+        >>> dataset = ds.SemeionDataset(dataset_dir=semeion_dataset_dir, shuffle=False)
+        >>>
+        >>> # 2) Randomly select 10 samples from SEMEION dataset
+        >>> dataset = ds.SemeionDataset(dataset_dir=semeion_dataset_dir, num_samples=10, shuffle=True)
+        >>>
+        >>> # 3) Get samples from SEMEION dataset for shard 0 in a 2-way distributed training
+        >>> dataset = ds.SemeionDataset(dataset_dir=semeion_dataset_dir, num_shards=2, shard_id=0)
+        >>>
+        >>> # In SEMEION dataset, each dictionary has keys: image, label.
+
+    About SEMEION dataset:
+
+    The dataset was created by Tactile Srl, Brescia, Italy (http://www.tattile.it) and donated in 1994
+    to Semeion Research Center of Sciences of Communication, Rome, Italy (http://www.semeion.it),
+    for machine learning research.
+
+    This dataset consists of 1593 records (rows) and 256 attributes (columns). Each record represents
+    a handwritten digit, originally scanned with a resolution of 256 grey scale. Each pixel of the each
+    original scanned image was first stretched, and after scaled between 0 and 1
+    (setting to 0 every pixel whose value was under the value 127 of the grey scale (127 included)
+    and setting to 1 each pixel whose original value in the grey scale was over 127). Finally, each binary image
+    was scaled again into a 16x16 square box (the final 256 binary attributes).
+
+    .. code-block::
+
+        .
+        └── semeion_dataset_dir
+            └──semeion.data
+            └──semeion.names
+
+    Citation:
+
+    .. code-block::
+
+        @article{
+          title={The Theory of Independent Judges, in Substance Use & Misuse 33(2)1998, pp 439-461},
+          author={M Buscema, MetaNet},
+        }
+    """
+
+    @check_semeion_dataset
+    def __init__(self, dataset_dir, num_samples=None, num_parallel_workers=None, shuffle=None,
+                 sampler=None, num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, sampler=sampler, num_samples=num_samples,
+                         shuffle=shuffle, num_shards=num_shards, shard_id=shard_id, cache=cache)
+
+        self.dataset_dir = dataset_dir
+
+    def parse(self, children=None):
+        return cde.SemeionNode(self.dataset_dir, self.sampler)
 
 
 class TedliumDataset(MappableDataset):
@@ -9833,6 +10809,82 @@ class STL10Dataset(MappableDataset):
 
     def parse(self, children=None):
         return cde.STL10Node(self.dataset_dir, self.usage, self.sampler)
+
+
+class EnWik9Dataset(SourceDataset):
+    """
+    A source dataset that reads and parses EnWik9 dataset.
+
+    The generated dataset has one column :py:obj:`[text]` with type string.
+
+    Args:
+        dataset_dir (str): Path to the root directory that contains the dataset.
+        num_samples (int, optional): The number of samples to be included in the dataset
+            (default=None, will include all samples).
+        num_parallel_workers (int, optional): Number of workers to read the data
+            (default=None, number set in the config).
+        shuffle (Union[bool, Shuffle level], optional): Perform reshuffling of the data every epoch
+            (default=True).
+            If shuffle is False, no shuffling will be performed;
+            If shuffle is True, the behavior is the same as setting shuffle to be Shuffle.GLOBAL
+            Otherwise, there are two levels of shuffling:
+
+            - Shuffle.GLOBAL: Shuffle both the files and samples.
+
+            - Shuffle.FILES: Shuffle files only.
+
+        num_shards (int, optional): Number of shards that the dataset will be divided into (default=None).
+            When this argument is specified, `num_samples` reflects the maximum sample number of per shard.
+        shard_id (int, optional): The shard ID within num_shards (default=None). This
+            argument can only be specified when num_shards is also specified.
+        cache (DatasetCache, optional): Use tensor caching service to speed up dataset processing
+            (default=None, which means no cache is used).
+
+    Examples:
+        >>> en_wik9_dataset_dir = "/path/to/en_wik9_dataset"
+        >>> dataset2 = ds.EnWik9Dataset(dataset_dir=en_wik9_dataset_dir, num_samples=2,
+        ...                             shuffle=True)
+
+    About EnWik9 dataset:
+
+    The data of EnWik9 is UTF-8 encoded XML consisting primarily of English text. It contains 243,426 article titles,
+    of which 85,560 are #REDIRECT to fix broken links, and the rest are regular articles.
+
+    The data is UTF-8 clean. All characters are in the range U'0000 to U'10FFFF with valid encodings of 1 to
+    4 bytes. The byte values 0xC0, 0xC1, and 0xF5-0xFF never occur. Also, in the Wikipedia dumps,
+    there are no control characters in the range 0x00-0x1F except for 0x09 (tab) and 0x0A (linefeed).
+    Linebreaks occur only on paragraph boundaries, so they always have a semantic purpose.
+
+    You can unzip the dataset files into the following directory structure and read by MindSpore's API.
+
+    .. code-block::
+
+        .
+        └── EnWik9
+             ├── enwik9
+
+    Citation:
+
+    .. code-block::
+
+        @NetworkResource{Hutter_prize,
+        author    = {English Wikipedia},
+        url       = "https://cs.fit.edu/~mmahoney/compression/textdata.html",
+        month     = {March},
+        year      = {2006}
+        }
+    """
+
+    @check_en_wik9_dataset
+    def __init__(self, dataset_dir, num_samples=None, num_parallel_workers=None, shuffle=True,
+                 num_shards=None, shard_id=None, cache=None):
+        super().__init__(num_parallel_workers=num_parallel_workers, num_samples=num_samples, shuffle=shuffle,
+                         num_shards=num_shards, shard_id=shard_id, cache=cache)
+        self.dataset_dir = dataset_dir
+
+    def parse(self, children=None):
+        return cde.EnWik9Node(self.dataset_dir, self.num_samples, self.shuffle_flag, self.num_shards,
+                              self.shard_id)
 
 
 class YahooAnswersDataset(SourceDataset):

@@ -25,15 +25,6 @@
 #include "src/control_flow/exit_subgraph_kernel.h"
 
 namespace mindspore::lite {
-bool ControlFlowScheduler::IsNonTailCallSubGraph(kernel::SubGraphKernel *subgraph_kernel) {
-  if (subgraph_kernel == nullptr) {
-    return false;
-  }
-  auto nodes = subgraph_kernel->nodes();
-  return std::any_of(nodes.begin(), nodes.end(),
-                     [](kernel::LiteKernel *node) { return kernel::LiteKernelUtil::IsNonTailCall(node); });
-}
-
 int ControlFlowScheduler::SplitNonTailCallSubGraphs(std::vector<kernel::LiteKernel *> *dst_kernels) {
   std::set<kernel::LiteKernel *> all_non_tail_subgraphs = GetNonTailCallSubGraphs(dst_kernels);
   for (auto item : all_non_tail_subgraphs) {
@@ -59,7 +50,7 @@ int ControlFlowScheduler::SplitNonTailCallSubGraphs(std::vector<kernel::LiteKern
     AppendToProcessQ(&new_subgraphs, &all_non_tail_subgraphs);
   }
 
-  RemoveUselessKernels(dst_kernels, all_non_tail_subgraphs);
+  RemoveUselessKernels(dst_kernels, &all_non_tail_subgraphs);
 
   return RecordNonTailCallLinkInfo();
 }
@@ -79,7 +70,7 @@ std::set<kernel::LiteKernel *> ControlFlowScheduler::GetNonTailCallSubGraphs(
     if (subgraph_kernel == nullptr) {
       continue;
     }
-    if (!IsNonTailCallSubGraph(subgraph_kernel)) {
+    if (!kernel::LiteKernelUtil::IsNonTailCallSubGraph(subgraph_kernel)) {
       continue;
     }
     non_tail_subgraph_kernels.insert(kernel);
@@ -128,14 +119,25 @@ int ControlFlowScheduler::SplitSingleNonTailCallSubGraph(kernel::SubGraphKernel 
 }
 
 void ControlFlowScheduler::RemoveUselessKernels(std::vector<kernel::LiteKernel *> *dst_kernels,
-                                                const std::set<kernel::LiteKernel *> &useless_kernels) {
+                                                std::set<kernel::LiteKernel *> *useless_kernels) {
   for (auto iter = dst_kernels->begin(); iter != dst_kernels->end();) {
-    if (useless_kernels.find(*iter) != useless_kernels.end()) {
+    if (useless_kernels->find(*iter) != useless_kernels->end()) {
       iter = dst_kernels->erase(iter);
     } else {
       iter++;
     }
   }
+
+  for (auto &kernel : *useless_kernels) {
+    auto subgraph_kernel = reinterpret_cast<kernel::SubGraphKernel *>(kernel);
+    if (subgraph_kernel == nullptr) {
+      continue;
+    }
+    subgraph_kernel->set_nodes({});
+    delete subgraph_kernel;
+  }
+  useless_kernels->clear();
+
   return;
 }
 
@@ -172,8 +174,14 @@ int ControlFlowScheduler::RecordNonTailCallLinkInfo() {
   return RET_OK;
 }
 
-void ControlFlowScheduler::RecordPartialNodeCallMoreThanOnce(kernel::LiteKernel *partial_node) {
-  more_than_once_called_partial_nodes_.insert(partial_node);
+void ControlFlowScheduler::RecordSubgraphCaller(const size_t &subgraph_index, kernel::LiteKernel *partial_node) {
+  if (more_than_once_called_partial_nodes_.find(subgraph_index) == more_than_once_called_partial_nodes_.end()) {
+    std::set<kernel::LiteKernel *> tmp_set{partial_node};
+    more_than_once_called_partial_nodes_.insert(
+      std::pair<size_t, std::set<kernel::LiteKernel *>>{subgraph_index, tmp_set});
+  } else {
+    more_than_once_called_partial_nodes_[subgraph_index].insert(partial_node);
+  }
 }
 
 kernel::SubGraphKernel *ControlFlowScheduler::CreateEntranceSubGraph(kernel::SubGraphKernel *subgraph,
@@ -222,7 +230,6 @@ kernel::SubGraphKernel *ControlFlowScheduler::CreateExitSubGraph(kernel::SubGrap
       MS_LOG(ERROR) << "new Tensor failed.";
       return nullptr;
     }
-
     src_tensors_->push_back(new_tensor);
     new_output_tensors.push_back(new_tensor);
     kernel::LiteKernelUtil::ReplaceSubGraphNodesOutTensor(subgraph, old_tensor, new_tensor);
@@ -234,22 +241,36 @@ kernel::SubGraphKernel *ControlFlowScheduler::CreateExitSubGraph(kernel::SubGrap
 }
 
 int ControlFlowScheduler::BuildBoundaryForMultipleCalledGraph(std::vector<kernel::LiteKernel *> *dst_kernels) {
-  for (auto node : more_than_once_called_partial_nodes_) {
-    kernel::PartialFusionKernel *partial = reinterpret_cast<kernel::PartialFusionKernel *>(node->kernel());
+  kernel::LiteKernelUtil::FindAllInoutKernels(*dst_kernels);
+
+  for (auto item : more_than_once_called_partial_nodes_) {
+    if (item.second.size() == 1) {
+      MS_LOG(DEBUG) << "subgraph call only once.";
+      continue;
+    }
+    auto node = item.second.begin();
+    kernel::PartialFusionKernel *partial = reinterpret_cast<kernel::PartialFusionKernel *>((*node)->kernel());
     MS_CHECK_TRUE_MSG(partial != nullptr, RET_ERROR, "cast to partial node failed.");
     auto aim_kernels = partial->subgraph_kernels();
     MS_CHECK_TRUE_MSG(aim_kernels.size() == 1, RET_ERROR, "partial subgraph kernels size not right.");
     auto subgraph = reinterpret_cast<kernel::SubGraphKernel *>(aim_kernels.front());
     MS_CHECK_TRUE_MSG(subgraph != nullptr, RET_ERROR, "subgraph is nullptr");
-    if (!IsNonTailCallSubGraph(subgraph)) {
-      MS_LOG(DEBUG) << "graph not split, no need add entrance and exit subgraph kernel.";
+    if (kernel::LiteKernelUtil::IsTailCallSubGraph(subgraph)) {
+      MS_LOG(DEBUG) << "tail call graph or output graph no need to build boundary.";
       continue;
     }
 
-    if (subgraph_kernel_and_exit_kernel_.find(subgraph) != subgraph_kernel_and_exit_kernel_.end()) {
-      auto exit_kernel = subgraph_kernel_and_exit_kernel_.at(subgraph);
-      auto exit_subgraph = reinterpret_cast<kernel::ExitSubGraphKernel *>(exit_kernel);
-      exit_subgraph->SetPartial(node);
+    std::vector<kernel::LiteKernel *> all_call_nodes{};
+    for (auto partial_node : item.second) {
+      auto call_node = kernel::LiteKernelUtil::GetPartialOutputCall(partial_node);
+      all_call_nodes.push_back(call_node);
+    }
+
+    // all of the caller is tail call, continue
+    if (kernel::LiteKernelUtil::IsOutputSubGraph(subgraph) &&
+        std::all_of(all_call_nodes.begin(), all_call_nodes.end(),
+                    [](kernel::LiteKernel *call_node) { return kernel::LiteKernelUtil::IsTailCall(call_node); })) {
+      MS_LOG(DEBUG) << "graph is output graph and caller is tail call, no need to build boundary.";
       continue;
     }
 
@@ -260,6 +281,7 @@ int ControlFlowScheduler::BuildBoundaryForMultipleCalledGraph(std::vector<kernel
       return RET_NULL_PTR;
     }
     link_tensor->set_tensor_name(subgraph->name() + "_link_tensor");
+    link_tensor->set_category(Category::CONST_TENSOR);
     src_tensors_->push_back(link_tensor);
 
     auto entrance_subgraph = CreateEntranceSubGraph(subgraph, link_tensor);
@@ -278,14 +300,20 @@ int ControlFlowScheduler::BuildBoundaryForMultipleCalledGraph(std::vector<kernel
     exit_subgraph->set_name(subgraph->name() + "_exit");
     dst_kernels->push_back(exit_subgraph);
 
-    subgraph_kernel_and_exit_kernel_[subgraph] = exit_subgraph;
-
     // update partial's subgraph kernels
     std::vector<kernel::LiteKernel *> subgraph_kernels{};
     subgraph_kernels.push_back(entrance_subgraph);
     subgraph_kernels.push_back(subgraph);
     subgraph_kernels.push_back(exit_subgraph);
-    partial->set_subgraph_kernels(subgraph_kernels);
+
+    // record partial nodes of this subgraph.
+    auto exit_subgraph_kernel = reinterpret_cast<kernel::ExitSubGraphKernel *>(exit_subgraph);
+    for (auto partial_node : item.second) {
+      exit_subgraph_kernel->SetPartial(partial_node);
+      auto partial_kernel = reinterpret_cast<kernel::PartialFusionKernel *>(partial_node->kernel());
+      MS_CHECK_TRUE_MSG(partial_kernel != nullptr, RET_ERROR, "cast to partial kernel failed.");
+      partial_kernel->set_subgraph_kernels(subgraph_kernels);
+    }
   }
   return RET_OK;
 }

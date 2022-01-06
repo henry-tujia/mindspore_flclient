@@ -65,14 +65,8 @@ std::string GetIfstreamString(const std::ifstream &ifstream) {
 }
 
 bool DumpJsonParser::IsDumpEnabled() {
-  auto single_op = common::GetEnv(kGraphOpRun);
   auto config_path = common::GetEnv(kMindsporeDumpConfig);
   if (config_path.empty()) {
-    return false;
-  }
-  if (!single_op.empty() && single_op == "1") {
-    MS_LOG(WARNING) << "Dump is not supported when task is not sink. Please set env GRAPH_OP_RUN to 0 to enable task "
-                       "sink, so that the data can be dumped.";
     return false;
   }
   MS_LOG(INFO) << "Dump config path is " << config_path;
@@ -206,6 +200,10 @@ void DumpJsonParser::CopyMSCfgJsonToDir(uint32_t rank_id) {
 }
 
 bool DumpJsonParser::GetIterDumpFlag() const { return e2e_dump_enabled_ && IsDumpIter(cur_dump_iter_); }
+
+bool DumpJsonParser::DumpEnabledForIter() const {
+  return ((e2e_dump_enabled_ || async_dump_enabled_) && IsDumpIter(cur_dump_iter_));
+}
 
 bool DumpJsonParser::DumpToFile(const std::string &filename, const void *data, size_t len, const ShapeVector &shape,
                                 TypeId type) {
@@ -478,7 +476,10 @@ void DumpJsonParser::ParseInputOutput(const nlohmann::json &content) {
 
 void DumpJsonParser::ParseKernels(const nlohmann::json &content) {
   CheckJsonArrayType(content, kKernels);
-
+  if (dump_mode_ != DUMP_KERNEL) {
+    MS_LOG(INFO) << "Dump config field <" << kKernels << "> is not used as the dump mode is not 1.";
+    return;
+  }
   for (const auto &kernel : content) {
     auto kernel_str = kernel.dump();
     kernel_str.erase(std::remove(kernel_str.begin(), kernel_str.end(), '\"'), kernel_str.end());
@@ -598,6 +599,8 @@ bool DumpJsonParser::NeedDump(const std::string &op_full_name) const {
         need_dump = true;
       }
       break;
+    default:
+      break;
   }
   return need_dump;
 }
@@ -612,7 +615,7 @@ void DumpJsonParser::MatchKernel(const std::string &kernel_name) {
 }
 
 void DumpJsonParser::PrintUnusedKernel() {
-  if (!e2e_dump_enabled_ && !async_dump_enabled_) {
+  if ((!e2e_dump_enabled_ && !async_dump_enabled_) || dump_mode_ != DUMP_KERNEL) {
     return;
   }
   for (const auto &iter : kernels_) {

@@ -20,7 +20,7 @@ from functools import partial
 from types import FunctionType
 
 from mindspore import context
-from ..._c_expression import EnvInstance_, GradOperation_, HyperMap_, Map_, MultitypeFuncGraph_, Tail_, Shard_, \
+from ..._c_expression import GradOperation_, HyperMap_, Map_, MultitypeFuncGraph_, Tail_, Shard_, \
     TupleAdd_, TupleSlice_, UnpackCall_, ZipOperation_, ListAppend_, TupleGetItemTensor_, ListInsert_
 from ...common import dtype as mstype
 from ...common.api import ms_function, _pynative_executor, _wrap_func
@@ -29,7 +29,7 @@ from ..operations import _grad_ops
 from .. import operations as P
 from .. import signature as sig
 
-__all__ = [EnvInstance_, TupleAdd_, TupleSlice_, UnpackCall_, TupleGetItemTensor_]
+__all__ = [TupleAdd_, TupleSlice_, UnpackCall_, TupleGetItemTensor_]
 
 
 def add_flags(fn=None, **flags):
@@ -211,6 +211,7 @@ class GradOperation(GradOperation_):
     Examples:
         >>> from mindspore import ParameterTuple
         >>> from mindspore.ops.composite import GradOperation
+        >>> from mindspore.ops import operations as P
         >>> class Net(nn.Cell):
         ...     def __init__(self):
         ...         super(Net, self).__init__()
@@ -525,6 +526,7 @@ class MultitypeFuncGraph(MultitypeFuncGraph_):
         >>> from mindspore import Tensor
         >>> from mindspore import ops
         >>> from mindspore import dtype as mstype
+        >>> from mindspore.ops.composite import MultitypeFuncGraph
         >>>
         >>> tensor_add = ops.Add()
         >>> add = MultitypeFuncGraph('add')
@@ -596,7 +598,7 @@ class HyperMap(HyperMap_):
     """
     Hypermap will apply the set operation to input sequences.
 
-    Apply the operations to every elements of the sequence or nested sequence. Different
+    Apply the operations to every element of the sequence or nested sequence. Different
     from `Map`, the `HyperMap` supports to apply on nested structure.
 
     Args:
@@ -624,6 +626,8 @@ class HyperMap(HyperMap_):
         ``Ascend`` ``GPU`` ``CPU``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> from mindspore.ops.composite.base import MultitypeFuncGraph, HyperMap
         >>> from mindspore import dtype as mstype
         >>> nest_tensor_list = ((Tensor(1, mstype.float32), Tensor(2, mstype.float32)),
         ...                     (Tensor(3, mstype.float32), Tensor(4, mstype.float32)))
@@ -683,7 +687,7 @@ class Map(Map_):
 
     Inputs:
         - **args** (Tuple[sequence]) - If `ops` is not `None`, all the inputs should be the same length sequences,
-          and each row of the sequences. e.g. If args length is 2, and for `i` in length of each sequence
+          and each row of the sequences. e.g. If the length of args is 2, and for `i` in length of each sequence
           `(args[0][i], args[1][i])` will be the input of the operation.
 
           If `ops` is `None`, the first input is the operation, and the other is inputs.
@@ -852,7 +856,7 @@ zip_operation = _ZipOperation('zip_operation')
 env_get = MultitypeFuncGraph("env_get")
 
 
-env_getitem = Primitive('env_getitem')
+environ_get = Primitive('EnvironGet')
 ref_to_embed = _grad_ops.RefToEmbed()
 zeros_like = P.ZerosLike()
 
@@ -860,4 +864,4 @@ zeros_like = P.ZerosLike()
 @env_get.register("EnvType", "Tensor")
 def _tensor_env_get(env, parameter):
     """Used to get env."""
-    return env_getitem(env, ref_to_embed(parameter), zeros_like(parameter))
+    return environ_get(env, ref_to_embed(parameter), zeros_like(parameter))

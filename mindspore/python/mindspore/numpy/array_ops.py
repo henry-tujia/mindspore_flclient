@@ -121,7 +121,7 @@ def transpose(a, axes=None):
 
     Raises:
         TypeError: If input arguments have types not specified above.
-        ValueError: If the number of `axes` is not euqal to a.ndim.
+        ValueError: If the number of `axes` is not equal to a.ndim.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -678,7 +678,7 @@ def where(condition, x=None, y=None):
         elements from `y` elsewhere.
 
     Raises:
-        ValueError: if operands cannot be broadcast.
+        ValueError: If operands cannot be broadcast.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -761,7 +761,7 @@ def atleast_1d(*arys):
         Tensor, or list of tensors, each with ``a.ndim >= 1``.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -798,7 +798,7 @@ def atleast_2d(*arys):
         Tensor, or list of tensors, each with ``a.ndim >= 2``.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -838,7 +838,7 @@ def atleast_3d(*arys):
         a 2-D array of shape `(M, N)` becomes a tensor of shape `(M, N, 1)`.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -894,7 +894,7 @@ def stack(arrays, axis=0):
         arrays.
 
     Raises:
-        ValueError: if input is not Tensor, tuple, or list.
+        ValueError: If input is not Tensor, tuple, or list.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -963,8 +963,7 @@ def unique(x, return_inverse=False):
 
     Returns:
         Tensor or tuple of Tensors.
-        - If `return_inverse` is `False`, just return the unique tensor.
-        - If `return_inverse` is `True`, return tuple of tensors.
+        If `return_inverse` is `False`, return the unique tensor, otherwise return tuple of tensors.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1043,14 +1042,14 @@ def roll(a, shift, axis=None):
 
     Args:
         a (Tensor): Input tensor.
-        shift (Union[int, tuple(int)]: The number of places by which elements are
+        shift (Union[int, tuple(int)]): The number of places by which elements are
             shifted. If a tuple, then axis must be a tuple of the same size, and
             each of the given axes is shifted by the corresponding number. If shift
             is an int while axis is a tuple of integers, then the same value is used
             for all given axes.
         axis (Union[int, tuple(int)], optional): Axis or axes along which elements
             are shifted. By default, the array is flattened before shifting, after
-            which the original shape is restored.
+            which the original shape is restored. Default: None.
 
     Returns:
         Tensor, with the same shape as a.
@@ -1146,7 +1145,7 @@ def moveaxis(a, source, destination):
         Tensor, array with moved axes.
 
     Raises:
-        ValueError: if axes are out of the range of ``[-a.ndim, a.ndim)``, or
+        ValueError: If axes are out of the range of ``[-a.ndim, a.ndim)``, or
             if the axes contain duplicates.
 
     Supported Platforms:
@@ -1200,7 +1199,7 @@ def tile(a, reps):
         Tensor, the tiled output array.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1255,7 +1254,7 @@ def broadcast_to(array, shape):
         Tensor, original array broadcast to the given shape.
 
     Raises:
-        ValueError: if array cannot be broadcast to shape.
+        ValueError: If array cannot be broadcast to shape.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1291,7 +1290,7 @@ def broadcast_arrays(*args):
         List of Tensor.
 
     Raises:
-        ValueError: if arrays cannot be broadcast.
+        ValueError: If arrays cannot be broadcast.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1643,7 +1642,7 @@ def flip(m, axis=None):
         Tensor, with the entries of `axis` reversed.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``GPU`` ``CPU``
@@ -1653,16 +1652,16 @@ def flip(m, axis=None):
         >>> A = np.arange(8.0).reshape((2,2,2))
         >>> output = np.flip(A)
         >>> print(output)
-        [[[7. 6]
-        [5. 4]]
-        [[3. 2]
-        [1. 0]]]
+        [[[7. 6.]
+        [5. 4.]]
+        [[3. 2.]
+        [1. 0.]]]
         >>> output = np.flip(A, (0, 2))
         >>> print(output)
-        [[[5. 4]
-        [7. 6]]
-        [[1. 0]
-        [3. 2]]]
+        [[[5. 4.]
+        [7. 6.]]
+        [[1. 0.]
+        [3. 2.]]]
     """
     _check_input_tensor(m)
     ndim = F.rank(m)
@@ -1694,7 +1693,7 @@ def flipud(m):
         Tensor.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``GPU`` ``CPU``
@@ -1724,7 +1723,7 @@ def fliplr(m):
         Tensor.
 
     Raises:
-        TypeError: if the input is not a tensor.
+        TypeError: If the input is not a tensor.
 
     Supported Platforms:
         ``GPU`` ``CPU``
@@ -1762,8 +1761,8 @@ def take_along_axis(arr, indices, axis):
         Tensor, the indexed result, with shape `(Ni…, J, Nk…)`.
 
     Raises:
-        ValueError: if input array and indices have different number of dimensions.
-        TypeError: if the input is not a Tensor.
+        ValueError: If input array and indices have different number of dimensions.
+        TypeError: If the input is not a Tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1844,9 +1843,9 @@ def take(a, indices, axis=None, mode='clip'):
         a (Tensor): Source array with shape `(Ni…, M, Nk…)`.
         indices (Tensor): The indices with shape `(Nj...)` of the values to extract.
         axis (int, optional): The axis over which to select values. By default,
-            the flattened input array is used.
+            the flattened input array is used. Defaults to None.
         mode ('raise', 'wrap', 'clip', optional): Specifies how out-of-bounds
-            indices will behave.
+            indices will behave. Defaults to "clip".
 
             'raise' – raise an error;
 
@@ -1860,8 +1859,8 @@ def take(a, indices, axis=None, mode='clip'):
         Tensor, the indexed result.
 
     Raises:
-        ValueError: if axis is out of range.
-        TypeError: if the input is not a Tensor.
+        ValueError: If axis is out of range.
+        TypeError: If the input is not a Tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1892,15 +1891,15 @@ def repeat(a, repeats, axis=None):
         repeats (int or sequence of ints): The number of repetitions for each element.
             `repeats` is broadcasted to fit the shape of the given axis.
         axis (int, optional): The axis along which to repeat values. By default,
-            use the flattened input array, and return a flat output array.
+            use the flattened input array, and return a flat output array. Defaults to None.
 
     Returns:
         Tensor, output array which has the same shape as `a`, except along the given
         axis.
 
     Raises:
-        ValueError: if axis is out of range.
-        TypeError: if input `a` is not a Tensor.
+        ValueError: If axis is out of range.
+        TypeError: If input `a` is not a Tensor.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -1944,10 +1943,10 @@ def rot90(a, k=1, axes=(0, 1)):
         Tensor.
 
     Raises:
-        TypeError: if input `a` is not a Tensor or
+        TypeError: If input `a` is not a Tensor or
             the argument `k` is not integer or
             the argument `axes` is not tuple of integers or list of ints.
-        ValueError: if any axis is out of range or
+        ValueError: If any axis is out of range or
             the length of `axes` is not `2`.
 
     Supported Platforms:
@@ -2023,7 +2022,7 @@ def select(condlist, choicelist, default=0):
         is `True`.
 
     Raises:
-        ValueError: if ``len(condlist) != len(choicelist)``.
+        ValueError: If ``len(condlist) != len(choicelist)``.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -2136,7 +2135,7 @@ def choose(a, choices, mode='clip'):
         Tensor, the merged result.
 
     Raises:
-        ValueError: if `a` and any of the `choices` cannot be broadcast.
+        ValueError: If `a` and any of the `choices` cannot be broadcast.
 
     Supported Platforms:
         ``Ascend`` ``GPU`` ``CPU``
@@ -2281,7 +2280,7 @@ def apply_along_axis(func1d, axis, arr, *args, **kwargs):
         ``Ascend`` ``GPU`` ``CPU``
 
     Raises:
-        ValueError: if axis is out of the range.
+        ValueError: If axis is out of the range.
 
     Examples:
         >>> import mindspore.numpy as np
@@ -2363,7 +2362,7 @@ def piecewise(x, condlist, funclist, *args, **kw):
         ``Ascend`` ``GPU`` ``CPU``
 
     Raises:
-        ValueError: if length of `funclist` is not in ``(len(condlist), len(condlist) + 1)``
+        ValueError: If length of `funclist` is not in ``(len(condlist), len(condlist) + 1)``
 
     Examples:
         >>> import mindspore.numpy as np
@@ -2405,7 +2404,7 @@ def unravel_index(indices, shape, order='C'):
             are indices into the flattened version of an array of dimensions shape.
         shape (tuple of integers): The shape of the array to use for unraveling indices.
         order (Union['C', 'F'], optional): Determines whether the indices should be viewed as
-            indexing in row-major (C-style) or column-major (Fortran-style) order.
+            indexing in row-major (C-style) or column-major (Fortran-style) order. Defaults to "C".
 
     Returns:
         Tensor, each array in the tuple has the same shape as the indices array.
@@ -2414,7 +2413,7 @@ def unravel_index(indices, shape, order='C'):
         ``Ascend`` ``GPU`` ``CPU``
 
     Raises:
-        ValueError: if `order` is not 'C' or 'F'.
+        ValueError: If `order` is not 'C' or 'F'.
 
     Examples:
         >>> import mindspore.numpy as np

@@ -85,6 +85,7 @@ class LiteOpActor : public OpActor<lite::Tensor> {
   virtual void InitInputData();
   void SetOutputData(OpContext<Tensor> *context);
   virtual void AsyncOutput(OpContext<Tensor> *context);
+  void SetTensorShape(Tensor *dst, Tensor *src);
 
   int CompileArrowThroughOutputTensors(
     const std::unordered_map<void *, std::set<std::pair<AID, size_t>>> &receivers_map);
@@ -94,6 +95,7 @@ class LiteOpActor : public OpActor<lite::Tensor> {
   virtual int PrepareOutputData();
 #ifndef CONTROLFLOW_TENSORLIST_CLIP
   virtual int UpdateActorOutput();
+  void SetTensorListShape(Tensor *dst, Tensor *src);
 #endif
   void MoveTensorInputData(Tensor *dst_tensor, Tensor *src_tensor);
   void MoveInputData(Tensor *dst_tensor, Tensor *src_tensor);
@@ -117,6 +119,7 @@ class LiteOpActor : public OpActor<lite::Tensor> {
   int CreateCommonArrow(const std::unordered_map<void *, std::set<std::pair<AID, size_t>>> &receivers_map,
                         const std::set<void *> &subgraph_inputs_set, const std::set<void *> &receiver_tensors,
                         const size_t &output_index, std::unordered_map<AID, std::set<size_t>> *receiver_index_set);
+  int CreateEmptyArrow(const size_t &output_index);
   bool ArrowHasCompiled(const AID &actor_name, const size_t &to_index,
                         const std::unordered_map<AID, std::set<size_t>> &receiver_index_set);
   void MarkArrowAsCompiled(const AID *actor_name, const size_t *to_index,

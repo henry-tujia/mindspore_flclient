@@ -26,7 +26,7 @@
 #include "utils/ms_context.h"
 #include "utils/context/context_extends.h"
 #include "utils/mpi/mpi_config.h"
-#include "common/trans.h"
+#include "utils/ms_device_shape_transfer.h"
 #include "runtime/rt.h"
 #include "acl/acl_rt.h"
 #include "runtime/device/ascend/ascend_stream_manager.h"
@@ -123,8 +123,7 @@ void AscendEnableDynamicRuntimeCache(const KernelGraph *graph) {
     }
     MS_EXCEPTION_IF_NULL(kernel_info);
     auto runtime_cache = kernel_info->runtime_cache();
-    MS_EXCEPTION_IF_NULL(runtime_cache);
-    runtime_cache->set_valid();
+    runtime_cache.runtime_cache().set_valid();
   }
 }
 }  // namespace
@@ -286,7 +285,7 @@ void AscendKernelRuntime::ReleaseDeviceRes() {
   // DestroyHccl must be called before FreeDeviceMemory
   (void)DestroyHccl();
   if (mem_manager_ != nullptr) {
-    mem_manager_->FreeDeviceMemory();
+    mem_manager_->Finalize();
   }
   mindspore::kernel::AicpuOpKernelLoad::GetInstance().FreeDeviceMemory();
 
@@ -346,7 +345,7 @@ bool AscendKernelRuntime::Init() {
 #endif
     mem_manager_ = std::make_shared<AscendMemoryManager>();
     MS_EXCEPTION_IF_NULL(mem_manager_);
-    mem_manager_->MallocDeviceMemory();
+    mem_manager_->Initialize();
 
     // Set callback func when exception error
     auto rt_ret = rtRegTaskFailCallbackByModule(kModuleName, TaskFailCallback);
@@ -811,8 +810,7 @@ DeviceAddressPtr AscendKernelRuntime::GetInternalDeviceAddress(const session::Ke
     }
     auto output_device_address = AnfAlgo::GetMutableOutputAddr(graph_output.first, 0);
     MS_EXCEPTION_IF_NULL(output_device_address);
-    if (output_device_address->GetPtr() != nullptr &&
-        output_device_address->DeviceType() == DeviceAddressType::kAscend) {
+    if (output_device_address->DeviceType() == DeviceAddressType::kAscend) {
       return output_device_address;
     }
   }
@@ -875,6 +873,33 @@ void AscendKernelRuntime::GenKernelEvents(const session::KernelGraph &graph) {
   }
   ProcessBoundaryEvent(kernels, &kernel_post_run_events, last_stream_nodes);
   graph_kernel_events_map_[graph.graph_id()] = std::move(kernel_events);
+}
+
+std::pair<vector<std::function<void()>>, vector<std::function<void()>>> AscendKernelRuntime::GetKernelEventFuncs(
+  const CNodePtr &kernel) const {
+  std::map<AnfNodePtr, std::vector<std::function<void()>>> kernels_pre_event_funcs;
+  std::map<AnfNodePtr, std::vector<std::function<void()>>> kernels_post_event_funcs;
+  std::vector<std::function<void()>> kernel_pre_event_funcs;
+  std::vector<std::function<void()>> kernel_post_event_funcs;
+
+  auto graph_id = AnfAlgo::GetGraphId(kernel.get());
+  auto events_iter = graph_kernel_events_map_.find(graph_id);
+  if (events_iter != graph_kernel_events_map_.end()) {
+    kernels_pre_event_funcs = events_iter->second.first;
+    kernels_post_event_funcs = events_iter->second.second;
+  }
+
+  auto pre_event_funcs_iter = kernels_pre_event_funcs.find(kernel);
+  if (pre_event_funcs_iter != kernels_pre_event_funcs.end()) {
+    kernel_pre_event_funcs = pre_event_funcs_iter->second;
+  }
+
+  auto post_event_funcs_iter = kernels_post_event_funcs.find(kernel);
+  if (post_event_funcs_iter != kernels_post_event_funcs.end()) {
+    kernel_post_event_funcs = post_event_funcs_iter->second;
+  }
+
+  return std::make_pair(kernel_pre_event_funcs, kernel_post_event_funcs);
 }
 
 void AscendKernelRuntime::ProcessBoundaryEvent(
@@ -1147,8 +1172,9 @@ bool AscendKernelRuntime::HcclInit() {
     return false;
   }
   MS_LOG(INFO) << "MINDSPORE_HCCL_CONFIG_PATH : " << full_path << ", RANK_ID: " << rank_id_str;
-  bool ret = hccl::HcclAdapter::GetInstance().InitHccl(context_ptr->get_param<uint32_t>(MS_CTX_DEVICE_ID), rank_id_str,
-                                                       full_path, mode == kGraphMode);
+  bool ret = hccl::HcclAdapter::GetInstance().InitHccl(
+    context_ptr->get_param<uint32_t>(MS_CTX_DEVICE_ID), rank_id_str, full_path,
+    mode == kGraphMode ? hccl::HcclMode::kGraph : hccl::HcclMode::kPynative);
   free(full_path);
   if (!ret) {
     MS_LOG(ERROR) << "Hcom init failed.";

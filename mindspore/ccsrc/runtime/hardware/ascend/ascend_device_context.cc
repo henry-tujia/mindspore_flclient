@@ -19,6 +19,7 @@
 #include <set>
 #include <unordered_map>
 #include "acl/acl_rt.h"
+#include "runtime/dev.h"
 #include "backend/optimizer/ascend/ascend_backend_optimization.h"
 #include "backend/optimizer/graph_kernel/graph_kernel_optimization.h"
 #include "utils/context/graph_kernel_flags.h"
@@ -28,8 +29,10 @@
 #include "runtime/device/ascend/kernel_build_ascend.h"
 #include "runtime/hardware/ascend/ascend_graph_optimization.h"
 #include "backend/kernel_compiler/ascend_kernel_mod.h"
+#include "backend/kernel_compiler/aicpu/aicpu_kernel_load.h"
 #include "runtime/device/ascend/ascend_bucket.h"
 #include "common/util/error_manager/error_manager.h"
+#include "runtime/device/ascend/ascend_memory_adapter.h"
 
 #ifndef ENABLE_SECURITY
 #include "debug/data_dump/dump_json_parser.h"
@@ -68,6 +71,7 @@ using KernelGraph = mindspore::session::KernelGraph;
 const char kMsVm[] = "vm";
 constexpr size_t kAtomicCleanInputSize = 2;
 constexpr auto kUnknowErrorString = "Unknown error occurred";
+constexpr auto kAscend910 = "ascend910";
 namespace {
 CNodePtr GetNextLabelSet(const std::vector<CNodePtr> &kernel_nodes, uint32_t index) {
   size_t node_sizes = kernel_nodes.size();
@@ -233,44 +237,6 @@ void Dump(const KernelGraphPtr &graph, uint32_t rank_id) {
 }
 #endif
 
-void AscendDeviceContext::DumpAllGraphs(const std::vector<KernelGraphPtr> &all_graphs) const {
-#ifdef ENABLE_DUMP_IR
-  auto context_ptr = MsContext::GetInstance();
-  MS_EXCEPTION_IF_NULL(context_ptr);
-  bool save_graphs = context_ptr->get_param<bool>(MS_CTX_SAVE_GRAPHS_FLAG);
-  auto &json_parser = DumpJsonParser::GetInstance();
-  json_parser.Parse();
-  if (!save_graphs && !json_parser.e2e_dump_enabled() && !json_parser.async_dump_enabled() &&
-      !mindspore::RecorderManager::Instance().RdrEnable()) {
-    return;
-  }
-  for (auto &graph : all_graphs) {
-    MS_EXCEPTION_IF_NULL(graph);
-    std::string name = "graph_build." + std::to_string(graph->graph_id());
-    DumpGraphParams dump_params = {true, static_cast<int>(kWholeStack)};
-    (void)mindspore::RDR::RecordAnfGraph(SUBMODULE_ID, name, graph, dump_params, ".ir;.pb");
-    if (save_graphs) {
-      std::string file_name = "graph_build_" + std::to_string(graph->graph_id()) + ".ir";
-      DumpIR(file_name, graph, true, kWholeStack);
-      DumpIRProto(graph, "vm_build_" + std::to_string(graph->graph_id()));
-      DumpIR("trace_code_graph", graph, true, kWholeStack);
-    }
-    std::string final_graph = "trace_code_graph_" + std::to_string(graph->graph_id());
-    if (json_parser.e2e_dump_enabled() || json_parser.async_dump_enabled()) {
-      std::string root_dir = json_parser.path() + "/rank_" + std::to_string(rank_id_);
-      std::string target_dir = root_dir + "/graphs";
-      std::string cst_file_dir = GenerateDumpPath(graph->root_graph_id(), rank_id_, true);
-      std::string ir_file_path = target_dir + "/" + "ms_output_" + final_graph + ".ir";
-      DumpIRProtoWithSrcInfo(graph, final_graph, target_dir, kDebugWholeStack);
-      DumpConstantInfo(graph, cst_file_dir);
-      DumpIR("trace_code_graph", graph, true, kWholeStack, ir_file_path);
-      DumpGraphExeOrder("ms_execution_order_graph_" + std::to_string(graph->graph_id()) + ".csv", root_dir,
-                        graph->execution_order());
-    }
-  }
-#endif
-}
-
 void AscendDeviceContext::Initialize() {
   MS_LOG(INFO) << "Status record: Enter Initialize...";
   if (initialized_) {
@@ -332,32 +298,33 @@ void AscendDeviceContext::Destroy() {
 std::vector<GraphSegmentPtr> AscendDeviceContext::PartitionGraph(
   const FuncGraphPtr &func_graph, const std::vector<GraphSegmentPtr> &default_partition_segments) {
   MS_EXCEPTION_IF_NULL(func_graph);
-  bool is_multi_graphs_sink = false;
   auto context_ptr = MsContext::GetInstance();
   MS_EXCEPTION_IF_NULL(context_ptr);
-  std::string backend = context_ptr->backend_policy();
-  auto task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
-  if (func_graph->ContainMultiTarget() || !task_sink) {
-    context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, false);
-    context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, false);
-  } else if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) != kPynativeMode) {
-    std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
-    auto manager = func_graph->manager();
-    MS_EXCEPTION_IF_NULL(manager);
-    auto graphs = manager->func_graphs();
-    bool exist_while =
-      std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
-    if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
-      MS_LOG(INFO) << "Run graph mode with multigraph sink.";
-      is_multi_graphs_sink = true;
-      context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, true);
-    } else {
-      MS_LOG(INFO) << "Run graph mode with vm.";
+  // TODO(lzlang): delete
+  if (!(common::GetEnv("ENABLE_ASCEND_KERNEL_MINDRT") == "1" || common::kEnableAscendKernelByKernel)) {
+    std::string backend = context_ptr->backend_policy();
+    auto task_sink = context_ptr->get_param<bool>(MS_CTX_ENABLE_TASK_SINK);
+    if (func_graph->ContainMultiTarget() || !task_sink) {
       context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, false);
       context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, false);
+    } else if (context_ptr->get_param<int>(MS_CTX_EXECUTION_MODE) != kPynativeMode) {
+      std::string device_target = context_ptr->get_param<std::string>(MS_CTX_DEVICE_TARGET);
+      auto manager = func_graph->manager();
+      MS_EXCEPTION_IF_NULL(manager);
+      auto graphs = manager->func_graphs();
+      bool exist_while =
+        std::any_of(graphs.cbegin(), graphs.cend(), [](const FuncGraphPtr &fg) { return fg->recursive(); });
+      if (device_target == kAscendDevice && backend != kMsVm && !exist_while) {
+        MS_LOG(INFO) << "Run graph mode with multigraph sink.";
+        context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, true);
+      } else {
+        MS_LOG(INFO) << "Run graph mode with vm.";
+        context_ptr->set_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK, false);
+        context_ptr->set_param<bool>(MS_CTX_ENABLE_LOOP_SINK, false);
+      }
     }
   }
-  if (is_multi_graphs_sink) {
+  if (context_ptr->get_param<bool>(MS_CTX_IS_MULTI_GRAPH_SINK)) {
     return std::vector<GraphSegmentPtr>();
   }
   return default_partition_segments;
@@ -407,20 +374,36 @@ void AscendDeviceContext::UpdateExecOrder(const KernelGraphPtr &graph) const {
   node_atomics_.clear();
 }
 
+void AscendDeviceContext::GenKernelEvents(const NotNull<KernelGraphPtr> &root_graph) const {
+  MS_LOG(INFO) << "Start GenKernelEvents for graph " << root_graph->graph_id();
+  MS_EXCEPTION_IF_NULL(runtime_instance_);
+  runtime_instance_->GenKernelEvents(*root_graph.get());
+  MS_LOG(INFO) << "Finish!";
+}
+
 void AscendDeviceContext::PreprocessBeforeRunGraph(const KernelGraphPtr &graph) const {
   MS_EXCEPTION_IF_NULL(graph);
   MS_LOG(INFO) << "PreprocessBeforeRunGraph Start for graph " << graph->graph_id();
-  device::ascend::InsertAtomicCleanOps(graph->execution_order(), &node_atomics_);
   if (graph->is_executing_sink()) {
+    device::ascend::InsertAtomicCleanOps(graph->execution_order(), &node_atomics_);
     UpdateExecOrder(graph);
     device::KernelAdjust::GetInstance().InsertDeviceLoopCtrl(graph);
     device::KernelAdjust::GetInstance().ProcessLoopSink(graph);
     AscendStreamAssign::GetInstance().AssignStream(NOT_NULL(graph));
+#ifndef ENABLE_SECURITY
+    // Insert profiling point, this function must be executed after assign stream.
+    device::KernelAdjust::GetInstance().Profiling(NOT_NULL(graph.get()));
+#endif
     CreateKernel(graph->execution_order());
     AllocateGraphMemory(NOT_NULL(graph));
     LoadModel(NOT_NULL(graph));
+    AssignOutputNopNodeDeviceAddress(graph);
+  } else {
+    PreprocessBeforeRunSingleOpGraph(graph);
+    AscendStreamAssign::GetInstance().AssignStream(NOT_NULL(graph));
+    GenKernelEvents(NOT_NULL(graph));
   }
-  AssignOutputNopNodeDeviceAddress(graph);
+
   MS_LOG(INFO) << "PreprocessBeforeRunGraph success.";
 }
 
@@ -467,13 +450,22 @@ void AscendDeviceContext::AllocateGraphMemory(const NotNull<KernelGraphPtr> &roo
   MS_EXCEPTION_IF_NULL(runtime_instance_);
   runtime_instance_->ClearGlobalIdleMem();
   memo_.clear();
+  mem_manager_->ResetDynamicMemory();
   AssignInputMemory(root_graph, NOT_NULL(&memo_));
   device::KernelAdjust::GetInstance().AssignLoopCtrlMemory(*root_graph.get());
   InitMemReuseExecOrder(root_graph.get().get());
   runtime_instance_->AssignStaticMemoryOutput(*root_graph.get());
-  mem_manager_->ResetDynamicMemory();
   runtime_instance_->AssignDynamicMemory(*root_graph.get());
   runtime_instance_->UpdateRefNodeOutputMem(*root_graph.get());
+
+  MS_LOG(INFO) << "Status record: end memory alloc. graph id: " << root_graph->graph_id()
+               << ", Memory Statistics: " << device::ascend::AscendMemAdapter::GetInstance().DevMemStatistics();
+  MS_LOG(INFO) << "The dynamic memory pool total size is: "
+               << device::ascend::AscendMemoryPool::GetInstance().TotalMemStatistics() / kMBToByte
+               << "M, total used size is "
+               << device::ascend::AscendMemoryPool::GetInstance().TotalUsedMemStatistics() / kMBToByte
+               << "M, used peak size is "
+               << device::ascend::AscendMemoryPool::GetInstance().UsedMemPeakStatistics() / kMBToByte << "M.";
 
 #ifndef ENABLE_SECURITY
   if (MemoryProfiling::GetInstance().IsMemoryProfilingInitialized()) {
@@ -541,6 +533,19 @@ bool AscendDeviceContext::AllocateContinuousMemory(const std::vector<DeviceAddre
   MS_EXCEPTION_IF_NULL(runtime_instance_);
   runtime_instance_->SetContext();
   return mem_manager_->MallocContinuousMemFromMemPool(addr_list, total_size, size_list);
+}
+
+void *AscendDeviceContext::AllocateMemory(size_t size) const {
+  MS_EXCEPTION_IF_NULL(runtime_instance_);
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  runtime_instance_->SetContext();
+  return mem_manager_->MallocMemFromMemPool(size, false);
+}
+
+void AscendDeviceContext::FreeMemory(void *const ptr) const {
+  MS_EXCEPTION_IF_NULL(ptr);
+  MS_EXCEPTION_IF_NULL(mem_manager_);
+  mem_manager_->FreeMemFromMemPool(ptr);
 }
 
 bool AscendDeviceContext::ExecuteGraph(const KernelGraphPtr &graph) const {
@@ -672,6 +677,10 @@ void AscendDeviceContext::PreprocessBeforeRunSingleOpGraph(const KernelGraphPtr 
   }
 
   CreateKernel(atomic_nodes);
+
+  if (!mindspore::kernel::AicpuOpKernelLoad::GetInstance().LaunchAicpuKernelSo()) {
+    MS_LOG(EXCEPTION) << "Cust aicpu kernel so load failed.";
+  }
 }
 
 void AscendDeviceContext::UpdateDynamicShape(const CNodePtr &kernel) const {}
@@ -696,6 +705,7 @@ bool AscendDeviceContext::PySyncRuning() const {
 
 bool AscendDeviceContext::MemoryCopyAsync(const CNodePtr &node, const vector<AddressPtr> &inputs,
                                           const vector<AddressPtr> &outputs) const {
+  MS_LOG(DEBUG) << "Launch MemoryCopyAsync instead for kernel " << node->fullname_with_scope();
   if (inputs.size() != 1 || outputs.size() != 1) {
     MS_LOG(ERROR) << "Kernel " << node->fullname_with_scope() << " input output size should be 1 but"
                   << " input size is:" << inputs.size() << " output size is:" << outputs.size();
@@ -703,43 +713,33 @@ bool AscendDeviceContext::MemoryCopyAsync(const CNodePtr &node, const vector<Add
   }
 
   aclError status = aclrtMemcpyAsync(outputs[0]->addr, outputs[0]->size, inputs[0]->addr, inputs[0]->size,
-                                     ACL_MEMCPY_DEVICE_TO_DEVICE, compute_stream_);
+                                     ACL_MEMCPY_DEVICE_TO_DEVICE, GetKernelStream(node));
   if (status != ACL_ERROR_NONE) {
     MS_LOG(ERROR) << "MemCpyAsync op aclrtMemcpyAsync failed, ret:" << status;
     return false;
   }
-  return PySyncRuning();
+  return true;
 }
 
-bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<AddressPtr> &inputs,
-                                       const vector<AddressPtr> &workspace, const vector<AddressPtr> &outputs,
-                                       bool is_dynamic_shape) const {
-  MS_EXCEPTION_IF_NULL(kernel);
-  MS_LOG(DEBUG) << "Launch kernel: " << kernel->fullname_with_scope();
-  BindDeviceToCurrentThread();
-
-  if (!LaunchAtomicClean(kernel, workspace, outputs)) {
-    MS_LOG(ERROR) << "Launch AtomicClean failed, pre kernel full name: " << kernel->fullname_with_scope();
-    return false;
-  }
-
-  auto kernel_mod = AnfAlgo::GetKernelMod(kernel);
+void *AscendDeviceContext::GetKernelStream(const CNodePtr &node) const {
+  auto kernel_mod = AnfAlgo::GetKernelMod(node);
   MS_EXCEPTION_IF_NULL(kernel_mod);
-
-  if (is_dynamic_shape) {
-    kernel::AscendKernelMod *ascend_kernel = dynamic_cast<kernel::AscendKernelMod *>(kernel_mod);
-    MS_EXCEPTION_IF_NULL(ascend_kernel);
-    ascend_kernel->InitDynamicKernel(kernel, compute_stream_);
-    auto dynamic_kernel = ascend_kernel->DynamicKernel();
-    MS_EXCEPTION_IF_NULL(dynamic_kernel);
-    dynamic_kernel->InferShape();
-    dynamic_kernel->UpdateArgs();
-    dynamic_kernel->Execute();
-    dynamic_kernel->PostExecute();
-    return PySyncRuning();
+  auto ms_context = MsContext::GetInstance();
+  MS_EXCEPTION_IF_NULL(ms_context);
+  if (ms_context->get_param<int>(MS_CTX_EXECUTION_MODE) == kPynativeMode) {
+    return compute_stream_;
+  } else {
+    auto stream = kernel_mod->GetStream();
+    if (stream == nullptr) {
+      stream = compute_stream_;
+      MS_LOG(INFO) << "Assign default compute stream for node " << node->fullname_with_scope();
+    }
+    return stream;
   }
+}
 
-  std::vector<AddressPtr> real_inputs;
+bool AscendDeviceContext::GetKernelRealInputs(const CNodePtr &kernel, const vector<AddressPtr> &inputs,
+                                              std::vector<AddressPtr> *real_inputs) const {
   auto input_num = AnfAlgo::GetInputTensorNum(kernel);
   if (input_num != inputs.size()) {
     MS_LOG(ERROR) << "Input num is " << input_num << " but input address num is " << inputs.size();
@@ -752,17 +752,72 @@ bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<Addr
       MS_LOG(ERROR) << "Total input num is " << input_num << " but get real_index " << real_index;
       return false;
     }
-    real_inputs.push_back(inputs[real_index]);
+    real_inputs->push_back(inputs[real_index]);
+  }
+  return true;
+}
+
+bool AscendDeviceContext::LaunchKernel(const CNodePtr &kernel, const vector<AddressPtr> &inputs,
+                                       const vector<AddressPtr> &workspace, const vector<AddressPtr> &outputs,
+                                       bool is_dynamic_shape) const {
+  MS_EXCEPTION_IF_NULL(kernel);
+  MS_LOG(DEBUG) << "Launch kernel: " << kernel->fullname_with_scope();
+  BindDeviceToCurrentThread();
+
+  auto event_funcs = runtime_instance_->GetKernelEventFuncs(kernel);
+
+  std::vector<AddressPtr> real_inputs;
+  bool ret = GetKernelRealInputs(kernel, inputs, &real_inputs);
+  if (!ret) {
+    MS_LOG(ERROR) << "Get real input fail for kernel " << kernel->fullname_with_scope();
+    return false;
+  }
+  auto kernel_mod = AnfAlgo::GetKernelMod(kernel);
+  MS_EXCEPTION_IF_NULL(kernel_mod);
+
+  // start launch
+  std::lock_guard<std::mutex> locker(launch_mutex_);
+
+  // launch pre events
+  MS_LOG(DEBUG) << "Launch pre-events for kernel " << kernel->fullname_with_scope();
+  for (auto &pre_event_func : event_funcs.first) {
+    pre_event_func();
   }
 
-  std::lock_guard<std::mutex> locker(launch_mutex_);
-  if (nop_op_to_memcpy_.find(kernel) != nop_op_to_memcpy_.end()) {
-    return MemoryCopyAsync(kernel, real_inputs, outputs);
-  }
-  auto ret = kernel_mod->Launch(real_inputs, workspace, outputs, compute_stream_);
-  if (!ret) {
-    MS_LOG(ERROR) << "Launch kernel failed, kernel full name: " << kernel->fullname_with_scope();
+  // launch atomic clean
+  if (!LaunchAtomicClean(kernel, workspace, outputs)) {
+    MS_LOG(ERROR) << "Launch AtomicClean failed, pre kernel full name: " << kernel->fullname_with_scope();
     return false;
+  }
+
+  // launch kernel
+  if (nop_op_to_memcpy_.find(kernel) != nop_op_to_memcpy_.end()) {
+    MemoryCopyAsync(kernel, real_inputs, outputs);
+  } else {
+    MS_LOG(DEBUG) << "Launch kernel " << kernel->fullname_with_scope();
+    if (is_dynamic_shape) {
+      kernel::AscendKernelMod *ascend_kernel = dynamic_cast<kernel::AscendKernelMod *>(kernel_mod);
+      MS_EXCEPTION_IF_NULL(ascend_kernel);
+      ascend_kernel->InitDynamicKernel(kernel, GetKernelStream(kernel));
+      auto dynamic_kernel = ascend_kernel->DynamicKernel();
+      MS_EXCEPTION_IF_NULL(dynamic_kernel);
+      dynamic_kernel->InferShape();
+      dynamic_kernel->UpdateArgs();
+      dynamic_kernel->Execute();
+      dynamic_kernel->PostExecute();
+    } else {
+      ret = kernel_mod->Launch(real_inputs, workspace, outputs, GetKernelStream(kernel));
+      if (!ret) {
+        MS_LOG(ERROR) << "Launch kernel failed, kernel full name: " << kernel->fullname_with_scope();
+        return false;
+      }
+    }
+  }
+
+  // launch post event
+  MS_LOG(DEBUG) << "Launch post-events for kernel " << kernel->fullname_with_scope();
+  for (auto &post_event_func : event_funcs.second) {
+    post_event_func();
   }
 
   return PySyncRuning();
@@ -780,6 +835,7 @@ bool AscendDeviceContext::LaunchAtomicClean(const CNodePtr &node, const std::vec
   if (iter == node_atomics_persistent_cache_.end()) {
     return true;
   }
+  MS_LOG(DEBUG) << "Launch atomic clean for kernel " << node->fullname_with_scope();
   auto atomic_node = iter->second.at(0);
   vector<AddressPtr> atomic_inputs;
   // The output addr need to clean
@@ -810,7 +866,7 @@ bool AscendDeviceContext::LaunchAtomicClean(const CNodePtr &node, const std::vec
   // Launch Atomic Node
   auto kernel_mod = AnfAlgo::GetKernelMod(atomic_node);
   MS_EXCEPTION_IF_NULL(kernel_mod);
-  return kernel_mod->Launch(atomic_inputs, {}, {}, compute_stream_);
+  return kernel_mod->Launch(atomic_inputs, {}, {}, GetKernelStream(atomic_node));
 }
 
 MS_REGISTER_DEVICE(kAscendDevice, AscendDeviceContext);

@@ -660,7 +660,10 @@ class NeighborExchange(Primitive):
         recv_shapes (tuple(list(int))): Data shape which received from recv_rank_ids.
         send_shapes (tuple(list(int))): Data shape which send to the send_rank_ids.
         recv_type (type): Data type which received from recv_rank_ids
-        group (str):
+        group (str): The communication group to work on. Default: "GlobalComm.WORLD_COMM_GROUP".
+
+    Supported Platforms:
+        ``Ascend``
 
     Example:
         >>> # This example should be run with 2 devices. Refer to the tutorial > Distributed Training on mindspore.cn
@@ -731,6 +734,9 @@ class AlltoAll(PrimitiveWithInfer):
 
     Raises:
         TypeError: If group is not a string.
+
+    Supported Platforms:
+        ``Ascend``
 
     Example:
         >>> # This example should be run with 8 devices. Refer to the tutorial > Distributed Training on mindspore.cn
@@ -818,6 +824,9 @@ class NeighborExchangeV2(Primitive):
         data_format (str): Data format, only support NCHW now.
         group (str): The communication group to work on. Default: "GlobalComm.WORLD_COMM_GROUP".
 
+    Supported Platforms:
+        ``Ascend``
+
     Example:
         >>> # This example should be run with 2 devices. Refer to the tutorial > Distributed Training on mindspore.cn
         >>> import os
@@ -859,6 +868,7 @@ class NeighborExchangeV2(Primitive):
         self.send_lens = send_lens
         self.recv_lens = recv_lens
         self.format = data_format
+        self.add_prim_attr('group', _get_group(group))
         self.add_prim_attr('no_eliminate', True)
 
     def __call__(self, tensor):

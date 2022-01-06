@@ -156,8 +156,7 @@ void DfGraphConvertor::InitLoopVar(std::vector<ge::Operator> *init_input) {
       value = ConfigManager::GetInstance().iter_num();
     } else {
       MS_LOG(INFO) << "Run with normal(non-sink) mode, the iterator number will always be 1";
-      value = 1;
-      ConfigManager::GetInstance().set_iter_num(value);
+      ConfigManager::GetInstance().ResetIterNum();
     }
     value -= 1;  // iteration start from 0, the max iteration number for n loop should be n-1
     (void)const_iter_num->set_attr_value(GeTensor(desc, reinterpret_cast<uint8_t *>(&value), sizeof(int64_t)));
@@ -609,7 +608,7 @@ void DfGraphConvertor::TraceOutputFromTupleGetItem(const AnfNodePtr &anf_out) {
     auto op = handle.op;
     if (op != nullptr) {
       MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType() << ", out_name: " << handle.out;
-      graph_outputs_.emplace_back(*op, handle.out);
+      (void)graph_outputs_.emplace_back(*op, handle.out);
     } else {
       MS_LOG(EXCEPTION) << "tuple_getitem: " << anf_out->fullname_with_scope() << " is not converted";
     }
@@ -628,7 +627,7 @@ void DfGraphConvertor::TraceOutput(const AnfNodePtr node) {
   if (node->isa<ValueNode>()) {
     auto op = Convert(anf_out);
     if (op != nullptr) {
-      graph_outputs_.emplace_back(*op, "");
+      (void)graph_outputs_.emplace_back(*op, "");
       AddGraphConstInput(op);
     }
     return;
@@ -678,7 +677,7 @@ void DfGraphConvertor::TraceOutput(const AnfNodePtr node) {
         }
       }
       MS_LOG(INFO) << "Add graph output: " << anf_out->fullname_with_scope() << ":" << index;
-      graph_outputs_.emplace_back(*op, index);
+      (void)graph_outputs_.emplace_back(*op, index);
     }
   }
 }
@@ -693,13 +692,13 @@ void DfGraphConvertor::TraceOutputFromParameter(const AnfNodePtr &anf_out) {
       OutHandler handle = it->second;
       auto op = handle.op;
       MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType() << ", out_name: " << handle.out;
-      graph_outputs_.emplace_back(*op, handle.out);
+      (void)graph_outputs_.emplace_back(*op, handle.out);
     } else {
       // common parameter case
       auto op = Convert(anf_out);
       if (op != nullptr) {
         MS_LOG(INFO) << "op name: " << op->GetName() << ", op type: " << op->GetOpType();
-        graph_outputs_.emplace_back(*op, "");
+        (void)graph_outputs_.emplace_back(*op, "");
       }
     }
   }
@@ -1880,6 +1879,8 @@ void DfGraphConvertor::SaveParamFormat(const CNodePtr node) {
           } else {
             CheckAndConvertUtils::GetFormatStringVal(prim, &format);
           }
+        } else if (attr.second->isa<StringImm>()) {
+          format = attr.second->ToString();
         }
         if (format != "NCDHW" && format != "NHWC") {
           break;

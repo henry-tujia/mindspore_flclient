@@ -721,6 +721,8 @@ class SequenceMask(PrimitiveWithCheck):
         ``GPU``
 
     Examples:
+        >>> from mindspore import ops
+        >>> import numpy as np
         >>> x = Tensor(np.array([[1, 3], [2, 0]]))
         >>> sequence_mask = ops.SequenceMask()
         >>> output = sequence_mask(x, 3)
@@ -1438,15 +1440,16 @@ class Cummin(Primitive):
 
     It returns the cumulative minimum of elements and the index.
 
-    ..math::
-
-        y{i} = min(x{1}, x{2}, ... , x{i})
+    .. math::
+        \begin{array}{ll} \\
+            y{i} = min(x{1}, x{2}, ... , x{i})
+        \end{array}
 
     Args:
         - **axis** (int) - The dimension to do the operation, The axis is in the range from -len(`input_x`.shape)
           to len(`input_x`.shape) - 1. When it's in the range from 0 to len(`input_x`.shape) - 1, it means starting
           from the first dimension and counting forwards, When it's less than 0, it means we're counting backwards
-          from the last dimension. for example, -1 means the last dimension.
+          from the last dimension. For example, -1 means the last dimension.
     Inputs:
         - **input_x** (Tensor) - The input tensor, rank of `input_x` > 0.
 
@@ -1463,6 +1466,8 @@ class Cummin(Primitive):
         ``Ascend``
 
     Examples:
+        >>> from mindspore import Tensor, ops
+        >>> import mindspore
         >>> a = Tensor([-0.2284, -0.6628,  0.0975,  0.2680, -1.3298, -0.4220], mindspore.float32)
         >>> output = ops.cummin(a, axis=0)
         >>> print(output[0])
@@ -1555,3 +1560,106 @@ class ClipGradNorm(PrimitiveWithInfer):
                                            [mstype.float16, mstype.float32], self.name)
         validator.check_tensor_dtype_valid("scaling_factor_type", scaling_factor_type, [mstype.float32], self.name)
         return mstype.float32
+
+
+class DynamicResizeNearestNeighbor(Primitive):
+    r"""
+    Resizes the input tensor by using the nearest neighbor algorithm.
+
+    Resizes the input tensor to a given size by using the nearest neighbor algorithm. The nearest
+    neighbor algorithm selects the value of the nearest point and does not consider the
+    values of neighboring points at all, yielding a piecewise-constant interpolant.
+
+    Note:
+        The operator supports dynamic shape.
+
+    Args:
+        align_corners (bool): Whether the centers of the 4 corner pixels of the input
+                              and output tensors are aligned. Default: False.
+
+    Inputs:
+        - **input_x** (Tensor) - The input tensor. The shape of the tensor is :math:`(N, C, H, W)`.
+        - **size** (Union[tuple, list]): The target size. The dimension of size must be 2.
+
+    Outputs:
+        Tensor, the shape of the output tensor is  :math:`(N, C, NEW\_H, NEW\_W)`.
+        The data type is the same as the `input_x`.
+    """
+
+    @prim_attr_register
+    def __init__(self, align_corners=False):
+        """Initialize ResizeNearestNeighbor"""
+        validator.check_value_type("align_corners", align_corners, [bool], self.name)
+        self.init_prim_io_names(inputs=['image_in'], outputs=['image_out'])
+
+
+class PsROIPooling(PrimitiveWithInfer):
+    r"""
+    Position Sensitive ROI-Pooling
+    Inputs:
+        - feature(Tensor)
+        - rois(Tensor)
+
+        - **features** (Tensor) - The input features, whose shape must be :math:`(N, C, H, W)`.
+        - **rois** (Tensor) - The shape is :math:`(rois\_n, 5)`. With data type of float16 or float32.
+          `rois_n` represents the number of RoI. The size of the second dimension must be `5` and the `5` colunms
+          are :math:`(image\_index, top\_left\_x, top\_left\_y, bottom\_right\_x, bottom\_right\_y)`.
+          `image_index` represents the index of image. `top_left_x` and `top_left_y` represent the `x, y`
+          coordinates of the top left corner of corresponding RoI, respectively. `bottom_right_x` and `bottom_right_y`
+          represent the `x, y` coordinates of the bottom right corner of corresponding RoI, respectively.
+
+    Outputs:
+        - out shape(rois_num, out_channel, pool_height, pool_width), the result after pooling.
+        - channel_map shape(rois_num, out_channel, pool_height, pool_width), use for back forward to compute grad
+    Supported Platforms:
+        ``GPU``
+
+    Examples:
+        >>> import mindspore
+        >>> import numpy as np
+        >>> from mindspore import Tensor
+        >>> from mindspore.ops.operations import _inner_ops as inner
+        >>> features = np.random.randn(4, 21 * 7 * 7, 80, 48)
+        >>> features = Tensor.from_numpy(features).astype(mindspore.float32)
+        >>> rois = Tensor.from_numpy(
+        >>>     np.array([
+        >>>        [0.0000, 150.3563, 200.1320, 579.3563, 602.3452],
+        >>>        [1.0000, 657.1263, 302.8564, 762.4214, 567.9854],
+        >>>        [2.0000, 321.3122, 232.2410, 679.0281, 587.6346],
+        >>>        [3.0000, 664.1630, 387.4919, 778.7322, 562.7321],
+        >>>     ])).astype(mindspore.float32)
+        >>> psRoIPooling = inner.PsROIPooling(pooled_height=7, pooled_width=7, num_rois=4,
+        >>>                                  spatial_scale=1.0/16, out_dim=21,
+        >>>                                  group_size=7)
+        >>> out, channel_map = psRoIPooling(features, rois)
+        >>> print(out.shape)
+            [4, 21, 7, 7]
+        >>> print(channel_map.shape)
+            [4, 21, 7, 7]
+    """
+
+    @prim_attr_register
+    def __init__(self, pooled_height, pooled_width, num_rois, spatial_scale, out_dim, group_size):
+
+        """Initialize PsROIPooling"""
+        validator.check_value_type("pooled_height", pooled_height, [int], self.name)
+        validator.check_value_type("pooled_width", pooled_width, [int], self.name)
+        validator.check_value_type("num_rois", pooled_width, [int], self.name)
+        validator.check_value_type("spatial_scale", spatial_scale, [float], self.name)
+        validator.check_value_type("out_dim", out_dim, [int], self.name)
+        validator.check_value_type("group_size", group_size, [int], self.name)
+        self.pooled_height = pooled_height
+        self.pooled_width = pooled_width
+        self.num_rois = num_rois
+        self.spatial_scale = spatial_scale
+        self.out_dim = out_dim
+        self.group_size = group_size
+
+    def infer_shape(self, inputs_shape, rois_shape):
+        output_shape = [self.num_rois, self.out_dim, self.pooled_height, self.pooled_width]
+        output_map_shape = [self.num_rois, self.out_dim, self.pooled_height, self.pooled_width]
+        return output_shape, output_map_shape
+
+    def infer_dtype(self, inputs_type, rois_type):
+        map_type = mstype.tensor_type(mstype.int32)
+        return inputs_type, map_type

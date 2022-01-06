@@ -1128,6 +1128,13 @@ void ControlNodeScheduler::LinkDataArrowByKernelGraph(const KernelGraphPtr &grap
       if (from_node_with_index.first == nullptr) {
         from_node_with_index = tuple_node_with_index;
       }
+
+      if (AnfAlgo::CheckPrimitiveType(from_node_with_index.first, prim::kPrimTupleGetItem)) {
+        MS_LOG(WARNING) << "Input node:" << from_node_with_index.first->DebugString()
+                        << " for graph:" << graph->ToString() << " is a tuple get item";
+        from_node_with_index = FetchRealNodeByGetItem(from_node_with_index);
+      }
+
       // If the formal parameter is a tuple type, the parameter of the kernel graph will not directly correspond
       // to the front parameter, but the node in the internal parameter.
       const auto &from_node = from_node_with_index.first;
@@ -1228,7 +1235,10 @@ void ControlNodeScheduler::LinkDataArrow(AbstractActor *const from_actor, Abstra
                                          size_t from_index, size_t to_index, const AnfNodePtr &from_kernel) {
   MS_EXCEPTION_IF_NULL(from_actor);
   MS_EXCEPTION_IF_NULL(to_actor);
-
+  if (from_actor->type() == KernelTransformType::kKernelActor && to_actor->type() != KernelTransformType::kExitActor) {
+    MS_LOG(WARNING) << "Kernel actor:" << from_actor->GetAID() << " link data arrow to actor:" << to_actor->GetAID()
+                    << " is not an exit actor.";
+  }
   auto data_arrow = std::make_shared<DataArrow>(from_index, to_actor->GetAID(), to_index);
   (void)from_actor->output_data_arrows_.emplace_back(data_arrow);
   (void)from_actor->output_data_nodes_.emplace_back(from_kernel);

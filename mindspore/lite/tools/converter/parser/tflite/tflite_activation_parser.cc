@@ -30,6 +30,8 @@ ops::PrimitiveC *TfliteReluParser::Parse(const std::unique_ptr<tflite::OperatorT
   auto prim = std::make_unique<ops::Activation>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
   prim->set_activation_type(mindspore::ActivationType::RELU);
+  prim->set_min_val(0);
+  prim->set_max_val(FLT_MAX);
 
   return prim.release();
 }
@@ -40,6 +42,8 @@ ops::PrimitiveC *TfliteRelu6Parser::Parse(const std::unique_ptr<tflite::Operator
   auto prim = std::make_unique<ops::Activation>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
   prim->set_activation_type(mindspore::ActivationType::RELU6);
+  prim->set_min_val(0);
+  prim->set_max_val(kValueThreshold6);
 
   return prim.release();
 }
@@ -91,9 +95,6 @@ ops::PrimitiveC *TfliteHardSwishParser::Parse(const std::unique_ptr<tflite::Oper
 ops::PrimitiveC *TfliteLogisticParser::Parse(const std::unique_ptr<tflite::OperatorT> &tflite_op,
                                              const std::unique_ptr<tflite::SubGraphT> &tflite_subgraph,
                                              const std::unique_ptr<tflite::ModelT> &tflite_model) {
-  MS_CHECK_TRUE_RET(tflite_op != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_subgraph != nullptr, nullptr);
-  MS_CHECK_TRUE_RET(tflite_model != nullptr, nullptr);
   auto prim = std::make_unique<ops::Activation>();
   MS_CHECK_TRUE_RET(prim != nullptr, nullptr);
   prim->set_activation_type(mindspore::ActivationType::SIGMOID);
