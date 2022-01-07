@@ -266,7 +266,7 @@ public class SyncFLJob {
                     break;
                 }
                 LOGGER.info(Common.addTag("[train] train succeed"));
-                oldFeatureMap_mul = flLiteClient.getFeatureMap();
+                oldFeatureMap_mul = flLiteClient.getFeatureMap_();
             }
             
 

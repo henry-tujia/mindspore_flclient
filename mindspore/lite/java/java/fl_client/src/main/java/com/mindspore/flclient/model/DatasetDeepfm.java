@@ -57,8 +57,7 @@ public class DatasetDeepfm {
                     break;
                 }
                 System.out.println(count+"th's data reading!");
-                JSONObject object = JSONObject.parseObject(st);
-                DataLabelTuple dataLabelTuple = object.toJavaObject(DataLabelTuple.class);
+                DataLabelTuple dataLabelTuple = JSONObject.parseObject(st,DataLabelTuple.class);
                 dataset.add(dataLabelTuple);
                 count ++;
             }

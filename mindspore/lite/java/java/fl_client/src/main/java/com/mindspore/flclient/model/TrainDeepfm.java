@@ -17,6 +17,7 @@
 package com.mindspore.flclient.model;
 
 import com.mindspore.flclient.Common;
+import com.mindspore.lite.LiteSession;
 import com.mindspore.lite.MSTensor;
 
 import java.util.Vector;
