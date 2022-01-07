@@ -34,9 +34,9 @@ public class TrainDeepfm extends TrainModel {
 
     private DatasetDeepfm mDs = new DatasetDeepfm();
 
-    private Vector<DatasetDeepfm.DataLabelTuple> mTrainDataset;
+    private Vector<DatasetDeepfm.DataLabelTuple> dataset;
 
-    private Vector<DatasetDeepfm.DataLabelTuple> mTestDataset;
+    // private Vector<DatasetDeepfm.DataLabelTuple> mTestDataset;
 
     private int batch_size;
 
@@ -111,10 +111,10 @@ public class TrainDeepfm extends TrainModel {
         if (!inputFile.isEmpty()) {
             mDs.initDataset(inputFile,Train);
             if (Train){
-                mTrainDataset = mDs.getTrainData();
+                dataset = mDs.getTrainData();
             }
             else{
-                mTestDataset = mDs.getTestData();
+                dataset = mDs.getTestData();
             }
             // Vector<dataset.DataLabelTuple> testDataset = ds.getTestData();
             // int[] label = new int[trainDataset.size()*NUM_OF_CLASS];
@@ -129,20 +129,28 @@ public class TrainDeepfm extends TrainModel {
         return 0;
     }
 
+
+    @Override
+    public int padSamples() {
+        return 0;
+    }
+
     @Override
     public int initSessionAndInputs(String modelPath, boolean trainMod) {
-        if (modelPath.isEmpty()) {
+        if (modelPath == null) {
             logger.severe(Common.addTag("modelPath cannot be empty"));
             return -1;
         }
-        trainSession = SessionUtil.initSession(modelPath);
-        if (trainSession == null) {
+        Optional<LiteSession> optTrainSession = SessionUtil.initSession(modelPath);
+        if (!optTrainSession.isPresent()) {
             logger.severe(Common.addTag("session init failed"));
             return -1;
         }
+        trainSession = optTrainSession.get();
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
-        batch_num = inputs.get(0).size()/batch_size;
+        batch_num = (Integer)inputs.get(0).size()/batch_size;
+        logger.info(Common.addTag("init session and inputs success"));
         return 0;
     }
 
@@ -155,7 +163,7 @@ public class TrainDeepfm extends TrainModel {
         Vector<Integer> labelsVec = new Vector<>();
 
         
-        List<MSTensor> inputs = session.getInputs();
+        List<MSTensor> inputs = trainSession.getInputs();
 
         int inputIdsDataCnt = inputs.get(0).elementsNum();
         int[] inputIdsBatchData = new int[inputIdsDataCnt];
