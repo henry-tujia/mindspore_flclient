@@ -25,6 +25,7 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.logging.Logger;
 
 public class TrainDeepfm extends TrainModel {
@@ -149,7 +150,7 @@ public class TrainDeepfm extends TrainModel {
         trainSession = optTrainSession.get();
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
-        batch_num = (Integer)inputs.get(0).size()/batch_size;
+        batch_num = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
         logger.info(Common.addTag("init session and inputs success"));
         return 0;
     }
