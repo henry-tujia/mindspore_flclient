@@ -56,7 +56,7 @@ public class UpdateAndCalMutualInformation {
      **/
     private double calMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
         
-        var res = MutualInformation.calculateMutualInformation(MapToArray(localModel), MapToArray(serverModel));
+        double res = MutualInformation.calculateMutualInformation(MapToArray(localModel), MapToArray(serverModel));
         
         return res;
 

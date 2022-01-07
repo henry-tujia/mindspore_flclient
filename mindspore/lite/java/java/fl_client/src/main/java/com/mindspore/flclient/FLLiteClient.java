@@ -503,6 +503,25 @@ public class FLLiteClient {
         return featureMap;
     }
 
+    public Map<String, float[]> getFeatureMap_() {
+        Map<String, float[]> featureMap = new HashMap<>();
+        if (Common.checkFLName(flParameter.getFlName())) {
+            featureMap = deprecatedGetFeatureMap();
+            return featureMap;
+        }
+        status = Common.initSession(flParameter.getTrainModelPath());
+        if (status == FLClientStatus.FAILED) {
+            Common.freeSession();
+            retCode = ResponseCode.RequestError;
+            return new HashMap<>();
+        }
+        List<MSTensor> features = client.getFeatures();
+        featureMap = CommonUtils.convertTensorToFeatures(features);
+        Common.freeSession();
+        return featureMap;
+    }
+
+
     /**
      * Obtain the weight of the model before training.
      *

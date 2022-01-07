@@ -257,7 +257,7 @@ public class SyncFLJob {
             }
 
             
-            Map<String, float[]> new_featureMap = flLiteClient.getFeatureMap();
+            Map<String, float[]> new_featureMap = flLiteClient.getFeatureMap_();
             if(oldFeatureMap_mul.size()==0){
                 // train
                 curStatus = flLiteClient.localTrain();
@@ -266,7 +266,7 @@ public class SyncFLJob {
                     break;
                 }
                 LOGGER.info(Common.addTag("[train] train succeed"));
-                oldFeatureMap_mul = getFeatureMap();
+                oldFeatureMap_mul = flLiteClient.getFeatureMap();
             }
             
 

@@ -19,6 +19,7 @@ package com.mindspore.flclient.model;
 import com.mindspore.flclient.Common;
 import com.mindspore.lite.MSTensor;
 
+import java.util.Vector;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -108,7 +109,7 @@ public class TrainDeepfm extends TrainModel {
 
     public int initDataSet(String inputFile,boolean Train) {
         if (!inputFile.isEmpty()) {
-            ds.initDataset(inputFile,Train);
+            mDs.initDataset(inputFile,Train);
             if (Train){
                 mTrainDataset = mDs.getTrainData();
             }
@@ -151,6 +152,7 @@ public class TrainDeepfm extends TrainModel {
         idsBuffer.clear();
         valsBuffer.clear();
         List<Integer> predictLabels = new ArrayList<>(batch_size);
+        Vector<Integer> labelsVec = new Vector<>();
 
         
         List<MSTensor> inputs = session.getInputs();
@@ -165,7 +167,7 @@ public class TrainDeepfm extends TrainModel {
         int[] labelBatchData = new int[labelDataCnt];
 
         for (int i = 0; i < batchSize; i++) {
-            Dataset.DataLabelTuple dataLabelTuple = dataset.get(batchIdx*batch_size+i);
+            DatasetDeepfm.DataLabelTuple dataLabelTuple = dataset.get(batchIdx*batch_size+i);
             int label = dataLabelTuple.label.get(0).intValue();
             int[] ids = dataLabelTuple.feat_ids.stream().mapToInt(j -> j).toArray();
 
