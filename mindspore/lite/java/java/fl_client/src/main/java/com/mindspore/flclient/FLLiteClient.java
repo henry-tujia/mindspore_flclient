@@ -334,7 +334,7 @@ public class FLLiteClient {
         return status;
     }
 
-    /**
+    /*
      * Define the training process.
      *
      * @return the status code corresponding to the response message.
@@ -343,41 +343,13 @@ public class FLLiteClient {
 
         LOGGER.info(Common.addTag("[train] ====================================global train epoch " + iteration +
                 "===================================="));
-        status = FLClientStatus.SUCCESS;
-        retCode = ResponseCode.SUCCEED;
-        if (flParameter.getFlName().equals(ALBERT)) {
-            LOGGER.info(Common.addTag("[train] train in albert"));
-            AlTrainBert alTrainBert = AlTrainBert.getInstance();
-            int tag = alTrainBert.trainModel(flParameter.getTrainModelPath(), epochs);
-            if (tag == -1) {
-                LOGGER.severe(Common.addTag("[train] unsolved error code in <alTrainBert.trainModel>"));
-                status = FLClientStatus.FAILED;
-                retCode = ResponseCode.RequestError;
-            }
-        } else if (flParameter.getFlName().equals(LENET)) {
-            LOGGER.info(Common.addTag("[train] train in lenet"));
-            TrainLenet trainLenet = TrainLenet.getInstance();
-            int tag = trainLenet.trainModel(flParameter.getTrainModelPath(), epochs);
-            if (tag == -1) {
-                LOGGER.severe(Common.addTag("[train] unsolved error code in <trainLenet.trainModel>"));
-                status = FLClientStatus.FAILED;
-                retCode = ResponseCode.RequestError;
-            }
-        } else if (flParameter.getFlName().equals(DEEPFM)) {
-            LOGGER.info(Common.addTag("[train] train in deepfm"));
-            TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
-            int tag = trainDeepfm.trainModel(flParameter.getTrainModelPath(), epochs);
-            if (tag == -1) {
-                LOGGER.severe(Common.addTag("[train] unsolved error code in <trainLenet.trainModel>"));
-                status = FLClientStatus.FAILED;
-                retCode = ResponseCode.RequestError;
-            }
+        if (Common.checkFLName(flParameter.getFlName())) {
+            status = deprecatedTrainLoop();
         } else {
             status = trainLoop();
         }
         return status;
     }
-
     /**
      *
      * @author ICT_hetianliu
