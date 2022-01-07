@@ -51,6 +51,10 @@ dependencies {
     // https://mvnrepository.com/artifact/com.google.flatbuffers/flatbuffers-java
     compile group: 'com.google.flatbuffers', name: 'flatbuffers-java', version: '2.0.0'
 
+    // https://mvnrepository.com/artifact/com.alibaba/fastjson
+    implementation group: 'com.alibaba', name: 'fastjson', version: '1.1.25'
+
+
     compile(group: 'org.bouncycastle',name: 'bcprov-jdk15on', version: '1.68')
     implementation project(':common')
     implementation project(':linux_x86')
