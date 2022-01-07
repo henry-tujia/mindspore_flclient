@@ -173,3 +173,35 @@ table RequestPushMetrics{
 table ResponsePushMetrics{
   retcode:int;
 }
+
+table RequestUpdateAndCalMutualInformation{
+  fl_id:string;
+  fl_mul:string;
+  timestamp:string;
+}
+table ResponseUpdateAndCalMutualInformation{
+  retcode:int;
+  reason:string;
+  next_req_time:string;
+  timestamp:string;
+}
+
+/**
+ *
+ * @description UploadTrainningTime
+ * @author ICT_hetianliu
+ *
+**/
+table RequestUploadTrainningTime{
+  fl_name:string;
+  fl_id:string;
+  iteration:int;
+  trainning_time:string;
+  timestamp:string;
+}
+table ResponseUploadTrainningTime{
+  retcode:int;
+  reason:string;
+  next_req_time:string;
+  timestamp:string;
+}
