@@ -32,7 +32,7 @@ import java.util.logging.Logger;
 public class TrainDeepfm extends TrainModel {
     private static final Logger logger = Logger.getLogger(TrainDeepfm.class.toString());
 
-    private static final int NUM_OF_CLASS = 2;
+    private static final int NUM_OF_CLASS = 1;
 
     private DatasetDeepfm mDs = new DatasetDeepfm();
 
@@ -61,6 +61,7 @@ public class TrainDeepfm extends TrainModel {
     private ByteBuffer valsBuffer;
 
     private static volatile TrainDeepfm trainDeepfm;
+    
 
     public static TrainDeepfm getInstance() {
         TrainDeepfm localRef = trainDeepfm;
@@ -157,7 +158,7 @@ public class TrainDeepfm extends TrainModel {
     }
 
     @Override
-    public List<Integer> fillModelInput(int batchIdx, boolean trainMod) {
+    public Vector<Integer> fillModelInput(int batchIdx, boolean trainMod) {
         labelsBuffer.clear();
         idsBuffer.clear();
         valsBuffer.clear();
@@ -213,5 +214,30 @@ public class TrainDeepfm extends TrainModel {
         }
         inputs.get(2).setData(labelByteBuf);
         return labelsVec;
+    }
+
+    @Override
+    private int getPredictLabel(float[] scores, int start, int end) {
+        if (scores == null || scores.length == 0) {
+            logger.severe(Common.addTag("scores cannot be empty"));
+            return -1;
+        }
+        if (start >= scores.length || start < 0 || end > scores.length || end < 0) {
+            logger.severe(Common.addTag("start,end cannot out of scores length"));
+            return -1;
+        }
+        if (end-start>1 ) {
+            logger.severe(Common.addTag("the diff between end and start cannot out of 1"));
+            return -1;
+        }
+        float maxScore = scores[start];
+        // int maxIdx = start;
+        // for (int i = start; i < end; i++) {
+        //     if (scores[i] > maxScore) {
+        //         maxIdx = i;
+        //         maxScore = scores[i];
+        //     }
+        // }
+        return Math.round(1 / (1 + (float) Math.exp(-maxScore)));;
     }
 }

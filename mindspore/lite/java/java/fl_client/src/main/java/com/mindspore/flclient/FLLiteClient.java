@@ -48,7 +48,7 @@ import mindspore.schema.ResponseUpdateAndCalMutualInformation;
 import mindspore.schema.ResponseUpdateModel;
 import mindspore.schema.ResponseUploadTrainningTime;
 
-
+import java.lang.management.ManagementFactory;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Date;
@@ -83,6 +83,7 @@ public class FLLiteClient {
     private double dpEps = 100d;
     private double dpDelta = 0.01d;
     private float mulinfo = -1;
+    public static UploadTrainningTime uploadTrainningTimeBuf = UpdateTrainningTime.getInstance();
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private SecureProtocol secureProtocol = new SecureProtocol();
@@ -867,6 +868,15 @@ public class FLLiteClient {
             dataSize = trainLenet.initDataSet(dataPath.split(",")[0], dataPath.split(",")[1]);
             LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath.split(",")[0] + " dataSize: " +
                     dataSize + " labelPath: " + dataPath.split(",")[1]));
+        } else if (flParameter.getFlName().equals(DEEPFM)){
+            TrainDeepfm trainDeepFm = TrainDeepfm.getInstance();
+            if (dataPath = null) {
+                LOGGER.severe(Common.addTag("[set input] the set dataPath for DeepFM is not valid, should be the " +
+                        "format of data.json "));
+                return -1;
+            }
+            dataSize = TrainDeepfm.initDataSet(dataPath,true);
+            LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath));
         }
         if (dataSize <= 0) {
             retCode = ResponseCode.RequestError;
@@ -898,7 +908,21 @@ public class FLLiteClient {
             if (tag == -1) {
                 failed("[train] unsolved error code in <trainLenet.trainModel>", ResponseCode.RequestError);
             }
-        } else {
+        } else if(flParameter.getFlName().equals(DEEPFM)){
+            LOGGER.info(Common.addTag("[train] train in DeepFM"));
+            long endTime = System.currentTimeMillis();
+
+            TrainDeepfm trainDeepFM = TrainDeepfm.getInstance();
+            long startTime = System.currentTimeMillis();
+            int tag = trainDeepFM.trainModel(flParameter.getTrainModelPath(), epochs);
+            String Pid = ManagementFactory.getRuntimeMXBean().getName();
+            uploadTrainningTimeBuf.addTrainningTime(Pid, batchEndTime - batchStartTime);
+            if (tag == -1) {
+                failed("[train] unsolved error code in <trainDeepFM.trainModel>", ResponseCode.RequestError);
+        }
+    }   
+        
+        else {
             failed("[train] the flName is not valid", ResponseCode.RequestError);
         }
         Common.freeSession();
@@ -919,6 +943,9 @@ public class FLLiteClient {
         } else if (flParameter.getFlName().equals(LENET)) {
             TrainLenet trainLenet = TrainLenet.getInstance();
             featureMap = SessionUtil.convertTensorToFeatures(SessionUtil.getFeatures(trainLenet.getTrainSession()));
+        }else if (flParameter.getFlName().equals(DEEPFM)) {
+            TrainDeepfm trainDeepFM = TrainDeepfm.getInstance();
+            featureMap = SessionUtil.convertTensorToFeatures(SessionUtil.getFeatures(trainDeepFM.getTrainSession()));
         }
         Common.freeSession();
         return featureMap;
@@ -1006,6 +1033,35 @@ public class FLLiteClient {
             LOGGER.info(Common.addTag("[evaluate] modelPath: " + flParameter.getInferModelPath() + " dataPath: " +
                     flParameter.getTestDataset().split(",")[0] + " labelPath: " +
                     flParameter.getTestDataset().split(",")[1]));
+            LOGGER.info(Common.addTag("[evaluate] evaluate acc: " + acc));
+        }
+        else if (flParameter.getFlName().equals(DEEPFM)) {
+            TrainDeepfm trainFeepFM = TrainDeepfm.getInstance();
+            if (flParameter.getTestDataset() == null) {
+                failed("[evaluate] the set testDataPath for lenet is not valid, should be the format of data.json", ResponseCode.RequestError);
+                return status;
+            }
+            int tag = trainFeepFM.initSessionAndInputs(flParameter.getTrainModelPath(), true);
+            if (tag == -1) {
+                failed("[evaluate] unsolved error code in <initSessionAndInputs>: the return is -1",
+                        ResponseCode.RequestError);
+                return FLClientStatus.FAILED;
+            }
+            int dataSize = trainFeepFM.initDataSet(flParameter.getTestDataset(),false);
+            if (dataSize <= 0) {
+                failed("[evaluate] unsolved error code in <trainLenet.initDataSet>: the return dataSize<=0",
+                        ResponseCode.RequestError);
+                return status;
+            }
+            float acc = trainFeepFM.evalModel();
+            SessionUtil.free(trainFeepFM.getTrainSession());
+            if (Float.isNaN(acc)) {
+                failed("[evaluate] unsolved error code in <trainLenet.evalModel>: the return acc is NAN",
+                        ResponseCode.RequestError);
+                return status;
+            }
+            LOGGER.info(Common.addTag("[evaluate] modelPath: " + flParameter.getInferModelPath() + " dataPath: " +
+                    flParameter.getTestDataset()));
             LOGGER.info(Common.addTag("[evaluate] evaluate acc: " + acc));
         }
         return status;
