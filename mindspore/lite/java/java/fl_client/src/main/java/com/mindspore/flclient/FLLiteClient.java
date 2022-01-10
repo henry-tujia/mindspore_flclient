@@ -84,7 +84,7 @@ public class FLLiteClient {
     private double dpEps = 100d;
     private double dpDelta = 0.01d;
     private float mulinfo = -1;
-    public static UploadTrainningTime uploadTrainningTimeBuf = UpdateTrainningTime.getInstance();
+    public static UploadTrainningTime uploadTrainningTimeBuf = UploadTrainningTime.getInstance();
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private SecureProtocol secureProtocol = new SecureProtocol();
@@ -911,8 +911,6 @@ public class FLLiteClient {
             }
         } else if(flParameter.getFlName().equals(DEEPFM)){
             LOGGER.info(Common.addTag("[train] train in DeepFM"));
-            long endTime = System.currentTimeMillis();
-
             TrainDeepfm trainDeepFM = TrainDeepfm.getInstance();
             long startTime = System.currentTimeMillis();
             int tag = trainDeepFM.trainModel(flParameter.getTrainModelPath(), epochs);
