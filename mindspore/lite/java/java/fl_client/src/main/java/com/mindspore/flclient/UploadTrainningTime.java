@@ -129,6 +129,7 @@ import java.util.logging.Logger;
         trainningTIme = sum+"";
     }
 
+
     /**
      * Record the running time of an epoch of PID
      *
@@ -145,6 +146,17 @@ import java.util.logging.Logger;
         }
     }
 
+        /**
+     * Record the running time of an epoch of PID
+     *
+     * @param PID  the PID of the process which running the model.
+     * @param time the real running time of an epoch.
+     */
+    public void _addTrainningTime(long time){
+        final double randomTime = Math.random();
+        trainningTIme = (long)randomTime*3+time+"";
+    }
+
     /**
      * Get a flatBuffer builder of RequestUploadTrainningTime.
      *
@@ -154,7 +166,7 @@ import java.util.logging.Logger;
      * @return the flatBuffer builder of RequestUploadTrainningTime in byte[] format.
      */
     public byte[] getRequestUploadTrainningTime(int iteration, SecureProtocol secureProtocol, int batchSize, int epochs) {
-        this.predictTrainningTime(batchSize, epochs);
+        // this.predictTrainningTime(batchSize, epochs);
         RequestUploadTrainningTimeBuilder builder = new RequestUploadTrainningTimeBuilder(localFLParameter.getEncryptLevel());
         return builder.flName(flParameter.getFlName()).time().id(localFLParameter.getFlID())
                 .trainningTime(this.trainningTIme).iteration(iteration).build();

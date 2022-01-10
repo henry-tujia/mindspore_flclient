@@ -216,7 +216,7 @@ public class TrainDeepfm extends TrainModel {
         return labelsVec;
     }
 
-    @Override
+    
     private int getPredictLabel(float[] scores, int start, int end) {
         if (scores == null || scores.length == 0) {
             logger.severe(Common.addTag("scores cannot be empty"));

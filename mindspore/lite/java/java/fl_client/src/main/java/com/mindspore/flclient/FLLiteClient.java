@@ -19,6 +19,7 @@ package com.mindspore.flclient;
 import static com.mindspore.flclient.FLParameter.SLEEP_TIME;
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 import com.mindspore.flclient.JavaMI.*;
 
@@ -870,12 +871,12 @@ public class FLLiteClient {
                     dataSize + " labelPath: " + dataPath.split(",")[1]));
         } else if (flParameter.getFlName().equals(DEEPFM)){
             TrainDeepfm trainDeepFm = TrainDeepfm.getInstance();
-            if (dataPath = null) {
+            if (dataPath == null) {
                 LOGGER.severe(Common.addTag("[set input] the set dataPath for DeepFM is not valid, should be the " +
                         "format of data.json "));
                 return -1;
             }
-            dataSize = TrainDeepfm.initDataSet(dataPath,true);
+            dataSize = trainDeepFm.initDataSet(dataPath,true);
             LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath));
         }
         if (dataSize <= 0) {
@@ -915,8 +916,9 @@ public class FLLiteClient {
             TrainDeepfm trainDeepFM = TrainDeepfm.getInstance();
             long startTime = System.currentTimeMillis();
             int tag = trainDeepFM.trainModel(flParameter.getTrainModelPath(), epochs);
-            String Pid = ManagementFactory.getRuntimeMXBean().getName();
-            uploadTrainningTimeBuf.addTrainningTime(Pid, batchEndTime - batchStartTime);
+            long endTime = System.currentTimeMillis();
+            // String Pid = ManagementFactory.getRuntimeMXBean().getName();
+            uploadTrainningTimeBuf._addTrainningTime(endTime - startTime);
             if (tag == -1) {
                 failed("[train] unsolved error code in <trainDeepFM.trainModel>", ResponseCode.RequestError);
         }
