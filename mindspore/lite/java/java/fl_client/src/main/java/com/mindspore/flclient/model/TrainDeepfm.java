@@ -238,6 +238,6 @@ public class TrainDeepfm extends TrainModel {
         //         maxScore = scores[i];
         //     }
         // }
-        return Math.round(1 / (1 + (float) Math.exp(-maxScore)));;
+        return Math.round(1 / (1 + (float) Math.exp(-maxScore)));
     }
 }
