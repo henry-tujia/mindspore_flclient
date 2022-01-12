@@ -835,6 +835,8 @@ public class SyncFLJob {
     }
 
     public static void main(String[] args) {
+        System.out.println("main coming!")
+        System.out.println("args[4] :"+ args[4])
         if (args[4] == null || args[4].isEmpty()) {
             LOGGER.severe(Common.addTag("the parameter of <args[4]> is null, please check"));
             throw new IllegalArgumentException();
