@@ -837,7 +837,7 @@ public class SyncFLJob {
     public static void main(String[] args) {
         System.out.println("main coming!");
         // System.out.println("args[4] :"+ args[4]);
-        for(int i =0;i<12;i++){
+        for(int i =0;i<14;i++){
             System.out.println("args["+i+"] :\t"+ args[i]);
         }
         if (args[4] == null || args[4].isEmpty()) {
