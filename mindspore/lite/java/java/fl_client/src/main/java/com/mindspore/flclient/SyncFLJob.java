@@ -836,14 +836,19 @@ public class SyncFLJob {
 
     public static void main(String[] args) {
         System.out.println("main coming!");
-        System.out.println("args[4] :"+ args[4]);
+        // System.out.println("args[4] :"+ args[4]);
+        for(int i =0;i<12;i++){
+            System.out.println("args["+i+"] :\t"+ args[i]);
+        }
         if (args[4] == null || args[4].isEmpty()) {
             LOGGER.severe(Common.addTag("the parameter of <args[4]> is null, please check"));
             throw new IllegalArgumentException();
         }
         if (Common.checkFLName(args[4])) {
+            System.out.println("deprecated task here!");
             deprecatedTask(args);
         } else {
+            System.out.println("normal task here");
             task(args);
         }
 
