@@ -61,7 +61,7 @@ public class Common {
     /**
      * The list of trust flName.
      */
-    public static final List<String> FL_NAME_TRUST_LIST = new ArrayList<>(Arrays.asList("lenet", "albert"));
+    public static final List<String> FL_NAME_TRUST_LIST = new ArrayList<>(Arrays.asList("lenet", "albert","deepfm"));
 
     /**
      * The list of trust ssl protocol.
