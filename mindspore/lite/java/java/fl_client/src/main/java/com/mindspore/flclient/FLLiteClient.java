@@ -877,7 +877,7 @@ public class FLLiteClient {
                 return -1;
             }
             dataSize = trainDeepFm.initDataSet(dataPath,true);
-            LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath));
+            LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath+ "datasize: " + dataSize));
         }
         if (dataSize <= 0) {
             retCode = ResponseCode.RequestError;
