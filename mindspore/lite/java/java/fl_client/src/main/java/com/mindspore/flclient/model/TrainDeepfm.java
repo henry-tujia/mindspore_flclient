@@ -129,7 +129,7 @@ public class TrainDeepfm extends TrainModel {
         } else {
             return -1;  // labelArray may be initialized from train
         }
-        return 0;
+        return dataset.size();
     }
 
 
