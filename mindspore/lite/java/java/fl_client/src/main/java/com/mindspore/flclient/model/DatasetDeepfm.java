@@ -56,7 +56,7 @@ public class DatasetDeepfm {
                 if (count>1000){
                     break;
                 }
-                System.out.println(count+"th's data reading!");
+                // System.out.println(count+"th's data reading!");
                 DataLabelTuple dataLabelTuple = JSONObject.parseObject(st,DataLabelTuple.class);
                 dataset.add(dataLabelTuple);
                 count ++;

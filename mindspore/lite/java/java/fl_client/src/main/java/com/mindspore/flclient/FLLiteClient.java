@@ -840,9 +840,17 @@ public class FLLiteClient {
             AlTrainBert alTrainBert = AlTrainBert.getInstance();
             alTrainBert.setBatchSize(batchSize);
         } else if (localFLParameter.getServerMod().equals(ServerMod.FEDERATED_LEARNING.toString())) {
+            if (flParameter.getFlName().equals(LENET)){
             LOGGER.info(Common.addTag("[startFLJob] set <batchSize> for TrainLenet: " + batchSize));
             TrainLenet trainLenet = TrainLenet.getInstance();
             trainLenet.setBatchSize(batchSize);
+        }
+            else if(flParameter.getFlName().equals(DEEPFM)){
+                LOGGER.info(Common.addTag("[startFLJob] set <batchSize> for TrainDeepfm: " + batchSize));
+                TrainDeepfm trainDeepFm = TrainDeepfm.getInstance();
+                trainDeepFm.setBatchSize(1000);
+            }
+
         } else {
             LOGGER.severe(Common.addTag("[startFLJob] the ServerMod returned from server is not valid"));
             return -1;
@@ -877,7 +885,7 @@ public class FLLiteClient {
                 return -1;
             }
             dataSize = trainDeepFm.initDataSet(dataPath,true);
-            LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath+ "datasize: " + dataSize));
+            LOGGER.info(Common.addTag("[set input] " + "dataPath: " + dataPath+ ", datasize: " + dataSize));
         }
         if (dataSize <= 0) {
             retCode = ResponseCode.RequestError;
