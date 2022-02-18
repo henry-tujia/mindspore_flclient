@@ -119,13 +119,6 @@ public class TrainDeepfm extends TrainModel {
             else{
                 dataset = mDs.getTestData();
             }
-            // Vector<dataset.DataLabelTuple> testDataset = ds.getTestData();
-            // int[] label = new int[trainDataset.size()*NUM_OF_CLASS];
-            // int j = 0;
-            // for(int i=0;i<trainDataset.size();i+=1){
-            //     label[j*NUM_OF_CLASS+Math.round(trainDataset.get(i).label.get(0))] =1 ;
-            //     j+=1;
-            // }
         } else {
             return -1;  // labelArray may be initialized from train
         }

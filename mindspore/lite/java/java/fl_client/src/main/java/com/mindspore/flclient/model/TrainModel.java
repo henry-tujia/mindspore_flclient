@@ -105,6 +105,7 @@ public abstract class TrainModel {
     }
 
     private int trainLoop(int epochs) {
+        System.out.println("session ptr is "+trainSession.getSessionPtr());
         boolean isTrain = trainSession.train();
         if (!isTrain) {
             logger.severe(Common.addTag("trainsession set train failed"));
