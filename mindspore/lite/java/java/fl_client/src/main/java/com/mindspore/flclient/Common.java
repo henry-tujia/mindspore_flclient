@@ -601,6 +601,10 @@ public class Common {
             LOGGER.info(Common.addTag("===========free session============="));
             TrainLenet trainLenet = TrainLenet.getInstance();
             SessionUtil.free(trainLenet.getTrainSession());
+        }else if (flParameter.getFlName().equals(DEEPFM)) {
+            LOGGER.info(Common.addTag("===========free session============="));
+            TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+            SessionUtil.free(trainDeepfm.getTrainSession());
         }
     }
 }

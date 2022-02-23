@@ -191,6 +191,17 @@ public class UpdateModel {
                 status = FLClientStatus.FAILED;
                 throw new IllegalArgumentException();
             }
+        }else if (flParameter.getFlName().equals(DEEPFM)) {
+            LOGGER.info(Common.addTag("[updateModel] serialize feature map for " +
+                    flParameter.getFlName()));
+            TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+            map = SessionUtil.convertTensorToFeatures(SessionUtil.getFeatures(trainDeepfm.getTrainSession()));
+            if (map.isEmpty()) {
+                LOGGER.severe(Common.addTag("[updateModel] the return map is empty in <SessionUtil" +
+                        ".convertTensorToFeatures>"));
+                status = FLClientStatus.FAILED;
+                throw new IllegalArgumentException();
+            }
         } else {
             LOGGER.severe(Common.addTag("[updateModel] the flName is not valid"));
             status = FLClientStatus.FAILED;
