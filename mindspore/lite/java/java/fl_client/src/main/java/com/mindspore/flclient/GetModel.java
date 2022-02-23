@@ -25,7 +25,7 @@ import com.mindspore.flclient.model.ClientManager;
 import com.mindspore.flclient.model.RunType;
 import com.mindspore.flclient.model.SessionUtil;
 import com.mindspore.flclient.model.Status;
-
+import com.mindspore.flclient.model.TrainDeepfm;
 import com.mindspore.flclient.model.TrainLenet;
 import mindspore.schema.FeatureMap;
 import mindspore.schema.RequestGetModel;
@@ -203,6 +203,38 @@ public class GetModel {
         LOGGER.info(Common.addTag("[getModel] ----------------loading weight into model-----------------"));
         TrainLenet trainLenet = TrainLenet.getInstance();
         tag = SessionUtil.updateFeatures(trainLenet.getTrainSession(), flParameter.getTrainModelPath(), featureMaps);
+        if (tag == -1) {
+            LOGGER.severe(Common.addTag("[getModel] unsolved error code in <SessionUtil.updateFeatures>"));
+            return FLClientStatus.FAILED;
+        }
+        Common.freeSession();
+        return FLClientStatus.SUCCESS;
+    }
+
+    private FLClientStatus deprecatedParseResponseDeepfm(ResponseGetModel responseDataBuf) {
+        FLClientStatus status;
+        int fmCount = responseDataBuf.featureMapLength();
+        ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
+        for (int i = 0; i < fmCount; i++) {
+            FeatureMap feature = responseDataBuf.featureMap(i);
+            if (feature == null) {
+                LOGGER.severe(Common.addTag("[getModel] the feature returned from server is null"));
+                return FLClientStatus.FAILED;
+            }
+            String featureName = feature.weightFullname();
+            featureMaps.add(feature);
+            LOGGER.info(Common.addTag("[getModel] weightFullname: " + featureName + ", weightLength: " +
+                    feature.dataLength()));
+        }
+        status = Common.initSession(flParameter.getInferModelPath());
+        if (status == FLClientStatus.FAILED) {
+            retCode = ResponseCode.RequestError;
+            return status;
+        }
+        int tag = 0;
+        LOGGER.info(Common.addTag("[getModel] ----------------loading weight into model-----------------"));
+        TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+        tag = SessionUtil.updateFeatures(trainDeepfm.getTrainSession(), flParameter.getTrainModelPath(), featureMaps);
         if (tag == -1) {
             LOGGER.severe(Common.addTag("[getModel] unsolved error code in <SessionUtil.updateFeatures>"));
             return FLClientStatus.FAILED;

@@ -20,6 +20,7 @@ import static com.mindspore.flclient.FLParameter.SLEEP_TIME;
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.ANDROID;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 import com.mindspore.flclient.model.AlInferBert;
 import com.mindspore.flclient.model.AlTrainBert;
@@ -29,6 +30,7 @@ import com.mindspore.flclient.model.RunType;
 import com.mindspore.flclient.model.SessionUtil;
 import com.mindspore.flclient.model.Status;
 import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.flclient.model.TrainDeepfm;
 import com.mindspore.flclient.pki.PkiUtil;
 import com.mindspore.lite.config.CpuBindMode;
 import mindspore.schema.ResponseGetModel;

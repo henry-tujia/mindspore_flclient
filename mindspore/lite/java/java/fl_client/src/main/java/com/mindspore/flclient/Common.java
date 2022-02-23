@@ -23,6 +23,7 @@ import com.mindspore.flclient.model.ClientManager;
 import com.mindspore.flclient.model.SessionUtil;
 import com.mindspore.flclient.model.Status;
 import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.flclient.model.TrainDeepfm;
 import mindspore.schema.ResponseCode;
 import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.engines.AESEngine;
@@ -43,6 +44,7 @@ import java.util.regex.Pattern;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 /**
  * Define basic global methods used in federated learning task.

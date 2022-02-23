@@ -14,6 +14,7 @@ import com.mindspore.flclient.model.RunType;
 import com.mindspore.flclient.model.SessionUtil;
 import com.mindspore.flclient.model.Status;
 import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.flclient.model.TrainDeepfm;
 import com.mindspore.flclient.pki.PkiBean;
 import com.mindspore.flclient.pki.PkiUtil;
 
@@ -30,6 +31,7 @@ import java.util.logging.Logger;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 /**
  * StartFLJob
@@ -247,6 +249,42 @@ public class StartFLJob {
         LOGGER.info(Common.addTag("[startFLJob] ----------------loading weight into model-----------------"));
         TrainLenet trainLenet = TrainLenet.getInstance();
         tag = SessionUtil.updateFeatures(trainLenet.getTrainSession(), flParameter.getTrainModelPath(), featureMaps);
+        if (tag == -1) {
+            LOGGER.severe(Common.addTag("[startFLJob] unsolved error code in <SessionUtil.updateFeatures>"));
+            return FLClientStatus.FAILED;
+        }
+        Common.freeSession();
+        return FLClientStatus.SUCCESS;
+    }
+
+    private FLClientStatus deprecatedParseResponseDeepfm(ResponseFLJob flJob) {
+        FLClientStatus status;
+        int fmCount = flJob.featureMapLength();
+        ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
+        updateFeatureName.clear();
+        featureSize = 0;
+        for (int i = 0; i < fmCount; i++) {
+            FeatureMap feature = flJob.featureMap(i);
+            if (feature == null) {
+                LOGGER.severe(Common.addTag("[startFLJob] the feature returned from server is null"));
+                return FLClientStatus.FAILED;
+            }
+            String featureName = feature.weightFullname();
+            featureMaps.add(feature);
+            featureSize += feature.dataLength();
+            updateFeatureName.add(featureName);
+            LOGGER.info(Common.addTag("[startFLJob] weightFullname: " +
+                    feature.weightFullname() + ", weightLength: " + feature.dataLength()));
+        }
+        status = Common.initSession(flParameter.getTrainModelPath());
+        if (status == FLClientStatus.FAILED) {
+            retCode = ResponseCode.RequestError;
+            return status;
+        }
+        int tag = 0;
+        LOGGER.info(Common.addTag("[startFLJob] ----------------loading weight into model-----------------"));
+        TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+        tag = SessionUtil.updateFeatures(trainDeepfm.getTrainSession(), flParameter.getTrainModelPath(), featureMaps);
         if (tag == -1) {
             LOGGER.severe(Common.addTag("[startFLJob] unsolved error code in <SessionUtil.updateFeatures>"));
             return FLClientStatus.FAILED;

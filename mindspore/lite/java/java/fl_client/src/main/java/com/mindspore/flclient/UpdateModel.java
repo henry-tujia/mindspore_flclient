@@ -25,6 +25,7 @@ import com.mindspore.flclient.model.CommonUtils;
 import com.mindspore.flclient.model.SessionUtil;
 import com.mindspore.flclient.model.Status;
 import com.mindspore.flclient.model.TrainLenet;
+import com.mindspore.flclient.model.TrainDeepfm;
 import com.mindspore.lite.MSTensor;
 
 import mindspore.schema.FeatureMap;
@@ -41,6 +42,7 @@ import java.util.logging.Logger;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 /**
  * Define the serialization method, handle the response message returned from server for updateModel request.
