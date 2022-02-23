@@ -569,6 +569,11 @@ public class Common {
                     "Train Session============="));
             TrainLenet trainLenet = TrainLenet.getInstance();
             tag = trainLenet.initSessionAndInputs(flParameter.getTrainModelPath(), true);
+        }else if (flParameter.getFlName().equals(DEEPFM)) {
+            LOGGER.info(Common.addTag("==========Loading train model, " + flParameter.getTrainModelPath() + " Create " +
+                    "Train Session============="));
+            TrainDeepfm trainDeepfm = TrainDeepfm.getInstance();
+            tag = trainDeepfm.initSessionAndInputs(flParameter.getTrainModelPath(), true);
         }
         if (tag == -1) {
             LOGGER.severe(Common.addTag("[initSession] unsolved error code in <initSessionAndInputs>: the return is " +
