@@ -147,7 +147,7 @@ public class TrainDeepfm extends TrainModel {
         // for(int i = 0;i < inputs.get(0).getShape().length;i++){
         //     logger.info(Common.addTag("Shape["+i+"]"+"  "+inputs.get(0).getShape()[i]));
         // };
-
+        logger.info(Common.addTag("[read data size]: whole data size from model is "+inputs.get(0).size()));
         batchNum = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
 
         labelsBuffer = ByteBuffer.allocateDirect(batch_size* Float.BYTES);
