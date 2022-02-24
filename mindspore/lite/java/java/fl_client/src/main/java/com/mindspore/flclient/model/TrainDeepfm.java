@@ -144,20 +144,20 @@ public class TrainDeepfm extends TrainModel {
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
 
-        for(int i = 0;i < inputs.get(0).getShape().length;i++){
-            logger.info(Common.addTag("Shape["+i+"]"+"  "+inputs.get(0).getShape()[i]));
-        };
+        // for(int i = 0;i < inputs.get(0).getShape().length;i++){
+        //     logger.info(Common.addTag("Shape["+i+"]"+"  "+inputs.get(0).getShape()[i]));
+        // };
 
-        // batchNum = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
+        batchNum = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
 
-        // labelsBuffer = ByteBuffer.allocateDirect(batch_size* * Float.BYTES);
-        // labelsBuffer.order(ByteOrder.nativeOrder());
+        labelsBuffer = ByteBuffer.allocateDirect(batch_size* Float.BYTES);
+        labelsBuffer.order(ByteOrder.nativeOrder());
 
-        // idsBuffer = ByteBuffer.allocateDirect(imageSize * Float.BYTES);
-        // idsBuffer.order(ByteOrder.nativeOrder());
+        idsBuffer = ByteBuffer.allocateDirect(batch_size*inputs.get(0).getShape()[1] * Float.BYTES);
+        idsBuffer.order(ByteOrder.nativeOrder());
 
-        // valsBuffer = ByteBuffer.allocateDirect(imageSize * Float.BYTES);
-        // valsBuffer.order(ByteOrder.nativeOrder());
+        valsBuffer = ByteBuffer.allocateDirect(batch_size*inputs.get(1).getShape()[1] * Float.BYTES);
+        valsBuffer.order(ByteOrder.nativeOrder());
 
         logger.info(Common.addTag("init session and inputs success"));
 
