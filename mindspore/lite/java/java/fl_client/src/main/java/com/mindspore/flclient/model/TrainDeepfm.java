@@ -42,6 +42,8 @@ public class TrainDeepfm extends TrainModel {
 
     private int batch_size;
 
+    private int datasize;
+
     private int imageSize;
 
     private int labelSize;
@@ -117,10 +119,11 @@ public class TrainDeepfm extends TrainModel {
             else{
                 dataset = mDs.getTestData();
             }
+            datasize = dataset.size();
         } else {
             return -1;  // labelArray may be initialized from train
         }
-        return dataset.size();
+        return dataszie;
     }
 
 
@@ -143,12 +146,11 @@ public class TrainDeepfm extends TrainModel {
         trainSession = optTrainSession.get();
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
-
+        batchNum = (int)Math.toIntExact(datasize/batch_size);
         // for(int i = 0;i < inputs.get(0).getShape().length;i++){
         //     logger.info(Common.addTag("Shape["+i+"]"+"  "+inputs.get(0).getShape()[i]));
         // };
         logger.info(Common.addTag("[read data size]: whole data size from model is "+inputs.get(0).size()));
-        batchNum = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
 
         labelsBuffer = ByteBuffer.allocateDirect(batch_size* Float.BYTES);
         labelsBuffer.order(ByteOrder.nativeOrder());
