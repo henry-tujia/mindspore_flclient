@@ -170,6 +170,8 @@ public class TrainDeepfm extends TrainModel {
         int labelDataCnt = inputs.get(2).elementsNum();
         int[] labelBatchData = new int[labelDataCnt];
 
+        logger.info(Common.addTag("total batchNum:" + batchSize));
+
         for (int i = 0; i < batchSize; i++) {
             DatasetDeepfm.DataLabelTuple dataLabelTuple = dataset.get(batchIdx*batch_size+i);
             int label = dataLabelTuple.label.get(0).intValue();

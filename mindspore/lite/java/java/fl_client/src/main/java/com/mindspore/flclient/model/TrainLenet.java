@@ -102,6 +102,7 @@ public class TrainLenet extends TrainModel {
         int[] predictLabels = new int[trainSampleSize];
         for (int j = 0; j < batchNum; j++) {
             List<Integer> modelInput = fillModelInput(j, false);
+            
             if (!modelInput.isEmpty()) {
                 logger.severe(Common.addTag("infer mode model input need empty"));
                 return new int[0];
