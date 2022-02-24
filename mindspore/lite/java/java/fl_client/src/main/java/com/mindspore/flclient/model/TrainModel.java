@@ -105,7 +105,6 @@ public abstract class TrainModel {
     }
 
     private int trainLoop(int epochs) {
-        System.out.println("session ptr is "+trainSession.getSessionPtr());
         boolean isTrain = trainSession.train();
         if (!isTrain) {
             logger.severe(Common.addTag("trainsession set train failed"));
@@ -113,6 +112,7 @@ public abstract class TrainModel {
         }
         long startTime = System.currentTimeMillis();
         for (int i = 0; i < epochs; i++) {
+            logger.info(Common.addTag("epoch:   "+i+"   batchNum:"+batchNum));
             float sumLossPerEpoch = 0.0f;
             for (int j = 0; j < batchNum; j++) {
                 List<Integer> labels = fillModelInput(j, true);
