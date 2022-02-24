@@ -42,8 +42,6 @@ public class TrainDeepfm extends TrainModel {
 
     private int batch_size;
 
-    private int batch_num;
-
     private int imageSize;
 
     private int labelSize;
@@ -145,7 +143,7 @@ public class TrainDeepfm extends TrainModel {
         trainSession = optTrainSession.get();
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
-        batch_num = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
+        batchNum = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
         logger.info(Common.addTag("init session and inputs success"));
         return 0;
     }
