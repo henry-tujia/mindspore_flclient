@@ -204,6 +204,7 @@ public class UpdateModel {
                 status = FLClientStatus.FAILED;
                 throw new IllegalArgumentException();
             }
+            LOGGER.info(Common.addTag("[updateModel] the return map for deepfm size is" +map.size()));
         } else {
             LOGGER.severe(Common.addTag("[updateModel] the flName is not valid"));
             status = FLClientStatus.FAILED;
