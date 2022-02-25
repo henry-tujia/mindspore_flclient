@@ -440,6 +440,10 @@ public class StartFLJob {
             LOGGER.info(Common.addTag("[startFLJob] into <parseResponseLenet>"));
             status = deprecatedParseResponseLenet(flJob);
         }
+        if (DEEPFM.equals(flParameter.getFlName())) {
+            LOGGER.info(Common.addTag("[startFLJob] into <parseResponseDeepfm>"));
+            status = deprecatedParseResponseDeepfm(flJob);
+        }
         return status;
     }
 

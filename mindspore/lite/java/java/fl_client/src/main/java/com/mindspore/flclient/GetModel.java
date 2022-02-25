@@ -251,6 +251,9 @@ public class GetModel {
         } else if (LENET.equals(flParameter.getFlName())) {
             LOGGER.info(Common.addTag("[getModel] into <parseResponseLenet>"));
             status = deprecatedParseResponseLenet(responseDataBuf);
+        }else if (DEEPFM.equals(flParameter.getFlName())) {
+            LOGGER.info(Common.addTag("[getModel] into <parseResponseDeepfm>"));
+            status = deprecatedParseResponseDeepfm(responseDataBuf);
         } else {
             LOGGER.severe(Common.addTag("[getModel] the flName is not valid, only support: lenet, albert"));
             status = FLClientStatus.FAILED;
