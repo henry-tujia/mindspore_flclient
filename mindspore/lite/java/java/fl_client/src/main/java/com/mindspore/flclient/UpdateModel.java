@@ -324,7 +324,6 @@ public class UpdateModel {
                     this.fmOffset = RequestUpdateModel.createFeatureMapVector(builder, fmOffsetsDP);
                     LOGGER.info(Common.addTag("[Encrypt] DP mask model ok!"));
                     return this;
-                case NOT_ENCRYPT:
                 default:
                     int featureSize = updateFeatureName.size();
                     int[] fmOffsets = new int[featureSize];
