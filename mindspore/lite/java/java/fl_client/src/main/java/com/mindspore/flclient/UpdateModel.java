@@ -326,8 +326,9 @@ public class UpdateModel {
                     LOGGER.info(Common.addTag("[Encrypt] DP mask model ok!"));
                     return this;
                 default:
-                    LOGGER.info("[Encrypt] no Encrypt here!");
+                    
                     int featureSize = updateFeatureName.size();
+                    LOGGER.info(Common.addTag("[Encrypt] featureSize is "+featureSize));
                     int[] fmOffsets = new int[featureSize];
                     for (int i = 0; i < featureSize; i++) {
                         String key = updateFeatureName.get(i);
