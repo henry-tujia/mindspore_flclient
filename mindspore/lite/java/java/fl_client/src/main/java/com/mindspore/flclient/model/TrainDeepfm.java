@@ -156,8 +156,6 @@ public class TrainDeepfm extends TrainModel {
 
         logger.info(Common.addTag("init session and inputs success"));
 
-
-
         return 0;
     }
 
