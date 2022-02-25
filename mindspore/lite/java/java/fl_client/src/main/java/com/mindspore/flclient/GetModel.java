@@ -38,6 +38,7 @@ import java.util.logging.Logger;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 /**
  * Define the serialization method, handle the response message returned from server for getModel request.
