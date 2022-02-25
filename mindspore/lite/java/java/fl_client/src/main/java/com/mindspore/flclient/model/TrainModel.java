@@ -157,6 +157,7 @@ public abstract class TrainModel {
         }
         Map<String, MSTensor> outputs = trainSession.getOutputMapByTensor();
         for (MSTensor tensor : outputs.values()) {
+            logger.info(Common.addTag("[get output] current tensor size is "+tensor.getFloatData().length));
             if (tensor == null) {
                 logger.severe(Common.addTag("tensor cannot be null"));
                 return Optional.empty();
