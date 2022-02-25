@@ -1046,7 +1046,7 @@ public class FLLiteClient {
         else if (flParameter.getFlName().equals(DEEPFM)) {
             TrainDeepfm trainFeepFM = TrainDeepfm.getInstance();
             if (flParameter.getTestDataset() == null) {
-                failed("[evaluate] the set testDataPath for lenet is not valid, should be the format of data.json", ResponseCode.RequestError);
+                failed("[evaluate] the set testDataPath for deepfm is not valid, should be the format of data.json", ResponseCode.RequestError);
                 return status;
             }
             int tag = trainFeepFM.initSessionAndInputs(flParameter.getTrainModelPath(), true);

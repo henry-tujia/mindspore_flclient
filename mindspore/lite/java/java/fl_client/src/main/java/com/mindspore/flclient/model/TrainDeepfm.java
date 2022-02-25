@@ -32,8 +32,6 @@ import java.util.logging.Logger;
 public class TrainDeepfm extends TrainModel {
     private static final Logger logger = Logger.getLogger(TrainDeepfm.class.toString());
 
-    private static final int NUM_OF_CLASS = 1;
-
     private DatasetDeepfm mDs = new DatasetDeepfm();
 
     private Vector<DatasetDeepfm.DataLabelTuple> dataset;
@@ -120,6 +118,7 @@ public class TrainDeepfm extends TrainModel {
                 dataset = mDs.getTestData();
             }
             datasize = dataset.size();
+            numOfClass = 1;
         } else {
             return -1;  // labelArray may be initialized from train
         }
@@ -188,7 +187,7 @@ public class TrainDeepfm extends TrainModel {
         int labelDataCnt = inputs.get(2).elementsNum();
         int[] labelBatchData = new int[labelDataCnt];
 
-        logger.info(Common.addTag("total batchNum:" + batchSize));
+        logger.info(Common.addTag("total batchsize:" + batchSize));
 
         for (int i = 0; i < batchSize; i++) {
             // logger.info(Common.addTag((batchIdx*batch_size+i)+"th data is reading!"));
