@@ -239,7 +239,7 @@ public class TrainDeepfm extends TrainModel {
         float maxScore = scores[start];
 
 
-        logger.info(Common.addTag("[eval model]:"+"current sample id is "+start+" score is "+maxScore);
+        logger.info(Common.addTag("[eval model]:"+"current sample id is "+start+" score is "+maxScore));
         // int maxIdx = start;
         // for (int i = start; i < end; i++) {
         //     if (scores[i] > maxScore) {
