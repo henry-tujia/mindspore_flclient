@@ -53,9 +53,9 @@ public class DatasetDeepfm {
             String st;
             int count = 0;
             while ((st = br.readLine()) != null) {
-                // if (count>999){
-                //     break;
-                // }
+                if (count>999){
+                    break;
+                }
                 // System.out.println(count+"th's data reading!");
                 DataLabelTuple dataLabelTuple = JSONObject.parseObject(st,DataLabelTuple.class);
                 dataset.add(dataLabelTuple);
