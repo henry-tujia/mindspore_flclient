@@ -144,7 +144,7 @@ public abstract class TrainModel {
     private float getLoss(LiteSession trainSession) {
         Optional<MSTensor> tensor = searchOutputsForSize(trainSession, 1);
         if (!tensor.isPresent()) {
-            logger.severe(Common.addTag("cannot find loss tensor"+tensor.tensorName()));
+            logger.severe(Common.addTag("cannot find loss tensor"+tensor.get().tensorName()));
             return Float.NaN;
         }
         return tensor.get().getFloatData()[0];
