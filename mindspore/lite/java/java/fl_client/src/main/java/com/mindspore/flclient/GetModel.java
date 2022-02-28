@@ -336,7 +336,7 @@ public class GetModel {
                 featureMaps.add(feature);
                 LOGGER.info(Common.addTag("[getModel] weightFullname: " + featureName + ", " +
                         "weightLength: " + feature.dataLength()));
-                for(int j = 0;j<feature.dataLength();i++){
+                for(int j = 0;j < feature.dataLength();j++){
                     LOGGER.info(Common.addTag("[getModel] weight is "+ feature.data(j)));
                 }
             }
