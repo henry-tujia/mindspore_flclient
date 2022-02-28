@@ -188,7 +188,7 @@ public abstract class TrainModel {
                 return accuracy;
             }
             int predictIdx = getPredictLabel(scores, numOfClass * b, numOfClass * b + numOfClass);
-            logger.info(Common.addTag("[cal acc] current label is "+labels.get(b)+" score is "+scores[b]+" pred is "+ predictIdx));
+            // logger.info(Common.addTag("[cal acc] current label is "+labels.get(b)+" score is "+scores[b]+" pred is "+ predictIdx));
             if (labels.get(b) == predictIdx) {
                 accuracy += 1;
             }
