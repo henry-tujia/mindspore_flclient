@@ -38,6 +38,7 @@ import java.util.logging.Logger;
 
 import static com.mindspore.flclient.LocalFLParameter.ALBERT;
 import static com.mindspore.flclient.LocalFLParameter.LENET;
+import static com.mindspore.flclient.LocalFLParameter.DEEPFM;
 
 /**
  * Define the serialization method, handle the response message returned from server for getModel request.
@@ -251,6 +252,9 @@ public class GetModel {
         } else if (LENET.equals(flParameter.getFlName())) {
             LOGGER.info(Common.addTag("[getModel] into <parseResponseLenet>"));
             status = deprecatedParseResponseLenet(responseDataBuf);
+        }else if (DEEPFM.equals(flParameter.getFlName())) {
+            LOGGER.info(Common.addTag("[getModel] into <parseResponseDeepfm>"));
+            status = deprecatedParseResponseDeepfm(responseDataBuf);
         } else {
             LOGGER.severe(Common.addTag("[getModel] the flName is not valid, only support: lenet, albert"));
             status = FLClientStatus.FAILED;

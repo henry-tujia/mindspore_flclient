@@ -204,6 +204,7 @@ public class UpdateModel {
                 status = FLClientStatus.FAILED;
                 throw new IllegalArgumentException();
             }
+            LOGGER.info(Common.addTag("[updateModel] the return map for deepfm size is " +map.size()));
         } else {
             LOGGER.severe(Common.addTag("[updateModel] the flName is not valid"));
             status = FLClientStatus.FAILED;
@@ -300,6 +301,7 @@ public class UpdateModel {
             } else {
                 trainedMap = getFeatureMap();
             }
+            LOGGER.info(Common.addTag("[updateModel] the encryptLevel is "+encryptLevel));
             switch (encryptLevel) {
                 case PW_ENCRYPT:
                     int[] fmOffsetsPW = secureProtocol.pwMaskModel(builder, trainDataSize, trainedMap);
@@ -323,9 +325,10 @@ public class UpdateModel {
                     this.fmOffset = RequestUpdateModel.createFeatureMapVector(builder, fmOffsetsDP);
                     LOGGER.info(Common.addTag("[Encrypt] DP mask model ok!"));
                     return this;
-                case NOT_ENCRYPT:
                 default:
+                    
                     int featureSize = updateFeatureName.size();
+                    LOGGER.info(Common.addTag("[Encrypt] featureSize is "+featureSize));
                     int[] fmOffsets = new int[featureSize];
                     for (int i = 0; i < featureSize; i++) {
                         String key = updateFeatureName.get(i);

@@ -105,7 +105,6 @@ public abstract class TrainModel {
     }
 
     private int trainLoop(int epochs) {
-        System.out.println("session ptr is "+trainSession.getSessionPtr());
         boolean isTrain = trainSession.train();
         if (!isTrain) {
             logger.severe(Common.addTag("trainsession set train failed"));
@@ -113,6 +112,7 @@ public abstract class TrainModel {
         }
         long startTime = System.currentTimeMillis();
         for (int i = 0; i < epochs; i++) {
+            logger.info(Common.addTag("epoch:   "+i+"   batchNum:"+batchNum));
             float sumLossPerEpoch = 0.0f;
             for (int j = 0; j < batchNum; j++) {
                 List<Integer> labels = fillModelInput(j, true);
@@ -157,6 +157,7 @@ public abstract class TrainModel {
         }
         Map<String, MSTensor> outputs = trainSession.getOutputMapByTensor();
         for (MSTensor tensor : outputs.values()) {
+            logger.info(Common.addTag("[get output] current tensor size is "+tensor.getFloatData().length));
             if (tensor == null) {
                 logger.severe(Common.addTag("tensor cannot be null"));
                 return Optional.empty();
@@ -187,6 +188,7 @@ public abstract class TrainModel {
                 return accuracy;
             }
             int predictIdx = getPredictLabel(scores, numOfClass * b, numOfClass * b + numOfClass);
+            logger.info(Common.addTag("[cal acc] current label is "+labels.get(b)+" score is "+scores[b]+" pred is "+ predictIdx));
             if (labels.get(b) == predictIdx) {
                 accuracy += 1;
             }

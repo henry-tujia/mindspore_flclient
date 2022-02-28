@@ -32,8 +32,6 @@ import java.util.logging.Logger;
 public class TrainDeepfm extends TrainModel {
     private static final Logger logger = Logger.getLogger(TrainDeepfm.class.toString());
 
-    private static final int NUM_OF_CLASS = 1;
-
     private DatasetDeepfm mDs = new DatasetDeepfm();
 
     private Vector<DatasetDeepfm.DataLabelTuple> dataset;
@@ -41,12 +39,6 @@ public class TrainDeepfm extends TrainModel {
     // private Vector<DatasetDeepfm.DataLabelTuple> mTestDataset;
 
     private int batch_size;
-
-    private int batch_num;
-
-    private int imageSize;
-
-    private int labelSize;
 
     private float[] idsArray;
 
@@ -119,10 +111,12 @@ public class TrainDeepfm extends TrainModel {
             else{
                 dataset = mDs.getTestData();
             }
+            trainSampleSize = dataset.size();
+            numOfClass = 1;
         } else {
             return -1;  // labelArray may be initialized from train
         }
-        return dataset.size();
+        return trainSampleSize;
     }
 
 
@@ -145,8 +139,23 @@ public class TrainDeepfm extends TrainModel {
         trainSession = optTrainSession.get();
         List<MSTensor> inputs = trainSession.getInputs();
         batch_size = inputs.get(0).getShape()[0];
-        batch_num = (int)Math.toIntExact(inputs.get(0).size()/batch_size);
+        batchNum = (int)Math.toIntExact(trainSampleSize/batch_size);
+        // for(int i = 0;i < inputs.get(0).getShape().length;i++){
+        //     logger.info(Common.addTag("Shape["+i+"]"+"  "+inputs.get(0).getShape()[i]));
+        // };
+        logger.info(Common.addTag("[read data size]: whole data size from model is "+inputs.get(0).size()));
+
+        labelsBuffer = ByteBuffer.allocateDirect(batch_size* Float.BYTES);
+        labelsBuffer.order(ByteOrder.nativeOrder());
+
+        idsBuffer = ByteBuffer.allocateDirect(batch_size*inputs.get(0).getShape()[1] * Float.BYTES);
+        idsBuffer.order(ByteOrder.nativeOrder());
+
+        valsBuffer = ByteBuffer.allocateDirect(batch_size*inputs.get(1).getShape()[1] * Float.BYTES);
+        valsBuffer.order(ByteOrder.nativeOrder());
+
         logger.info(Common.addTag("init session and inputs success"));
+
         return 0;
     }
 
@@ -170,7 +179,11 @@ public class TrainDeepfm extends TrainModel {
         int labelDataCnt = inputs.get(2).elementsNum();
         int[] labelBatchData = new int[labelDataCnt];
 
+        logger.info(Common.addTag("total batchsize:" + batchSize));
+
         for (int i = 0; i < batchSize; i++) {
+            // logger.info(Common.addTag((batchIdx*batch_size+i)+"th data is reading!"));
+
             DatasetDeepfm.DataLabelTuple dataLabelTuple = dataset.get(batchIdx*batch_size+i);
             int label = dataLabelTuple.label.get(0).intValue();
             int[] ids = dataLabelTuple.feat_ids.stream().mapToInt(j -> j).toArray();
@@ -224,6 +237,9 @@ public class TrainDeepfm extends TrainModel {
             return -1;
         }
         float maxScore = scores[start];
+
+
+        // logger.info(Common.addTag("[eval model]:"+"current sample id is "+start+" score is "+maxScore));
         // int maxIdx = start;
         // for (int i = start; i < end; i++) {
         //     if (scores[i] > maxScore) {
