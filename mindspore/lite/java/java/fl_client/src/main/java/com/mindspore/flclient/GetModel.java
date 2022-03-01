@@ -218,6 +218,7 @@ public class GetModel {
         int fmCount = responseDataBuf.featureMapLength();
         ArrayList<FeatureMap> featureMaps = new ArrayList<FeatureMap>();
         for (int i = 0; i < fmCount; i++) {
+            String paras = "";
             FeatureMap feature = responseDataBuf.featureMap(i);
             if (feature == null) {
                 LOGGER.severe(Common.addTag("[getModel] the feature returned from server is null"));
@@ -227,9 +228,12 @@ public class GetModel {
             featureMaps.add(feature);
             LOGGER.info(Common.addTag("[getModel] weightFullname: " + featureName + ", weightLength: " +
                     feature.dataLength()));
+            
             for(int j = 0;j < feature.dataLength();j++){
-                LOGGER.info(Common.addTag("[getModel] weight is "+ feature.data(j)));
+                paras += feature.data(j);
+                paras += " ";
             }
+            LOGGER.info(Common.addTag("[getModel] weightFullname: " + featureName + ", data: " + paras));
         }
         status = Common.initSession(flParameter.getInferModelPath());
         if (status == FLClientStatus.FAILED) {
