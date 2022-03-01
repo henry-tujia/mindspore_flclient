@@ -213,6 +213,7 @@ public class SyncFLJob {
      * @return the status code corresponding to the response message.
      */
     public FLClientStatus flJobRunMul() {
+        LOGGER.info(Common.addTag("[fljob MUL] Into Fljob MUL"));
         flJobResultCallback = flParameter.getIflJobResultCallback();
         if (!Common.checkFLName(flParameter.getFlName()) && ANDROID.equals(flParameter.getDeployEnv())) {
             Common.setSecureRandom(Common.getFastSecureRandom());
