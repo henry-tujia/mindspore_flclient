@@ -248,15 +248,16 @@ public class SyncFLJob {
             }
             LOGGER.info(Common.addTag("[startFLJob] startFLJob succeed, curIteration: " + flLiteClient.getIteration()));
 
-
-            // getModel
-            curStatus = getModel(flLiteClient);
-            if (curStatus == FLClientStatus.RESTART) {
-                restart("[getModel]", flLiteClient.getNextRequestTime(), flLiteClient);
-                continue;
-            } else if (curStatus == FLClientStatus.FAILED) {
-                failed("[getModel] getModel", flLiteClient);
-                break;
+            if (flLiteClient.getIteration()>1){
+                // getModel
+                curStatus = getModel(flLiteClient);
+                if (curStatus == FLClientStatus.RESTART) {
+                    restart("[getModel]", flLiteClient.getNextRequestTime(), flLiteClient);
+                    continue;
+                } else if (curStatus == FLClientStatus.FAILED) {
+                    failed("[getModel] getModel", flLiteClient);
+                    break;
+                }
             }
 
             
