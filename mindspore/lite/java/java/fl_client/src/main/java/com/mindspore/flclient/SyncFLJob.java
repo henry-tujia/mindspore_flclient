@@ -56,8 +56,8 @@ public class SyncFLJob {
     private FLParameter flParameter = FLParameter.getInstance();
     private LocalFLParameter localFLParameter = LocalFLParameter.getInstance();
     private IFLJobResultCallback flJobResultCallback;
-    private Map<String, float[]> oldFeatureMap;
-    private Map<String, float[]> oldFeatureMap_mul;
+    private Map<String, float[]> oldFeatureMap = new HashMap<>();
+    private Map<String, float[]> oldFeatureMap_mul = new HashMap<>();
     private FLClientStatus curStatus;
 
     private void initFlIDForPkiVerify() {
