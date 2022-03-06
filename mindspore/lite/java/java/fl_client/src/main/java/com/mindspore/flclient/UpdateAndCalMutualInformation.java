@@ -69,16 +69,18 @@ public class UpdateAndCalMutualInformation {
             enuNum+= b.length;
         }
 
-        float[] res = new float[enuNum];
+        double[] res = new double[enuNum];
 
         int j = 0;
 
         for (float[] b : input.values()) {
-            System.arraycopy(b, 0, res, j, b.length);
-            j+=b.length;
+            for(float c : b){
+                res[j] = c;
+                j += 1;
+            }
         }
 
-        return (double[]) (Object) res;
+        return res;
 
     }
 
