@@ -778,7 +778,7 @@ public class FLLiteClient {
             long start = Common.startTime("single UpdateAndCalMutualInformation");
             LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] the request message length: "
                     + updateAndCalMutualInformationBuffer.length));
-            byte[] message = flCommunication.syncRequest(url + "/UpdateAndCalMutualInformation",
+            byte[] message = flCommunication.syncRequest(url + "/updateAndCalMutualInformation",
                     updateAndCalMutualInformationBuffer);
             if (!Common.isSeverReady(message)) {
                 LOGGER.info(Common.addTag(
