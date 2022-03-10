@@ -769,7 +769,7 @@ public class FLLiteClient {
                 flParameter.getDomainName());
         UpdateAndCalMutualInformation updateAndCalMutualInformationBuf = UpdateAndCalMutualInformation.getInstance();
         byte[] updateAndCalMutualInformationBuffer = updateAndCalMutualInformationBuf
-                .getRequestUpdateAndCalMutualInformation(localModel, serverModel);
+                .getRequestUpdateAndCalMutualInformation(localModel, serverModel, iteration);
         if (updateAndCalMutualInformationBuf.getStatus() == FLClientStatus.FAILED) {
             LOGGER.info(Common.addTag("[updateModel] catch error in build UpdateAndCalMutualInformation"));
             return FLClientStatus.FAILED;

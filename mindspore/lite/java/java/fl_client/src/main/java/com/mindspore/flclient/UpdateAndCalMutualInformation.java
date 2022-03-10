@@ -92,9 +92,10 @@ public class UpdateAndCalMutualInformation {
      * @param batchSize  the batchSize of trainning option.
      * @return the flatBuffer builder of RequestUpdateAndCalMutualInformation in byte[] format.
      */
-    public byte[] getRequestUpdateAndCalMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel) {
+    public byte[] getRequestUpdateAndCalMutualInformation(Map<String, float[]> localModel,Map<String, float[]> serverModel, int iteration) {
         RequestUpdateAndCalMutualInformationBuilder builder = new RequestUpdateAndCalMutualInformationBuilder();
-        return builder.time().id(localFLParameter.getFlID()).mul(calMutualInformation(localModel,serverModel)+"").build();
+        LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] ID is "+localFLParameter.getFlID()+", mul is "+calMutualInformation(localModel,serverModel)+", Iteration is "+ iteration));
+        return builder.time().id(localFLParameter.getFlID()).mul(calMutualInformation(localModel,serverModel)+"").iteration(iteration).build();
     }
 
     /**
@@ -130,6 +131,7 @@ public class UpdateAndCalMutualInformation {
         private FlatBufferBuilder builder;
         private int idOffset = 0;
         private int mulOffset = 0;
+        private int iteration = 0;
         private int timestampOffset = 0;
 
         private RequestUpdateAndCalMutualInformationBuilder() {
@@ -178,16 +180,21 @@ public class UpdateAndCalMutualInformation {
             return this;
         }
 
+        private RequestUpdateAndCalMutualInformationBuilder iteration(int iteration) {
+            this.iteration = iteration;
+            return this;
+        }
+
         /**
          * Create a flatBuffer builder of RequestUpdateAndCalMutualInformation.
          *
          * @return the flatBuffer builder of RequestUpdateAndCalMutualInformation in byte[] format.
          */
         private byte[] build() {
-            RequestUpdateAndCalMutualInformation.startRequestUpdateAndCalMutualInformation(this.builder);
-            RequestUpdateAndCalMutualInformation.addFlId(this.builder, idOffset);
-            RequestUpdateAndCalMutualInformation.addTimestamp(builder, this.timestampOffset);
-            RequestUpdateAndCalMutualInformation.addTimestamp(builder, this.mulOffset);
+            RequestUpdateAndCalMutualInformation.startRequestUpdateAndCalMutualInformation(builder);
+            RequestUpdateAndCalMutualInformation.addFlId(builder, idOffset);
+            RequestUpdateAndCalMutualInformation.addTimestamp(builder, timestampOffset);
+            RequestUpdateAndCalMutualInformation.addIteration(builder, iteration);
             int root = RequestUpdateAndCalMutualInformation.endRequestUpdateAndCalMutualInformation(builder);
             builder.finish(root);
             return builder.sizedByteArray();
