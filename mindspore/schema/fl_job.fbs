@@ -178,12 +178,14 @@ table RequestUpdateAndCalMutualInformation{
   fl_id:string;
   fl_mul:string;
   timestamp:string;
+  iteration:int;
 }
 table ResponseUpdateAndCalMutualInformation{
   retcode:int;
   reason:string;
   next_req_time:string;
   timestamp:string;
+  iteration:int;
 }
 
 /**
