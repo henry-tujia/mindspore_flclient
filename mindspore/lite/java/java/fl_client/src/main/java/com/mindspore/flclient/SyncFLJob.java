@@ -275,13 +275,15 @@ public class SyncFLJob {
             
 
              // calculate mul-information
-            curStatus = flLiteClient.updateAndCalMutualInformation(new_featureMap,oldFeatureMap_mul);
-            if (curStatus == FLClientStatus.FAILED) {
-                failed("[updateAndCalMutualInformation] upload mul failed or server drop the client ", flLiteClient);
+            curStatus = updateAndCalMutualInformation(flLiteClient,new_featureMap,oldFeatureMap_mul);
+            if (curStatus == FLClientStatus.RESTART) {
+                restart("[updateAndCalMutualInformation]", flLiteClient.getNextRequestTime(), flLiteClient);
                 continue;
+            } else if (curStatus == FLClientStatus.FAILED) {
+                failed("[updateAndCalMutualInformation] updateModel", flLiteClient);
+                break;
             }
-            LOGGER.info(Common.addTag("[updateAndCalMutualInformation] upload mul success"));
-
+            
             // updateModel
             curStatus = updateModel(flLiteClient);
             if (curStatus == FLClientStatus.RESTART) {
@@ -453,6 +455,20 @@ public class SyncFLJob {
             }
             waitSomeTime();
             curStatus = flLiteClient.updateModel();
+        }
+        return curStatus;
+    }
+
+    private FLClientStatus updateAndCalMutualInformation(FLLiteClient flLiteClient,Map<String, float[]> localModel,
+            Map<String, float[]> serverModel) {
+        FLClientStatus curStatus = flLiteClient.updateAndCalMutualInformation(localModel,serverModel);
+        while (curStatus == FLClientStatus.WAIT) {
+            if (checkStopJobFlag()) {
+                curStatus = FLClientStatus.FAILED;
+                break;
+            }
+            waitSomeTime();
+            curStatus = flLiteClient.updateAndCalMutualInformation(localModel,serverModel);
         }
         return curStatus;
     }
