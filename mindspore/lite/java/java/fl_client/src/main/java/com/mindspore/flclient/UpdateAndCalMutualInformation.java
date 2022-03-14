@@ -109,19 +109,23 @@ public class UpdateAndCalMutualInformation {
         LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] ==========retcode: " + response.retcode()));
         LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] ==========reason: " + response.reason()));
         LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] ==========next request time: " + response.nextReqTime()));
+        FLClientStatus status = FLClientStatus.SUCCESS;
         switch (response.retcode()) {
             case (ResponseCode.SUCCEED):
-                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] UpdateAndCalMutualInformation success"));
-                return FLClientStatus.SUCCESS;
+                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] UpdateAndCalMutualInformation response success"));
+                return status;
+            case (ResponseCode.SucNotReady):
+                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] server is not ready now: need wait and request UpdateAndCalMutualInformation again"));
+                return FLClientStatus.WAIT;
             case (ResponseCode.OutOfTime):
+                LOGGER.info(Common.addTag("[UpdateAndCalMutualInformation] out of time: need wait and request startFLJob again"));
                 return FLClientStatus.RESTART;
             case (ResponseCode.RequestError):
             case (ResponseCode.SystemError):
                 LOGGER.warning(Common.addTag("[UpdateAndCalMutualInformation] catch RequestError or SystemError"));
                 return FLClientStatus.FAILED;
             default:
-                LOGGER.severe(Common.addTag("[UpdateAndCalMutualInformation]the return <retCode> from server is invalid: " +
-                        response.retcode()));
+                LOGGER.severe(Common.addTag("[UpdateAndCalMutualInformation] the return <retCode> from server is invalid: " + response.retcode()));
                 return FLClientStatus.FAILED;
         }
     }
